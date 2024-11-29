@@ -18,7 +18,6 @@ default:
     DMore\ChromeExtension\Behat\ServiceContainer\ChromeExtension: ~
     # Base extension for UI tests
     Behat\MinkExtension:  
-      base_url: http://localhost/exface/exface    
       # Stick with chrome by default. It's 2x faster than firefox or phantomjs (your results may vary).
       default_session: chromePortable
       javascript_session: chromePortable
