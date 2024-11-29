@@ -9,6 +9,18 @@
         "behat/mink-browserkit-driver": "^2.2",
         "behat/mink-selenium2-driver": "^1.7"
     },
+    "authors": [
+        {
+            "name": "Andrej Kabachnik",
+            "email": "kabachnik@gmail.com",
+            "role": "Creator"
+        }
+    ],
+    "support": {
+        "source": "https://github.com/axenox/bdt",
+        "docs": "https://github.com/axenox/bdt/blob/master/Docs",
+        "issues": "https://github.com/axenox/bdt/issues"
+    },
     "autoload": {
         "psr-4": {
             "\\axenox\\BDT\\": ""

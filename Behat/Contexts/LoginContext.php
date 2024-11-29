@@ -1,6 +1,5 @@
 <?php
-
-namespace Src\Context;
+namespace axenox\BDT\Behat\Contexts;
 
 use Behat\Behat\Context\Context;
 use Page\LoginPage;

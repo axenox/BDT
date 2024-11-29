@@ -1,0 +1,44 @@
+# Default profile
+default:
+  autoload:
+      # Point the PSR-0 autoloader built into Behat to our verndor folder. This will allow it to find
+      # the different contexts by their namespace
+      '': '%paths.base%/vendor'
+  suites:
+    default:
+      contexts:
+        - axenox\BDT\Behat\Contexts\JEasyUI\FeatureContext
+    axenox.bdt: 
+      paths: 
+        - '%paths.base%/vendor/axenox/bdt/Tests/Behat/Features'
+      contexts:
+        - axenox\BDT\Behat\Contexts\JEasyUI\FeatureContext
+  extensions:
+    # Chrome UI driver
+    DMore\ChromeExtension\Behat\ServiceContainer\ChromeExtension: ~
+    # Base extension for UI tests
+    Behat\MinkExtension:  
+      base_url: http://localhost/exface/exface    
+      # Stick with chrome by default. It's 2x faster than firefox or phantomjs (your results may vary).
+      default_session: chromePortable
+      javascript_session: chromePortable
+      # Configure browser to be used. Browser must be available on wd_host.
+      sessions:
+        # Chrome portable as described in the docs
+        chromePortable:
+          chrome:
+              api_url: "http://localhost:9222"
+              # Increase timeout because the first time chrome is called it might take longer
+              socket_timeout: 30
+        # Selenium - worked only with Selenium 2 which is outdated and does not work with current browsers
+        selenium:
+          selenium2: # or selenium4?
+              wd_host: http://127.0.0.1:4444
+              capabilities:
+                    browserName: firefox
+                    version: "*"
+                    platform: ANY
+        # Non-Javascript browser via Symfony browserkit. Should be faster. Not tested yet
+        # browserkit:
+          # browserkit_http: ~
+          

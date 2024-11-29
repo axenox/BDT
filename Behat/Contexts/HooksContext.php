@@ -1,5 +1,5 @@
 <?php
-
+namespace axenox\BDT\Behat\Contexts;
 
 use Behat\Behat\Context\Context;
 use Behat\Behat\Hook\Scope\BeforeScenarioScope;
