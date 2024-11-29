@@ -15,6 +15,7 @@ use Symfony\Component\Yaml\Yaml;
  * Use from the command line:
  * 
  * - `vendor\bin\action axenox.BDT:Behat` - run all tests
+ * - `vendor\bin\action axenox.BDT:Behat init` - prepare everything to run Behat tests on this installation
  * - `vendor\bin\action axenox.BDT:Behat includeApp=my.APP` - include app `my.APP` as a test suite
  *        
  * @author Andrej Kabachnik
