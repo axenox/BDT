@@ -3,6 +3,7 @@
 ## Preparing an installation for testing
 
 1. Install prerequisites - see [setup guidelines](Setup/index.md) if not
+2. Got to `Administration > Automated tests`. The system will set up everything automatically
 
 ## Running a test
 

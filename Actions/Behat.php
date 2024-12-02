@@ -118,6 +118,10 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
 
         $writer = $this->getYmlWriter($yml, $ymlPath);
         yield from $writer;
+
+        // TODO Check if browsers are running
+
+        yield 'Ready to test now!' . PHP_EOL;
     }
 
     /**

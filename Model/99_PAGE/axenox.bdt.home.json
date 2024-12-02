@@ -1,0 +1,66 @@
+{
+    "uid": "0x11ef9cade73751fa9cad025041000001",
+    "alias_with_namespace": "axenox.bdt.home",
+    "menu_parent_page_selector": "0xf8310d4bba2c11e7895fe4b318306b9a",
+    "menu_index": 14,
+    "menu_visible": true,
+    "name": "Automated tests",
+    "description": "",
+    "intro": "",
+    "replaces_page_selector": null,
+    "created_by_user_selector": "0x31000000000000000000000000000000",
+    "created_on": "2024-12-02 09:10:33",
+    "modified_by_user_selector": "0x31000000000000000000000000000000",
+    "modified_on": "2024-12-02 09:33:22",
+    "contents": {
+        "object_alias": "exface.Core.DUMMY",
+        "widget_type": "SplitHorizontal",
+        "panels": [
+            {
+                "caption": "Command line",
+                "width": "50%",
+                "widgets": [
+                    {
+                        "widget_type": "Console",
+                        "object_alias": "exface.Core.ACTION",
+                        "allowed_commands": [
+                            "\/action.*\/i",
+                            "\/behat.*\/i",
+                            "\/git.*\/i",
+                            "\/whoami\/"
+                        ],
+                        "start_commands": [
+                            "vendor\/bin\/action axenox.BDT:Behat init"
+                        ],
+                        "command_presets": [
+                            {
+                                "caption": "Run all tests",
+                                "hint": "Runs all available test",
+                                "commands": [
+                                    "vendor\/bin\/Behat"
+                                ]
+                            },
+                            {
+                                "caption": "Run suite",
+                                "hint": "Run only the given test suite",
+                                "commands": [
+                                    "vendor\/bin\/Behat --suite=<Suite>"
+                                ]
+                            },
+                            {
+                                "caption": "Init",
+                                "hint": "Set up this installation for testing",
+                                "commands": [
+                                    "vendor\/bin\/action axenox.BDT:Behat init"
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "caption": "Features (coming soon)"
+            }
+        ]
+    }
+}
