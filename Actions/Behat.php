@@ -2,6 +2,10 @@
 namespace axenox\BDT\Actions;
 
 use exface\Core\CommonLogic\AbstractActionDeferred;
+use exface\Core\CommonLogic\Filemanager;
+use exface\Core\DataTypes\FilePathDataType;
+use exface\Core\DataTypes\StringDataType;
+use exface\Core\Interfaces\Tasks\CliTaskInterface;
 use exface\Core\Interfaces\Tasks\TaskInterface;
 use exface\Core\Interfaces\DataSources\DataTransactionInterface;
 use exface\Core\Interfaces\Actions\iCanBeCalledFromCLI;
@@ -23,7 +27,11 @@ use Symfony\Component\Yaml\Yaml;
  */
 class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
 {
+    const PARAM_COMMAND = 'operation';
+
     const COMMAND_INIT = 'init';
+
+    const OPTION_INCLUDE_APP = 'includeApp';
     
     /**
      *
@@ -32,18 +40,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
      */
     protected function performImmediately(TaskInterface $task, DataTransactionInterface $transaction, ResultMessageStreamInterface $result) : array
     {
-        return [$this->getCommands($task)];
-    }
-
-    protected function getCommands(TaskInterface $task) : array
-    {
-        $commands = [];
-        switch (true) {
-            case $task->hasParameter(self::COMMAND_INIT):
-                $commands[] = [self::COMMAND_INIT, []];
-                break;
-        }
-        return $commands;
+        return [$task];
     }
     
     /**
@@ -51,17 +48,21 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
      * {@inheritDoc}
      * @see \exface\Core\CommonLogic\AbstractActionDeferred::performDeferred()
      */
-    protected function performDeferred(array $commands = []) : \Generator
+    protected function performDeferred(CliTaskInterface $task = null) : \Generator
     {
-        foreach ($commands as $cmdArray) {
-            list($cmd, $args) = $cmdArray;
-            switch ($cmd) {
-                case self::COMMAND_INIT:
-                    yield from $this->doInit();
-                    break;
-                default:
-                    yield 'Not implemented yet! But a Behat test will run here some day';
-            }
+        $cmd = $task->getParameter(self::PARAM_COMMAND);
+
+        switch ($cmd) {
+            case self::COMMAND_INIT:
+                yield from $this->doInit();
+                break;
+            default:
+                
+        }
+
+        switch (true) {
+            case $task->hasParameter(self::OPTION_INCLUDE_APP):
+                yield from $this->doIncludeApp($task->getParameter(self::OPTION_INCLUDE_APP));
         }
     }
     
@@ -74,14 +75,8 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
     {
         return [
             (new ServiceParameter($this))
-                ->setName(self::COMMAND_INIT)
-                ->setDescription('Initialize this installation for Behat tests'),
-            (new ServiceParameter($this))
-                ->setName('includeApp')
-                ->setDescription('Include an app (alias) when running tests on the current installation'),
-            (new ServiceParameter($this))
-                ->setName('excludeApp')
-                ->setDescription('Exclude an app (alias) when running tests on the current installation')
+                ->setName(self::PARAM_COMMAND)
+                ->setDescription('Command to be performed')
         ];
     }
     
@@ -92,7 +87,11 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
      */
     public function getCliOptions() : array
     {
-        return [];
+        return [
+            (new ServiceParameter($this))
+                ->setName(self::OPTION_INCLUDE_APP)
+                ->setDescription('Include an app (alias) when running tests on the current installation')
+        ];
     }
 
     /**
@@ -103,6 +102,50 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
     {
         $wbPath = $this->getWorkbench()->getInstallationPath();
         return $wbPath . DIRECTORY_SEPARATOR . 'behat.yml';
+    }
+
+    protected function doIncludeApp(string $alias) : \Generator
+    {
+        $ymlPath = $this->getGlobalYmlPath();
+        $loader = $this->getYmlReader($ymlPath);
+        yield from $loader;
+        $yml = $loader->getReturn();
+
+        $app = $this->getWorkbench()->getApp($alias);
+        $appDir = $app->getDirectoryAbsolutePath();
+        $pathToBehat = $appDir . DIRECTORY_SEPARATOR . 'Tests' . DIRECTORY_SEPARATOR . 'Behat' . DIRECTORY_SEPARATOR;
+        $pathToFeatures = $pathToBehat . 'Features';
+        $pathToYml = $pathToBehat . 'Behat.yml';
+        if (! file_exists($pathToYml)) {
+            // Make sure Tests/Behat/Features exists in app
+            Filemanager::pathConstruct($pathToFeatures);
+            $appYml = [
+                'default' => [
+                    'suites' => [
+                        $app->getAliasWithNamespace() => [
+                            'paths' => ['%paths.base%/vendor/' . StringDataType::substringAfter(FilePathDataType::normalize($pathToFeatures), '/vendor/')],
+                            'contexts' => ['axenox\BDT\Behat\Contexts\UI5\FeatureContext']
+                        ]
+                    ]
+                ]
+            ];
+            file_put_contents($pathToYml, Yaml::dump($appYml,  10));
+            yield 'Created app config "' . StringDataType::substringAfter(FilePathDataType::normalize($pathToYml), '/vendor/') . '"' . PHP_EOL;
+        } else {
+            yield 'Found existing Behat.yml in app' . PHP_EOL;
+        }
+
+        $imports = $yml['imports'];
+        $pathToYmlRelative = 'vendor/' . StringDataType::substringAfter(FilePathDataType::normalize($pathToYml), '/vendor/');
+        if (! array_search($pathToYmlRelative, $imports)) {
+            $yml['imports'][] = $pathToYmlRelative;
+            yield 'Added import to global behat.yml' . PHP_EOL;
+        } else {
+            yield 'App already included.' . PHP_EOL;
+        }
+
+        $writer = $this->getYmlWriter($yml, $ymlPath);
+        yield from $writer;
     }
 
     /**
@@ -133,11 +176,11 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
     {
         
         if (file_exists($ymlPath)) {
-            yield 'Found existing behat.yml file' . PHP_EOL;
+            yield 'Found existing global behat.yml file' . PHP_EOL;
         } else {
             $tplPath = $this->getApp()->getDirectoryAbsolutePath() . DIRECTORY_SEPARATOR . 'Behat' . DIRECTORY_SEPARATOR . 'Template.yml';
             file_put_contents($ymlPath, file_get_contents($tplPath));
-            yield 'Created new behat.yml file in installation folder';
+            yield 'Created new global behat.yml file in installation folder';
         }
 
         $yml = Yaml::parseFile($ymlPath);
