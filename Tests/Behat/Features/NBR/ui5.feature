@@ -1,4 +1,4 @@
-Feature: Table test
+Feature: UI5 Table test
 
   Scenario: Open given page
     Given I log in to the page "my.app.bestellprozess-maststahl-materialbedarfsliste.html"
