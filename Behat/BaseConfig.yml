@@ -7,17 +7,7 @@ default:
   suites:
     default:
       contexts:
-        - axenox\BDT\Behat\Contexts\JEasyUI\FeatureContext
-    axenox.bdt: 
-      paths: 
-        - '%paths.base%/vendor/axenox/bdt/Tests/Behat/Features/Administration'
-      contexts:
-        - axenox\BDT\Behat\Contexts\JEasyUI\FeatureContext
-    ui5.test: 
-      paths: 
-        - '%paths.base%/vendor/axenox/bdt/Tests/Behat/Features/Example'
-      contexts:
-        - axenox\BDT\Behat\Contexts\UI5\FeatureContext
+        - axenox\BDT\Tests\Behat\Contexts\UI5Facade\FeatureContext
   extensions:
     # Chrome UI driver
     DMore\ChromeExtension\Behat\ServiceContainer\ChromeExtension: ~
