@@ -1,5 +1,5 @@
 <?php
-namespace axenox\BDT\Behat\Contexts\JEasyUI;
+namespace axenox\BDT\Behat\Contexts\JEasyUIFacade;
 
 use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Session;

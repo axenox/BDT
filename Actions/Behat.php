@@ -124,7 +124,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
                     'suites' => [
                         $app->getAliasWithNamespace() => [
                             'paths' => ['%paths.base%/vendor/' . StringDataType::substringAfter(FilePathDataType::normalize($pathToFeatures), '/vendor/')],
-                            'contexts' => ['axenox\BDT\Behat\Contexts\UI5\FeatureContext']
+                            'contexts' => ['axenox\BDT\Behat\Tests\Contexts\UI5Facade\FeatureContext']
                         ]
                     ]
                 ]
@@ -139,7 +139,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
         $pathToYmlRelative = 'vendor/' . StringDataType::substringAfter(FilePathDataType::normalize($pathToYml), '/vendor/');
         if (! array_search($pathToYmlRelative, $imports)) {
             $yml['imports'][] = $pathToYmlRelative;
-            yield 'Added import to global behat.yml' . PHP_EOL;
+            yield 'Added "' . $pathToYmlRelative . '" as import to global behat.yml' . PHP_EOL;
         } else {
             yield 'App already included.' . PHP_EOL;
         }

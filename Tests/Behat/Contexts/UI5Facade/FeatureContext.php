@@ -1,8 +1,7 @@
 <?php
-namespace axenox\BDT\Behat\Contexts\UI5;
+namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
 use Behat\Behat\Context\Context;
-use Behat\Behat\Tester\Exception\PendingException;
 use Behat\MinkExtension\Context\MinkContext;
 use PHPUnit\Framework\Assert;
 
@@ -20,17 +19,6 @@ class FeatureContext extends MinkContext implements Context
      * context constructor through behat.yml.
      */
     private $browser;
-
-    public function __construct()
-    {
-    }
-    //******************************************** */
-
-    
-
-    //************************************** */
-
-
 
     /**
      * @Given I log in to the page ":url"
@@ -61,8 +49,10 @@ class FeatureContext extends MinkContext implements Context
     }
 
     /**
-     * @Then /^I see (\d+) widgets? of type ([a-zA-z]+) with "([a-zA-z]+)"$/i
-     * @Then /^I see (\d+) widgets? of type ([a-zA-z]+)$/i
+     * @Then I see :number widget of type ":widgetType"
+     * @Then I see :number widgets of type ":widgetType"
+     * @Then I see :number widget of type ":widgetType" with ":objectAlias"
+     * @Then I see :number widgets of type ":widgetType" with ":objectAlias"
      */
     public function iSeeWidgets(int $number, string $widgetType, string $objectAlias): void
     {

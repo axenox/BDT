@@ -1,5 +1,5 @@
 imports:
-    - vendor/axenox/bdt/Behat/Behat.yml
+    - vendor/axenox/bdt/Behat/BaseConfig.yml
 default:
     extensions:
         Behat\MinkExtension:  

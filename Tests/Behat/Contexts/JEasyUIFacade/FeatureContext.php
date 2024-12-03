@@ -1,5 +1,5 @@
 <?php
-namespace axenox\BDT\Behat\Contexts\JEasyUI;
+namespace axenox\BDT\Behat\Contexts\JEasyUIFacade;
 
 use Behat\Behat\Context\Context;
 use Behat\MinkExtension\Context\MinkContext;
