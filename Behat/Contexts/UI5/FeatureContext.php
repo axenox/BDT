@@ -34,8 +34,9 @@ class FeatureContext extends MinkContext implements Context
 
     /**
      * @Given I log in to the page ":url"
+     * @Given I log in to the page ":url" as ":userRole"
      */
-    public function iLogInToPage(string $url)
+    public function iLogInToPage(string $url, string $userRole = null)
     {
 
         $this->visitPath('/' . $url);
@@ -60,9 +61,10 @@ class FeatureContext extends MinkContext implements Context
     }
 
     /**
+     * @Then /^I see (\d+) widgets? of type ([a-zA-z]+) with "([a-zA-z]+)"$/i
      * @Then /^I see (\d+) widgets? of type ([a-zA-z]+)$/i
      */
-    public function iSeeWidgets($number, $widgetType): void
+    public function iSeeWidgets(int $number, string $widgetType, string $objectAlias): void
     {
         $found = $this->browser->countWigets($widgetType);
         Assert::assertEquals($number, $found);
