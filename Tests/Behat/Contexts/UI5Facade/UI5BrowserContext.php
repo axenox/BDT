@@ -3,13 +3,15 @@ namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
 use Behat\Behat\Context\Context;
 use Behat\MinkExtension\Context\MinkContext;
+use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use PHPUnit\Framework\Assert;
 
 
 /**
- * Defines application features from the specific context.
+ * Test steps available for the OpenUI5 facade
+ * 
  */
-class FeatureContext extends MinkContext implements Context
+class UI5BrowserContext extends MinkContext implements Context
 {
     /**
      * Initializes context.

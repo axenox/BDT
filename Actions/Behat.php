@@ -27,11 +27,11 @@ use Symfony\Component\Yaml\Yaml;
  */
 class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
 {
-    const PARAM_COMMAND = 'operation';
+    const CLI_ARG_OPERATION = 'operation';
 
-    const COMMAND_INIT = 'init';
+    const OPERATION_INIT = 'init';
 
-    const OPTION_INCLUDE_APP = 'includeApp';
+    const CLI_OPT_ADD_APP = 'addApp';
     
     /**
      *
@@ -50,10 +50,10 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
      */
     protected function performDeferred(CliTaskInterface $task = null) : \Generator
     {
-        $cmd = $task->getParameter(self::PARAM_COMMAND);
+        $cmd = $task->getParameter(self::CLI_ARG_OPERATION);
 
         switch ($cmd) {
-            case self::COMMAND_INIT:
+            case self::OPERATION_INIT:
                 yield from $this->doInit();
                 break;
             default:
@@ -61,8 +61,8 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
         }
 
         switch (true) {
-            case $task->hasParameter(self::OPTION_INCLUDE_APP):
-                yield from $this->doIncludeApp($task->getParameter(self::OPTION_INCLUDE_APP));
+            case $task->hasParameter(self::CLI_OPT_ADD_APP):
+                yield from $this->doIncludeApp($task->getParameter(self::CLI_OPT_ADD_APP));
         }
     }
     
@@ -75,8 +75,8 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
     {
         return [
             (new ServiceParameter($this))
-                ->setName(self::PARAM_COMMAND)
-                ->setDescription('Command to be performed')
+                ->setName(self::CLI_ARG_OPERATION)
+                ->setDescription('Command to be performed: init, test')
         ];
     }
     
@@ -89,7 +89,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
     {
         return [
             (new ServiceParameter($this))
-                ->setName(self::OPTION_INCLUDE_APP)
+                ->setName(self::CLI_OPT_ADD_APP)
                 ->setDescription('Include an app (alias) when running tests on the current installation')
         ];
     }
@@ -124,7 +124,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
                     'suites' => [
                         $app->getAliasWithNamespace() => [
                             'paths' => ['%paths.base%/vendor/' . StringDataType::substringAfter(FilePathDataType::normalize($pathToFeatures), '/vendor/')],
-                            'contexts' => ['axenox\BDT\Behat\Tests\Contexts\UI5Facade\FeatureContext']
+                            'contexts' => ['axenox\BDT\Behat\Tests\Contexts\UI5Facade\UI5BrowserContext']
                         ]
                     ]
                 ]

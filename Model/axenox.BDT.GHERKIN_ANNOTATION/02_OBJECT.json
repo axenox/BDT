@@ -80,41 +80,57 @@
     ],
     "rows": [
         {
-            "CREATED_ON": "2024-12-02 09:41:20",
-            "MODIFIED_ON": "2024-12-03 12:19:08",
+            "CREATED_ON": "2024-12-03 15:29:40",
+            "MODIFIED_ON": "2024-12-03 17:11:32",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
-            "UID": "0x11ef9022353fc90a9022025041000001",
+            "UID": "0x11efb31a08107966b31ac84bd653ed63",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
             "COMMENTS": "",
             "DOCS": "",
-            "NAME": "Features",
+            "NAME": "Gherkin Step Annotation",
             "INHERIT_DATA_SOURCE_BASE_OBJECT": 1,
-            "DATA_SOURCE": "0x11e6afd8d2fa47e78943e4b318306b9a",
+            "DATA_SOURCE": "0x11efbe212997a678be21c84bd653ed63",
             "APP": "0x11efa2214f96c8b8a221025041000001",
             "SHORT_DESCRIPTION": "",
-            "PARENT_OBJECT": null,
-            "DATA_ADDRESS_PROPS": null,
+            "PARENT_OBJECT": "0x11e6bae2326c99b59ee0e4b318306b9a",
+            "DATA_ADDRESS_PROPS": {
+                "annotation_level": "method",
+                "ignore_comments_without_matching_tags": "true"
+            },
             "DEFAULT_EDITOR_UXON": {
-                "widget_type": "Dialog",
+                "widget_type": "Panel",
                 "widgets": [
                     {
-                        "attribute_alias": "CONTENTS",
-                        "widget_type": "axenox.BDT.InputGherkin",
-                        "width": 2,
-                        "height": "max",
-                        "hide_caption": true,
-                        "disabled": false
+                        "attribute_alias": "PROPERTY",
+                        "widget_type": "TextHeading",
+                        "heading_level": 1
                     },
                     {
-                        "attribute_alias": "PATHNAME_RELATIVE",
-                        "width": 2
+                        "attribute_alias": "FULL_DESCRIPTION",
+                        "width": "max",
+                        "hide_caption": true,
+                        "widget_type": "Markdown"
+                    },
+                    {
+                        "attribute_alias": "TYPE"
+                    },
+                    {
+                        "attribute_alias": "DEFAULT"
+                    },
+                    {
+                        "attribute_alias": "FILENAME",
+                        "width": "max"
+                    },
+                    {
+                        "attribute_alias": "CLASS",
+                        "width": "max"
                     }
                 ]
             },
-            "ALIAS": "BEHAT_FEATURE",
-            "DATA_ADDRESS": "*\/*\/Tests\/Behat\/Features\/*.feature"
+            "ALIAS": "GHERKIN_ANNOTATION",
+            "DATA_ADDRESS": "[#FILE#]"
         }
     ],
     "totals_rows": [],

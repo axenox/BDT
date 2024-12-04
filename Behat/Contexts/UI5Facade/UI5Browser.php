@@ -1,5 +1,5 @@
 <?php
-namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
+namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
 use Behat\Mink\Session;
 use exface\Core\DataTypes\StringDataType;

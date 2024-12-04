@@ -80,41 +80,92 @@
     ],
     "rows": [
         {
-            "CREATED_ON": "2024-12-02 09:41:20",
-            "MODIFIED_ON": "2024-12-03 12:19:08",
+            "CREATED_ON": "2024-12-03 15:44:59",
+            "MODIFIED_ON": "2024-12-03 18:05:34",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
-            "UID": "0x11ef9022353fc90a9022025041000001",
+            "UID": "0x11ef8d452ba1b71c8d45c84bd653ed63",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
             "COMMENTS": "",
             "DOCS": "",
-            "NAME": "Features",
+            "NAME": "Gherkin Test Context",
             "INHERIT_DATA_SOURCE_BASE_OBJECT": 1,
             "DATA_SOURCE": "0x11e6afd8d2fa47e78943e4b318306b9a",
             "APP": "0x11efa2214f96c8b8a221025041000001",
             "SHORT_DESCRIPTION": "",
-            "PARENT_OBJECT": null,
+            "PARENT_OBJECT": "0x11e6be0ad5666af88ddee4b318306b9a",
             "DATA_ADDRESS_PROPS": null,
             "DEFAULT_EDITOR_UXON": {
-                "widget_type": "Dialog",
-                "widgets": [
+                "widget_type": "Tabs",
+                "object_alias": "exface.Core.UXON_ENTITY_ANNOTATION",
+                "tabs": [
                     {
-                        "attribute_alias": "CONTENTS",
-                        "widget_type": "axenox.BDT.InputGherkin",
-                        "width": 2,
-                        "height": "max",
-                        "hide_caption": true,
-                        "disabled": false
+                        "caption": "General",
+                        "widgets": [
+                            {
+                                "attribute_alias": "ENTITY",
+                                "widget_type": "TextHeading",
+                                "heading_level": 1,
+                                "width": "max"
+                            },
+                            {
+                                "attribute_alias": "CLASS",
+                                "width": "max"
+                            },
+                            {
+                                "attribute_alias": "FULL_DESCRIPTION",
+                                "widget_type": "Markdown",
+                                "width": "max",
+                                "hide_caption": true
+                            },
+                            {
+                                "attribute_alias": "FILE",
+                                "hidden": true,
+                                "id": "prototype_class_field"
+                            }
+                        ]
                     },
                     {
-                        "attribute_alias": "PATHNAME_RELATIVE",
-                        "width": 2
+                        "caption": "Steps",
+                        "widgets": [
+                            {
+                                "object_alias": "axenox.BDT.GHERKIN_ANNOTATION",
+                                "widget_type": "DataTable",
+                                "filters": [
+                                    {
+                                        "attribute_alias": "FILE",
+                                        "hidden": true,
+                                        "required": true
+                                    },
+                                    {
+                                        "attribute_alias": "STEP"
+                                    }
+                                ],
+                                "columns": [
+                                    {
+                                        "attribute_alias": "STEP"
+                                    }
+                                ],
+                                "sorters": [
+                                    {
+                                        "attribute_alias": "STEP",
+                                        "direction": "desc"
+                                    }
+                                ],
+                                "buttons": [
+                                    {
+                                        "action_alias": "exface.Core.ShowObjectInfoDialog",
+                                        "bind_to_double_click": true
+                                    }
+                                ]
+                            }
+                        ]
                     }
                 ]
             },
-            "ALIAS": "BEHAT_FEATURE",
-            "DATA_ADDRESS": "*\/*\/Tests\/Behat\/Features\/*.feature"
+            "ALIAS": "GHERKIN_CONTEXT",
+            "DATA_ADDRESS": "*\/*\/Tests\/Behat\/Contexts\/*.php"
         }
     ],
     "totals_rows": [],

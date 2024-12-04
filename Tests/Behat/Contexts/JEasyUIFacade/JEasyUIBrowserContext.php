@@ -1,15 +1,16 @@
 <?php
-namespace axenox\BDT\Behat\Contexts\JEasyUIFacade;
+namespace axenox\BDT\Tests\Behat\Contexts\JEasyUIFacade;
 
 use Behat\Behat\Context\Context;
 use Behat\MinkExtension\Context\MinkContext;
+use axenox\BDT\Behat\Contexts\JEasyUIFacade\LoginPage;
 use PHPUnit\Framework\Assert;
 
 
 /**
  * Defines application features from the specific context.
  */
-class FeatureContext extends MinkContext implements Context
+class JEasyUIBrowserContext extends MinkContext implements Context
 {
     /**
      * Initializes context.

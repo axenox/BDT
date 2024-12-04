@@ -1,0 +1,47 @@
+{
+    "uid": "0x11ef9e19d90bd3ce9e19c84bd653ed63",
+    "alias_with_namespace": "axenox.bdt.contexts-and-steps",
+    "menu_parent_page_selector": "0x11ef9cade73751fa9cad025041000001",
+    "menu_index": 1,
+    "menu_visible": true,
+    "name": "Contexts & Steps",
+    "description": "Browse available testing contexts",
+    "intro": "",
+    "replaces_page_selector": null,
+    "created_by_user_selector": "0x31000000000000000000000000000000",
+    "created_on": "2024-12-03 17:01:22",
+    "modified_by_user_selector": "0x31000000000000000000000000000000",
+    "modified_on": "2024-12-04 08:11:53",
+    "contents": {
+        "object_alias": "axenox.BDT.GHERKIN_CONTEXT",
+        "widget_type": "DataTable",
+        "filters": [
+            {
+                "attribute_alias": "NAME"
+            },
+            {
+                "attribute_alias": "PATHNAME_RELATIVE"
+            }
+        ],
+        "columns": [
+            {
+                "attribute_alias": "NAME"
+            },
+            {
+                "attribute_alias": "APP__ALIAS"
+            },
+            {
+                "attribute_alias": "PATHNAME_RELATIVE"
+            }
+        ],
+        "buttons": [
+            {
+                "bind_to_double_click": true,
+                "action": {
+                    "alias": "exface.Core.ShowObjectInfoDialog",
+                    "disable_buttons": false
+                }
+            }
+        ]
+    }
+}
