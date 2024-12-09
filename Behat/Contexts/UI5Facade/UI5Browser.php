@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
+use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Session;
 use exface\Core\DataTypes\StringDataType;
 
@@ -20,7 +21,12 @@ class UI5Browser
         $this->waitForAppLoaded($ui5AppUrl);
     }
 
-    public function findInputByLabel(string $label)
+    /**
+     * 
+     * @param string $label
+     * @return \Behat\Mink\Element\NodeElement|null
+     */
+    public function findInputByCaption(string $label) : ?NodeElement
     {
         $page = $this->getPage();
         $input = null;
@@ -38,7 +44,12 @@ class UI5Browser
         return $input;
     }
 
-    public function findButtonByLabel(string $label)
+    /**
+     * 
+     * @param string $label
+     * @return NodeElement
+     */
+    public function findButtonByCaption(string $label) : ?NodeElement
     {
         $page = $this->getPage();
         $input = null;
@@ -59,12 +70,23 @@ class UI5Browser
         return $this->session->getPage();
     }
 
+    /**
+     * 
+     * @param string $pageUrl
+     * @return void
+     */
     protected function waitForAppLoaded(string $pageUrl)
     {
         $appId = StringDataType::substringBefore($pageUrl, '.html', $pageUrl) . '.app';
         $this->waitForNodeId($appId);
     }
 
+    /**
+     * 
+     * @param string $id
+     * @param int $timeoutInSeconds
+     * @return void
+     */
     protected function waitForNodeId(string $id, int $timeoutInSeconds = 10)
     {
         $page = $this->getPage();
@@ -76,6 +98,11 @@ class UI5Browser
         );
     }
 
+    /**
+     * 
+     * @param int $timeoutInSeconds
+     * @return bool
+     */
     public function waitWhileAppBusy(int $timeoutInSeconds = 5) : bool
     {
         return $this->getSession()->wait($timeoutInSeconds*1000, <<<JS
@@ -98,6 +125,11 @@ JS
         );
     }
 
+    /**
+     * 
+     * @param int $timeoutInSeconds
+     * @return bool
+     */
     public function waitForAjaxFinished(int $timeoutInSeconds = 5) : bool
     {
         return $this->getSession()->wait($timeoutInSeconds*1000, <<<JS
@@ -114,6 +146,11 @@ JS
         );
     }
 
+    /**
+     * 
+     * @param mixed $timeoutInSeconds
+     * @return void
+     */
     public function waitForPageIsFullyLoaded($timeoutInSeconds = 5)
     {
         $this->getSession()->wait($timeoutInSeconds*1000, <<<JS
@@ -122,6 +159,12 @@ JS
         );
     }
 
+    /**
+     * 
+     * @param string $widgetType
+     * @param int $timeoutInSeconds
+     * @return int
+     */
     public function countWigets(string $widgetType, int $timeoutInSeconds = 2) : int
     {
         // Wait for at least one of the widget to show up. This is important to make sure, they really
@@ -149,6 +192,10 @@ JS
         return $cnt;
     }
 
+    /**
+     * 
+     * @return \Behat\Mink\Session
+     */
     protected function getSession() : Session
     {
         return $this->session;
