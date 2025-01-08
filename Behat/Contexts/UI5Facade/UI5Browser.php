@@ -23,18 +23,19 @@ class UI5Browser
 
     /**
      * 
-     * @param string $label
-     * @return \Behat\Mink\Element\NodeElement|null
+     * @param string $caption
+     * @param \Behat\Mink\Element\NodeElement|null $parent
+     * @return NodeElement|null
      */
-    public function findInputByCaption(string $label) : ?NodeElement
+    public function findInputByCaption(string $caption, NodeElement $parent = null) : ?NodeElement
     {
         $page = $this->getPage();
         $input = null;
-        // $input = $page->find('xpath', '//*/label/span/bdi[contains(text(), "' . $label . '")]');
-        // $labelBdi = $page->find('named', ['content', $label]);
-        $labelBdis = $page->findAll('css', 'label.sapMLabel > span > bdi');
+        // $input = $page->find('xpath', '//*/label/span/bdi[contains(text(), "' . $caption . '")]');
+        // $labelBdi = $page->find('named', ['content', $caption]);
+        $labelBdis = ($parent ?? $page)->findAll('css', 'label.sapMLabel > span > bdi');
         foreach ($labelBdis as $labelBdi) {
-            if ($labelBdi->getText() === $label) {
+            if ($labelBdi->getText() === $caption) {
                 $sapMLabel = $labelBdi->getParent()->getParent();
                 $labelFor = $sapMLabel->getAttribute('for');
                 $input = $sapMLabel->getParent()->getParent()->findById($labelFor);
@@ -46,18 +47,18 @@ class UI5Browser
 
     /**
      * 
-     * @param string $label
+     * @param string $caption
+     * @param \Behat\Mink\Element\NodeElement|null $parent
      * @return NodeElement
      */
-    public function findButtonByCaption(string $label) : ?NodeElement
+    public function findButtonByCaption(string $caption, NodeElement $parent = null) : ?NodeElement
     {
         $page = $this->getPage();
-        $input = null;
-        // $input = $page->find('xpath', '//*/label/span/bdi[contains(text(), "' . $label . '")]');
-        // $labelBdi = $page->find('named', ['content', $label]);
-        $labelBdis = $page->findAll('css', 'button.sapMBtn > span > span > bdi');
+        // $input = $page->find('xpath', '//*/label/span/bdi[contains(text(), "' . $caption . '")]');
+        // $labelBdi = $page->find('named', ['content', $caption]);
+        $labelBdis = ($parent ?? $page)->findAll('css', 'button.sapMBtn > span > span > bdi');
         foreach ($labelBdis as $labelBdi) {
-            if ($labelBdi->getText() === $label) {
+            if ($labelBdi->getText() === $caption) {
                 $button = $labelBdi->getParent()->getParent()->getParent();
                 break;
             }
@@ -163,20 +164,9 @@ JS
      * 
      * @param string $widgetType
      * @param int $timeoutInSeconds
-     * @return int
-     */
-    public function countWidgets(string $widgetType, int $timeoutInSeconds = 2) : int
-    {
-        return count($this->findWidgets($widgetType, $timeoutInSeconds));
-    }
-
-    /**
-     * 
-     * @param string $widgetType
-     * @param int $timeoutInSeconds
      * @return NodeElement[]
      */
-    public function findWidgets(string $widgetType, int $timeoutInSeconds = 2) : array
+    public function findWidgets(string $widgetType, NodeElement $parent = null, int $timeoutInSeconds = 2) : array
     {
         // Wait for at least one of the widget to show up. This is important to make sure, they really
         // have loaded. 
@@ -201,6 +191,28 @@ JS
             }
         }
         return $result;
+    }
+
+    /**
+     * Returns the type of the widget, that the given node belongs to
+     * 
+     * @param \Behat\Mink\Element\NodeElement $node
+     * @return bool|string|null
+     */
+    public function getNodeWidgetType(NodeElement $node) : ?string
+    {
+        $classes = $node->getAttribute('class');
+        $type = null;
+        foreach (explode(' ', $classes ?? '') as $class) {
+            if (mb_stripos($class, 'exfw-') === 0) {
+                $type = StringDataType::substringAfter($class, 'exfw-');
+            }
+        }
+        if ($type === null) {
+            // TODO search the parents of the node for the first one with `exfw` CSS class
+            // and take the widget type from that node
+        }
+        return $type;
     }
 
     /**

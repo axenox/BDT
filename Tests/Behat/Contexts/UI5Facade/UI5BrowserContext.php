@@ -2,6 +2,7 @@
 namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
 use Behat\Behat\Context\Context;
+use Behat\Mink\Element\NodeElement;
 use Behat\MinkExtension\Context\MinkContext;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use PHPUnit\Framework\Assert;
@@ -49,7 +50,8 @@ class UI5BrowserContext extends MinkContext implements Context
         // FIXME Need to wait one second here because otherwise the next steps do not find their
         // widgets. But why? Why isn't waitWhileAppBusy() helping???
         sleep(1);
-        $this->browser->waitWhileAppBusy(30);
+        $this->browser->waitWhileAppBusy(60);
+        sleep(1);
     }
 
     /**
@@ -60,8 +62,15 @@ class UI5BrowserContext extends MinkContext implements Context
      */
     public function iSeeWidgets(int $number, string $widgetType, string $objectAlias): void
     {
-        $found = $this->browser->countWidgets($widgetType);
+        $widgetNodes = $this->browser->findWidgets($widgetType);
+        foreach ($widgetNodes as $node) {
+            // TODO check object alias somehow?
+        }
+        $found = count($widgetNodes);
         Assert::assertEquals($number, $found);
+        if ($found === 1) {
+            $this->focus($widgetNodes[0]);
+        }
     }
 
     /**
@@ -74,9 +83,7 @@ class UI5BrowserContext extends MinkContext implements Context
     public function iClickButton(string $caption) : void
     {
         $btn = $this->browser->findButtonByCaption($caption);
-        if ($btn === null) {
-            // TODO throw error
-        }
+        Assert::assertNotNull($btn, 'Cannot find button "' . $caption . '"');
         $btn->click();
         $this->browser->waitWhileAppBusy(30);
     }
@@ -92,25 +99,25 @@ class UI5BrowserContext extends MinkContext implements Context
     public function iTypeIntoWidgetWithCaption(string $value, string $caption) : void
     {
         $widget = $this->browser->findInputByCaption($caption);
-        if ($widget === null) {
-            // TODO throw error
-        }
+        Assert::assertNotNull($widget, 'Cannot find input widget "' . $caption . '"');
         $widget->setValue($value);
     }
 
     /**
-     * @When I look at first ":widgetType"
+     * Focus a widget of a given type
+     * 
+     * @When I look at the first ":widgetType"
+     * @When I look at ":widgetType" no. :number
      * 
      * @param string $widgetType
      * @return void
      */
-    public function iLookAtWidget(string $widgetType) : void
+    public function iLookAtWidget(string $widgetType, int $number = 1) : void
     {
         $widgetNodes = $this->browser->findWidgets($widgetType);
-        if (count($widgetNodes) === 0) {
-            // TODO throw error
-        }
-        $this->focusStack[] = $widgetNodes[0];
+        $node = $widgetNodes[$number-1];
+        Assert::assertNotNull($node, 'Cannot find "' . $widgetType . '" no. ' . $number . '!');
+        $this->focus($node);
     }
 
     /**
@@ -124,8 +131,26 @@ class UI5BrowserContext extends MinkContext implements Context
         /**
          * @var \Behat\Mink\Element\NodeElement $tableNode
          */
-        $tableNode = end($this->focusStack);
+        $tableNode = $this->getFocusedNode();
+        Assert::assertNotNull($tableNode, 'No widget has focus right now - cannot use steps like "it has..."');
         $colNode = $tableNode->find('css', 'td');
-        Assert::assertNotNull($colNode);
+        Assert::assertNotNull($colNode, 'Column "' . $caption, '" not found');
+    }
+
+    protected function focus(NodeElement $node) : void
+    {
+        $top = end($this->focusStack);
+        if ($top !== $node) {
+            $this->focusStack[] = $node;
+        }
+    }
+
+    protected function getFocusedNode() : ?NodeElement
+    {
+        if (empty($this->focusStack)) {
+            return null;
+        }
+        $top = end($this->focusStack);
+        return $top;
     }
 }
