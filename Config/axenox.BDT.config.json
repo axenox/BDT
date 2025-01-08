@@ -1,0 +1,12 @@
+{
+    "BROWSERS.CHROME_DEBUG_API": {
+        "START_ON_WINDOWS": "\"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromePortable\\GoogleChromePortable.exe\" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --user-data-dir=\"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromeUserData\"",
+        "START_ON_UNIX": "",
+        "OPTIONS": {}
+    },
+    "BROWSERS.CHROME_HEADLESS": {
+        "START_ON_WINDOWS": "\"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromePortable\\GoogleChromePortable.exe\" --headless --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --user-data-dir=\"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromeUserData\"",
+        "START_ON_UNIX": "",
+        "OPTIONS": {}
+    }
+}

@@ -13,19 +13,20 @@ default:
     DMore\ChromeExtension\Behat\ServiceContainer\ChromeExtension: ~
     # Base extension for UI tests
     Behat\MinkExtension:  
+      # The different session type can be configured in axenox.Behat.config.json in the BROWSERS section
       # Stick with chrome by default. It's 2x faster than firefox or phantomjs (your results may vary).
-      default_session: chromePortable
-      javascript_session: chromePortable
+      default_session: CHROME_DEBUG_API
+      javascript_session: CHROME_DEBUG_API
       # Configure browser to be used. Browser must be available on wd_host.
       sessions:
         # Chrome portable as described in the docs
-        chromePortable:
+        CHROME_DEBUG_API:
           chrome:
               api_url: "http://localhost:9222"
               # Increase timeout because the first time chrome is called it might take longer
               socket_timeout: 30
         # Selenium - worked only with Selenium 2 which is outdated and does not work with current browsers
-        selenium:
+        SELENIUM:
           selenium2: # or selenium4?
               wd_host: http://127.0.0.1:4444
               capabilities:
@@ -33,6 +34,6 @@ default:
                     version: "*"
                     platform: ANY
         # Non-Javascript browser via Symfony browserkit. Should be faster. Not tested yet
-        # browserkit:
+        # BROWSERKIT:
           # browserkit_http: ~
           

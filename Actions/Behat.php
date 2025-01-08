@@ -4,7 +4,10 @@ namespace axenox\BDT\Actions;
 use exface\Core\CommonLogic\AbstractActionDeferred;
 use exface\Core\CommonLogic\Filemanager;
 use exface\Core\DataTypes\FilePathDataType;
+use exface\Core\DataTypes\ServerSoftwareDataType;
 use exface\Core\DataTypes\StringDataType;
+use exface\Core\Exceptions\Actions\ActionInputMissingError;
+use exface\Core\Facades\ConsoleFacade\CommandRunner;
 use exface\Core\Interfaces\Tasks\CliTaskInterface;
 use exface\Core\Interfaces\Tasks\TaskInterface;
 use exface\Core\Interfaces\DataSources\DataTransactionInterface;
@@ -20,7 +23,8 @@ use Symfony\Component\Yaml\Yaml;
  * 
  * - `vendor\bin\action axenox.BDT:Behat` - run all tests
  * - `vendor\bin\action axenox.BDT:Behat init` - prepare everything to run Behat tests on this installation
- * - `vendor\bin\action axenox.BDT:Behat includeApp=my.APP` - include app `my.APP` as a test suite
+ * - `vendor\bin\action axenox.BDT:Behat addApp=my.APP` - include app `my.APP` as a test suite
+ * - `vendor\bin\action axenox.BDT:Behat startBrowser=CHROME_DEBUG_API` - start a browser defined in BROWSERS section of axenox.BDT.config.json
  *        
  * @author Andrej Kabachnik
  *        
@@ -30,6 +34,10 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
     const CLI_ARG_OPERATION = 'operation';
 
     const OPERATION_INIT = 'init';
+
+    const OPERATION_START_BROWSER = 'startBrowser';
+
+    const CLI_OPT_BROWSER = 'browser';
 
     const CLI_OPT_ADD_APP = 'addApp';
     
@@ -55,6 +63,14 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
         switch ($cmd) {
             case self::OPERATION_INIT:
                 yield from $this->doInit();
+                break;
+            case self::OPERATION_START_BROWSER:
+                if ($task->hasParameter(self::CLI_OPT_BROWSER)) {
+                    $browser = $task->getParameter(self::CLI_OPT_BROWSER);
+                } else {
+                    throw new ActionInputMissingError($this, 'Missing required action parameter "--browser"!');
+                }
+                yield from $this->doStartBrowser($browser);
                 break;
             default:
                 
@@ -90,7 +106,10 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
         return [
             (new ServiceParameter($this))
                 ->setName(self::CLI_OPT_ADD_APP)
-                ->setDescription('Include an app (alias) when running tests on the current installation')
+                ->setDescription('Include an app (alias) when running tests on the current installation'),
+            (new ServiceParameter($this))
+                ->setName(self::CLI_OPT_BROWSER)
+                ->setDescription('Use this browser configuration from configuration file "axenox.Behat.config.json"')
         ];
     }
 
@@ -165,6 +184,26 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
         // TODO Check if browsers are running
 
         yield 'Ready to test now!' . PHP_EOL;
+    }
+
+    protected function doStartBrowser(string $configKey) : \Generator
+    {
+        $cfg = $this->getWorkbench()->getApp('axenox.BDT')->getConfig()->getOption('BROWSERS.' . mb_strtoupper($configKey));
+        if (ServerSoftwareDataType::isOsWindows()) {
+            $cmd = $cfg->getProperty('START_ON_WINDOWS');
+        } else {
+            $cmd = $cfg->getProperty('START_ON_LINUX');
+        }
+        if ($cmd) {
+            yield 'Starting browser via ' . $cmd . PHP_EOL;
+            $cmd = StringDataType::replacePlaceholders($cmd, [
+                '~workbench_path' => $this->getWorkbench()->getInstallationPath()
+            ]);
+            yield from CommandRunner::runCliCommand($cmd);
+        } else {
+            // TODO get the default browser session from BaseConfig.yml
+            yield 'No start command find for browser "' . $configKey . '" in app config file . '; 
+        }
     }
 
     /**
