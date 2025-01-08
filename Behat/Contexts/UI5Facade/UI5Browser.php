@@ -103,7 +103,7 @@ class UI5Browser
      * @param int $timeoutInSeconds
      * @return bool
      */
-    public function waitWhileAppBusy(int $timeoutInSeconds = 5) : bool
+    public function waitWhileAppBusy(int $timeoutInSeconds = 10) : bool
     {
         return $this->getSession()->wait($timeoutInSeconds*1000, <<<JS
             (function() {
@@ -130,7 +130,7 @@ JS
      * @param int $timeoutInSeconds
      * @return bool
      */
-    public function waitForAjaxFinished(int $timeoutInSeconds = 5) : bool
+    public function waitForAjaxFinished(int $timeoutInSeconds = 10) : bool
     {
         return $this->getSession()->wait($timeoutInSeconds*1000, <<<JS
             (function() {
@@ -165,7 +165,18 @@ JS
      * @param int $timeoutInSeconds
      * @return int
      */
-    public function countWigets(string $widgetType, int $timeoutInSeconds = 2) : int
+    public function countWidgets(string $widgetType, int $timeoutInSeconds = 2) : int
+    {
+        return count($this->findWidgets($widgetType, $timeoutInSeconds));
+    }
+
+    /**
+     * 
+     * @param string $widgetType
+     * @param int $timeoutInSeconds
+     * @return NodeElement[]
+     */
+    public function findWidgets(string $widgetType, int $timeoutInSeconds = 2) : array
     {
         // Wait for at least one of the widget to show up. This is important to make sure, they really
         // have loaded. 
@@ -183,13 +194,13 @@ JS
         // Now count, how many there are
         $page = $this->getPage();
         $widgets = $page->findAll('css', $cssSelector);
-        $cnt = 0;
+        $result = [];
         foreach ($widgets as $w) {
             if ($w->isVisible()) {
-                $cnt++;
+                $result[] = $w;
             }
         }
-        return $cnt;
+        return $result;
     }
 
     /**

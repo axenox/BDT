@@ -20,6 +20,12 @@ class UI5BrowserContext extends MinkContext implements Context
     private $browser;
 
     /**
+     * Summary of focusStack
+     * @var \Behat\Mink\Element\NodeElement[]
+     */
+    private $focusStack = [];
+
+    /**
      * @Given I log in to the page ":url"
      * @Given I log in to the page ":url" as ":userRole"
      */
@@ -43,7 +49,7 @@ class UI5BrowserContext extends MinkContext implements Context
         // FIXME Need to wait one second here because otherwise the next steps do not find their
         // widgets. But why? Why isn't waitWhileAppBusy() helping???
         sleep(1);
-        $this->browser->waitWhileAppBusy();
+        $this->browser->waitWhileAppBusy(30);
     }
 
     /**
@@ -54,7 +60,7 @@ class UI5BrowserContext extends MinkContext implements Context
      */
     public function iSeeWidgets(int $number, string $widgetType, string $objectAlias): void
     {
-        $found = $this->browser->countWigets($widgetType);
+        $found = $this->browser->countWidgets($widgetType);
         Assert::assertEquals($number, $found);
     }
 
@@ -72,7 +78,7 @@ class UI5BrowserContext extends MinkContext implements Context
             // TODO throw error
         }
         $btn->click();
-        $this->browser->waitWhileAppBusy();
+        $this->browser->waitWhileAppBusy(30);
     }
 
     /**
@@ -90,5 +96,36 @@ class UI5BrowserContext extends MinkContext implements Context
             // TODO throw error
         }
         $widget->setValue($value);
+    }
+
+    /**
+     * @When I look at first ":widgetType"
+     * 
+     * @param string $widgetType
+     * @return void
+     */
+    public function iLookAtWidget(string $widgetType) : void
+    {
+        $widgetNodes = $this->browser->findWidgets($widgetType);
+        if (count($widgetNodes) === 0) {
+            // TODO throw error
+        }
+        $this->focusStack[] = $widgetNodes[0];
+    }
+
+    /**
+     * @Then it has a column ":caption"
+     * 
+     * @param string $caption
+     * @return void
+     */
+    public function itHasColumn(string $caption) : void
+    {
+        /**
+         * @var \Behat\Mink\Element\NodeElement $tableNode
+         */
+        $tableNode = end($this->focusStack);
+        $colNode = $tableNode->find('css', 'td');
+        Assert::assertNotNull($colNode);
     }
 }
