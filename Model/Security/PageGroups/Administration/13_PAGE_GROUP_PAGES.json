@@ -1,5 +1,5 @@
 {
-    "object_alias": "exface.Core.APP",
+    "object_alias": "exface.Core.PAGE_GROUP_PAGES",
     "columns": [
         {
             "name": "_EXPORT_SUMMARY",
@@ -27,41 +27,36 @@
             "attribute_alias": "UID"
         },
         {
-            "name": "DEFAULT_LANGUAGE_CODE",
-            "attribute_alias": "DEFAULT_LANGUAGE_CODE"
+            "name": "PAGE",
+            "attribute_alias": "PAGE"
         },
         {
-            "name": "ALIAS",
-            "attribute_alias": "ALIAS"
-        },
-        {
-            "name": "NAME",
-            "attribute_alias": "NAME"
+            "name": "PAGE_GROUP",
+            "attribute_alias": "PAGE_GROUP"
         }
     ],
     "rows": [
         {
-            "_EXPORT_SUMMARY": "axenox BDT [axenox.BDT]",
-            "CREATED_ON": "2024-11-28 20:52:34",
-            "MODIFIED_ON": "2024-11-28 20:52:34",
+            "_EXPORT_SUMMARY": "Administration / Contexts & Steps",
+            "CREATED_ON": "2024-12-03 17:01:25",
+            "MODIFIED_ON": "2024-12-03 17:01:25",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
-            "UID": "0x11efa2214f96c8b8a221025041000001",
-            "DEFAULT_LANGUAGE_CODE": "en",
-            "ALIAS": "axenox.BDT",
-            "NAME": "axenox BDT"
+            "UID": "0x11ef9acad94b78089acac84bd653ed63",
+            "PAGE": "0x11ef9e19d90bd3ce9e19c84bd653ed63",
+            "PAGE_GROUP": "0x11ea631047ee7732a2e30205857feb80"
         }
     ],
     "totals_rows": [],
     "filters": {
         "operator": "AND",
-        "base_object_alias": "exface.Core.APP",
+        "base_object_alias": "exface.Core.PAGE_GROUP_PAGES",
         "conditions": [
             {
-                "expression": "UID",
+                "expression": "PAGE__APP",
                 "comparator": "=",
                 "value": "0x11efa2214f96c8b8a221025041000001",
-                "object_alias": "exface.Core.APP"
+                "object_alias": "exface.Core.PAGE_GROUP_PAGES"
             }
         ]
     },

@@ -2,6 +2,11 @@
     "object_alias": "exface.Core.DATASRC",
     "columns": [
         {
+            "name": "_EXPORT_SUMMARY",
+            "hidden": true,
+            "attribute_alias": "LABEL"
+        },
+        {
             "name": "CREATED_ON",
             "attribute_alias": "CREATED_ON"
         },
@@ -56,6 +61,7 @@
     ],
     "rows": [
         {
+            "_EXPORT_SUMMARY": "Gherkin Context Annotations",
             "CREATED_ON": "2024-12-03 17:10:47",
             "MODIFIED_ON": "2024-12-03 17:11:15",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
@@ -63,7 +69,7 @@
             "UID": "0x11efbe212997a678be21c84bd653ed63",
             "APP": "0x11efa2214f96c8b8a221025041000001",
             "DEFAULT_CONNECTION": "0x11e6bbc738b084ae9ee0e4b318306b9a",
-            "DEFAULT_QUERY_BUILDER": "axenox\/bdt\/QueryBuilders\/GherkinAnnotationsReader.php",
+            "DEFAULT_QUERY_BUILDER": "axenox/bdt/QueryBuilders/GherkinAnnotationsReader.php",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
             "BASE_OBJECT": null,
