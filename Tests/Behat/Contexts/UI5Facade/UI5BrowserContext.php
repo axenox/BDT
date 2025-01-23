@@ -103,7 +103,7 @@ class UI5BrowserContext extends MinkContext implements Context
     {
         if ($scope->getTestResult()->getResultCode() === TestResult::FAILED) {
             $this->takeScreenshot();
-            // HTML rapora ekleyebilmek için hata mesajını genişletelim
+            // HTML extend for to add the report
             if ($this->lastScreenshot) {
                 $scope->getTestResult()->getMessage() . "\nScreenshot: screenshots/" . $this->lastScreenshot;
             }
@@ -150,8 +150,7 @@ class UI5BrowserContext extends MinkContext implements Context
     }
 
     /**
-     * Verifies page content is not empty
-     * @Then I should see the page
+     * @Then /^I should see the page$/
      */
     public function iShouldSeeThePage()
     {
@@ -169,13 +168,6 @@ class UI5BrowserContext extends MinkContext implements Context
     /**
      * @Given I log in to the page :url
      * @Given I log in to the page :url as :userRole
-     */
-    /**
-     * Logs into page with specified URL and optional user role
-     * Handles page loading, UI5 initialization, and login form interaction
-     * @param string $url Page URL
-     * @param string|null $userRole Optional user role
-     * @throws \Exception if login elements not found or login fails
      */
     public function iLogInToPage(string $url, string $userRole = null)
     {
@@ -203,16 +195,16 @@ class UI5BrowserContext extends MinkContext implements Context
                     echo "Debug - Login form searching... Attempt num: " . $attempts . "\n";
                 }
             }
+
             // Handle login form interaction
             if ($username) {
                 echo "Debug - Login form found\n";
-
                 // For testing purpose, we can give wrong username or password
-                $username->setValue('admin_e');
+                $username->setValue('admin');
 
                 $password = $this->browser->findInputByCaption('Password');
                 if ($password) {
-                    $password->setValue('admin_e');
+                    $password->setValue('admin');
 
                     $loginButton = $this->browser->findButtonByCaption('Login');
                     if ($loginButton) {
@@ -253,11 +245,6 @@ class UI5BrowserContext extends MinkContext implements Context
      * @Then I see :number widgets of type ":widgetType"
      * @Then I see :number widget of type ":widgetType" with ":objectAlias"
      * @Then I see :number widgets of type ":widgetType" with ":objectAlias"
-     *
-     * Verifies presence of widgets with specified type and count
-     * @param int $number Expected number of widgets
-     * @param string $widgetType Type of widget to find
-     * @param string|null $objectAlias Optional object alias to verify
      */
     public function iSeeWidgets(int $number, string $widgetType, string $objectAlias = null): void
     {
@@ -265,11 +252,11 @@ class UI5BrowserContext extends MinkContext implements Context
         echo "-------- ERROR HANDLING STARTS --------\n";
         echo "Existing URL: " . $this->getSession()->getCurrentUrl() . "\n";
         echo "Page Status: " . $this->getSession()->evaluateScript('return document.readyState') . "\n";
-        // echo "UI5 status: " . $this->getSession()->evaluateScript('return (typeof sap !== "undefined" && sap.ui && sap.ui.getCore().isInit())') . "\n";
+        // echo "UI5 Status: " . $this->getSession()->evaluateScript('return (typeof sap !== "undefined" && sap.ui && sap.ui.getCore().isInit())') . "\n";
         echo "Searching Widget: " . $widgetType . "\n";
         // ERROR HANDLING - START
 
-        // Wait for page to be ready
+        // Sayfanın tamamen yüklenmesini ve meşgul olmamasını bekle
         $this->browser->waitForPageIsFullyLoaded(10);
         $this->browser->waitWhileAppBusy(30);
         $this->browser->waitForAjaxFinished(10);
@@ -277,7 +264,7 @@ class UI5BrowserContext extends MinkContext implements Context
         // UI5'in özel başlatması için ek bekleme
         // $this->getSession()->wait(5000, "return (typeof sap !== 'undefined' && sap.ui && sap.ui.getCore().isInit())");
 
-        // Find widgets
+        // Widget'ları ara
         $widgetNodes = $this->browser->findWidgets($widgetType, null, 5);
 
         // ERROR HANDLING - RESULTS
@@ -296,9 +283,8 @@ class UI5BrowserContext extends MinkContext implements Context
                 // TODO: Object alias doğrulaması eklenecek
             }
         }
-        // Verify widget count
-        Assert::assertEquals($number, count($widgetNodes), "Couldn't found {$widgetType} number of widgets");
-        // Focus single widget if only one found
+
+        Assert::assertEquals($number, count($widgetNodes), "Beklenen sayıda {$widgetType} widget'ı bulunamadı");
         if (count($widgetNodes) === 1) {
             $this->focus($widgetNodes[0]);
         }
@@ -308,7 +294,7 @@ class UI5BrowserContext extends MinkContext implements Context
     /**
      * 
      * @When I click button ":caption"
-     * Clicks button with specified caption 
+     * 
      * @param string $caption
      * @return void
      */
@@ -323,10 +309,9 @@ class UI5BrowserContext extends MinkContext implements Context
     /**
      * 
      * @When I type ":value" into ":caption"
-     * 
-     * Sets value for input widget with specified caption
-     * @param string $value Value to set
-     * @param string $caption Caption of input widget
+     *
+     * @param string $value
+     * @param string $caption
      * @return void
      */
     public function iTypeIntoWidgetWithCaption(string $value, string $caption): void
@@ -337,10 +322,10 @@ class UI5BrowserContext extends MinkContext implements Context
     }
 
     /**
-     * Focuses on widget of specified type and number
-     *
-     * @param string $widgetType Type of widget to focus
-     * @param int $number Widget number (1-based index)
+     * Focus a widget of a given type
+     * 
+     * @When I look at the first ":widgetType"
+     * @When I look at ":widgetType" no. :number
      * 
      * @param string $widgetType
      * @return void
