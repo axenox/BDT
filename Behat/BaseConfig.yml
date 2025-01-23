@@ -1,39 +1,84 @@
-# Default profile
+# Default profile for Behat configuration
 default:
-  autoload:
-      # Point the PSR-0 autoloader built into Behat to our verndor folder. This will allow it to find
-      # the different contexts by their namespace
-      '': '%paths.base%/vendor'
-  suites:
-    default:
-      contexts:
-        - axenox\BDT\Tests\Behat\Contexts\UI5Facade\FeatureContext
-  extensions:
-    # Chrome UI driver
-    DMore\ChromeExtension\Behat\ServiceContainer\ChromeExtension: ~
-    # Base extension for UI tests
-    Behat\MinkExtension:  
-      # The different session type can be configured in axenox.Behat.config.json in the BROWSERS section
-      # Stick with chrome by default. It's 2x faster than firefox or phantomjs (your results may vary).
-      default_session: CHROME_DEBUG_API
-      javascript_session: CHROME_DEBUG_API
-      # Configure browser to be used. Browser must be available on wd_host.
-      sessions:
-        # Chrome portable as described in the docs
-        CHROME_DEBUG_API:
-          chrome:
-              api_url: "http://localhost:9222"
-              # Increase timeout because the first time chrome is called it might take longer
-              socket_timeout: 30
-        # Selenium - worked only with Selenium 2 which is outdated and does not work with current browsers
-        SELENIUM:
-          selenium2: # or selenium4?
-              wd_host: http://127.0.0.1:4444
-              capabilities:
-                    browserName: firefox
-                    version: "*"
-                    platform: ANY
-        # Non-Javascript browser via Symfony browserkit. Should be faster. Not tested yet
-        # BROWSERKIT:
-          # browserkit_http: ~
-          
+ # Formatters section defines how test results will be reported
+ formatters:
+   # Pretty formatter provides readable console output with colors and formatting
+   pretty: true
+   # HTML formatter generates detailed test reports in web format
+   html:
+     # Directory where HTML test reports will be saved
+     # Using paths.base ensures reports are saved relative to project root
+     output_path: '%paths.base%/data/BDT/Reports' 
+ 
+ autoload:
+     # Configure PSR-0 autoloader to find test context classes
+     # Empty prefix means look in all namespaces under vendor directory
+     # This helps Behat locate all required testing classes automatically
+     '': '%paths.base%/vendor'
+ 
+ suites:
+   # Default test suite configuration
+   default:
+     contexts:
+       # List of context classes that provide test steps
+       # UI5BrowserContext handles UI5-specific testing functionality
+       - axenox\BDT\Tests\Behat\Contexts\UI5Facade\UI5BrowserContext
+     # Timeout and failure handling settings
+     stop_on_failure: false    # Continue testing even if a test fails
+     fail_on_timeout: false    # Don't mark test as failed on timeout
+     timeouts:
+       suite: 1800    # 30 minutes timeout for entire test suite
+       step: 300      # 5 minutes timeout for individual steps
+       scenario: 600  # 10 minutes timeout for each scenario
+ 
+ extensions:
+   # Chrome Extension for Behat - enables Chrome WebDriver integration
+   DMore\ChromeExtension\Behat\ServiceContainer\ChromeExtension: ~
+   
+   # MinkExtension provides browser automation capabilities
+   Behat\MinkExtension:  
+   
+     # Session configuration for browser automation
+     # Using Chrome as default browser due to better performance
+     default_session: CHROME_DEBUG_API
+     javascript_session: CHROME_DEBUG_API
+     
+     # Browser session configurations
+     sessions:
+       # Chrome Debug Protocol configuration
+       # Uses Chrome's debugging API for better control and stability
+       CHROME_DEBUG_API:
+         chrome:
+             # Chrome debugging API endpoint
+             api_url: "http://localhost:9222"
+             # Extended timeout for initial Chrome startup
+             # Particularly important for first test run
+             socket_timeout: 120 # 2 minutes 
+       
+       # Selenium WebDriver configuration (legacy support)
+       # Note: Selenium 2 is outdated, consider upgrading to Selenium 4
+       SELENIUM:
+         selenium2:
+             wd_host: http://127.0.0.1:4444
+             capabilities:
+                   browserName: firefox
+                   version: "*"
+                   platform: ANY
+       
+       # Browserkit configuration for lightweight testing (experimental)
+       # Commented out as it's not fully tested yet
+       # BROWSERKIT:
+         # browserkit_http: ~
+   
+   # HTML Formatter extension settings
+   # Generates detailed HTML reports for test results
+   emuse\BehatHTMLFormatter\BehatHTMLFormatterExtension:
+     name: html                           # Formatter identifier
+     renderer: Twig                       # Using Twig template engine
+     file_name: 'test_report_%timestamp%' # Dynamic filename with timestamp
+     print_args: true                     # Include test arguments in report
+     print_outp: true                     # Include test output in report
+     loop_break: true                     # Enable loop break functionality 
+    #  screenshot_path: '/data/BDT/Reports/screenshots/'   its not supported
+
+     #v1

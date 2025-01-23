@@ -22,12 +22,96 @@ class UI5Browser
     }
 
     /**
+     * Waits for OpenUI5 framework to load and initialize
+     * 
+     * @param int $timeoutInSeconds Maximum time to wait for UI5 loading (default: 30 seconds)
+     * @return bool Returns true if UI5 loaded successfully, false otherwise
+     * 
+     * Step-by-step process:
+     * 1. Checks if global 'sap' object exists
+     * 2. Verifies sap.ui namespace is available
+     * 3. Confirms sap.ui.getCore() method exists
+     * 4. Validates core object is accessible
+     * 5. Ensures core.getLoadedLibraries function is available
+     */
+    protected function waitForUI5Loading(int $timeoutInSeconds = 30): bool
+    {
+        return $this->getSession()->wait(
+            $timeoutInSeconds * 1000,
+            <<<JS
+            (function() {
+                // Check if base SAP namespace exists
+                if (typeof sap === 'undefined') {
+                    console.log('SAP not defined');
+                    return false;
+                }
+                
+                // Verify UI namespace is available
+                if (typeof sap.ui === 'undefined') {
+                    console.log('sap.ui not defined');
+                    return false;
+                }
+                
+                // Confirm core method exists
+                if (typeof sap.ui.getCore === 'undefined') {
+                    console.log('sap.ui.getCore not defined');
+                    return false;
+                }
+                
+                // Get core instance and validate
+                var core = sap.ui.getCore();
+                if (!core) {
+                    console.log('core not available');
+                    return false;
+                }
+                
+                // Final check - ensure core libraries are loaded
+                return typeof core.getLoadedLibraries === 'function';
+            })()
+    JS
+        );
+    }
+
+    /**
+     * Waits for UI5 controls to render in the page
+     * 
+     * @param int $timeoutInSeconds Maximum wait time (default: 30 seconds)
+     * @return bool Returns true if UI5 controls are found, false if timeout reached
+     * 
+     * Verification process:
+     * 1. Checks if UI5 framework is loaded (sap and sap.ui objects)
+     * 2. Searches page content for UI5-specific markers:
+     *    - 'sapUiView' - indicates presence of UI5 views
+     *    - 'sapMPage' - indicates presence of UI5 mobile pages
+     */
+    protected function waitForUI5Controls(int $timeoutInSeconds = 30): bool
+    {
+        return $this->getSession()->wait(
+            $timeoutInSeconds * 1000,
+            <<<JS
+            (function() {
+                // Verify UI5 base requirements
+                if (typeof sap === 'undefined' || typeof sap.ui === 'undefined') return false;
+                
+                // Search page content for UI5 view markers
+                var content = document.body.innerHTML;
+                
+                // Check for either standard view or mobile page indicators
+                return content.indexOf('sapUiView') !== -1 || content.indexOf('sapMPage') !== -1;
+            })()
+    JS
+        );
+    }
+
+
+
+    /**
      * 
      * @param string $caption
      * @param \Behat\Mink\Element\NodeElement|null $parent
      * @return NodeElement|null
      */
-    public function findInputByCaption(string $caption, NodeElement $parent = null) : ?NodeElement
+    public function findInputByCaption(string $caption, NodeElement $parent = null): ?NodeElement
     {
         $page = $this->getPage();
         $input = null;
@@ -51,7 +135,7 @@ class UI5Browser
      * @param \Behat\Mink\Element\NodeElement|null $parent
      * @return NodeElement
      */
-    public function findButtonByCaption(string $caption, NodeElement $parent = null) : ?NodeElement
+    public function findButtonByCaption(string $caption, NodeElement $parent = null): ?NodeElement
     {
         $page = $this->getPage();
         // $input = $page->find('xpath', '//*/label/span/bdi[contains(text(), "' . $caption . '")]');
@@ -72,15 +156,108 @@ class UI5Browser
     }
 
     /**
+     * Waits the complete UI5 application loading process
      * 
-     * @param string $pageUrl
+     * @param string $pageUrl URL of the UI5 application
      * @return void
+     * 
+     * Loading sequence:
+     * 1. Waits for initial page load completion
+     * 2. Ensures UI5 framework is loaded
+     * 3. Waits for UI5 controls to render
+     * 4. Validates app ID presence
+     * 5. Checks bussy state resolution
+     * 6. Confirm AJAX requests completion
      */
     protected function waitForAppLoaded(string $pageUrl)
     {
+        // Wait for initial page DOM to be ready
+        $this->waitForPageIsFullyLoaded(10);
+
+        // Ensure UI5 framework is loaded and initialized
+        if (!$this->waitForUI5Loading(30)) {
+            error_log("Warning: UI5 failed to load or not ready");
+        }
+
+        // Wait for UI5 controls to be rendered
+        if (!$this->waitForUI5Controls(30)) {
+            error_log("Warning: UI5 controls failed to load");
+        }
+
+        // Extract and validate app ID from URL
         $appId = StringDataType::substringBefore($pageUrl, '.html', $pageUrl) . '.app';
-        $this->waitForNodeId($appId);
+        $this->waitForNodeId($appId, 30);
+
+        // Check app's busy state and AJAX completion
+        $this->waitWhileAppBusy(30);
+        $this->waitForAjaxFinished(30);
     }
+
+
+    /**
+     * Waits for UI5 controls to render in the page
+     * 
+     * @param string $componentType
+     * @param int $timeoutInSeconds Maximum wait time (default: 30 seconds)
+     * @return bool Returns true if UI5 controls are found, false if timeout reached
+     * 
+     * Verification process:
+     * 1. Checks if UI5 framework is loaded (sap and sap.ui objects)
+     * 2. Searches page content for UI5-specific markers:
+     *    - 'sapUiView' - indicates presence of UI5 views
+     *    - 'sapMPage' - indicates presence of UI5 mobile pages
+     */
+    public function waitForUI5Component(string $componentType, int $timeoutInSeconds = 30): bool
+    {
+        return $this->getSession()->wait(
+            $timeoutInSeconds * 1000,
+            <<<JS
+            (function() {
+                // Check for UI5 framework availability
+                if (typeof sap === 'undefined' || typeof sap.ui === 'undefined') return false;
+                
+                // Look for elements with component-specific class
+                var elements = document.getElementsByClassName('sap{$componentType}');
+                
+                // Return true if at least one component found
+                return elements.length > 0;
+            })()
+    JS
+        );
+    }
+
+    /**
+     * Checks the complete UI5 application loading process
+     * 
+     * @param string $pageUrl URL of the UI5 application
+     * @return void
+     * 
+     * Loading sequence:
+     * 1. Waits for initial page load completion
+     * 2. Ensures UI5 framework is loaded
+     * 3. Waits for UI5 controls to render
+     * 4. Validates app ID presence
+     * 5. Checks busy state resolution
+     * 6. Confirms AJAX requests completion
+     */
+    public function isUI5Ready(): bool
+    {
+        return $this->getSession()->evaluateScript(
+            <<<JS
+            (function() {
+                // Verify UI5 framework existence
+                if (typeof sap === 'undefined' || typeof sap.ui === 'undefined') return false;
+                
+                // Get and validate core object
+                var core = sap.ui.getCore();
+                
+                // Check core functionality
+                return core && typeof core.getLoadedLibraries === 'function';
+            })()
+    JS
+        );
+    }
+
 
     /**
      * 
@@ -91,7 +268,8 @@ class UI5Browser
     protected function waitForNodeId(string $id, int $timeoutInSeconds = 10)
     {
         $page = $this->getPage();
-        $page->waitFor($timeoutInSeconds*1000,
+        $page->waitFor(
+            $timeoutInSeconds * 1000,
             function () use ($page, $id) {
                 $app = $page->findById($id);
                 return $app && $app->isVisible();
@@ -104,9 +282,11 @@ class UI5Browser
      * @param int $timeoutInSeconds
      * @return bool
      */
-    public function waitWhileAppBusy(int $timeoutInSeconds = 10) : bool
+    public function waitWhileAppBusy(int $timeoutInSeconds = 10): bool
     {
-        return $this->getSession()->wait($timeoutInSeconds*1000, <<<JS
+        return $this->getSession()->wait(
+            $timeoutInSeconds * 1000,
+            <<<JS
             (function() {
                 if (document.readyState !== "complete") {
                     return false;
@@ -131,9 +311,11 @@ JS
      * @param int $timeoutInSeconds
      * @return bool
      */
-    public function waitForAjaxFinished(int $timeoutInSeconds = 10) : bool
+    public function waitForAjaxFinished(int $timeoutInSeconds = 10): bool
     {
-        return $this->getSession()->wait($timeoutInSeconds*1000, <<<JS
+        return $this->getSession()->wait(
+            $timeoutInSeconds * 1000,
+            <<<JS
             (function() {
                 if (typeof $ !== 'undefined') {
                     return $.active === 0;
@@ -154,7 +336,9 @@ JS
      */
     public function waitForPageIsFullyLoaded($timeoutInSeconds = 5)
     {
-        $this->getSession()->wait($timeoutInSeconds*1000, <<<JS
+        $this->getSession()->wait(
+            $timeoutInSeconds * 1000,
+            <<<JS
             document.readyState === "complete"
 JS
         );
@@ -166,24 +350,39 @@ JS
      * @param int $timeoutInSeconds
      * @return NodeElement[]
      */
-    public function findWidgets(string $widgetType, NodeElement $parent = null, int $timeoutInSeconds = 2) : array
+    public function findWidgets(string $widgetType, NodeElement $parent = null, int $timeoutInSeconds = 2): array
     {
-        // Wait for at least one of the widget to show up. This is important to make sure, they really
-        // have loaded. 
+
+        // Ensure UI5 is ready before searching
+        if (!$this->isUI5Ready()) {
+            $this->waitForUI5Loading($timeoutInSeconds);
+        }
+
+        // Special handling for DataTable widgets
+        if ($widgetType === 'DataTable') {
+            $this->waitForUI5Component('Table', $timeoutInSeconds);
+        }
+
+        // Construct widget selector
         $cssSelector = ".exfw-{$widgetType}";
-        $timeout = $this->getSession()->wait($timeoutInSeconds*1000, <<<JS
-            (function() {
-                var jqEls = $('{$cssSelector}');
-                return jqEls.length !== 0;
-            })()
+
+        // Wait for widgets to appear in DOM
+        $timeout = $this->getSession()->wait(
+            $timeoutInSeconds * 1000,
+            <<<JS
+        (function() {
+            // Check for matching elements
+            var jqEls = $('{$cssSelector}');
+            return jqEls.length !== 0;
+        })()
 JS
         );
 
-        // FIXME how to check, if the timeout was reached???
-
-        // Now count, how many there are
+        // Get page reference and find all matching widgets
         $page = $this->getPage();
         $widgets = $page->findAll('css', $cssSelector);
+
+        // Filter for visible widgets only
         $result = [];
         foreach ($widgets as $w) {
             if ($w->isVisible()) {
@@ -199,7 +398,7 @@ JS
      * @param \Behat\Mink\Element\NodeElement $node
      * @return bool|string|null
      */
-    public function getNodeWidgetType(NodeElement $node) : ?string
+    public function getNodeWidgetType(NodeElement $node): ?string
     {
         $classes = $node->getAttribute('class');
         $type = null;
@@ -219,7 +418,7 @@ JS
      * 
      * @return \Behat\Mink\Session
      */
-    protected function getSession() : Session
+    protected function getSession(): Session
     {
         return $this->session;
     }
