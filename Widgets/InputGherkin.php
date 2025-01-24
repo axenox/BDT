@@ -43,6 +43,7 @@ HTML;
         $includes = parent::getHtmlHeadTags();
         $includes[] = '<script src="vendor/npm-asset/ace-builds/src-min/ace.js"></script>';
         $includes[] = '<script src="vendor/npm-asset/ace-builds/src-min/ext-language_tools.js"></script>';
+        $includes[] = '<script src="vendor/npm-asset/ace-builds/src-min/ext-searchbox.js"></script>';
         return $includes;
     }
 
