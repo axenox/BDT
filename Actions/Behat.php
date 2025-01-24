@@ -40,23 +40,23 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
     const CLI_OPT_BROWSER = 'browser';
 
     const CLI_OPT_ADD_APP = 'addApp';
-    
+
     /**
      *
      * {@inheritDoc}
      * @see \exface\Core\CommonLogic\AbstractActionDeferred::performImmediately()
      */
-    protected function performImmediately(TaskInterface $task, DataTransactionInterface $transaction, ResultMessageStreamInterface $result) : array
+    protected function performImmediately(TaskInterface $task, DataTransactionInterface $transaction, ResultMessageStreamInterface $result): array
     {
         return [$task];
     }
-    
+
     /**
      *
      * {@inheritDoc}
      * @see \exface\Core\CommonLogic\AbstractActionDeferred::performDeferred()
      */
-    protected function performDeferred(CliTaskInterface $task = null) : \Generator
+    protected function performDeferred(CliTaskInterface $task = null): \Generator
     {
         $cmd = $task->getParameter(self::CLI_ARG_OPERATION);
 
@@ -73,7 +73,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
                 yield from $this->doStartBrowser($browser);
                 break;
             default:
-                
+
         }
 
         switch (true) {
@@ -81,13 +81,13 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
                 yield from $this->doIncludeApp($task->getParameter(self::CLI_OPT_ADD_APP));
         }
     }
-    
+
     /**
      * 
      * {@inheritdoc}
      * @see iCanBeCalledFromCLI::getCliArguments()
      */
-    public function getCliArguments() : array
+    public function getCliArguments(): array
     {
         return [
             (new ServiceParameter($this))
@@ -95,13 +95,13 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
                 ->setDescription('Command to be performed: init, test')
         ];
     }
-    
+
     /**
      * 
      * {@inheritdoc}
      * @see iCanBeCalledFromCLI::getCliOptions()
      */
-    public function getCliOptions() : array
+    public function getCliOptions(): array
     {
         return [
             (new ServiceParameter($this))
@@ -117,13 +117,13 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
      * 
      * @return string
      */
-    protected function getGlobalYmlPath() : string
+    protected function getGlobalYmlPath(): string
     {
         $wbPath = $this->getWorkbench()->getInstallationPath();
         return $wbPath . DIRECTORY_SEPARATOR . 'behat.yml';
     }
 
-    protected function doIncludeApp(string $alias) : \Generator
+    protected function doIncludeApp(string $alias): \Generator
     {
         $ymlPath = $this->getGlobalYmlPath();
         $loader = $this->getYmlReader($ymlPath);
@@ -135,7 +135,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
         $pathToBehat = $appDir . DIRECTORY_SEPARATOR . 'Tests' . DIRECTORY_SEPARATOR . 'Behat' . DIRECTORY_SEPARATOR;
         $pathToFeatures = $pathToBehat . 'Features';
         $pathToYml = $pathToBehat . 'Behat.yml';
-        if (! file_exists($pathToYml)) {
+        if (!file_exists($pathToYml)) {
             // Make sure Tests/Behat/Features exists in app
             Filemanager::pathConstruct($pathToFeatures);
             $appYml = [
@@ -148,7 +148,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
                     ]
                 ]
             ];
-            file_put_contents($pathToYml, Yaml::dump($appYml,  10));
+            file_put_contents($pathToYml, Yaml::dump($appYml, 10));
             yield 'Created app config "' . StringDataType::substringAfter(FilePathDataType::normalize($pathToYml), '/vendor/') . '"' . PHP_EOL;
         } else {
             yield 'Found existing Behat.yml in app' . PHP_EOL;
@@ -156,7 +156,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
 
         $imports = $yml['imports'];
         $pathToYmlRelative = 'vendor/' . StringDataType::substringAfter(FilePathDataType::normalize($pathToYml), '/vendor/');
-        if (! array_search($pathToYmlRelative, $imports)) {
+        if (!array_search($pathToYmlRelative, $imports)) {
             $yml['imports'][] = $pathToYmlRelative;
             yield 'Added "' . $pathToYmlRelative . '" as import to global behat.yml' . PHP_EOL;
         } else {
@@ -168,25 +168,95 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
     }
 
     /**
+     * Initialize the Behat testing environment
      * 
-     * @return \Generator
+     * This method performs the following tasks:
+     * 1. Sets up the global Behat YAML configuration
+     * 2. Creates necessary directories for screenshots and test reports
+     * 3. Generates unique filenames for test reports
+     * 4. Configures HTML formatter settings
+     * 5. Sets up web access configurations
+     * 
+     * @return \Generator Yields status messages during the initialization process
      */
-    protected function doInit() : \Generator
+    protected function doInit(): \Generator
     {
+        // Get the path where the global Behat YAML configuration will be stored
+        // This is in the root directory of the installation
         $ymlPath = $this->getGlobalYmlPath();
+
+        // Load existing YAML configuration or create a new one from template
+        // If file doesn't exist, it will be created from Template.yml
         $loader = $this->getYmlReader($ymlPath);
         yield from $loader;
         $yml = $loader->getReturn();
+ 
+        // Generate a unique filename for the test report using current timestamp
+        // Format: test_report_YYYY-MM-DD_HH-mm-ss
+        $uniqueFileName = 'test_report_' . date('Y-m-d_H-i-s');
 
+        // Initialize the formatters array in YAML if it doesn't exist
+        // This is required for the HTML formatter configuration
+        if (!isset($yml['default']['formatters'])) {
+            $yml['default']['formatters'] = [];
+        }
+
+        // Set up BehatHTMLFormatter extension configuration
+        // This extension is responsible for generating HTML test reports
+        if (!isset($yml['default']['extensions']['emuse\\BehatHTMLFormatter\\BehatHTMLFormatterExtension'])) {
+            $yml['default']['extensions']['emuse\\BehatHTMLFormatter\\BehatHTMLFormatterExtension'] = [];
+        }
+
+        // Configure the HTML formatter to use our unique filename
+        $yml['default']['extensions']['emuse\\BehatHTMLFormatter\\BehatHTMLFormatterExtension']['file_name'] = $uniqueFileName;
+
+        // Set up the main output directory for test reports
+        // Path: installation_path/data/BDT/Reports
+        $outputDir = $this->getWorkbench()->getInstallationPath() .
+            DIRECTORY_SEPARATOR . 'data' .
+            DIRECTORY_SEPARATOR . 'BDT' .
+            DIRECTORY_SEPARATOR . 'Reports';
+
+        // Create the output directory if it doesn't exist
+        if (!file_exists($outputDir)) {
+            // Create directory with full permissions (0777)
+            mkdir($outputDir, 0777, true);
+            yield 'Created HTML output directory at ' . $outputDir . PHP_EOL;
+
+            // Create .htaccess file to enable web access to test results
+            // This allows viewing the HTML reports through a web browser
+            $htaccessPath = dirname($outputDir) . DIRECTORY_SEPARATOR . '.htaccess';
+            if (!file_exists($htaccessPath)) {
+                $htaccessContent = "Options +Indexes\nAllow from all";
+                file_put_contents($htaccessPath, $htaccessContent);
+                yield 'Created .htaccess for test results access' . PHP_EOL;
+            }
+        }
+
+          // Create directory structure for storing test screenshots
+        // Path: installation_path/data/BDT/Reports/screenshots
+        $screenshotDir = $this->getWorkbench()->getInstallationPath() .
+            DIRECTORY_SEPARATOR . 'data' .
+            DIRECTORY_SEPARATOR . 'BDT' .
+            DIRECTORY_SEPARATOR . 'Reports' .
+            DIRECTORY_SEPARATOR . 'screenshots';
+
+        // Create screenshots directory if it doesn't exist
+        if (!file_exists($screenshotDir)) {
+            mkdir($screenshotDir, 0777, true);
+            yield 'Screenshot path created: ' . $screenshotDir . PHP_EOL;
+        }
+
+        // Save the updated YAML configuration
+        // This also updates the base_url if it has changed
         $writer = $this->getYmlWriter($yml, $ymlPath);
         yield from $writer;
 
-        // TODO Check if browsers are running
-
-        yield 'Ready to test now!' . PHP_EOL;
+        // Return success message with the filename that will be used for the report
+        yield 'Ready to test now! Test results will be saved as ' . $uniqueFileName . '.html' . PHP_EOL;
     }
 
-    protected function doStartBrowser(string $configKey) : \Generator
+    protected function doStartBrowser(string $configKey): \Generator
     {
         $cfg = $this->getWorkbench()->getApp('axenox.BDT')->getConfig()->getOption('BROWSERS.' . mb_strtoupper($configKey));
         if (ServerSoftwareDataType::isOsWindows()) {
@@ -202,18 +272,19 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
             yield from CommandRunner::runCliCommand($cmd);
         } else {
             // TODO get the default browser session from BaseConfig.yml
-            yield 'No start command find for browser "' . $configKey . '" in app config file . '; 
+            yield 'No start command find for browser "' . $configKey . '" in app config file . ';
         }
     }
+
 
     /**
      * 
      * @param string $ymlPath
      * @return \Generator
      */
-    protected function getYmlReader(string $ymlPath) : \Generator
+    protected function getYmlReader(string $ymlPath): \Generator
     {
-        
+
         if (file_exists($ymlPath)) {
             yield 'Found existing global behat.yml file' . PHP_EOL;
         } else {
@@ -232,7 +303,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
      * @param string $ymlPath
      * @return \Generator
      */
-    protected function getYmlWriter(array $yml, string $ymlPath) : \Generator
+    protected function getYmlWriter(array $yml, string $ymlPath): \Generator
     {
         $currentUrl = $yml['default']['extensions']['Behat\MinkExtension']['base_url'];
         $wbUrl = $this->getWorkbench()->getUrl();
@@ -240,7 +311,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
             yield 'Updating base_url to "' . $this->getWorkbench()->getUrl() . '"' . PHP_EOL;
             $yml['default']['extensions']['Behat\MinkExtension']['base_url'] = $wbUrl;
         }
-        $str = Yaml::dump($yml,  10);
+        $str = Yaml::dump($yml, 10);
         file_put_contents($ymlPath, $str);
         return $yml;
     }

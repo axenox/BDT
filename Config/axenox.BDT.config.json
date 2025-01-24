@@ -1,6 +1,6 @@
 {
     "BROWSERS.CHROME_DEBUG_API": {
-        "START_ON_WINDOWS": "\"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromePortable\\GoogleChromePortable.exe\" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --user-data-dir=\"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromeUserData\"",
+        "START_ON_WINDOWS": "\"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromePortable\\GoogleChromePortable.exe\" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --user-data-dir=\"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromeUserData\" --disable-gpu --no-sandbox --disable-dev-shm-usage --start-maximized --window-size=1920,1080 --auto-open-devtools-for-tabs",
         "START_ON_UNIX": "",
         "OPTIONS": {}
     },
