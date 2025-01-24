@@ -8,7 +8,7 @@ default:
    html:
      # Directory where HTML test reports will be saved
      # Using paths.base ensures reports are saved relative to project root
-     output_path: '%paths.base%/data/BDT/Reports' 
+     output_path: '%paths.base%/data/axenox/BDT/Reports' 
  
  autoload:
      # Configure PSR-0 autoloader to find test context classes
@@ -73,12 +73,9 @@ default:
    # HTML Formatter extension settings
    # Generates detailed HTML reports for test results
    emuse\BehatHTMLFormatter\BehatHTMLFormatterExtension:
-     name: html                           # Formatter identifier
-     renderer: Twig                       # Using Twig template engine
-     file_name: 'test_report_%timestamp%' # Dynamic filename with timestamp
-     print_args: true                     # Include test arguments in report
-     print_outp: true                     # Include test output in report
-     loop_break: true                     # Enable loop break functionality 
-    #  screenshot_path: '/data/BDT/Reports/screenshots/'   its not supported
-
+      name: html                           # Formatter identifier
+      renderer: Twig                       # Using Twig template engine
+      print_args: true                     # Include test arguments in report
+      print_outp: true                     # Include test output in report
+      loop_break: true                     # Enable loop break functionality 
      #v1

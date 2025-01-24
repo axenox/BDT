@@ -40,6 +40,7 @@ class UI5BrowserContext extends MinkContext implements Context
         // Create screenshot directory path using workbench path
         $this->screenshotDir = $workbenchRoot .
             DIRECTORY_SEPARATOR . 'data' .
+            DIRECTORY_SEPARATOR . 'axenox' .
             DIRECTORY_SEPARATOR . 'BDT' .
             DIRECTORY_SEPARATOR . 'Reports' .
             DIRECTORY_SEPARATOR . 'screenshots' .
