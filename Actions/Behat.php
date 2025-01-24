@@ -190,25 +190,23 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
         $loader = $this->getYmlReader($ymlPath);
         yield from $loader;
         $yml = $loader->getReturn();
- 
-        // Generate a unique filename for the test report using current timestamp
-        // Format: test_report_YYYY-MM-DD_HH-mm-ss
-        $uniqueFileName = 'test_report_' . date('Y-m-d_H-i-s');
 
+      
         // Initialize the formatters array in YAML if it doesn't exist
         // This is required for the HTML formatter configuration
         if (!isset($yml['default']['formatters'])) {
             $yml['default']['formatters'] = [];
         }
 
-        // Set up BehatHTMLFormatter extension configuration
-        // This extension is responsible for generating HTML test reports
+        // // Set up BehatHTMLFormatter extension configuration
+        // // This extension is responsible for generating HTML test reports     
+
         if (!isset($yml['default']['extensions']['emuse\\BehatHTMLFormatter\\BehatHTMLFormatterExtension'])) {
             $yml['default']['extensions']['emuse\\BehatHTMLFormatter\\BehatHTMLFormatterExtension'] = [];
         }
 
-        // Configure the HTML formatter to use our unique filename
-        $yml['default']['extensions']['emuse\\BehatHTMLFormatter\\BehatHTMLFormatterExtension']['file_name'] = $uniqueFileName;
+        // // Configure the HTML formatter to use our unique filename
+        // $yml['default']['extensions']['emuse\\BehatHTMLFormatter\\BehatHTMLFormatterExtension']['file_name'] = $uniqueFileName;
 
         // Set up the main output directory for test reports
         // Path: installation_path/data/BDT/Reports
@@ -252,8 +250,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
         $writer = $this->getYmlWriter($yml, $ymlPath);
         yield from $writer;
 
-        // Return success message with the filename that will be used for the report
-        yield 'Ready to test now! Test results will be saved as ' . $uniqueFileName . '.html' . PHP_EOL;
+          yield 'Ready to test now! Test results will be saved  in html' . PHP_EOL;
     }
 
     protected function doStartBrowser(string $configKey): \Generator

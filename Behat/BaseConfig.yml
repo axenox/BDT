@@ -75,7 +75,7 @@ default:
    emuse\BehatHTMLFormatter\BehatHTMLFormatterExtension:
      name: html                           # Formatter identifier
      renderer: Twig                       # Using Twig template engine
-     file_name: 'test_report_%timestamp%' # Dynamic filename with timestamp
+     #file_name: 'test_report_%timestamp%' # Dynamic filename with timestamp
      print_args: true                     # Include test arguments in report
      print_outp: true                     # Include test output in report
      loop_break: true                     # Enable loop break functionality 
