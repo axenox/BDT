@@ -11,7 +11,7 @@
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2024-12-02 09:10:33",
     "modified_by_user_selector": "0x31000000000000000000000000000000",
-    "modified_on": "2025-01-09 10:03:42",
+    "modified_on": "2025-01-24 14:30:23",
     "contents": {
         "object_alias": "exface.Core.DUMMY",
         "widget_type": "SplitHorizontal",
@@ -25,48 +25,48 @@
                         "object_alias": "exface.Core.ACTION",
                         "id": "test_cli",
                         "allowed_commands": [
-                            "\/action.*\/i",
-                            "\/behat.*\/i",
-                            "\/git.*\/i",
-                            "\/whoami\/"
+                            "/action.*/i",
+                            "/behat.*/i",
+                            "/git.*/i",
+                            "/whoami/"
                         ],
                         "start_commands": [
-                            "vendor\/bin\/action axenox.BDT:Behat init"
+                            "vendor/bin/action axenox.BDT:Behat init"
                         ],
                         "command_presets": [
                             {
                                 "caption": "Run all tests",
                                 "hint": "Runs all available test",
                                 "commands": [
-                                    "vendor\/bin\/Behat --colors"
+                                    "vendor/bin/Behat --colors"
                                 ]
                             },
                             {
                                 "caption": "Run suite",
                                 "hint": "Run only the given test suite",
                                 "commands": [
-                                    "vendor\/bin\/Behat --colors --suite=<Suite>"
+                                    "vendor/bin/Behat --colors --suite=<Suite>"
                                 ]
                             },
                             {
                                 "caption": "Init",
                                 "hint": "Set up this installation for testing",
                                 "commands": [
-                                    "vendor\/bin\/action axenox.BDT:Behat init"
+                                    "vendor/bin/action axenox.BDT:Behat init"
                                 ]
                             },
                             {
                                 "caption": "Add app",
                                 "hint": "Set up an app to be tested",
                                 "commands": [
-                                    "vendor\/bin\/action axenox.BDT:Behat init --addApp=<App alias>"
+                                    "vendor/bin/action axenox.BDT:Behat init --addApp=<App alias>"
                                 ]
                             },
                             {
                                 "caption": "Start browser",
                                 "hint": "Start a remote controlled browser for UI tests",
                                 "commands": [
-                                    "vendor\/bin\/action axenox.BDT:Behat startBrowser --browser=<Browser config key>"
+                                    "vendor/bin/action axenox.BDT:Behat startBrowser --browser=<Browser config key>"
                                 ]
                             }
                         ]
@@ -74,55 +74,116 @@
                 ]
             },
             {
-                "caption": "Features",
                 "widgets": [
                     {
-                        "widget_type": "DataTable",
-                        "object_alias": "axenox.BDT.BEHAT_FEATURE",
-                        "filters": [
+                        "widget_type": "SplitVertical",
+                        "panels": [
                             {
-                                "attribute_alias": "NAME"
+                                "height": "50%",
+                                "widgets": [
+                                    {
+                                        "widget_type": "DataTable",
+                                        "object_alias": "axenox.BDT.BEHAT_FEATURE",
+                                        "caption": "Features",
+                                        "filters": [
+                                            {
+                                                "attribute_alias": "NAME"
+                                            },
+                                            {
+                                                "attribute_alias": "APP"
+                                            }
+                                        ],
+                                        "columns": [
+                                            {
+                                                "attribute_alias": "APP__ALIAS",
+                                                "caption": "Test suite"
+                                            },
+                                            {
+                                                "attribute_alias": "FEATURE_NAME"
+                                            },
+                                            {
+                                                "attribute_alias": "PATHNAME_RELATIVE",
+                                                "caption": "File"
+                                            },
+                                            {
+                                                "attribute_alias": "APP__NAME"
+                                            }
+                                        ],
+                                        "sorters": [
+                                            {
+                                                "attribute_alias": "NAME",
+                                                "direction": "asc"
+                                            }
+                                        ],
+                                        "buttons": [
+                                            {
+                                                "action_alias": "exface.Core.ShowObjectCreateDialog"
+                                            },
+                                            {
+                                                "action_alias": "exface.Core.ShowObjectEditDialog",
+                                                "bind_to_double_click": true
+                                            },
+                                            {
+                                                "caption": "Run suite",
+                                                "action": {
+                                                    "alias": "exface.Core.CallWidgetFunction",
+                                                    "widget_id": "test_cli",
+                                                    "function": "run_command(\"vendor/bin/Behat --colors --suite=[#APP__ALIAS#]\")"
+                                                }
+                                            },
+                                            {
+                                                "action_alias": "exface.Core.ShowObjectCopyDialog"
+                                            },
+                                            {
+                                                "action_alias": "exface.Core.DeleteObject",
+                                                "visibility": "optional"
+                                            }
+                                        ]
+                                    }
+                                ]
                             },
                             {
-                                "attribute_alias": "APP"
-                            }
-                        ],
-                        "columns": [
-                            {
-                                "attribute_alias": "APP__ALIAS",
-                                "caption": "Test suite"
-                            },
-                            {
-                                "attribute_alias": "FEATURE_NAME"
-                            },
-                            {
-                                "attribute_alias": "PATHNAME_RELATIVE",
-                                "caption": "File"
-                            },
-                            {
-                                "attribute_alias": "APP__NAME"
-                            }
-                        ],
-                        "sorters": [
-                            {
-                                "attribute_alias": "NAME",
-                                "direction": "asc"
-                            }
-                        ],
-                        "buttons": [
-                            {
-                                "action_alias": "exface.Core.ShowObjectCreateDialog"
-                            },
-                            {
-                                "action_alias": "exface.Core.ShowObjectEditDialog",
-                                "bind_to_double_click": true
-                            },
-                            {
-                                "action_alias": "exface.Core.ShowObjectCopyDialog"
-                            },
-                            {
-                                "action_alias": "exface.Core.DeleteObject",
-                                "visibility": "optional"
+                                "widgets": [
+                                    {
+                                        "widget_type": "DataTable",
+                                        "object_alias": "axenox.BDT.TEST_REPORT",
+                                        "filters": [
+                                            {
+                                                "attribute_alias": "NAME"
+                                            }
+                                        ],
+                                        "columns": [
+                                            {
+                                                "attribute_alias": "NAME"
+                                            },
+                                            {
+                                                "attribute_alias": "CREATED_ON"
+                                            }
+                                        ],
+                                        "sorters": [
+                                            {
+                                                "attribute_alias": "NAME",
+                                                "direction": "desc"
+                                            }
+                                        ],
+                                        "buttons": [
+                                            {
+                                                "caption": "Open Report",
+                                                "action": {
+                                                    "alias": "exface.Core.ShowDialog",
+                                                    "dialog": {
+                                                        "widgets": [
+                                                            {
+                                                                "widget_type": "Browser",
+                                                                "attribute_alias": "PATHNAME_RELATIVE"
+                                                            }
+                                                        ]
+                                                    }
+                                                }
+                                            }
+                                        ]
+                                    }
+                                ]
                             }
                         ]
                     }
