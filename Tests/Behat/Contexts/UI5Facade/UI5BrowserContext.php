@@ -121,9 +121,11 @@ class UI5BrowserContext extends MinkContext implements Context
             echo "\nDebug - Taking screenshot with driver: " . get_class($driver) . "\n";
 
             // Generate filename using timestamp and scenario name
-            $filename = date('Y-m-d_His') . '_' .
-                preg_replace('/[^a-zA-Z0-9]/', '_', $this->scenarioName) .
-                '.png';
+            $filename = date('Y-m-d_His');
+            if ($this->scenarioName) {
+                $filename .= '_' . preg_replace('/[^a-zA-Z0-9]/', '_', $this->scenarioName);
+            }
+            $filename .= '.png';
 
             $fullPath = $this->screenshotDir . $filename;
 
