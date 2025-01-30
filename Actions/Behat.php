@@ -191,7 +191,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
         yield from $loader;
         $yml = $loader->getReturn();
 
-      
+
         // Initialize the formatters array in YAML if it doesn't exist
         // This is required for the HTML formatter configuration
         if (!isset($yml['default']['formatters'])) {
@@ -212,6 +212,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
         // Path: installation_path/data/BDT/Reports
         $outputDir = $this->getWorkbench()->getInstallationPath() .
             DIRECTORY_SEPARATOR . 'data' .
+            DIRECTORY_SEPARATOR . 'axenox' .
             DIRECTORY_SEPARATOR . 'BDT' .
             DIRECTORY_SEPARATOR . 'Reports';
 
@@ -231,7 +232,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
             }
         }
 
-          // Create directory structure for storing test screenshots
+        // Create directory structure for storing test screenshots
         // Path: installation_path/data/BDT/Reports/screenshots
         $screenshotDir = $this->getWorkbench()->getInstallationPath() .
             DIRECTORY_SEPARATOR . 'data' .
@@ -250,7 +251,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
         $writer = $this->getYmlWriter($yml, $ymlPath);
         yield from $writer;
 
-          yield 'Ready to test now! Test results will be saved  in html' . PHP_EOL;
+        yield 'Ready to test now! Test results will be saved  in html' . PHP_EOL;
     }
 
     protected function doStartBrowser(string $configKey): \Generator

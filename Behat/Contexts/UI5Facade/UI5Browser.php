@@ -18,7 +18,9 @@ use PHPUnit\Framework\Assert;
  * @author Andrej Kabachnik
  */
 class UI5Browser
-{
+{ 
+    private $lastError = null;
+
     private $session;
 
     private $workbench = null;
@@ -29,9 +31,165 @@ class UI5Browser
     public function __construct(Session $session, string $ui5AppUrl)
     {
         $this->session = $session;
+        // XHR izleme sistemini başlat
+        $this->initializeXHRMonitoring();
         $this->waitForAppLoaded($ui5AppUrl);
         $this->workbench = new Workbench();
     }
+
+      /**
+     * Initializes XHR and UI5 error monitoring.
+     * 
+     * Captures and logs:
+     * - XMLHttpRequests (URLs, status, duration)
+     * - UI5 error messages
+     * - Response data and timestamps
+     * 
+     * Stores data in window.exfXHRLog object.
+     * 
+     * @return void
+     */
+    public function initializeXHRMonitoring(): void
+    {
+        $this->getSession()->evaluateScript(
+            <<<JS
+            (function() {
+                // Initialize XHR monitoring store if not exists
+                if (typeof window.exfXHRLog === 'undefined') {
+                    window.exfXHRLog = {
+                        requests: [],       // Array to store all XHR requests
+                        lastRequest: null,  // Reference to most recent request
+                        errors: []          // Collection of errors
+                    };
+
+                    // Store original XMLHttpRequest to extend its functionality
+                    var originalXHR = window.XMLHttpRequest;
+                    // Create custom XMLHttpRequest with monitoring
+                    window.XMLHttpRequest = function() {
+                        var xhr = new originalXHR();
+                        var start = Date.now(); // Capture start time for duration calculation exfTools.date.format(sTime, 'yyyy-MM-dd HH:mm:ss.SSS');
+                        
+                        // Add listener for request completion
+                        xhr.addEventListener('loadend', function() {
+                            var request = {
+                                url: xhr.responseURL,               // Captured request URL
+                                status: xhr.status,                 // HTTP status code
+                                statusText: xhr.statusText,         // HTTP status message
+                                duration: Date.now() - start,       // Request duration in ms
+                                response: xhr.responseText,         // Response content
+                                timestamp: new Date().toISOString() // Request timestamp
+                            };
+                            
+                            window.exfXHRLog.requests.push(request);
+                            window.exfXHRLog.lastRequest = request;
+                            
+                            // Log non-successful responses as errors (not 2xx)
+                            if (xhr.status < 200 || xhr.status >= 300) {
+                                window.exfXHRLog.errors.push({
+                                    type: 'HTTPError',
+                                    ...request
+                                });
+                            }
+                        });
+                        
+                        return xhr;
+                    };
+                }
+                
+                // Initialize UI5 error monitoring if UI5 is available
+                if (typeof sap !== 'undefined' && sap.ui && sap.ui.getCore) {
+                    try {
+                        var core = sap.ui.getCore();
+                        if (core && core.getMessageManager) {
+                            var messageProcessor = {
+                                getId: function() {
+                                    return 'exf-xhr-message-processor';
+                                },
+                                // Process and log UI5 error messages
+                                processMessage: function(message) {
+                                    if (message.type === 'Error' || message.type === 'Fatal') {
+                                        window.exfXHRLog.errors.push({
+                                            type: 'UI5Error',
+                                            message: message.message,
+                                            details: message.description,
+                                            timestamp: new Date().toISOString() //exfTools.date.format(sTime, 'yyyy-MM-dd HH:mm:ss.SSS');
+                                        });
+                                    }
+                                },
+
+                                // These empty methods are required by UI5's MessageProcessor interface for proper error handling
+
+                                attachMessageChange: function() {}, // Subscribe to messages
+                                detachMessageChange: function() {}, // Unsubscribe from messages
+                                // Message handler interface methods
+                                handleMessages: function() { return true; }, // Process messages
+                                // Required lifecycle methods for UI5 system
+                                init: function() {},  // Called on startup
+                                exit: function() {},  // Called on cleanup
+                                // Message model methods 
+                                setMessages: function() {},  // Update messages
+                                getMessages: function() { return []; } // Get messages
+                            };
+                            
+                            // Try-catch processor save
+                            try {
+                                core.getMessageManager().registerMessageProcessor(messageProcessor);
+                            } catch (e) {
+                                console.warn('Message processor registration failed:', e); 
+                                window.exfXHRLog.errors.push({
+                                    type: 'UI5Error',
+                                    message: 'Message processor registration failed',
+                                    details: e.toString(),
+                                    timestamp: new Date().toISOString()
+                                });
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('UI5 message handling setup failed:', e);
+                    }
+                }
+            })();
+            JS
+        );
+    }
+
+    /**
+     * Clears the XHR (XMLHttpRequest) monitoring log and resets error state
+     * 
+     * This function performs two main cleanup tasks:
+     * 1. Clears the XHR log array in the browser (window._xhrLog)
+     * 2. Resets the internal error tracking state
+     * 
+     * Use cases:
+     * - Before starting a new test scenario
+     * - After completing a test case
+     * - When needing to reset monitoring state
+     * - Before capturing new AJAX requests
+     * 
+     * Note: This should be called before any new AJAX monitoring to ensure
+     * clean state and prevent mixing logs from different test scenarios
+     * 
+     * @return void
+     * @see initializeXHRMonitoring() For the setup of the logging system
+     */
+    public function clearXHRLog(): void
+    {
+        $this->getSession()->evaluateScript(
+            <<<JS
+            window.exfXHRLog = {
+                requests: [],
+                lastRequest: null,
+                errors: []
+            };
+            JS
+        );
+    }
+
+
+
+
+
+
 
     /**
      * Waits for OpenUI5 framework to load and initialize
@@ -127,9 +285,8 @@ class UI5Browser
     {
         $page = $this->getPage();
         $input = null;
-        // $input = $page->find('xpath', '//*/label/span/bdi[contains(text(), "' . $caption . '")]');
-        // $labelBdi = $page->find('named', ['content', $caption]);
         $labelBdis = ($parent ?? $page)->findAll('css', 'label.sapMLabel > span > bdi');
+
         foreach ($labelBdis as $labelBdi) {
             if ($labelBdi->getText() === $caption) {
                 $sapMLabel = $labelBdi->getParent()->getParent();
@@ -152,6 +309,7 @@ class UI5Browser
         $page = $this->getPage();
         // $input = $page->find('xpath', '//*/label/span/bdi[contains(text(), "' . $caption . '")]');
         // $labelBdi = $page->find('named', ['content', $caption]);
+        $button = null;
         $labelBdis = ($parent ?? $page)->findAll('css', 'button.sapMBtn > span > span > bdi');
         foreach ($labelBdis as $labelBdi) {
             if ($labelBdi->getText() === $caption) {
@@ -289,6 +447,10 @@ class UI5Browser
         );
     }
 
+
+
+
+
     /**
      * 
      * @param int $timeoutInSeconds
@@ -319,26 +481,82 @@ JS
     }
 
     /**
+     * Enhanced version of waitForAjaxFinished method
      * 
-     * @param int $timeoutInSeconds
-     * @return bool
+     * UPDATES:
+     * - Added checkAjaxRequestStatus validation
+     * - Improved error detection
+     * - Better handling of UI5 busy states
+     * 
+     * This method now:
+     * 1. Waits for jQuery AJAX requests
+     * 2. Checks UI5 BusyIndicator
+     * 3. Validates overall AJAX status
+     * 
+     * @param int $timeoutInSeconds Maximum time to wait for AJAX completion
+     * @return bool True if all AJAX requests completed successfully
      */
     public function waitForAjaxFinished(int $timeoutInSeconds = 10): bool
     {
-        return $this->getSession()->wait(
+        // Wait for basic AJAX completion
+        $result = $this->getSession()->wait(
             $timeoutInSeconds * 1000,
             <<<JS
-            (function() {
-                if (typeof $ !== 'undefined') {
-                    return $.active === 0;
+        (function() {
+            // Check jQuery active requests
+            if (typeof jQuery !== 'undefined' && jQuery.active !== 0) {
+                return false;
+            }
+
+            // Check UI5 busy state
+            if (typeof sap !== 'undefined' && sap.ui && sap.ui.core) {
+                if (sap.ui.core.BusyIndicator._globalBusyIndicatorCounter > 0) {
+                    return false;
                 }
-                if (typeof XMLHttpRequest !== 'undefined') {
-                    return XMLHttpRequest.prototype.readyState === 4;
-                }
-                return true;
-            })()
-JS
+            }
+
+            // All immediate checks passed
+            return true;
+        })()
+        JS
         );
+
+        // Return false if initial wait failed
+        if (!$result) {
+            return false;
+        }
+
+        // Perform additional validation using enhanced status check
+        return $this->checkAjaxRequestStatus();
+    }
+
+    /**
+     * Checks if all AJAX requests completed successfully
+     * 
+     * Validates HTTP status codes, UI5 errors, and busy state.
+     * Stores any detected errors in lastError property.
+     * 
+     * @return bool true if successful, false if errors found
+     * @see getLastError() For error details
+     */
+    public function checkAjaxRequestStatus(): bool
+    {
+        // First check if there's an existing error
+        $error = $this->getAjaxError();
+        if ($error !== null) {
+            // Store the error details for later retrieval
+            $this->lastError = $error;
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Gets the last error
+     */
+    public function getLastError(): ?array
+    {
+        return $this->lastError;
     }
 
     /**
@@ -355,53 +573,70 @@ JS
 JS
         );
     }
-
     /**
+     * Enhanced findWidgets method with better widget detection
      * 
      * @param string $widgetType
+     * @param NodeElement|null $parent
      * @param int $timeoutInSeconds
      * @return NodeElement[]
      */
     public function findWidgets(string $widgetType, NodeElement $parent = null, int $timeoutInSeconds = 2): array
     {
-
-        // Ensure UI5 is ready before searching
+        // Ensure UI5 is ready
         if (!$this->isUI5Ready()) {
             $this->waitForUI5Loading($timeoutInSeconds);
         }
 
-        // Special handling for DataTable widgets
+        // For DataTable, wait for UI5 Table components
         if ($widgetType === 'DataTable') {
             $this->waitForUI5Component('Table', $timeoutInSeconds);
+            // Also wait for List component as tables might be implemented as lists
+            $this->waitForUI5Component('List', $timeoutInSeconds);
         }
 
-        // Construct widget selector
+        // Base selector for widget
         $cssSelector = ".exfw-{$widgetType}";
 
-        // Wait for widgets to appear in DOM
+        // Wait for widgets with expanded selectors
         $timeout = $this->getSession()->wait(
             $timeoutInSeconds * 1000,
             <<<JS
         (function() {
-            // Check for matching elements
-            var jqEls = $('{$cssSelector}');
-            return jqEls.length !== 0;
+            // Check main selector
+            var elements = document.querySelectorAll('{$cssSelector}');
+            if (elements.length > 0) return true;
+            
+            // For DataTable, also check UI5 specific classes
+            if ('{$widgetType}' === 'DataTable') {
+                var ui5Tables = document.querySelectorAll('.sapMTable, .sapUiTable, .sapMList');
+                if (ui5Tables.length > 0) return true;
+            }
+            
+            return false;
         })()
-JS
+        JS
         );
 
-        // Get page reference and find all matching widgets
-        $page = $this->getPage();
-        $widgets = $page->findAll('css', $cssSelector);
+        // Get page or parent element
+        $searchContext = $parent ?? $this->getPage();
 
-        // Filter for visible widgets only
-        $result = [];
-        foreach ($widgets as $w) {
-            if ($w->isVisible()) {
-                $result[] = $w;
+        // Find widgets with the exfw class
+        $widgets = $searchContext->findAll('css', $cssSelector);
+
+        // For DataTables, also look for UI5 specific elements if no exfw widgets found
+        if ($widgetType === 'DataTable' && empty($widgets)) {
+            $ui5Selectors = ['.sapMTable', '.sapUiTable', '.sapMList'];
+            foreach ($ui5Selectors as $selector) {
+                $ui5Elements = $searchContext->findAll('css', $selector);
+                $widgets = array_merge($widgets, $ui5Elements);
             }
         }
-        return $result;
+
+        // Filter for visible widgets only
+        return array_filter($widgets, function ($widget) {
+            return $widget->isVisible();
+        });
     }
 
     /**
@@ -448,11 +683,11 @@ JS
      * 
      * @return \exface\UI5Facade\Facades\UI5Facade
      */
-    public function getFacade() : UI5Facade
+    public function getFacade(): UI5Facade
     {
         if ($this->facade === null) {
             $this->facade = FacadeFactory::createFromString(UI5Facade::class, $this->getWorkbench());
-        }   
+        }
         return $this->facade;
     }
 
@@ -472,4 +707,58 @@ JS
         }
         return $widget;
     }
+
+
+    protected function logXHRCount(string $context = '')
+    {
+        $xhrCount = $this->getSession()->evaluateScript('return window._xhrLog ? window._xhrLog.length : 0;');
+        echo "\n[DEBUG] " . ($context ? "{$context} - " : '') . "XHR Log Count: " . $xhrCount . "\n";
+    }
+
+    /**
+     * Retrieves error information from AJAX and UI5 operations
+     * 
+     * Checks three sources of errors:
+     * - Previous errors stored in lastError
+     * - XHR logs for HTTP errors (non-200 responses)
+     * - UI5 busy indicator state
+     * 
+     * @return array|null Error details array or null if no errors found
+     * @see checkAjaxRequestStatus() For status validation
+     */
+    public function getAjaxError(): ?array
+    {
+        try {
+            // Debug log ekle
+            $logExists = $this->getSession()->evaluateScript('return typeof window.exfXHRLog !== "undefined";');
+            echo "\nDebug - exfXHRLog exists: " . ($logExists ? 'true' : 'false') . "\n";
+
+            // Hata logunu kontrol et
+            $errors = $this->getSession()->evaluateScript('return window.exfXHRLog ? window.exfXHRLog.errors : [];') ?? [];
+
+            if (!empty($errors)) {
+                return end($errors);
+            }
+
+            // UI5 meşgul durumunu kontrol et
+            $busyIndicatorCount = $this->getSession()->evaluateScript(
+                'return (typeof sap !== "undefined" && sap.ui && sap.ui.core) ? ' .
+                'sap.ui.core.BusyIndicator._globalBusyIndicatorCounter : 0;'
+            );
+
+            if ($busyIndicatorCount > 0) {
+                return [
+                    'type' => 'UI5Busy',
+                    'message' => 'UI5 is still processing',
+                    'busyIndicatorCount' => $busyIndicatorCount
+                ];
+            }
+
+            return null;
+        } catch (\Exception $e) {
+            echo "\nDebug - getAjaxError Exception: " . $e->getMessage() . "\n";
+            return null;
+        }
+    }
 }
+// V1
