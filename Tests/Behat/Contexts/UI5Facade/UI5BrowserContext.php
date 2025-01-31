@@ -45,7 +45,7 @@ class UI5BrowserContext extends MinkContext implements Context
             DIRECTORY_SEPARATOR . 'axenox' .
             DIRECTORY_SEPARATOR . 'BDT' .
             DIRECTORY_SEPARATOR . 'Reports' .
-            DIRECTORY_SEPARATOR . 'screenshots' .
+            DIRECTORY_SEPARATOR . 'assets/screenshots' .
             DIRECTORY_SEPARATOR;
 
         echo "Screenshot directory will be: " . $this->screenshotDir . "\n";
@@ -465,7 +465,7 @@ class UI5BrowserContext extends MinkContext implements Context
     }
 
     /**
-     * @Then I see filtered results in the DataTable
+     * @Then I see at least one data item
      */
     public function iSeeFilteredResultsInDataTable(): void
     {
@@ -613,7 +613,7 @@ class UI5BrowserContext extends MinkContext implements Context
     }
 
     /**
-     * @When I click button :caption and wait for AJAX
+     * @When I click the search-button
      */
     public function iClickButtonAndWaitForAjax(string $caption): void
     {
@@ -630,8 +630,7 @@ class UI5BrowserContext extends MinkContext implements Context
             echo "\n------------ BEFORE CLICK ------------\n";
             $beforeLog = $this->getSession()->evaluateScript('
                 if (window.exfXHRLog && window.exfXHRLog.requests) {
-                    return "Total Requests: " + window.exfXHRLog.requests.length + "\n" +
-                        JSON.stringify(window.exfXHRLog.requests, null, 2);
+                    return "Total Requests: " + window.exfXHRLog.requests.length + "\n"
                 }
                 return "No requests logged yet";
             ');
@@ -659,8 +658,7 @@ class UI5BrowserContext extends MinkContext implements Context
             echo "\n------------ AFTER CLICK ------------\n";
             $afterLog = $this->getSession()->evaluateScript('
                 if (window.exfXHRLog && window.exfXHRLog.requests) {
-                    return "Total Requests: " + window.exfXHRLog.requests.length + "\n" +
-                        JSON.stringify(window.exfXHRLog.requests, null, 2);
+                    return "Total Requests: " + window.exfXHRLog.requests.length + "\n";
                 }
                 return "No requests logged";
             ');
@@ -678,6 +676,7 @@ class UI5BrowserContext extends MinkContext implements Context
 
     /**
      * @Then AJAX requests should complete successfully
+     * @then Data is loaded
      */
     public function ajaxRequestsShouldCompleteSuccessfully(): void
     {

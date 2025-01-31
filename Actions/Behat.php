@@ -174,7 +174,6 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
      * 1. Sets up the global Behat YAML configuration
      * 2. Creates necessary directories for screenshots and test reports
      * 3. Generates unique filenames for test reports
-     * 4. Configures HTML formatter settings
      * 5. Sets up web access configurations
      * 
      * @return \Generator Yields status messages during the initialization process
@@ -190,23 +189,6 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
         $loader = $this->getYmlReader($ymlPath);
         yield from $loader;
         $yml = $loader->getReturn();
-
-
-        // Initialize the formatters array in YAML if it doesn't exist
-        // This is required for the HTML formatter configuration
-        if (!isset($yml['default']['formatters'])) {
-            $yml['default']['formatters'] = [];
-        }
-
-        // // Set up BehatHTMLFormatter extension configuration
-        // // This extension is responsible for generating HTML test reports     
-
-        if (!isset($yml['default']['extensions']['emuse\\BehatHTMLFormatter\\BehatHTMLFormatterExtension'])) {
-            $yml['default']['extensions']['emuse\\BehatHTMLFormatter\\BehatHTMLFormatterExtension'] = [];
-        }
-
-        // // Configure the HTML formatter to use our unique filename
-        // $yml['default']['extensions']['emuse\\BehatHTMLFormatter\\BehatHTMLFormatterExtension']['file_name'] = $uniqueFileName;
 
         // Set up the main output directory for test reports
         // Path: installation_path/data/BDT/Reports

@@ -62,6 +62,34 @@ class UI5Browser
                         errors: []          // Collection of errors
                     };
 
+                    \$.ajaxSetup({
+                        beforeSend: function(jqXHR) {
+                            jqXHR._exfLogKey = window.exfXHRLog.requests.push({
+                                jqXHR: jqXHR
+                            });
+                            jqXHR._exfStart = Date.now();
+                        },
+                        complete: function(jqXHR) {
+                            var oLogItem = window.exfXHRLog.requests[jqXHR._exfLogKey];
+                            oLogItem.url = xhr.responseURL;               // Captured request URL
+                            oLogItem.status = xhr.status;                 // HTTP status code
+                            oLogItem.statusText = xhr.statusText;         // HTTP status message
+                            oLogItem.duration = Date.now() - start;       // Request duration in ms
+                            oLogItem.response = xhr.responseText;         // Response content
+                            oLogItem.timestamp = new Date().toISOString(); // Request timestamp
+
+                            window.exfXHRLog.lastRequest = request;
+                            
+                            // Log non-successful responses as errors (not 2xx)
+                            if (xhr.status < 200 || xhr.status >= 300) {
+                                window.exfXHRLog.errors.push({
+                                    type: 'HTTPError',
+                                    ...request
+                                });
+                            }
+                        }
+                    });
+                    /* FIXME remove if not needed until 28.02.2025
                     // Store original XMLHttpRequest to extend its functionality
                     var originalXHR = window.XMLHttpRequest;
                     // Create custom XMLHttpRequest with monitoring
@@ -94,6 +122,7 @@ class UI5Browser
                         
                         return xhr;
                     };
+                    */
                 }
                 
                 // Initialize UI5 error monitoring if UI5 is available
@@ -157,7 +186,7 @@ class UI5Browser
      * Clears the XHR (XMLHttpRequest) monitoring log and resets error state
      * 
      * This function performs two main cleanup tasks:
-     * 1. Clears the XHR log array in the browser (window._xhrLog)
+     * 1. Clears the XHR log array in the browser (window.exfXHRLog)
      * 2. Resets the internal error tracking state
      * 
      * Use cases:
