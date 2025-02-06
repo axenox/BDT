@@ -214,15 +214,10 @@ class UI5BrowserContext extends MinkContext implements Context
     public function iLogInToPage(string $url, string $userRole = null)
     {
         try {
-            // Navigate to page
-            $this->visitPath('/' . $url);
-            echo "Debug - First page is loading...\n";
+            $session = $this->getSession();
+            // TODO handle user roles here
 
-            // Wait for page and UI5 to load
-            $this->getSession()->wait(5000, "document.readyState === 'complete'");
-            $this->getSession()->wait(10000, "return typeof sap !== 'undefined' && typeof sap.ui !== 'undefined'");
-
-            $this->browser = new UI5Browser($this->getSession(), $url);
+            $this->iVisitPage($url);
 
             // Find login form with retries
             $username = null;
@@ -279,6 +274,25 @@ class UI5BrowserContext extends MinkContext implements Context
             $this->takeScreenshot(); // Take Screenshot when we have an error
             throw $e; // throw error
         }
+    }
+
+    /**
+     * Summary of iVisitPage
+     * 
+     * @Given I visit page :url
+     * 
+     * @param string $url
+     * @return void
+     */
+    public function iVisitPage(string $url) : void
+    {
+        // Navigate to page
+        $this->visitPath('/' . $url);
+        echo "Debug - First page is loading...\n";
+
+        $this->browser = new UI5Browser($this->getSession(), $url);
+
+        return;
     }
 
 
