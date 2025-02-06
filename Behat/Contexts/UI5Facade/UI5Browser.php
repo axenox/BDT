@@ -18,7 +18,7 @@ use PHPUnit\Framework\Assert;
  * @author Andrej Kabachnik
  */
 class UI5Browser
-{ 
+{
     private $lastError = null;
 
     private $session;
@@ -26,6 +26,51 @@ class UI5Browser
     private $workbench = null;
 
     private $facade = null;
+
+    /**
+     * Property to store the object alias for widget filtering
+     * Used to narrow down widget search results based on specific text/alias
+     * @var string|null
+     */
+    private $objectAlias = null;
+
+    /**
+     * Sets the object alias used for filtering widget search results
+     * This allows targeting specific widgets that contain the given alias text
+     * For example, if searching for a table related to "Customer" data,
+     * setting objectAlias to "Customer" will only return widgets containing that text
+     *
+     * @param string|null $alias The text to filter widgets by, null to clear filter
+     * @return void
+     */
+    public function setObjectAlias(?string $alias): void
+    {
+        $this->objectAlias = $alias;
+    }
+
+    /**
+     * Gets the current object alias used for widget filtering
+     * Returns the text currently being used to filter widget search results,
+     * or null if no filtering is active
+     *
+     * @return string|null The current object alias or null if not set
+     */
+    public function getObjectAlias(): ?string
+    {
+        return $this->objectAlias;
+    }
+    // //// SAMPLE
+    //     // Let's say we have multiple tables on the page:
+    // // - Customer Table
+    // // - Order Table
+    // // - Product Table
+
+    // // To find only the Customer table:
+    // $browser->setObjectAlias("Customer");
+    // $widgets = $browser->findWidgets("DataTable");
+    // // This will only find tables containing the word "Customer"
+
+
 
     // Constructor
     public function __construct(Session $session, string $ui5AppUrl)
@@ -37,149 +82,188 @@ class UI5Browser
         $this->workbench = new Workbench();
     }
 
-      /**
-     * Initializes XHR and UI5 error monitoring.
+    /**
+     * Initializes XHR and AJAX Request Monitoring System
      * 
-     * Captures and logs:
-     * - XMLHttpRequests (URLs, status, duration)
-     * - UI5 error messages
-     * - Response data and timestamps
+     * This function sets up a comprehensive monitoring system for all network requests by:
+     * - Creating a wrapper around XMLHttpRequest without modifying its core functionality (Uses wrapper pattern instead of modifying original XHR)
+     * - Monitoring jQuery AJAX calls through $.ajaxSetup
+     * - Tracking all fetch API requests , Catches HTTP errors (400, 500 etc.)
      * 
-     * Stores data in window.exfXHRLog object.
+     * Features:
+     * - Captures all network activity including status codes and responses
+     * - Detects HTTP errors (400, 500 etc.) and UI5 specific errors
+     * - Logs detailed request information (timestamps, duration, responses)
+     * - Stores logs separately in window.exfXHRLog without affecting application
      * 
+     * Use Cases:
+     * - Test automation error detection
+     * - Network request debugging
+     * - Error state capturing
+     * - Automatic error logging
+     * 
+     * @method initializeXHRMonitoring
      * @return void
+     * @throws \RuntimeException if XHR monitoring initialization fails
      */
     public function initializeXHRMonitoring(): void
     {
         $this->getSession()->evaluateScript(
             <<<JS
             (function() {
-                // Initialize XHR monitoring store if not exists
-                if (typeof window.exfXHRLog === 'undefined') {
-                    window.exfXHRLog = {
-                        requests: [],       // Array to store all XHR requests
-                        lastRequest: null,  // Reference to most recent request
-                        errors: []          // Collection of errors
-                    };
-
-                    \$.ajaxSetup({
-                        beforeSend: function(jqXHR) {
-                            jqXHR._exfLogKey = window.exfXHRLog.requests.push({
-                                jqXHR: jqXHR
+                // Initialize global XHR logging object with tracking arrays
+                window.exfXHRLog = {
+                    requests: [],    // Array to store all network requests
+                    errors: [],      // Array to store any error states
+                    addRequest: function(request) {
+                        // Add timestamp to each request for tracking
+                        request.timestamp = new Date().toISOString();
+                        
+                        // Store request in history array
+                        this.requests.push(request);
+                        
+                        // Check for error status codes (400+)
+                        if (request.status >= 400) {
+                            this.errors.push({
+                                type: 'HTTPError',
+                                status: request.status,
+                                url: request.url,
+                                message: request.statusText,
+                                response: request.response,
+                                timestamp: request.timestamp
                             });
-                            jqXHR._exfStart = Date.now();
-                        },
-                        complete: function(jqXHR) {
-                            var oLogItem = window.exfXHRLog.requests[jqXHR._exfLogKey];
-                            oLogItem.url = xhr.responseURL;               // Captured request URL
-                            oLogItem.status = xhr.status;                 // HTTP status code
-                            oLogItem.statusText = xhr.statusText;         // HTTP status message
-                            oLogItem.duration = Date.now() - start;       // Request duration in ms
-                            oLogItem.response = xhr.responseText;         // Response content
-                            oLogItem.timestamp = new Date().toISOString(); // Request timestamp
+                            console.error('XHR Error:', request);
+                        }
+                    }
+                };
+    
+                // Set up jQuery AJAX request monitoring
+                if (typeof jQuery !== 'undefined') {
+                    const originalAjax = jQuery.ajax;
+                    jQuery.ajax = function(options) {
+                        const startTime = Date.now();
+                        
+                        // Store original callback for later execution
+                        const originalComplete = options.complete;
+                        
+                        // Wrap the complete callback to add monitoring
+                        options.complete = function(jqXHR, textStatus) {
+                            try {
+                                // Collect comprehensive request details
+                                const request = {
+                                    url: options.url,
+                                    method: options.type || 'GET',
+                                    status: jqXHR.status,
+                                    statusText: jqXHR.statusText,
+                                    response: jqXHR.responseText,
+                                    duration: Date.now() - startTime
+                                };
 
-                            window.exfXHRLog.lastRequest = request;
-                            
-                            // Log non-successful responses as errors (not 2xx)
-                            if (xhr.status < 200 || xhr.status >= 300) {
-                                window.exfXHRLog.errors.push({
-                                    type: 'HTTPError',
-                                    ...request
-                                });
+                                // Add request to monitoring log
+                                window.exfXHRLog.addRequest(request);
+                               
+                                // Execute original callback if it exists
+                                if (originalComplete) {
+                                    originalComplete.apply(this, arguments);
+                                }
+                            } catch (e) {
+                                console.error('Error in XHR logging:', e);
                             }
+                        };
+    
+                        return originalAjax.apply(this, arguments);
+                    };
+                }
+    
+                // Set up native XMLHttpRequest monitoring
+                const originalXHR = window.XMLHttpRequest;
+                window.XMLHttpRequest = function() {
+                    const xhr = new originalXHR();
+                    const startTime = Date.now();
+                    let requestUrl = '';
+                    let requestMethod = '';
+
+                    // Intercept the open method to capture request details
+                    const originalOpen = xhr.open;
+                    xhr.open = function(method, url) {
+                        requestUrl = url;
+                        requestMethod = method;
+                        return originalOpen.apply(this, arguments);
+                    };
+                        // Add listener for request completion
+
+                    xhr.addEventListener('loadend', function() {
+                        try {
+                            // Compile request information
+
+                            const request = {
+                                url: requestUrl,
+                                method: requestMethod,
+                                status: xhr.status,
+                                statusText: xhr.statusText,
+                                response: xhr.responseText,
+                                duration: Date.now() - startTime
+                            };
+                            
+                            window.exfXHRLog.addRequest(request);
+                        } catch (e) {
+                            console.error('Error in XHR logging:', e);
                         }
                     });
-                    /* FIXME remove if not needed until 28.02.2025
-                    // Store original XMLHttpRequest to extend its functionality
-                    var originalXHR = window.XMLHttpRequest;
-                    // Create custom XMLHttpRequest with monitoring
-                    window.XMLHttpRequest = function() {
-                        var xhr = new originalXHR();
-                        var start = Date.now(); // Capture start time for duration calculation exfTools.date.format(sTime, 'yyyy-MM-dd HH:mm:ss.SSS');
-                        
-                        // Add listener for request completion
-                        xhr.addEventListener('loadend', function() {
-                            var request = {
-                                url: xhr.responseURL,               // Captured request URL
-                                status: xhr.status,                 // HTTP status code
-                                statusText: xhr.statusText,         // HTTP status message
-                                duration: Date.now() - start,       // Request duration in ms
-                                response: xhr.responseText,         // Response content
-                                timestamp: new Date().toISOString() // Request timestamp
-                            };
+    
+                    return xhr;
+                };
+    
+                // Set up Fetch API request monitoring
+                if (typeof window.fetch === 'function') {
+                    const originalFetch = window.fetch;
+                    window.fetch = async function(input, init) {
+                        const startTime = Date.now();
+                        const url = typeof input === 'string' ? input : input.url;
+                        const method = init?.method || 'GET';
+    
+                        try {
+                             // Execute original fetch request
+                            const response = await originalFetch.apply(this, arguments);
+                            const clone = response.clone();
+                            const responseText = await clone.text();
                             
-                            window.exfXHRLog.requests.push(request);
-                            window.exfXHRLog.lastRequest = request;
-                            
-                            // Log non-successful responses as errors (not 2xx)
-                            if (xhr.status < 200 || xhr.status >= 300) {
-                                window.exfXHRLog.errors.push({
-                                    type: 'HTTPError',
-                                    ...request
-                                });
-                            }
-                        });
-                        
-                        return xhr;
-                    };
-                    */
-                }
-                
-                // Initialize UI5 error monitoring if UI5 is available
-                if (typeof sap !== 'undefined' && sap.ui && sap.ui.getCore) {
-                    try {
-                        var core = sap.ui.getCore();
-                        if (core && core.getMessageManager) {
-                            var messageProcessor = {
-                                getId: function() {
-                                    return 'exf-xhr-message-processor';
-                                },
-                                // Process and log UI5 error messages
-                                processMessage: function(message) {
-                                    if (message.type === 'Error' || message.type === 'Fatal') {
-                                        window.exfXHRLog.errors.push({
-                                            type: 'UI5Error',
-                                            message: message.message,
-                                            details: message.description,
-                                            timestamp: new Date().toISOString() //exfTools.date.format(sTime, 'yyyy-MM-dd HH:mm:ss.SSS');
-                                        });
-                                    }
-                                },
-
-                                // These empty methods are required by UI5's MessageProcessor interface for proper error handling
-
-                                attachMessageChange: function() {}, // Subscribe to messages
-                                detachMessageChange: function() {}, // Unsubscribe from messages
-                                // Message handler interface methods
-                                handleMessages: function() { return true; }, // Process messages
-                                // Required lifecycle methods for UI5 system
-                                init: function() {},  // Called on startup
-                                exit: function() {},  // Called on cleanup
-                                // Message model methods 
-                                setMessages: function() {},  // Update messages
-                                getMessages: function() { return []; } // Get messages
-                            };
-                            
-                            // Try-catch processor save
-                            try {
-                                core.getMessageManager().registerMessageProcessor(messageProcessor);
-                            } catch (e) {
-                                console.warn('Message processor registration failed:', e); 
-                                window.exfXHRLog.errors.push({
-                                    type: 'UI5Error',
-                                    message: 'Message processor registration failed',
-                                    details: e.toString(),
-                                    timestamp: new Date().toISOString()
-                                });
-                            }
+                            // Log successful request details
+                            window.exfXHRLog.addRequest({
+                                url: url,
+                                method: method,
+                                status: response.status,
+                                statusText: response.statusText,
+                                response: responseText,
+                                duration: Date.now() - startTime
+                            });
+    
+                            return response;
+                        } catch (error) {
+                            // Log failed request details
+                            window.exfXHRLog.addRequest({
+                                url: url,
+                                method: method,
+                                status: 0,
+                                statusText: error.message,
+                                error: error.toString(),
+                                duration: Date.now() - startTime
+                            });
+                            throw error;
                         }
-                    } catch (e) {
-                        console.warn('UI5 message handling setup failed:', e);
-                    }
+                    };
                 }
+    
+                console.log('XHR monitoring initialized successfully');
             })();
-            JS
+    JS
         );
+
+        // Verify that monitoring system was initialized correctly
+        $isInitialized = $this->getSession()->evaluateScript('return typeof window.exfXHRLog !== "undefined" && typeof window.exfXHRLog.addRequest === "function"');
+        if (!$isInitialized) {
+            throw new \RuntimeException('XHR monitoring initialization failed');
+        }
     }
 
     /**
@@ -302,9 +386,13 @@ class UI5Browser
         );
     }
 
-
-
     /**
+     * Finds an input element by its associated label caption in a UI5 application
+     * 
+     * This function performs a hierarchical search to find input elements:
+     * 1. First finds the label element with matching caption
+     * 2. Then locates the corresponding input through the label's 'for' attribute
+     * 3. Handles different UI5 input structures and nested elements
      * 
      * @param string $caption
      * @param \Behat\Mink\Element\NodeElement|null $parent
@@ -312,20 +400,51 @@ class UI5Browser
      */
     public function findInputByCaption(string $caption, NodeElement $parent = null): ?NodeElement
     {
+        // Get the page or use provided parent element as search context
         $page = $this->getPage();
         $input = null;
+
+        // Find all label BDI elements (UI5 uses BDI for bidirectional text support)
         $labelBdis = ($parent ?? $page)->findAll('css', 'label.sapMLabel > span > bdi');
 
+        // Iterate through found labels to locate matching one
         foreach ($labelBdis as $labelBdi) {
             if ($labelBdi->getText() === $caption) {
-                $sapMLabel = $labelBdi->getParent()->getParent();
-                $labelFor = $sapMLabel->getAttribute('for');
-                $input = $sapMLabel->getParent()->getParent()->findById($labelFor);
-                break;
+                try {
+                    // Navigate from BDI to actual label element
+                    $sapMLabel = $labelBdi->getParent()->getParent();
+                    $labelFor = $sapMLabel->getAttribute('for');
+
+                    // First attempt: Try to find input directly by ID
+                    $input = ($parent ?? $page)->findById($labelFor);
+
+                    // Second attempt: Look for inner input element
+                    // UI5 often wraps inputs in containers with -inner suffix
+                    if (!$input) {
+                        $input = ($parent ?? $page)->find('css', '#' . $labelFor . '-inner');
+                    }
+
+                    // Third attempt: Check for nested input within container
+                    // Some UI5 controls have complex DOM structures
+                    if (!$input) {
+                        $inputContainer = ($parent ?? $page)->find('css', '#' . $labelFor);
+                        if ($inputContainer) {
+                            $input = $inputContainer->find('css', 'input.sapMInputBaseInner');
+                        }
+                    }
+                    // If input found, break the loop
+                    if ($input) {
+                        break;
+                    }
+                } catch (\Exception $e) {
+                    continue;
+                }
             }
         }
+
         return $input;
     }
+
 
     /**
      * 
@@ -525,60 +644,87 @@ JS
      * @param int $timeoutInSeconds Maximum time to wait for AJAX completion
      * @return bool True if all AJAX requests completed successfully
      */
-    public function waitForAjaxFinished(int $timeoutInSeconds = 10): bool
+    public function waitForAjaxFinished(int $timeoutInSeconds = 30): bool
     {
-        // Wait for basic AJAX completion
         $result = $this->getSession()->wait(
             $timeoutInSeconds * 1000,
             <<<JS
-        (function() {
-            // Check jQuery active requests
-            if (typeof jQuery !== 'undefined' && jQuery.active !== 0) {
-                return false;
-            }
-
-            // Check UI5 busy state
-            if (typeof sap !== 'undefined' && sap.ui && sap.ui.core) {
-                if (sap.ui.core.BusyIndicator._globalBusyIndicatorCounter > 0) {
+            (function() {
+                // Check active jQuery requests
+                if (typeof jQuery !== 'undefined' && jQuery.active !== 0) {
                     return false;
                 }
-            }
-
-            // All immediate checks passed
-            return true;
-        })()
-        JS
+                
+                // Check UI5 busy indicators
+                if (typeof sap !== 'undefined' && sap.ui && sap.ui.core) {
+                    if (sap.ui.core.BusyIndicator._globalBusyIndicatorCounter > 0) {
+                        return false;
+                    }
+                }
+                
+                // Check for errors in XHR log
+                if (window.exfXHRLog && window.exfXHRLog.requests) {
+                    var failedRequests = window.exfXHRLog.requests.filter(function(req) {
+                        return req.status >= 400 || 
+                               (req.response && (
+                                   req.response.includes("SQL error") || 
+                                   req.response.includes("error") ||
+                                   req.response.includes("Exception")
+                               ));
+                    });
+                    
+                    if (failedRequests.length > 0) {
+                        window.exfXHRLog.errors.push({
+                            type: 'HTTPError',
+                            message: 'Failed requests detected',
+                            details: failedRequests
+                        });
+                        return true; // Return true to stop waiting and handle error
+                    }
+                }
+                
+                return true;
+            })()
+            JS
         );
 
-        // Return false if initial wait failed
         if (!$result) {
             return false;
         }
 
-        // Perform additional validation using enhanced status check
-        return $this->checkAjaxRequestStatus();
-    }
+        // // Check for errors after requests complete
+        // $error = $this->getAjaxError();
+        // if ($error !== null) {
+        //     echo "\nAJAX Error detected:";
+        //     echo "\nType: " . ($error['type'] ?? 'Unknown');
+        //     echo "\nStatus: " . ($error['status'] ?? 'Unknown');
+        //     echo "\nResponse: " . substr(($error['responseText'] ?? ''), 0, 500);
+        //     return false;
+        // }
 
-    /**
-     * Checks if all AJAX requests completed successfully
-     * 
-     * Validates HTTP status codes, UI5 errors, and busy state.
-     * Stores any detected errors in lastError property.
-     * 
-     * @return bool true if successful, false if errors found
-     * @see getLastError() For error details
-     */
-    public function checkAjaxRequestStatus(): bool
-    {
-        // First check if there's an existing error
-        $error = $this->getAjaxError();
-        if ($error !== null) {
-            // Store the error details for later retrieval
-            $this->lastError = $error;
-            return false;
-        }
         return true;
     }
+
+    // /**
+    //  * Checks if all AJAX requests completed successfully
+    //  * 
+    //  * Validates HTTP status codes, UI5 errors, and busy state.
+    //  * Stores any detected errors in lastError property.
+    //  * 
+    //  * @return bool true if successful, false if errors found
+    //  * @see getLastError() For error details
+    //  */
+    // public function checkAjaxRequestStatus(): bool
+    // {
+    //     // First check if there's an existing error
+    //     $error = $this->getAjaxError();
+    //     if ($error !== null) {
+    //         // Store the error details for later retrieval
+    //         $this->lastError = $error;
+    //         return false;
+    //     }
+    //     return true;
+    // }
 
     /**
      * Gets the last error
@@ -602,6 +748,8 @@ JS
 JS
         );
     }
+
+
     /**
      * Enhanced findWidgets method with better widget detection
      * 
@@ -612,60 +760,188 @@ JS
      */
     public function findWidgets(string $widgetType, NodeElement $parent = null, int $timeoutInSeconds = 2): array
     {
-        // Ensure UI5 is ready
-        if (!$this->isUI5Ready()) {
-            $this->waitForUI5Loading($timeoutInSeconds);
-        }
-
-        // For DataTable, wait for UI5 Table components
-        if ($widgetType === 'DataTable') {
-            $this->waitForUI5Component('Table', $timeoutInSeconds);
-            // Also wait for List component as tables might be implemented as lists
-            $this->waitForUI5Component('List', $timeoutInSeconds);
-        }
-
-        // Base selector for widget
-        $cssSelector = ".exfw-{$widgetType}";
-
-        // Wait for widgets with expanded selectors
-        $timeout = $this->getSession()->wait(
-            $timeoutInSeconds * 1000,
-            <<<JS
-        (function() {
-            // Check main selector
-            var elements = document.querySelectorAll('{$cssSelector}');
-            if (elements.length > 0) return true;
-            
-            // For DataTable, also check UI5 specific classes
-            if ('{$widgetType}' === 'DataTable') {
-                var ui5Tables = document.querySelectorAll('.sapMTable, .sapUiTable, .sapMList');
-                if (ui5Tables.length > 0) return true;
-            }
-            
-            return false;
-        })()
-        JS
-        );
-
-        // Get page or parent element
         $searchContext = $parent ?? $this->getPage();
+        $widgets = [];
+        $foundIds = [];
 
-        // Find widgets with the exfw class
-        $widgets = $searchContext->findAll('css', $cssSelector);
 
-        // For DataTables, also look for UI5 specific elements if no exfw widgets found
-        if ($widgetType === 'DataTable' && empty($widgets)) {
-            $ui5Selectors = ['.sapMTable', '.sapUiTable', '.sapMList'];
-            foreach ($ui5Selectors as $selector) {
-                $ui5Elements = $searchContext->findAll('css', $selector);
-                $widgets = array_merge($widgets, $ui5Elements);
-            }
+        switch ($widgetType) {
+            case 'Dialog':
+                $selectors = [
+                    '.sapMDialog',
+                    '.sapMDialog-CTX',
+                    '.exf-dialog-page'
+                ];
+
+                $foundIds = []; // Tekrar eden elementleri önlemek için ID'leri takip et
+
+                foreach ($selectors as $selector) {
+                    $elements = $searchContext->findAll('css', $selector);
+                    foreach ($elements as $element) {
+                        try {
+                            // Element ID'sini al
+                            $elementId = $element->getAttribute('id');
+
+                            // Eğer bu ID daha önce eklenmemişse
+                            if (!in_array($elementId, $foundIds)) {
+                                // Title veya text kontrolü
+                                $text = $element->getText();
+
+                                if (!empty($this->objectAlias)) {
+                                    if (strpos($text, $this->objectAlias) !== false) {
+                                        $widgets[] = $element;
+                                        $foundIds[] = $elementId;
+                                    }
+                                } else {
+                                    $widgets[] = $element;
+                                    $foundIds[] = $elementId;
+                                }
+                            }
+                        } catch (\Exception $e) {
+                            continue;
+                        }
+                    }
+                }
+                break;
+
+            case 'Input':
+                $widgets = [];
+                $foundIds = [];
+
+                // Ana input container'ları bul
+                $mainInputs = $searchContext->findAll('css', '.sapMInputBase');
+                foreach ($mainInputs as $input) {
+                    try {
+                        $elementId = $input->getAttribute('id');
+                        // ID tekrarını kontrol et
+                        if (!in_array($elementId, $foundIds)) {
+                            // İçinde gerçek input elementi var mı kontrol et
+                            $inner = $input->find('css', '.sapMInputBaseInner');
+                            if ($inner && $inner->isVisible()) {
+                                $widgets[] = $input;
+                                $foundIds[] = $elementId;
+                            }
+                        }
+                    } catch (\Exception $e) {
+                        continue;
+                    }
+                }
+
+                // Debug için bilgi
+                echo "\nFound input elements:" . count($mainInputs) . "\n";
+                foreach ($widgets as $index => $widget) {
+                    echo "Input #" . ($index + 1) . ":\n";
+                    echo "ID: " . $widget->getAttribute('id') . "\n";
+                    echo "Classes: " . $widget->getAttribute('class') . "\n";
+                    echo "Inner input exists: " . ($widget->find('css', '.sapMInputBaseInner') ? 'yes' : 'no') . "\n";
+                    echo "---\n";
+                }
+
+                // Yalnızca ana input container'ları döndür
+                return array_values(array_filter($widgets, function ($widget) {
+                    return strpos($widget->getAttribute('class'), 'sapMInputBase') !== false;
+                }));
+                break;
+
+
+            case 'DataTable':
+                $mainSelector = '#x11ef864724bba1188647005056bef75d__DataTable';
+                $element = $searchContext->find('css', $mainSelector);
+
+                if ($element) {
+                    $allContent = '';
+                    $title = $searchContext->find('css', '#__title0-inner');
+                    if ($title) {
+                        $allContent .= ' ' . $title->getText();
+                    }
+
+                    // Table içeriğini topla
+                    $headerCells = $element->findAll('css', 'th, [role="columnheader"]');
+                    foreach ($headerCells as $cell) {
+                        $allContent .= ' ' . $cell->getText();
+                    }
+
+                    $cells = $element->findAll('css', 'td, [role="gridcell"]');
+                    foreach ($cells as $cell) {
+                        $allContent .= ' ' . $cell->getText();
+                    }
+
+                    if (!empty($this->objectAlias)) {
+                        if (stripos($allContent, $this->objectAlias) !== false) {
+                            $widgets[] = $element;
+                        }
+                    } else {
+                        $widgets[] = $element;
+                    }
+                }
+                break;
+
+
+            default:
+                $widgets = $searchContext->findAll('css', ".exfw-{$widgetType}");
         }
 
-        // Filter for visible widgets only
-        return array_filter($widgets, function ($widget) {
-            return $widget->isVisible();
+        // Filter visible widgets and deduplicate by content
+        $visibleWidgets = array_filter($widgets, function ($widget) {
+            try {
+                return $widget->isVisible();
+            } catch (\Exception $e) {
+                return false;
+            }
         });
+
+        // // Debug logging
+        // //echo "\n-------- DEBUG: Found Widgets --------\n";
+        // foreach ($visibleWidgets as $index => $widget) {
+        //     try {
+        //         echo "Widget #" . ($index + 1) . ":\n";
+        //         echo "ID: " . ($widget->getAttribute('id') ?? 'no id') . "\n";
+        //         echo "Classes: " . ($widget->getAttribute('class') ?? 'no class') . "\n";
+        //         echo "Role: " . ($widget->getAttribute('role') ?? 'no role') . "\n";
+        //         echo "Content Hash: " . md5($widget->getText()) . "\n";
+        //         echo "-----------------\n";
+        //     } catch (\Exception $e) {
+        //         continue;
+        //     }
+        // }
+
+        // // objectAlias ile filtrele
+        // if (!empty($visibleWidgets) && !empty($this->objectAlias)) {
+        //     $filteredWidgets = array_filter($visibleWidgets, function ($widget) {
+        //         try {
+        //             return strpos($widget->getText(), $this->objectAlias) !== false;
+        //         } catch (\Exception $e) {
+        //             return false;
+        //         }
+        //     });
+        //     return array_values($filteredWidgets);
+        // }
+
+        return array_values(array_filter($widgets, function ($widget) {
+            try {
+                return $widget->isVisible();
+            } catch (\Exception $e) {
+                return false;
+            }
+        }));
+    }
+
+    // Helper method to check if a table is visible and contains content
+    protected function isValidTable(NodeElement $element): bool
+    {
+        try {
+            if (!$element->isVisible()) {
+                return false;
+            }
+
+            // Check for actual table content
+            $headers = $element->findAll('css', 'th, [role="columnheader"]');
+            $cells = $element->findAll('css', 'td, [role="gridcell"]');
+
+            return !empty($headers) || !empty($cells);
+        } catch (\Exception $e) {
+            return false;
+        }
     }
 
     /**
@@ -745,49 +1021,191 @@ JS
     }
 
     /**
-     * Retrieves error information from AJAX and UI5 operations
+     * Checks for any errors in AJAX requests, UI5 state, or JavaScript
      * 
-     * Checks three sources of errors:
-     * - Previous errors stored in lastError
-     * - XHR logs for HTTP errors (non-200 responses)
-     * - UI5 busy indicator state
-     * 
-     * @return array|null Error details array or null if no errors found
-     * @see checkAjaxRequestStatus() For status validation
+     * @return array|null Error details if any found, null if all clear
      */
     public function getAjaxError(): ?array
     {
         try {
-            // Debug log ekle
-            $logExists = $this->getSession()->evaluateScript('return typeof window.exfXHRLog !== "undefined";');
-            echo "\nDebug - exfXHRLog exists: " . ($logExists ? 'true' : 'false') . "\n";
-
-            // Hata logunu kontrol et
-            $errors = $this->getSession()->evaluateScript('return window.exfXHRLog ? window.exfXHRLog.errors : [];') ?? [];
-
-            if (!empty($errors)) {
-                return end($errors);
+            // Check for JavaScript errors
+            $jsErrors = $this->getSession()->evaluateScript('
+            if (window.exfXHRLog && window.exfXHRLog.errors) {
+                return window.exfXHRLog.errors.filter(function(err) {
+                    return err.type === "JSError";
+                });
             }
+            return [];
+        ');
 
-            // UI5 meşgul durumunu kontrol et
-            $busyIndicatorCount = $this->getSession()->evaluateScript(
-                'return (typeof sap !== "undefined" && sap.ui && sap.ui.core) ? ' .
-                'sap.ui.core.BusyIndicator._globalBusyIndicatorCounter : 0;'
-            );
-
-            if ($busyIndicatorCount > 0) {
+            if (!empty($jsErrors)) {
                 return [
-                    'type' => 'UI5Busy',
-                    'message' => 'UI5 is still processing',
-                    'busyIndicatorCount' => $busyIndicatorCount
+                    'type' => 'JavaScript',
+                    'message' => $jsErrors[0]['message'] ?? 'Unknown JavaScript error'
                 ];
             }
 
+            // Check for UI5 MessageManager errors
+            $ui5Errors = $this->getSession()->evaluateScript('
+            if (typeof sap !== "undefined" && sap.ui && sap.ui.getCore()) {
+                var messageManager = sap.ui.getCore().getMessageManager();
+                if (messageManager && messageManager.getMessageModel) {
+                    return messageManager.getMessageModel().getData().filter(function(msg) {
+                        return msg.type === "Error" || msg.type === "Fatal";
+                    });
+                }
+            }
+            return [];
+        ');
+
+            if (!empty($ui5Errors)) {
+                return [
+                    'type' => 'UI5',
+                    'message' => $ui5Errors[0]['message'] ?? 'UI5 framework error'
+                ];
+            }
+
+            // Check for failed HTTP requests with enhanced error parsing
+            $failedRequests = $this->getSession()->evaluateScript('
+        if (window.exfXHRLog && window.exfXHRLog.requests) {
+            return window.exfXHRLog.requests.filter(function(req) {
+                return req.status >= 300 );
+            }).map(function(req) {
+                try {
+                    return {
+                        status: req.status,
+                        response: req.response,
+                        parsed: JSON.parse(req.response) 
+                    };
+                } catch(e) {
+                    return {
+                        status: req.status,
+                        response: req.response,
+                        parsed: null
+                    };
+                }
+            });
+        }
+        return [];
+    ');
+
+            if (!empty($failedRequests)) {
+                $lastFailedRequest = end($failedRequests);
+                $error = [
+                    'type' => 'HTTP',
+                    'status' => $lastFailedRequest['status'] ?? 'unknown',
+                    'message' => mb_substr($lastFailedRequest['response'] ?? '', 0, 500)
+                ];
+
+                // Add structured error info if available
+                if (isset($lastFailedRequest['parsed']['error'])) {
+                    $error['structured'] = $lastFailedRequest['parsed']['error'];
+                }
+
+                return $error;
+            }
+
             return null;
+
         } catch (\Exception $e) {
-            echo "\nDebug - getAjaxError Exception: " . $e->getMessage() . "\n";
-            return null;
+            return [
+                'type' => 'Exception',
+                'message' => $e->getMessage()
+            ];
         }
     }
+
+    //
+
+    // /**
+    //  * Checks for UI5 framework specific errors
+    //  * 
+    //  * @throws \RuntimeException if UI5 errors are detected
+    //  */
+    // public function checkUI5Errors(): void
+    // {
+    //     $ui5Errors = $this->getSession()->evaluateScript('
+    //     if (typeof sap !== "undefined" && sap.ui && sap.ui.getCore()) {
+    //         var messageManager = sap.ui.getCore().getMessageManager();
+    //         if (messageManager && messageManager.getMessageModel) {
+    //             return messageManager.getMessageModel().getData().filter(function(msg) {
+    //                 return msg.type === "Error" || msg.type === "Fatal";
+    //             });
+    //         }
+    //     }
+    //     return [];
+    // ');
+
+    //     if (!empty($ui5Errors)) {
+    //         $errorDetails = "\nUI5 Framework Errors Detected:";
+    //         foreach ($ui5Errors as $error) {
+    //             $errorDetails .= sprintf(
+    //                 "\nType: %s, Message: %s",
+    //                 $error['type'] ?? 'unknown',
+    //                 $error['message'] ?? 'unknown'
+    //             );
+    //         }
+    //         throw new \RuntimeException($errorDetails);
+    //     }
+    // }
+    // /**
+    //  * Checks for XHR (XMLHttpRequest) related errors
+    //  * 
+    //  * @throws \RuntimeException if XHR errors are detected
+    //  */
+    // public function checkXHRErrors(): void
+    // {
+    //     $errors = $this->getSession()->evaluateScript('
+    //     if (window.exfXHRLog && window.exfXHRLog.errors) {
+    //         return window.exfXHRLog.errors;
+    //     }
+    //     return [];
+    // ') ?? [];
+
+    //     if (!empty($errors)) {
+    //         $lastError = end($errors);
+    //         $errorDetails = "\nXHR Error Detected:";
+    //         $errorDetails .= "\nType: " . ($lastError['type'] ?? 'Unknown');
+    //         $errorDetails .= "\nMessage: " . ($lastError['message'] ?? 'No message');
+    //         throw new \RuntimeException($errorDetails);
+    //     }
+    // }
+
+    // /**
+    //  * Checks for network resource loading errors
+    //  * 
+    //  * @throws \RuntimeException if network errors are detected
+    //  */
+    // public function checkNetworkErrors(): void
+    // {
+    //     $failedRequests = $this->getSession()->evaluateScript('
+    //     if (window.exfXHRLog && window.exfXHRLog.requests) {
+    //         return window.exfXHRLog.requests.filter(function(req) {
+    //             return req.status >= 400;
+    //         }).map(function(req) {
+    //             return {
+    //                 url: req.url || "unknown",
+    //                 status: req.status || 0,
+    //                 response: (req.response || "").substring(0, 200)
+    //             };
+    //         });
+    //     }
+    //     return [];
+    // ');
+
+    //     if (!empty($failedRequests)) {
+    //         $errorDetails = "\nNetwork Request Failures Detected:";
+    //         foreach ($failedRequests as $request) {
+    //             $errorDetails .= sprintf(
+    //                 "\nURL: %s, Status: %s, Response: %s",
+    //                 $request['url'],
+    //                 $request['status'],
+    //                 $request['response']
+    //             );
+    //         }
+    //         throw new \RuntimeException($errorDetails);
+    //     }
+    // }
+
 }
-// V1
+//v1

@@ -77,4 +77,5 @@ default:
       renderer: Twig                       # Using Twig template engine
       print_args: true                     # Include test arguments in report
       print_outp: true                     # Include test output in report
-      loop_break: true                     # Enable loop break functionality 
+      loop_break: true                     # Enable loop break functionality
+      file_name: generated 
