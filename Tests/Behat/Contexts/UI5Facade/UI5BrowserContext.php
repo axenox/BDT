@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
+use axenox\BDT\Behat\TwigFormatter\Context\BehatFormatterContext;
 use Behat\Behat\Context\Context;
 use Behat\Mink\Element\NodeElement;
 use Behat\MinkExtension\Context\MinkContext;
@@ -25,7 +26,7 @@ use Behat\Gherkin\Node\TableNode;
  * context constructor through behat.yml.
  * 
  */
-class UI5BrowserContext extends MinkContext implements Context
+class UI5BrowserContext extends BehatFormatterContext implements Context
 {
     private $browser;
     private $scenarioName;
@@ -120,46 +121,6 @@ class UI5BrowserContext extends MinkContext implements Context
         }
     }
 
-    /**
-     * Takes screenshot if scenario fails
-     * @param AfterScenarioScope $scope Behat scenario scope
-     */
-    public function afterScenario(AfterScenarioScope $scope)
-    {
-        if ($scope->getTestResult()->getResultCode() === TestResult::FAILED) {
-            $screenshotPath = $this->takeScreenshot();
-            
-            if ($this->lastScreenshot) {
-                $urlInfo = $this->getCurrentUrlInfo();
-                $message = $scope->getTestResult()->getMessage() ?? 'Test failed';
-                $message .= "\nScreenshot: " . $this->lastScreenshot;
-                $message .= sprintf(
-                    "\nURLs:\n" .
-                    "  Base URL: %s\n" .
-                    "  Full URL: %s\n" .
-                    "  UI5 Hash: %s",
-                    $urlInfo['baseUrl'],
-                    $urlInfo['fullUrl'],
-                    $urlInfo['hash']
-                );
-                
-                // Ajax hatasını kontrol et
-                if ($error = $this->browser->getAjaxError()) {
-                    $message .= "\nAJAX Error:";
-                    $message .= "\nType: " . ($error['type'] ?? 'Unknown');
-                    $message .= "\nStatus: " . ($error['status'] ?? 'N/A');
-                    if (isset($error['structured'])) {
-                        $message .= "\nLogID: " . ($error['structured']['logid'] ?? 'N/A');
-                        $message .= "\nError Code: " . ($error['structured']['code'] ?? 'N/A');
-                    }
-                }
-
-                // Test sonucuna detayları ekle
-                $this->attachErrorDetailsToResult($scope, $message);
-            }
-        }
-    }
-
     private function attachErrorDetailsToResult(AfterScenarioScope $scope, string $message): void
     {
         try {
@@ -169,77 +130,6 @@ class UI5BrowserContext extends MinkContext implements Context
             $messageProperty->setValue($scope->getTestResult(), $message);
         } catch (\Exception $e) {
             echo "\nWarning: Could not attach error details to report: " . $e->getMessage();
-        }
-    }
-
-    /**
-     * Automatic error checking hook that runs after each step in the test scenario
-     * 
-     * This hook performs comprehensive error checking after every test step:
-     * 1. Waits for all AJAX requests to complete
-     * 2. Checks for any AJAX errors (network, timeout, etc.)
-     * 3. Verifies network request status codes
-     * 4. Examines UI5 framework error messages
-     * 5. Takes screenshots on failures for debugging
-     * 
-     * Benefits:
-     * - No need to explicitly write AJAX error checks in feature files
-     * - Catches errors immediately after they occur
-     * - Provides detailed error information for debugging
-     * - Maintains screenshots of failure states
-     * 
-     * @param AfterStepScope $scope Provides context about the current test step
-     * @throws \Exception When any type of error is detected
-     */
-    /**
-     * Automatic error checking hook that runs after each step in the test scenario
-     * Coordinates all error checks through separate specialized methods
-     * v1
-     * @param AfterStepScope $scope Provides context about the current test step
-     * @throws \Exception When any type of error is detected
-     */
-    /** @AfterStep */
-    public function afterStep(AfterStepScope $scope)
-    {
-        try {
-            $result = $scope->getTestResult();
-            
-            if (!$result->isPassed()) {
-                $urlInfo = $this->getCurrentUrlInfo();
-                $error = $this->browser->getAjaxError();
-                
-                $message = "Step failed.\n";
-                $message .= sprintf(
-                    "URLs:\n" .
-                    "  Base URL: %s\n" .
-                    "  Full URL: %s\n" .
-                    "  UI5 Hash: %s\n",
-                    $urlInfo['baseUrl'],
-                    $urlInfo['fullUrl'],
-                    $urlInfo['hash']
-                );
-                
-                if ($error) {
-                    $message .= sprintf(
-                        "AJAX Error:\nType: %s\nStatus: %s\n",
-                        $error['type'] ?? 'Unknown',
-                        $error['status'] ?? 'N/A'
-                    );
-                    
-                    if (isset($error['structured'])) {
-                        $message .= sprintf(
-                            "LogID: %s\nError Code: %s\n",
-                            $error['structured']['logid'] ?? 'N/A',
-                            $error['structured']['code'] ?? 'N/A'
-                        );
-                    }
-                }
-                
-                throw new \RuntimeException($message);
-            }
-        } catch (\Exception $e) {
-            $this->takeScreenshot();
-            throw $e;
         }
     }
 

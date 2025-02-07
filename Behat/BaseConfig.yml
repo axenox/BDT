@@ -32,50 +32,52 @@ default:
        scenario: 600  # 10 minutes timeout for each scenario
  
  extensions:
-   # Chrome Extension for Behat - enables Chrome WebDriver integration
-   DMore\ChromeExtension\Behat\ServiceContainer\ChromeExtension: ~
+  # Chrome Extension for Behat - enables Chrome WebDriver integration
+  DMore\ChromeExtension\Behat\ServiceContainer\ChromeExtension: ~
+  
+  # MinkExtension provides browser automation capabilities
+  Behat\MinkExtension:  
+  
+    # Session configuration for browser automation
+    # Using Chrome as default browser due to better performance
+    default_session: CHROME_DEBUG_API
+    javascript_session: CHROME_DEBUG_API
+    
+    # Browser session configurations
+    sessions:
+      # Chrome Debug Protocol configuration
+      # Uses Chrome's debugging API for better control and stability
+      CHROME_DEBUG_API:
+        chrome:
+          # Chrome debugging API endpoint
+          api_url: "http://localhost:9222"
+          # Extended timeout for initial Chrome startup
+          # Particularly important for first test run
+          socket_timeout: 120 # 2 minutes 
+      
+      # Selenium WebDriver configuration (legacy support)
+      # Note: Selenium 2 is outdated, consider upgrading to Selenium 4
+      SELENIUM:
+        selenium2:
+          wd_host: http://127.0.0.1:4444
+          capabilities:
+            browserName: firefox
+            version: "*"
+            platform: ANY
+      
+      # Browserkit configuration for lightweight testing (experimental)
+      # Commented out as it's not fully tested yet
+      # BROWSERKIT:
+        # browserkit_http: ~
    
-   # MinkExtension provides browser automation capabilities
-   Behat\MinkExtension:  
-   
-     # Session configuration for browser automation
-     # Using Chrome as default browser due to better performance
-     default_session: CHROME_DEBUG_API
-     javascript_session: CHROME_DEBUG_API
-     
-     # Browser session configurations
-     sessions:
-       # Chrome Debug Protocol configuration
-       # Uses Chrome's debugging API for better control and stability
-       CHROME_DEBUG_API:
-         chrome:
-             # Chrome debugging API endpoint
-             api_url: "http://localhost:9222"
-             # Extended timeout for initial Chrome startup
-             # Particularly important for first test run
-             socket_timeout: 120 # 2 minutes 
-       
-       # Selenium WebDriver configuration (legacy support)
-       # Note: Selenium 2 is outdated, consider upgrading to Selenium 4
-       SELENIUM:
-         selenium2:
-             wd_host: http://127.0.0.1:4444
-             capabilities:
-                   browserName: firefox
-                   version: "*"
-                   platform: ANY
-       
-       # Browserkit configuration for lightweight testing (experimental)
-       # Commented out as it's not fully tested yet
-       # BROWSERKIT:
-         # browserkit_http: ~
-   
-   # HTML Formatter extension settings
-   # Generates detailed HTML reports for test results
-   emuse\BehatHTMLFormatter\BehatHTMLFormatterExtension:
-      name: html                           # Formatter identifier
-      renderer: Twig                       # Using Twig template engine
-      print_args: true                     # Include test arguments in report
-      print_outp: true                     # Include test output in report
-      loop_break: true                     # Enable loop break functionality
-      file_name: generated 
+  # HTML Formatter extension settings
+  # Generates detailed HTML reports for test results
+  axenox\BDT\Behat\TwigFormatter\BehatFormatterExtension:
+    projectName: axenox BDT
+    name: html
+    renderer: Twig
+    # file_name: Index
+    print_args: true
+    print_outp: true
+    loop_break: true
+    show_tags: true
