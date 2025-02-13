@@ -67,9 +67,9 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
 
             //create filename string
             $fileName = BehatFormatter::buildScreenshotFilename(
-                $event->getSuite()->getName(),
-                $event->getFeature()->getFile(),
-                $event->getFeature()->getLine()
+                $scope->getSuite()->getName(),
+                $scope->getFeature()->getFile(),
+                $scope->getFeature()->getLine()
             );
 
             /*
