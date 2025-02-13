@@ -16,6 +16,7 @@ use Behat\Testwork\EventDispatcher\Event\AfterExerciseCompleted;
 use Behat\Testwork\EventDispatcher\Event\AfterSuiteTested;
 use Behat\Testwork\EventDispatcher\Event\BeforeExerciseCompleted;
 use Behat\Testwork\EventDispatcher\Event\BeforeSuiteTested;
+use Behat\Testwork\EventDispatcher\Event\ExerciseCompleted;
 use Behat\Testwork\Output\Exception\BadOutputPathException;
 use Behat\Testwork\Output\Formatter;
 use Behat\Testwork\Output\Printer\OutputPrinter;
@@ -25,11 +26,10 @@ use axenox\BDT\Behat\TwigFormatter\Classes\Step;
 use axenox\BDT\Behat\TwigFormatter\Classes\Suite;
 use axenox\BDT\Behat\TwigFormatter\Printer\FileOutputPrinter;
 use axenox\BDT\Behat\TwigFormatter\Renderer\BaseRenderer;
-use Behat\Behat\Hook\Scope\AfterStepScope;
-use axenox\BDT\Behat\TwigFormatter\Context;
 use exface\Core\CommonLogic\Filemanager;
 use exface\Core\DataTypes\FilePathDataType;
 
+global $suiteStartDate, $suiteEndDate, $featureStartDate, $featureEndDate, $scenarioStartDate, $scenarioEndDate, $stepStartDate, $stepEndDate;
 
 /**
  * Class BehatFormatter
@@ -212,6 +212,7 @@ class BehatFormatter implements Formatter {
         $this->assetsSubfolder = $filename == 'generated' ? date('YmdHis') : FilePathDataType::findFileName($filename, false);
         $this->printer = new FileOutputPrinter($this->renderer->getNameList(), $filename, $base_path);
         $this->timer = new Timer();
+        $this->timerFeature = new Timer();
         $this->memory = new Memory();
 
     }
@@ -444,6 +445,11 @@ class BehatFormatter implements Formatter {
         return $this->timer;
     }
 
+    public function getTimerFeature()
+    {
+        return $this->timerFeature;
+    }
+
     public function getMemory()
     {
         return $this->memory;
@@ -530,7 +536,7 @@ class BehatFormatter implements Formatter {
     /**
      * @param AfterExerciseCompleted $event
      */
-    public function onAfterExercise(AfterExerciseCompleted $event)
+    public function onAfterExercise(ExerciseCompleted $event)
     {
 
         $this->timer->stop();
@@ -568,6 +574,9 @@ class BehatFormatter implements Formatter {
      */
     public function onBeforeFeatureTested(BeforeFeatureTested $event)
     {
+        // datetime
+        $GLOBALS['featureStartDate'] = new \DateTime(date("Y-m-d H:i:s"));
+
         $feature = new Feature();
         $feature->setId($this->featureCounter);
         $this->featureCounter++;
@@ -587,6 +596,12 @@ class BehatFormatter implements Formatter {
      */
     public function onAfterFeatureTested(AfterFeatureTested $event)
     {
+        // datetime
+        $endTime = new \DateTime(date("Y-m-d H:i:s"));
+        $GLOBALS['featureEndDate'] = $GLOBALS['featureStartDate']->diff($endTime);
+        // setDuration for the Feature
+        $this->currentFeature->setTime($GLOBALS['featureEndDate']->format("%H:%I:%S"));
+
         $this->currentSuite->addFeature($this->currentFeature);
         if($this->currentFeature->allPassed()) {
             $this->passedFeatures[] = $this->currentFeature;
@@ -603,6 +618,9 @@ class BehatFormatter implements Formatter {
      */
     public function onBeforeScenarioTested(BeforeScenarioTested $event)
     {
+        // datetime
+        $GLOBALS['scenarioStartDate'] = new \DateTime(date("Y-m-d H:i:s"));
+
         $scenario = new Scenario();
         $scenario->setName($event->getScenario()->getTitle());
         $scenario->setTags($event->getScenario()->getTags());
@@ -619,6 +637,12 @@ class BehatFormatter implements Formatter {
      */
     public function onAfterScenarioTested(AfterScenarioTested $event)
     {
+        // datetime
+        $endTime = new \DateTime(date("Y-m-d H:i:s"));
+        $GLOBALS['scenarioEndDate'] = $GLOBALS['scenarioStartDate']->diff($endTime);
+        // setDuration for the Feature
+        $this->currentScenario->setTime($GLOBALS['scenarioEndDate']->format("%H:%I:%S"));
+
         $scenarioPassed = $event->getTestResult()->isPassed();
 
         if($scenarioPassed) {
@@ -728,8 +752,11 @@ class BehatFormatter implements Formatter {
             }
         }
         if(($step->getResultCode() == "99") || ($step->getResult()->isPassed() && $step->getKeyword() === "Then")){
-            $screenshot = $event->getSuite()->getName().".".basename($event->getFeature()->getFile()).".".$event->getStep()->getLine().".png";
-            $screenshot = str_replace('.feature', '', $screenshot);
+            $screenshot = self::buildScreenshotFilename(
+                $event->getSuite()->getName(),
+                $event->getFeature()->getFile(),
+                $event->getStep()->getLine()
+            );
 
             if (file_exists(getcwd().DIRECTORY_SEPARATOR.".tmp_behatFormatter".DIRECTORY_SEPARATOR.$screenshot)){
                 $screenshot = 'assets'
@@ -764,5 +791,14 @@ class BehatFormatter implements Formatter {
         var_dump($obj);
         $result = ob_get_clean();
         $this->printText($result);
+    }
+
+    public static function buildScreenshotFilename(string $suiteName, string $featureFilePath, int $featureLine) : string
+    {
+        return $suiteName
+        . "." . str_replace('.feature', '', basename($featureFilePath))
+        . "." . $featureLine
+        . "." . date("YmdHis")
+        . ".png";
     }
 }

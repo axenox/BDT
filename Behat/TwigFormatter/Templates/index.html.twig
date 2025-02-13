@@ -113,6 +113,13 @@
                                 <td></td>
                             </tr>
                             <tr>
+                                <th> Build time:</th>
+                                <td>
+                                    {{ Timer }}
+                                </td>
+                                <td></td>
+                            </tr>
+                            <tr>
                                 <th>Run</th>
                                 <td>
                                     <div class="progress progress-striped active" style="height:8px; margin:5px 0 0 0;">
@@ -259,6 +266,7 @@
                                                     <span class="pull-right label label-primary">{{ tag }}</span>
                                                 {% endfor %}
                                             {% endif %}
+                                            <span class="pull-right label">{{ feature.time }}</span>
                                         </div>
 
                                         <ol class="dd-list">
@@ -295,7 +303,7 @@
                                                                     {% endif %}
                                                                     {% if printStepArgs is not null %}
                                                                        {% for argument in step.arguments %}
-                                                                          <p style="padding-left:0.5em; overflow-x:scroll; white-space:nowrap; font-family:monospace">{{ argument | nl2br }}</p>
+                                                                          <pre style="padding-left:0.5em; overflow-x:scroll; font-family:monospace">{{ argument }}</pre>
                                                                        {% endfor %}
                                                                     {% endif %}
                                                                     {% if step.exception is not null %}

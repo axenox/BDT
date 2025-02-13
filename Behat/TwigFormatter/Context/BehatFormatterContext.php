@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\TwigFormatter\Context;
 
+use axenox\BDT\Behat\TwigFormatter\Formatter\BehatFormatter;
 use Behat\Behat\Context\SnippetAcceptingContext;
 use Behat\Gherkin\Node\PyStringNode;
 use Behat\Gherkin\Node\TableNode;
@@ -65,8 +66,11 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
             }*/
 
             //create filename string
-            $fileName = $currentSuite.".".basename($scope->getFeature()->getFile()).'.'.$scope->getStep()->getLine().'.png';
-            $fileName = str_replace('.feature', '', $fileName);
+            $fileName = BehatFormatter::buildScreenshotFilename(
+                $event->getSuite()->getName(),
+                $event->getFeature()->getFile(),
+                $event->getFeature()->getLine()
+            );
 
             /*
              * Determine destination folder!

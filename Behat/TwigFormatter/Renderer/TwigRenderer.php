@@ -50,6 +50,8 @@ class TwigRenderer implements RendererInterface {
                 'printLoopBreak'        => $obj->getPrintLoopBreak(),
                 'printShowTags'         => $obj->getPrintShowTags(),
                 'buildDate'             => $obj->getBuildDate(),
+                'Timer'                 => $obj->getTimer(),
+                'TimerFeature'          => $obj->getTimerFeature(),
             )
         );
         $obj->copyTempScreenshotDirectory();

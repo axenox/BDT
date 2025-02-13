@@ -18,6 +18,7 @@ class Scenario
     private $name;
     private $line;
     private $tags;
+    private $time;
     private $loopCount;
     private $screenshotName;
 
@@ -45,6 +46,22 @@ class Scenario
     public function setName($name)
     {
         $this->name = $name;
+    }
+    
+    /**
+     * @return time
+     */
+    public function getTime()
+    {
+      return $this->time;
+    }
+
+    /**
+     * @param mixed $time
+     */
+    public function setTime($time)
+    {
+      $this->time = $time;
     }
 
     public function getScreenshotName()

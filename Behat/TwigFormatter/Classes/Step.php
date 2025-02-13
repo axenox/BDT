@@ -22,6 +22,8 @@ class Step
     private $output;
     private $definition;
     private $screenshot;
+    private $time;
+
 
     /**
      * @param string $screenshot
@@ -51,6 +53,22 @@ class Step
     public function setKeyword($keyword)
     {
         $this->keyword = $keyword;
+    }
+
+    /**
+     * @return time
+     */
+    public function getTime()
+    {
+        return $this->time;
+    }
+
+    /**
+     * @param mixed $time
+     */
+    public function setTime($time)
+    {
+        $this->time = $time;
     }
 
     /**
