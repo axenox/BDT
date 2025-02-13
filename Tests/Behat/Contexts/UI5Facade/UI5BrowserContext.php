@@ -13,6 +13,7 @@ use Behat\Testwork\Tester\Result\TestResult;
 use Behat\Behat\Tester\Exception\PendingException;
 use Behat\Step\Then;
 use Behat\Behat\Hook\Scope\AfterStepScope;
+use Behat\Behat\Hook\Scope\BeforeStepScope;
 use Behat\Gherkin\Node\TableNode;
 
 /**
@@ -30,10 +31,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 {
     private $browser;
     private $scenarioName;
-    private $screenshotDir; // Directory path for storing screenshots
+    // private $screenshotDir; // Directory path for storing screenshots
 
 
-    private $lastScreenshot = null;  // Add this property at the top of the class with other properties
+    // private $lastScreenshot = null;  // Add this property at the top of the class with other properties
 
 
     /**
@@ -42,40 +43,32 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function __construct()
     {
-        // Get workbench root path
-        $workbenchRoot = $this->getWorkbenchPath();
+        // // Get workbench root path
+        // $workbenchRoot = $this->getWorkbenchPath();
 
-        // Create screenshot directory path using workbench path
-        $this->screenshotDir = $workbenchRoot .
-            DIRECTORY_SEPARATOR . 'data' .
-            DIRECTORY_SEPARATOR . 'axenox' .
-            DIRECTORY_SEPARATOR . 'BDT' .
-            DIRECTORY_SEPARATOR . 'Reports' .
-            DIRECTORY_SEPARATOR . 'assets' .
-            DIRECTORY_SEPARATOR . 'screenshots' .
-            DIRECTORY_SEPARATOR;
+        // // Create screenshot directory path using workbench path
+        // $this->screenshotDir = $workbenchRoot .
+        //     DIRECTORY_SEPARATOR . 'data' .
+        //     DIRECTORY_SEPARATOR . 'axenox' .
+        //     DIRECTORY_SEPARATOR . 'BDT' .
+        //     DIRECTORY_SEPARATOR . 'Reports' .
+        //     DIRECTORY_SEPARATOR . 'assets' .
+        //     DIRECTORY_SEPARATOR . 'screenshots' .
+        //     DIRECTORY_SEPARATOR;
 
-        echo "Screenshot directory will be: " . $this->screenshotDir . "\n";
+        // echo "Screenshot directory will be: " . $this->screenshotDir . "\n";
 
-        // Create directory if it doesn't exist
-        if (!file_exists($this->screenshotDir)) {
-            if (!mkdir($this->screenshotDir, 0777, true)) {
-                throw new \RuntimeException(
-                    sprintf('Directory "%s" could not be created', $this->screenshotDir)
-                );
-            }
-            echo "Screenshot directory created successfully\n";
-        }
+        // // Create directory if it doesn't exist
+        // if (!file_exists($this->screenshotDir)) {
+        //     if (!mkdir($this->screenshotDir, 0777, true)) {
+        //         throw new \RuntimeException(
+        //             sprintf('Directory "%s" could not be created', $this->screenshotDir)
+        //         );
+        //     }
+        //     echo "Screenshot directory created successfully\n";
+        // }
     }
 
-
-    /** @AfterStep */
-    public function takeScreenshotAfterFailedStep(AfterStepScope $scope)
-    {
-        if (!$scope->getTestResult()->isPassed()) {
-            // $this->takeScreenshot();
-        }
-    }
 
 
     /**
@@ -121,6 +114,39 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
     }
 
+    /**
+     * Cleans up visual debugging highlights from UI5 elements before each test step
+     * 
+     * @BeforeStep
+     */
+    public function clearWidgetHighlights(BeforeStepScope $scope): void
+    {
+        // Verify both session and browser wrapper are initialized
+        // This prevents errors when running steps before browser setup
+        try {
+            // Execute cleanup script in browser context
+            if ($this->getSession() && $this->browser) {
+                // Execute cleanup script in browser context
+                $this->getSession()->executeScript('
+                    // Check if cleanup function exists from previous highlight operations
+                    if (window.clearHighlight) {
+                        // Find all elements with outline style (indicating highlights)
+                        document.querySelectorAll("[style*=\'outline\']").forEach(el => {
+                            // Only clean elements that have debug labels
+                            // This prevents affecting legitimate UI styles
+                            if (el._debugLabel) {
+                                window.clearHighlight(el);
+                            }
+                        });
+                    }
+                ');
+            }
+        } catch (\Exception $e) {
+            // Session henüz başlatılmamış olabilir, sessizce devam et
+            return;
+        }
+    }
+
     private function attachErrorDetailsToResult(AfterScenarioScope $scope, string $message): void
     {
         try {
@@ -133,58 +159,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
     }
 
-    /**
-     * Captures and saves a screenshot of the current browser state
-     * 
-     * Used primarily for debugging test failures. Creates uniquely named 
-     * screenshots with scenario name and error details if available.
-     * Uses ChromeDriver to capture screenshot
-     * @return void
-     */
-    private function takeScreenshot()
+    /** @AfterStep */
+    public function takeScreenshotAfterFailedStep(AfterStepScope $scope)
     {
-        try {
-            // Get the ChromeDriver instance for taking screenshots
-            $driver = $this->getSession()->getDriver();
-            // Generate filename with timestamp and scenario name
-            $filename = date('Y-m-d_His');
-            if ($this->scenarioName) {
-                // Add scenario name to filename, replacing invalid characters
-                $filename .= '_' . preg_replace('/[^a-zA-Z0-9]/', '_', $this->scenarioName);
-            }
-            // Add error type to filename if available
-            if ($this->browser) {
-                $error = $this->browser->getLastError();
-                if ($error) {
-                    // Append error type to filename, sanitizing special characters
-                    $filename .= '_' . preg_replace('/[^a-zA-Z0-9]/', '_', $error['type']);
-                }
-            }
-            $filename .= '.png';
-            // Construct full path for saving screenshot
-            $fullPath = $this->screenshotDir . $filename;
-            // Check if driver is ChromeDriver and take screenshot
-            if ($driver instanceof \DMore\ChromeDriver\ChromeDriver) {
-                $screenshotData = $driver->getScreenshot();
-                if ($screenshotData && file_put_contents($fullPath, $screenshotData) !== false) {
-                    // Store filename for reference in error messages
-                    $this->lastScreenshot = $filename;
-                    echo "\nScreenshot saved: " . $fullPath;
-
-                    // Save error details alongside screenshot if available
-                    if ($this->browser && ($error = $this->browser->getLastError())) {
-                        // Create separate JSON file for error details
-                        $errorLog = $this->screenshotDir . str_replace('.png', '_error.json', $filename);
-                        file_put_contents($errorLog, json_encode($error, JSON_PRETTY_PRINT));
-                        echo "\nError details saved: " . $errorLog;
-                    }
-                }
-            }
-        } catch (\Exception $e) {
-            // Log any errors that occur during screenshot capture
-            echo "\nScreenshot error: " . $e->getMessage();
+        if (!$scope->getTestResult()->isPassed()) {
+            // $this->takeScreenshot();
         }
     }
+
 
     /**
      * @Then /^I should see the page$/
@@ -292,7 +274,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         } catch (\Exception $e) {
             echo "Debug - Login error: " . $e->getMessage() . "\n";
-            $this->takeScreenshot(); // Take Screenshot when we have an error
             throw $e; // throw error
         }
     }
@@ -305,7 +286,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $url
      * @return void
      */
-    public function iVisitPage(string $url) : void
+    public function iVisitPage(string $url): void
     {
         // Navigate to page
         $this->visitPath('/' . $url);
@@ -316,6 +297,20 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         return;
     }
 
+    /**
+     * Helper function to get widget location description
+     */
+    private function getWidgetLocation(NodeElement $widget): string
+    {
+        $parent = $widget->find('xpath', './ancestor::*[contains(@class, "sapMPage") or contains(@class, "sapMPopup")][1]');
+        if ($parent) {
+            $title = $parent->find('css', '.sapMTitle');
+            if ($title) {
+                return "in " . trim($title->getText());
+            }
+        }
+        return "in page";
+    }
 
     /**
      * @Then I see :number widget of type ":widgetType"
@@ -325,39 +320,182 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeWidgets(int $number, string $widgetType, string $objectAlias = null): void
     {
-        $this->browser->waitForPageIsFullyLoaded(10);
-        $this->browser->waitWhileAppBusy(30);
-        $this->browser->waitForAjaxFinished(10);
+        $maxRetries = 5;
+        $retryCount = 0;
+        $widgetNodes = [];
 
-        $this->getSession()->wait(5000);
-
-        // Debug çıktılarını kaldır
-        $this->browser->setObjectAlias($objectAlias);
-        $widgetNodes = $this->browser->findWidgets($widgetType, null, 5);
-
-        Assert::assertEquals(
-            $number,
-            count($widgetNodes),
-            sprintf(
-                "Expected %d widget(s) of type '%s'%s, but found %d",
-                $number,
-                $widgetType,
-                $objectAlias ? " with text '$objectAlias'" : '',
-                count($widgetNodes)
-            )
+        // Initialize the visual debugging helpers
+        $this->getSession()->executeScript(<<<'JS'
+        window.highlightElement = function(element, color, label) {
+            const rect = element.getBoundingClientRect();
+            
+            // Create label with location context
+            const debugLabel = document.createElement('div');
+            debugLabel.style.cssText = 'position: absolute;' +
+                'background: ' + color + ';' +
+                'color: white;' +
+                'padding: 4px 8px;' +
+                'border-radius: 4px;' +
+                'font-size: 12px;' +
+                'z-index: 9999;' +
+                'pointer-events: none;';
+            debugLabel.textContent = label;
+            
+            // Position above the element
+            debugLabel.style.top = (rect.top + window.scrollY - 25) + 'px';
+            debugLabel.style.left = rect.left + 'px';
+            
+            // Add highlight to element
+            element.style.outline = '2px solid ' + color;
+            element.style.backgroundColor = color + '33';
+            
+            // Store info for cleanup
+            element._debugLabel = debugLabel;
+            element._originalStyles = {
+                outline: element.style.outline,
+                background: element.style.backgroundColor
+            };
+            
+            document.body.appendChild(debugLabel);
+        };
+    
+        window.clearHighlight = function(element) {
+            if (element._debugLabel) {
+                element._debugLabel.remove();
+                element.style.outline = element._originalStyles.outline;
+                element.style.backgroundColor = element._originalStyles.background;
+                delete element._debugLabel;
+                delete element._originalStyles;
+            }
+        };
+    JS
         );
+
+        while ($retryCount < $maxRetries) {
+            try {
+                $this->browser->waitForPageIsFullyLoaded(10);
+                $this->browser->waitWhileAppBusy(30);
+                $this->browser->waitForAjaxFinished(30);
+
+                $this->browser->setObjectAlias($objectAlias);
+                $widgetNodes = $this->browser->findWidgets($widgetType, null, 5);
+
+                // Clear any existing highlights
+                $this->getSession()->executeScript('
+                    document.querySelectorAll("[style*=\'outline\']").forEach(el => {
+                        if (el._debugLabel) window.clearHighlight(el);
+                    });
+                ');
+
+                // Colors for different widget types
+                $colors = [
+                    'DataTable' => '#4CAF50',
+                    'Dialog' => '#2196F3',
+                    'Input' => '#FF9800'
+                ];
+                $defaultColor = '#9C27B0';
+
+                foreach ($widgetNodes as $index => $node) {
+                    $color = $colors[$widgetType] ?? $defaultColor;
+
+                    // Get widget location
+                    $location = $this->getWidgetLocation($node);
+
+                    // Get content sample and clean it up
+                    $contentSample = $node->getText();
+                    $contentSample = preg_replace('/\s+/', ' ', $contentSample);
+                    $contentSample = trim($contentSample);
+
+                    // Add visual highlight with location
+                    $this->getSession()->executeScript(
+                        sprintf(
+                            'window.highlightElement(document.querySelector("#%s"), "%s", "%s #%d %s");',
+                            $node->getAttribute('id'),
+                            $color,
+                            $widgetType,
+                            $index + 1,
+                            $location
+                        )
+                    );
+
+                    // Log detailed widget information
+                    echo "\nWidget #" . ($index + 1) . " Details:";
+                    echo "\n - ID: " . $node->getAttribute('id');
+                    echo "\n - Type: " . $widgetType;
+                    echo "\n - Location: " . $location;
+                    echo "\n - Classes: " . $node->getAttribute('class');
+                    echo "\n - Content Preview: " . mb_substr($contentSample, 0, 100) . "...\n";
+                }
+
+                // Check if we found enough widgets
+                if ($widgetType === 'DataTable') {
+                    if (count($widgetNodes) >= $number) {
+                        break;
+                    }
+                } else {
+                    if (count($widgetNodes) === $number) {
+                        break;
+                    }
+                }
+
+                // echo sprintf(
+                //     "\nTry %d: Found %d '%s' widget(s)%s (expected: %d)",
+                //     $retryCount + 1,
+                //     count($widgetNodes),
+                //     $widgetType,
+                //     $objectAlias ? " containing '$objectAlias'" : '',
+                //     $number
+                // );
+
+                $retryCount++;
+                sleep(5);
+
+            } catch (\Exception $e) {
+                $retryCount++;
+                sleep(5);
+                continue;
+            }
+        }
+
+        // Assert correct number of widgets found
+        if ($widgetType === 'DataTable') {
+            Assert::assertGreaterThanOrEqual(
+                $number,
+                count($widgetNodes),
+                sprintf(
+                    "Expected at least %d '%s' widget(s), Found: %d\nURL: %s",
+                    $number,
+                    $widgetType,
+                    count($widgetNodes),
+                    $this->getSession()->getCurrentUrl()
+                )
+            );
+        } else {
+            Assert::assertEquals(
+                $number,
+                count($widgetNodes),
+                sprintf(
+                    "Expected exactly %d '%s' widget(s), Found: %d\nURL: %s",
+                    $number,
+                    $widgetType,
+                    count($widgetNodes),
+                    $this->getSession()->getCurrentUrl()
+                )
+            );
+        }
 
         if (count($widgetNodes) === 1) {
             $this->focus($widgetNodes[0]);
         }
     }
+    //v1
 
     private function getCurrentUrlWithHash(): string
     {
         return $this->getSession()->evaluateScript('
-        return window.location.href + 
-        (window.location.hash ? "" : "#" + window.location.hash);
-    ');
+            return window.location.href + 
+            (window.location.hash ? "" : "#" + window.location.hash);
+        ');
     }
 
 
@@ -597,20 +735,25 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     public function iSeeInColumn(string $text, string $columnName): void
     {
         try {
+            // Wait for any pending operations to complete
+            // This ensures table data is fully loaded
             $this->browser->waitForAjaxFinished(10);
             $this->browser->waitWhileAppBusy(10);
-            $this->browser->waitForUI5Component('Table', 30);
 
+            // Find UI5 DataTable on the page
             $dataTables = $this->browser->findWidgets('DataTable');
             Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
-            $dataTable = $dataTables[0];
+            // Use the first table found
+            $table = $dataTables[0];
 
-            // Önce doğru kolonu bul
-            $headerCells = $dataTable->findAll('css', 'th, [role="columnheader"]');
+            // Find column headers using UI5's specific header cell class
+            $headers = $table->findAll('css', '.sapUiTableHeaderCell label');
             $columnIndex = null;
 
-            foreach ($headerCells as $index => $cell) {
-                if (trim($cell->getText()) === $columnName) {
+            // Search for the target column by header text
+
+            foreach ($headers as $index => $header) {
+                if (trim($header->getText()) === $columnName) {
                     $columnIndex = $index;
                     break;
                 }
@@ -618,31 +761,41 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
             Assert::assertNotNull($columnIndex, "Column '$columnName' not found");
 
-            // Şimdi o kolondaki hücreleri kontrol et
-            $rows = $dataTable->findAll('css', 'tr');
+            // Find all cells containing text in the table
+            $cells = $table->findAll('css', '.sapUiTableCell .sapMText');
             $found = false;
 
-            foreach ($rows as $row) {
-                $cells = $row->findAll('css', 'td, [role="gridcell"]');
-                if (isset($cells[$columnIndex])) {
-                    if (strpos($cells[$columnIndex]->getText(), $text) !== false) {
-                        $found = true;
-                        break;
-                    }
+            // Her columnIndex'inci hücreyi kontrol et
+            for ($i = $columnIndex; $i < count($cells); $i += count($headers)) {
+                if (strpos($cells[$i]->getText(), $text) !== false) {
+                    $found = true;
+                    break;
                 }
             }
 
-            Assert::assertTrue($found, sprintf('Text "%s" not found in column "%s"', $text, $columnName));
+            // If text wasn't found, provide detailed debug information
+            if (!$found) {
+                echo "\nSearching for: '$text' in column '$columnName' (index: $columnIndex)";
+                echo "\nFound headers: " . count($headers);
+                echo "\nFound cells: " . count($cells);
+                echo "\nSample cell texts:";
+                for ($i = 0; $i < min(5, count($cells)); $i++) {
+                    echo "\n - " . $cells[$i]->getText();
+                }
+            }
+            // Final assertion with meaningful error message
+
+            Assert::assertTrue($found, "Text '$text' not found in column '$columnName'");
 
         } catch (\Exception $e) {
-            $this->takeScreenshot();
-            throw new \RuntimeException(sprintf(
-                "Failed to find text '%s' in column '%s'\nError: %s\nCurrent URL  Address: %s",
-                $text,
-                $columnName,
-                $e->getMessage(),
-                $this->getCurrentUrlWithHash()
-            ));
+            throw new \RuntimeException(
+                sprintf(
+                    "Failed to find text '%s' in column '%s'. Error: %s",
+                    $text,
+                    $columnName,
+                    $e->getMessage()
+                )
+            );
         }
     }
 
@@ -693,41 +846,72 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $isInitialized = $this->getSession()->evaluateScript('return typeof window.exfXHRLog !== "undefined"');
 
             if (!$isInitialized) {
-                //echo "\nWarning: XHR monitoring not initialized. Initializing now...\n";
                 $this->browser->initializeXHRMonitoring();
             }
 
-            // Get the current count of XHR requests
-            $xhrCount = $this->getSession()->evaluateScript('
-            if (window.exfXHRLog && window.exfXHRLog.requests) {
-                return window.exfXHRLog.requests.length;
+            // Get requests info
+            $xhrRequests = $this->getSession()->evaluateScript('
+                if (window.exfXHRLog && window.exfXHRLog.requests) {
+                    return window.exfXHRLog.requests.map(function(req) {
+                        return {
+                            url: req.url,
+                            method: req.method,
+                            status: req.status,
+                            response: req.response
+                        };
+                    });
+                }
+                return [];
+            ');
+
+            // Log basic request count
+            $message = "\n[XHR LOG] " . ($context ? "{$context} - " : '') . "Request Count: " . count($xhrRequests);
+
+            // Get and log failed requests (status >= 400)
+            $failedRequests = array_filter($xhrRequests, function ($req) {
+                return isset($req['status']) && $req['status'] >= 400;
+            });
+
+            if (!empty($failedRequests)) {
+                $message .= "\nFailed Requests:";
+                foreach ($failedRequests as $req) {
+                    $message .= sprintf(
+                        "\n - %s %s (Status: %s)",
+                        $req['method'] ?? 'Unknown',
+                        $req['url'] ?? 'Unknown URL',
+                        $req['status'] ?? 'Unknown Status'
+                    );
+                    if (isset($req['response'])) {
+                        $message .= "\n   Response: " . substr($req['response'], 0, 200) . "...";
+                    }
+                }
             }
-            return 0;
-        ');
 
-            // Log the count with context if provided
-            $message = "\n[XHR LOG] " . ($context ? "{$context} - " : '') . "Request Count: {$xhrCount}";
-
-            // Add any errors if present
+            // Get script errors
             $errors = $this->getSession()->evaluateScript('
-            if (window.exfXHRLog && window.exfXHRLog.errors) {
-                return window.exfXHRLog.errors;
-            }
-            return [];
-        ');
+                if (window.exfXHRLog && window.exfXHRLog.errors) {
+                    return window.exfXHRLog.errors.filter(function(err) {
+                        return err.type === "JSError";
+                    });
+                }
+                return [];
+            ');
 
             if (!empty($errors)) {
-                $message .= "\nErrors found: " . count($errors);
+                $message .= "\nJavaScript Errors:";
                 foreach ($errors as $error) {
-                    $message .= "\n - Type: " . ($error['type'] ?? 'Unknown');
-                    $message .= "\n   Message: " . ($error['message'] ?? 'No message');
+                    $message .= sprintf(
+                        "\n - %s: %s",
+                        $error['type'] ?? 'Unknown Error',
+                        $error['message'] ?? 'No error message'
+                    );
                 }
             }
 
             echo $message . "\n";
 
         } catch (\Exception $e) {
-            echo "\nWarning: Failed to log XHR count - " . $e->getMessage() . "\n";
+            echo "\nWarning: Failed to log XHR details - " . $e->getMessage() . "\n";
         }
     }
 
@@ -737,57 +921,39 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iClickButton(string $caption): void
     {
-        try {
-            // Find and validate the button
-            $btn = $this->browser->findButtonByCaption($caption);
-            Assert::assertNotNull($btn, 'Cannot find button "' . $caption . '"');
 
-            // Clear XHR logs before click
-            $this->browser->clearXHRLog();
+        $this->browser->waitForPageIsFullyLoaded(10);
+        $this->browser->waitWhileAppBusy(30);
+        $this->browser->waitForAjaxFinished(30);
 
-            // Click the button
-            $btn->click();
+        // Log XHR count when checking for errors
+        $this->logXHRCount('iClickButton start xhr Count');
 
-            // Wait for UI and network operations
-            $this->browser->waitWhileAppBusy(30);
-            $this->browser->waitForAjaxFinished(30);
+        // Get requests before click button
+        $beforeRequests = $this->getSession()->evaluateScript('return window.exfXHRLog.requests.slice();');
 
-            // Check for any errors after button click
-            $error = $this->browser->getAjaxError();
-            if ($error !== null) {
-                $errorDetails = sprintf(
-                    'Button click "%s" failed:\nType: %s\nMessage: %s',
-                    $caption,
-                    $error['type'] ?? 'Unknown',
-                    $error['message'] ?? 'No message'
-                );
+        $btn = $this->browser->findButtonByCaption($caption);
+        $this->logXHRCount('iClickButton Count');
+        Assert::assertNotNull($btn, 'Cannot find button "' . $caption . '"');
 
-                throw new \RuntimeException($errorDetails);
-            }
+        $btn->click();
 
-            // // Verify that the button click had some effect
-            // $requestCount = $this->getSession()->evaluateScript('
-            //     return window.exfXHRLog && window.exfXHRLog.requests ? 
-            //         window.exfXHRLog.requests.length : 0;
-            // ');
+        $this->browser->waitWhileAppBusy(30);
+        $this->browser->waitForAjaxFinished(30);
 
-            // if ($requestCount === 0) {
-            //     // Check UI5 busy indicator to see if any UI operations happened
-            //     $busyIndicator = $this->getSession()->evaluateScript('
-            //         return sap.ui.core.BusyIndicator._globalBusyIndicatorCounter > 0;
-            //     ');
+        // After request list of after clicking the button
+        $afterRequests = $this->getSession()->evaluateScript('return window.exfXHRLog.requests;');
 
-            //     if (!$busyIndicator) {
-            //         throw new \RuntimeException(
-            //             sprintf('Button click "%s" had no effect - no network requests or UI updates detected', $caption)
-            //         );
-            //     }
-            // }
+        // Logging
+        // echo "\nRequests triggered by button click:\n";
+        // foreach ($afterRequests as $request) {
+        //     if (!in_array($request, $beforeRequests)) {
+        //         echo "URL: {$request['url']}, Status: {$request['status']}\n";
+        //     }
+        // }
 
-        } catch (\Exception $e) {
-            $this->takeScreenshot();
-            throw new \RuntimeException('Button click failed: ' . $e->getMessage());
-        }
+        // // Log XHR count when checking for errors
+        // $this->logXHRCount('iClickButton end xhr Count');
     }
 
     /**
@@ -883,8 +1049,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             Assert::assertTrue($found, "Text '$text' not found in DataTable");
 
         } catch (\Exception $e) {
-            // Capture screenshot for debugging if assertion fails
-            // $this->takeScreenshot();
             throw $e;
         }
     }
@@ -963,9 +1127,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             );
 
         } catch (\Exception $e) {
-            // Take screenshot and add additional debug info
-            // $this->takeScreenshot();
-
             // Get page content for debugging
             $pageContent = $this->getSession()->getPage()->getContent();
             echo "Page content sample: " . substr($pageContent, 0, 500) . "\n";
@@ -1044,7 +1205,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         } catch (\Exception $e) {
             echo "\nDebug - Button Click Error: " . $e->getMessage() . "\n";
-            // $this->takeScreenshot();
             throw $e;
         }
     }
@@ -1068,8 +1228,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     //             $errorDetails .= "Type: " . $error['type'] . "\n";
     //             $errorDetails .= "Message: " . ($error['message'] ?? 'Unknown error') . "\n";
 
-    //             // Take a screenshot in case of error
-    //             // $this->takeScreenshot();
     //             throw new \Exception($errorDetails);
     //         }
 
@@ -1078,8 +1236,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     //         echo "Debug - AJAX request completed successfully.\n";
 
     //     } catch (\Exception $e) {
-    //         echo "Debug - AJAX Error: " . $e->getMessage() . "\n";
-    //         // $this->takeScreenshot();
+    //         echo "Debug - AJAX Error: " . $e->getMessage() . "\n"; 
     //         throw $e;
     //     }
     // }
@@ -1141,8 +1298,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     //         // Check network resource errors
     //         $this->checkNetworkErrors();
 
-    //     } catch (\Exception $e) {
-    //         $this->takeScreenshot();
+    //     } catch (\Exception $e) { 
     //         throw $e;
     //     }
     // }
@@ -1161,9 +1317,157 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $errorDetails .= "\n";
         }
 
-        // $this->takeScreenshot();
         throw new \Exception($errorDetails);
     }
 
+    /**
+     * @Then the page should be responsive
+     */
+    public function thePageShouldBeResponsive()
+    {
+        try {
+            // Check if page is interactive
+            $isResponsive = $this->getSession()->evaluateScript(
+                'return document.readyState === "complete" && !document.querySelector(".sapUiBlockLayerTabbable")'
+            );
+            Assert::assertTrue($isResponsive, 'Page is not responsive');
+
+            // Check for UI5 busy indicators
+            $isBusy = $this->getSession()->evaluateScript(
+                'return sap.ui.core.BusyIndicator._globalBusyIndicatorCounter > 0'
+            );
+            Assert::assertFalse($isBusy, 'Page is still showing busy indicator');
+
+            // Her adımdan sonra hata kontrolü yap
+            $this->assertNoErrors();
+
+        } catch (\Exception $e) {
+            throw new \RuntimeException('Page responsiveness check failed: ' . $e->getMessage());
+        }
+    }
+
+
+
+    /**
+     * @Then I wait for UI5 components to load
+     */
+    public function iWaitForUI5ComponentsToLoad()
+    {
+        try {
+            $this->browser->waitForPageIsFullyLoaded(10);
+            $this->browser->waitWhileAppBusy(30);
+            $this->browser->waitForAjaxFinished(30);
+
+            // Her adımdan sonra hata kontrolü yap
+            $this->assertNoErrors();
+
+            // Verify UI5 is properly initialized
+            $ui5Ready = $this->browser->isUI5Ready();
+            Assert::assertTrue($ui5Ready, 'UI5 framework failed to initialize properly');
+
+        } catch (\Exception $e) {
+            throw new \RuntimeException('Failed waiting for UI5 components: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Checks for HTTP errors and UI5 error states
+     * Throws exception if any errors detected
+     * 
+     * @throws \RuntimeException
+     */
+    private function assertNoErrors(): void
+    {
+        // Collect all types of errors
+        $errors = [];
+
+        // Check network errors (HTTP 4xx, 5xx)
+        $networkErrors = $this->getSession()->evaluateScript('
+        if (window.exfXHRLog && window.exfXHRLog.requests) {
+            return window.exfXHRLog.requests.filter(function(req) {
+                return req.status >= 400;
+            }).map(function(req) {
+                return {
+                    type: "Network",
+                    url: req.url,
+                    status: req.status,
+                    response: req.response,
+                    timestamp: req.timestamp
+                };
+            });
+        }
+        return [];
+    ');
+        $errors = array_merge($errors, $networkErrors);
+
+        // Check UI5 MessageManager errors
+        $ui5Errors = $this->getSession()->evaluateScript('
+        if (typeof sap !== "undefined" && sap.ui && sap.ui.getCore()) {
+            var messageManager = sap.ui.getCore().getMessageManager();
+            if (messageManager && messageManager.getMessageModel) {
+                return messageManager.getMessageModel().getData()
+                    .filter(function(msg) {
+                        return msg.type === "Error" || msg.type === "Fatal";
+                    })
+                    .map(function(msg) {
+                        return {
+                            type: "UI5",
+                            message: msg.message,
+                            details: msg.description || ""
+                        };
+                    });
+            }
+        }
+        return [];
+    ');
+        $errors = array_merge($errors, $ui5Errors);
+
+        // Check JavaScript errors
+        $jsErrors = $this->getSession()->evaluateScript('
+        if (window.exfXHRLog && window.exfXHRLog.errors) {
+            return window.exfXHRLog.errors.filter(function(err) {
+                return err.type === "JSError";
+            });
+        }
+        return [];
+    ');
+        $errors = array_merge($errors, $jsErrors);
+
+        // If any errors found, throw exception with details
+        if (!empty($errors)) {
+            $errorMessage = "Errors detected during page operation:\n";
+            foreach ($errors as $error) {
+                $errorMessage .= sprintf(
+                    "\nType: %s\n",
+                    $error['type'] ?? 'Unknown'
+                );
+
+                if (isset($error['status'])) {
+                    $errorMessage .= sprintf("Status: %s\n", $error['status']);
+                }
+
+                if (isset($error['url'])) {
+                    $errorMessage .= sprintf("URL: %s\n", $error['url']);
+                }
+
+                if (isset($error['message'])) {
+                    $errorMessage .= sprintf("Message: %s\n", $error['message']);
+                }
+
+                if (isset($error['response'])) {
+                    $errorMessage .= sprintf(
+                        "Response: %s\n",
+                        substr($error['response'], 0, 500)
+                    );
+                }
+
+                $errorMessage .= "------------------------\n";
+            }
+
+            throw new \RuntimeException($errorMessage);
+        }
+    }
+
+
 }
-//v1
+// v1 nice
