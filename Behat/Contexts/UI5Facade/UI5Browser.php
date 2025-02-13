@@ -760,6 +760,7 @@ JS
      */
     public function findWidgets(string $widgetType, NodeElement $parent = null, int $timeoutInSeconds = 2): array
     {
+        // Initialize search context - either parent element or full page
         $searchContext = $parent ?? $this->getPage();
         $widgets = [];
         $foundIds = [];
@@ -767,35 +768,55 @@ JS
 
         switch ($widgetType) {
             case 'Dialog':
+                // Define selectors for different types of UI5 dialogs
                 $selectors = [
+                    // Core dialog selectors
                     '.sapMDialog',
+                    '[role="dialog"]',
+                    // Message and popup dialogs
+                    '.sapMMessageDialog',
+                    '.sapMPopover[role="dialog"]',
+                    // Dialog content containers
+                    '.sapMDialogSection',
+                    '.sapMDialogScroll',
+                    // Custom dialog classes
+                    '.exf-dialog-page',
+                    //
                     '.sapMDialog-CTX',
-                    '.exf-dialog-page'
+                    '.sapMDialogBlock',
+                    '.sapMPopover',
+                    '.sapUiRespDialog',
                 ];
-
-                $foundIds = []; // Tekrar eden elementleri önlemek için ID'leri takip et
+                // Search for each dialog type
 
                 foreach ($selectors as $selector) {
                     $elements = $searchContext->findAll('css', $selector);
                     foreach ($elements as $element) {
                         try {
-                            // Element ID'sini al
                             $elementId = $element->getAttribute('id');
 
-                            // Eğer bu ID daha önce eklenmemişse
-                            if (!in_array($elementId, $foundIds)) {
-                                // Title veya text kontrolü
-                                $text = $element->getText();
+                            // Skip already processed elements to avoid duplicates
+                            if (in_array($elementId, $foundIds)) {
+                                continue;
+                            }
 
-                                if (!empty($this->objectAlias)) {
-                                    if (strpos($text, $this->objectAlias) !== false) {
-                                        $widgets[] = $element;
-                                        $foundIds[] = $elementId;
-                                    }
-                                } else {
+                            // Validate that element is a proper dialog
+                            if (!$this->isValidDialog($element)) {
+                                continue;
+                            }
+
+                            // Get dialog text content for filtering
+                            $dialogText = $this->extractDialogText($element);
+
+                            // Filter by objectAlias if specified
+                            if (!empty($this->objectAlias)) {
+                                if (stripos($dialogText, $this->objectAlias) !== false) {
                                     $widgets[] = $element;
                                     $foundIds[] = $elementId;
                                 }
+                            } else {
+                                $widgets[] = $element;
+                                $foundIds[] = $elementId;
                             }
                         } catch (\Exception $e) {
                             continue;
@@ -805,17 +826,17 @@ JS
                 break;
 
             case 'Input':
+                // Search for UI5 input elements
                 $widgets = [];
                 $foundIds = [];
 
-                // Ana input container'ları bul
                 $mainInputs = $searchContext->findAll('css', '.sapMInputBase');
                 foreach ($mainInputs as $input) {
                     try {
                         $elementId = $input->getAttribute('id');
-                        // ID tekrarını kontrol et
+                        // Check for duplicate IDs
                         if (!in_array($elementId, $foundIds)) {
-                            // İçinde gerçek input elementi var mı kontrol et
+                            // Verify element has actual input field
                             $inner = $input->find('css', '.sapMInputBaseInner');
                             if ($inner && $inner->isVisible()) {
                                 $widgets[] = $input;
@@ -827,7 +848,7 @@ JS
                     }
                 }
 
-                // Debug için bilgi
+                // Debug  
                 echo "\nFound input elements:" . count($mainInputs) . "\n";
                 foreach ($widgets as $index => $widget) {
                     echo "Input #" . ($index + 1) . ":\n";
@@ -837,7 +858,7 @@ JS
                     echo "---\n";
                 }
 
-                // Yalnızca ana input container'ları döndür
+                // Return only main input containers
                 return array_values(array_filter($widgets, function ($widget) {
                     return strpos($widget->getAttribute('class'), 'sapMInputBase') !== false;
                 }));
@@ -845,33 +866,64 @@ JS
 
 
             case 'DataTable':
-                $mainSelector = '#x11ef864724bba1188647005056bef75d__DataTable';
-                $element = $searchContext->find('css', $mainSelector);
+                // Define selectors for different UI5 table types
+                $tableSelectors = [
+                    '.sapUiTable',                  // Grid Table
+                    '.sapMTable',                   // Responsive Table
+                    '.sapMList[role="grid"]',       // List as Table
+                    '[role="grid"]',                // Generic Grid Role
+                    '.exfw-DataTable'               // Custom DataTable Class
+                ];
+                // Search through each table type
 
-                if ($element) {
-                    $allContent = '';
-                    $title = $searchContext->find('css', '#__title0-inner');
-                    if ($title) {
-                        $allContent .= ' ' . $title->getText();
-                    }
+                foreach ($tableSelectors as $selector) {
+                    $tables = $searchContext->findAll('css', $selector);
 
-                    // Table içeriğini topla
-                    $headerCells = $element->findAll('css', 'th, [role="columnheader"]');
-                    foreach ($headerCells as $cell) {
-                        $allContent .= ' ' . $cell->getText();
-                    }
+                    foreach ($tables as $table) {
+                        try {
+                            // Validate table structure
+                            if (!$this->isValidTable($table)) {
+                                continue;
+                            }
 
-                    $cells = $element->findAll('css', 'td, [role="gridcell"]');
-                    foreach ($cells as $cell) {
-                        $allContent .= ' ' . $cell->getText();
-                    }
+                            // Build complete table content for filtering
+                            $allContent = '';
 
-                    if (!empty($this->objectAlias)) {
-                        if (stripos($allContent, $this->objectAlias) !== false) {
-                            $widgets[] = $element;
+                            // Check table title
+                            $title = $table->find('css', '.sapMTitle, .sapUiTableTitle');
+                            if ($title) {
+                                $allContent .= ' ' . $title->getText();
+                            }
+
+                            // Get column headers
+                            $headers = $table->findAll('css', 'th, [role="columnheader"]');
+                            foreach ($headers as $header) {
+                                $headerText = $header->find('css', '.sapMLabel, .sapUiTableColText');
+                                if ($headerText) {
+                                    $allContent .= ' ' . $headerText->getText();
+                                }
+                            }
+
+                            // Tablo hücreleri
+                            $cells = $table->findAll('css', 'td, [role="gridcell"]');
+                            foreach ($cells as $cell) {
+                                $cellText = $cell->find('css', '.sapMText, .sapUiTableCell');
+                                if ($cellText) {
+                                    $allContent .= ' ' . $cellText->getText();
+                                }
+                            }
+
+                            // Filter by objectAlias if specified
+                            if (!empty($this->objectAlias)) {
+                                if (stripos($allContent, $this->objectAlias) !== false) {
+                                    $widgets[] = $table;
+                                }
+                            } else {
+                                $widgets[] = $table;
+                            }
+                        } catch (\Exception $e) {
+                            continue;
                         }
-                    } else {
-                        $widgets[] = $element;
                     }
                 }
                 break;
@@ -926,20 +978,119 @@ JS
         }));
     }
 
-    // Helper method to check if a table is visible and contains content
-    protected function isValidTable(NodeElement $element): bool
+    /**
+     * Validates if a DOM element represents a proper UI5 table structure
+     * @param NodeElement $element Element to check
+     * @return bool True if element is a valid dialog
+     */
+    protected function isValidDialog(NodeElement $element): bool
     {
         try {
+            // Must be visible
+            // First check: Element must be visible in the DOM
+            // This ensures we're not processing hidden template elements
             if (!$element->isVisible()) {
                 return false;
             }
 
-            // Check for actual table content
-            $headers = $element->findAll('css', 'th, [role="columnheader"]');
-            $cells = $element->findAll('css', 'td, [role="gridcell"]');
+            // Check for essential dialog attributes
+            $role = $element->getAttribute('role');
+            $classes = $element->getAttribute('class');
 
-            return !empty($headers) || !empty($cells);
+            // Must have dialog role or specific dialog classes
+            if (
+                $role !== 'dialog' &&
+                !preg_match('/(sapMDialog|sapMMessageDialog|sapMPopover)/', $classes)
+            ) {
+                return false;
+            }
+
+            // Should have either a header or content section
+            $hasHeader = $element->find('css', '.sapMDialogTitle, .sapMIBar-CTX') !== null;
+            $hasContent = $element->find('css', '.sapMDialogSection, .sapMDialogContent') !== null;
+
+            return $hasHeader || $hasContent;
+
         } catch (\Exception $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Extracts text content from a dialog element
+     * 
+     * @param NodeElement $element Dialog element
+     * @return string Concatenated text content
+     */
+    protected function extractDialogText(NodeElement $element): string
+    {
+        $textParts = [];
+
+        try {
+            // Get header title 
+            $headerTitle = $element->find('css', '.sapMDialogTitle, .sapMIBar-CTX .sapMTitle');
+            if ($headerTitle) {
+                $textParts[] = trim($headerTitle->getText());
+            }
+
+            // Get content text
+            $textElements = $element->findAll('css', '.sapMDialogContent .sapMText, .sapMDialogContent .sapMLabel');
+            foreach ($textElements as $textElement) {
+                $text = trim($textElement->getText());
+                if (!empty($text)) {
+                    $textParts[] = $text;
+                }
+            }
+
+            // Get button texts
+            $buttons = $element->findAll('css', '.sapMDialogFooter .sapMBtn, .sapMBar-CTX .sapMBtn');
+            foreach ($buttons as $button) {
+                $buttonText = $button->find('css', '.sapMBtnContent');
+                if ($buttonText) {
+                    $textParts[] = trim($buttonText->getText());
+                }
+            }
+
+        } catch (\Exception $e) {
+            // If any error occurs, return empty string
+            return '';
+        }
+
+        return implode(' ', array_filter($textParts));
+    }
+
+    /**
+     * Validates if a DOM element represents a proper UI5 table structure
+     *  
+     * 
+     * @param NodeElement $table The element to validate as a table
+     * @return bool True if element is a valid UI5 table, false otherwise
+     */
+    protected function isValidTable(NodeElement $table): bool
+    {
+        try {
+            // First check: Element must be visible in the DOM
+            // This ensures we're not processing hidden template elements
+            if (!$table->isVisible()) {
+                return false;
+            }
+
+            // Second check: Look for table structural elements
+            // Search for both standard table headers (th) and UI5 grid headers (role="columnheader")
+            $hasHeaders = count($table->findAll('css', 'th, [role="columnheader"]')) > 0;
+            // Third check: Look for table cells
+            // Search for both standard cells (td) and UI5 grid cells (role="gridcell")
+            $hasCells = count($table->findAll('css', 'td, [role="gridcell"]')) > 0;
+
+            // A valid table must have either headers or cells
+            // - Headers without cells: Empty table with column definitions
+            // - Cells without headers: Data grid without column labels
+            // - Both headers and cells: Standard populated table
+            return $hasHeaders || $hasCells;
+
+        } catch (\Exception $e) {
+            // If any error occurs during validation (e.g., stale element reference)
+            // consider the table invalid
             return false;
         }
     }
@@ -1208,4 +1359,4 @@ JS
     // }
 
 }
-//v1
+// v1 nice
