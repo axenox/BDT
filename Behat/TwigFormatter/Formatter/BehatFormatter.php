@@ -35,7 +35,8 @@ global $suiteStartDate, $suiteEndDate, $featureStartDate, $featureEndDate, $scen
  * Class BehatFormatter
  * @package tests\features\formatter
  */
-class BehatFormatter implements Formatter {
+class BehatFormatter implements Formatter
+{
 
     //<editor-fold desc="Variables">
     /**
@@ -225,16 +226,16 @@ class BehatFormatter implements Formatter {
     {
         return array(
             'tester.exercise_completed.before' => 'onBeforeExercise',
-            'tester.exercise_completed.after'  => 'onAfterExercise',
-            'tester.suite_tested.before'       => 'onBeforeSuiteTested',
-            'tester.suite_tested.after'        => 'onAfterSuiteTested',
-            'tester.feature_tested.before'     => 'onBeforeFeatureTested',
-            'tester.feature_tested.after'      => 'onAfterFeatureTested',
-            'tester.scenario_tested.before'    => 'onBeforeScenarioTested',
-            'tester.scenario_tested.after'     => 'onAfterScenarioTested',
-            'tester.outline_tested.before'     => 'onBeforeOutlineTested',
-            'tester.outline_tested.after'      => 'onAfterOutlineTested',
-            'tester.step_tested.after'         => 'onAfterStepTested',
+            'tester.exercise_completed.after' => 'onAfterExercise',
+            'tester.suite_tested.before' => 'onBeforeSuiteTested',
+            'tester.suite_tested.after' => 'onAfterSuiteTested',
+            'tester.feature_tested.before' => 'onBeforeFeatureTested',
+            'tester.feature_tested.after' => 'onAfterFeatureTested',
+            'tester.scenario_tested.before' => 'onBeforeScenarioTested',
+            'tester.scenario_tested.after' => 'onAfterScenarioTested',
+            'tester.outline_tested.before' => 'onBeforeOutlineTested',
+            'tester.outline_tested.after' => 'onAfterOutlineTested',
+            'tester.step_tested.after' => 'onAfterStepTested',
         );
     }
 
@@ -258,20 +259,33 @@ class BehatFormatter implements Formatter {
     /**
      * Copy temporary screenshot folder to the assets folder
      */
-    public function copyTempScreenshotDirectory(){
-        $source = getcwd().DIRECTORY_SEPARATOR.".tmp_behatFormatter";
+    public function copyTempScreenshotDirectory()
+    {
+        // Build paths for source and destination directories
+
+        $source = getcwd() . DIRECTORY_SEPARATOR . ".tmp_behatFormatter";
         $destination = FilePathDataType::normalize(
-            $this->printer->getOutputPath() 
+            $this->printer->getOutputPath()
             . DIRECTORY_SEPARATOR . 'assets'
-            . DIRECTORY_SEPARATOR . FilePathDataType::findFileName($this->assetsSubfolder), 
-        DIRECTORY_SEPARATOR);
+            . DIRECTORY_SEPARATOR . FilePathDataType::findFileName($this->assetsSubfolder),
+            DIRECTORY_SEPARATOR
+        );
+        // Log the start of copy operation
+
+        error_log("Copying screenshots from: " . $source . " to: " . $destination);
+        // If destination exists, delete it to ensure clean copy
 
         if (is_dir($destination)) {
             Filemanager::deleteDir($destination);
-        } else {
-            Filemanager::pathConstruct($destination);
         }
-        @rename($source, $destination . DIRECTORY_SEPARATOR . 'screenshots');
+        // Create destination directory structure
+
+        Filemanager::pathConstruct($destination);
+        // Move screenshot directory from temp location to final destination
+        // Using rename instead of copy for better performance
+        $result = @rename($source, $destination . DIRECTORY_SEPARATOR . 'screenshots');
+        error_log("Screenshot copy result: " . ($result ? 'Success' : 'Failed'));
+
     }
 
     /**
@@ -294,7 +308,7 @@ class BehatFormatter implements Formatter {
         $filename = basename($imagepath);
         copy($imagepath, $destination . DIRECTORY_SEPARATOR . $filename);
 
-        return "assets/".$filename;
+        return "assets/" . $filename;
     }
 
     /**
@@ -338,7 +352,7 @@ class BehatFormatter implements Formatter {
      */
     public function setParameter($name, $value)
     {
-        $this->parameters[ $name ] = $value;
+        $this->parameters[$name] = $value;
     }
 
     /**
@@ -348,7 +362,7 @@ class BehatFormatter implements Formatter {
      */
     public function getParameter($name)
     {
-        return $this->parameters[ $name ];
+        return $this->parameters[$name];
     }
 
     /**
@@ -359,9 +373,9 @@ class BehatFormatter implements Formatter {
      */
     public function setOutputPath($path)
     {
-        $outpath = realpath($this->base_path.DIRECTORY_SEPARATOR.$path);
-        if(!file_exists($outpath)) {
-            if(!mkdir($outpath, 0755, true)) {
+        $outpath = realpath($this->base_path . DIRECTORY_SEPARATOR . $path);
+        if (!file_exists($outpath)) {
+            if (!mkdir($outpath, 0755, true)) {
                 throw new BadOutputPathException(
                     sprintf(
                         'Output path %s does not exist and could not be created!',
@@ -371,7 +385,7 @@ class BehatFormatter implements Formatter {
                 );
             }
         } else {
-            if(!is_dir($outpath)) {
+            if (!is_dir($outpath)) {
                 throw new BadOutputPathException(
                     sprintf(
                         'The argument to `output` is expected to the a directory, but got %s!',
@@ -584,7 +598,7 @@ class BehatFormatter implements Formatter {
         $feature->setDescription($event->getFeature()->getDescription());
         $feature->setTags($event->getFeature()->getTags());
         $feature->setFile($event->getFeature()->getFile());
-        $feature->setScreenshotFolder($event->getSuite()->getName().'/'.$event->getFeature()->getTitle());
+        $feature->setScreenshotFolder($event->getSuite()->getName() . '/' . $event->getFeature()->getTitle());
         $this->currentFeature = $feature;
 
         $print = $this->renderer->renderBeforeFeature($this);
@@ -603,7 +617,7 @@ class BehatFormatter implements Formatter {
         $this->currentFeature->setTime($GLOBALS['featureEndDate']->format("%H:%I:%S"));
 
         $this->currentSuite->addFeature($this->currentFeature);
-        if($this->currentFeature->allPassed()) {
+        if ($this->currentFeature->allPassed()) {
             $this->passedFeatures[] = $this->currentFeature;
         } else {
             $this->failedFeatures[] = $this->currentFeature;
@@ -645,7 +659,7 @@ class BehatFormatter implements Formatter {
 
         $scenarioPassed = $event->getTestResult()->isPassed();
 
-        if($scenarioPassed) {
+        if ($scenarioPassed) {
             $this->passedScenarios[] = $this->currentScenario;
             $this->currentFeature->addPassedScenario();
         } else {
@@ -683,7 +697,7 @@ class BehatFormatter implements Formatter {
     {
         $scenarioPassed = $event->getTestResult()->isPassed();
 
-        if($scenarioPassed) {
+        if ($scenarioPassed) {
             $this->passedScenarios[] = $this->currentScenario;
             $this->currentFeature->addPassedScenario();
         } else {
@@ -714,10 +728,9 @@ class BehatFormatter implements Formatter {
      */
     public function onAfterStepTested(AfterStepTested $event)
     {
+        error_log("\n=== onAfterStepTested Start ===");
         $result = $event->getTestResult();
 
-        //$this->dumpObj($event->getStep()->getArguments());
-        /** @var Step $step */
         $step = new Step();
         $step->setKeyword($event->getStep()->getKeyword());
         $step->setText($event->getStep()->getText());
@@ -726,51 +739,94 @@ class BehatFormatter implements Formatter {
         $step->setResult($result);
         $step->setResultCode($result->getResultCode());
 
-        //What is the result of this step ?
-        if(is_a($result, 'Behat\Behat\Tester\Result\UndefinedStepResult')) {
-            //pending step -> no definition to load
-            $this->pendingSteps[] = $step;
-        } else {
-            if(is_a($result, 'Behat\Behat\Tester\Result\SkippedStepResult')) {
-                //skipped step
-                /** @var ExecutedStepResult $result */
-                $step->setDefinition($result->getStepDefinition());
-                $this->skippedSteps[] = $step;
-            } else {
-                //failed or passed
-                if($result instanceof ExecutedStepResult) {
-                    $step->setDefinition($result->getStepDefinition());
-                    $exception = $result->getException();
-                    if($exception) {
-                        $step->setException($exception->getMessage());
-                        $this->failedSteps[] = $step;
-                    } else {
-                        $step->setOutput($result->getCallResult()->getStdOut());
-                        $this->passedSteps[] = $step;
-                    }
+        // If step failed, collect error information
+        if (!$result->isPassed()) {
+            $exception = $result instanceof ExecutedStepResult ? $result->getException() : null;
+            if ($exception) {
+                $errorMessage = "(";
+                $errorMessage .= "During the page operation, founded an issue:\n\n";
+
+                // Parse exception message to extract error details
+                $message = $exception->getMessage();
+
+                // Check if message contains HTTP error details
+                if (preg_match('/status code: (\d+)/', $message, $matches)) {
+                    $errorMessage .= sprintf(
+                        "Type: Network\nStatus: %s\n",
+                        $matches[1]
+                    );
                 }
+
+                // Check for SQL errors
+                if (strpos($message, 'SQL query failed') !== false) {
+                    $errorMessage .= sprintf(
+                        "Type: Database\nMessage: %s\n",
+                        $message
+                    );
+                }
+
+                // Check for UI5 specific errors
+                if (strpos($message, 'UI5') !== false || strpos($message, 'sap') !== false) {
+                    $errorMessage .= sprintf(
+                        "Type: Database\nMessage: %s\n",
+                        $message
+                    );
+                }
+
+                // If no specific error type detected, add as generic error
+                if (strpos($errorMessage, "Tip:") === false) {
+                    $errorMessage .= sprintf(
+                        "Type: Database\nMessage: %s\n",
+                        $message
+                    );
+                }
+
+                $errorMessage .= "------------------------\n";
+                $errorMessage .= ")";
+
+                $step->addOutput($errorMessage);
             }
         }
-        if(($step->getResultCode() == "99") || ($step->getResult()->isPassed() && $step->getKeyword() === "Then")){
+
+        // Handle screenshots
+        if (($step->getResultCode() == "99") || ($step->getResult()->isPassed() && $step->getKeyword() === "Then")) {
             $screenshot = self::buildScreenshotFilename(
                 $event->getSuite()->getName(),
                 $event->getFeature()->getFile(),
                 $event->getStep()->getLine()
             );
 
-            if (file_exists(getcwd().DIRECTORY_SEPARATOR.".tmp_behatFormatter".DIRECTORY_SEPARATOR.$screenshot)){
-                $screenshot = 'assets'
-                . DIRECTORY_SEPARATOR . FilePathDataType::findFileName($this->assetsSubfolder)
-                . DIRECTORY_SEPARATOR . 'screenshots'.DIRECTORY_SEPARATOR
-                . $screenshot;
+            $tempPath = getcwd() . DIRECTORY_SEPARATOR . ".tmp_behatFormatter" . DIRECTORY_SEPARATOR . $screenshot;
+            if (file_exists($tempPath)) {
+                $screenshot = 'assets/'
+                    . FilePathDataType::findFileName($this->assetsSubfolder)
+                    . '/screenshots/'
+                    . $screenshot;
                 $step->setScreenshot($screenshot);
             }
         }
+
+        if (!$result->isPassed()) {
+            $screenshot = self::buildScreenshotFilename(
+                $event->getSuite()->getName(),
+                $event->getFeature()->getFile(),
+                $event->getStep()->getLine()
+            );
+
+            $tempPath = getcwd() . DIRECTORY_SEPARATOR . ".tmp_behatFormatter" . DIRECTORY_SEPARATOR . $screenshot;
+            if (file_exists($tempPath)) {
+                $screenshot = 'assets/'
+                    . FilePathDataType::findFileName($this->assetsSubfolder)
+                    . '/screenshots/'
+                    . $screenshot;
+                $step->setScreenshot($screenshot);
+            }
+        }
+
         $this->currentScenario->addStep($step);
 
         $print = $this->renderer->renderAfterStep($this);
         $this->printer->writeln($print);
-
     }
     //</editor-fold>
 
@@ -793,12 +849,12 @@ class BehatFormatter implements Formatter {
         $this->printText($result);
     }
 
-    public static function buildScreenshotFilename(string $suiteName, string $featureFilePath, int $featureLine) : string
+    public static function buildScreenshotFilename(string $suiteName, string $featureFilePath, int $featureLine): string
     {
         return $suiteName
-        . "." . str_replace('.feature', '', basename($featureFilePath))
-        . "." . $featureLine
-        . "." . date("YmdHis")
-        . ".png";
+            . "." . str_replace('.feature', '', basename($featureFilePath))
+            . "." . $featureLine
+            . "." . date("YmdHis")
+            . ".png";
     }
 }
