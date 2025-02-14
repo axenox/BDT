@@ -1418,12 +1418,13 @@ JS
                 'PASSWORD' => $config->getOption('TEST_USER.PASSWORD'),
                 'FIRST_NAME' => $config->getOption('TEST_USER.FIRST_NAME'),
                 'LAST_NAME' => $config->getOption('TEST_USER.LAST_NAME'),
+                'LOCALE' => $workbench->getConfig()->getOption('SERVER.DEFAULT_LOCALE')
             ]);
             $userSheet->dataCreate();
         }
         $userId = $userSheet->getUidColumn()->getValue(0);
 
-        if ($locale !== null) {
+        if ($locale) {
             $userSheet->setCellValue('LOCALE', 0, $locale);
         }
 
