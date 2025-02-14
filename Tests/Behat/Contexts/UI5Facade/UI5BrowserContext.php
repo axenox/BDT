@@ -148,6 +148,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private $focusStack = [];
 
     /**
+     * Log in to a URL with a specific role and locale
+     * 
+     * Examples:
+     * - Given I log in to page "exface.core.logs.html" as "Support"
+     * - Given I log in to page "exface.core.logs.html" as "Support, Debugger"
+     * - Given I log in to page "exface.core.logs.html" as "Support" with locale "de_DE"
+     * - Given I log in to page "exface.core.logs.html" as "exface.Core.SUPERUSER"
+     * 
      * @Given I log in to the page :url
      * @Given I log in to the page :url as :userRole
      * @Given I log in to the page :url as :userRole with locale :locale
@@ -156,12 +164,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         try {
             // Setup the user and get the required login data
-            if ($userRoles !== null) {
-                $userRolesArray = explode(',', $userRoles);
-                $userRolesArray = array_map('trim', $userRolesArray);
-            } else {
-                $userRolesArray = [];
-            }
+            $userRolesArray = $this->splitArgument($userRoles);
             $loginFields = UI5Browser::setupUser($this->getWorkbench(), $userRolesArray, $userLocale);
             $tabCaption = $loginFields['_tab'];
             unset($loginFields['_tab']);
@@ -190,11 +193,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $loginButton->click();
 
             // Wait for login completion
+            // TODO centralize waiting!!!
             sleep(3);
             $this->getBrowser()->waitWhileAppBusy(60);
             $this->getBrowser()->waitForAjaxFinished(30);
 
             // Check for failed requests
+            // TODO move to UI5Browser - it is too complicated
             $failedRequests = $this->getSession()->evaluateScript('
                 if (window.exfXHRLog && window.exfXHRLog.requests) {
                     return window.exfXHRLog.requests.filter(function(req) {
@@ -226,6 +231,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             // Check authentication status
             // TODO make it simple to check, if we have an error status code. No need to write these
             // get-if sequences every time. Also do not throw an exception, but 
+            // TODO move it further up. Why wait if bad status code?
             $statusCode = $this->getSession()->getStatusCode();
             if ($statusCode >= 400) {
                 throw new \Exception("Login failed: Unauthorized (401)");
@@ -1461,6 +1467,16 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             throw new \RuntimeException('BDT Browser not initialized!');
         }
         return $this->browser;
+    }
+
+    protected function splitArgument(string $delimitedList = null, string $delimiter = ',') : array
+    {
+        if ($delimitedList === null) {
+            return [];
+        }
+        $array = explode($delimiter, $delimitedList);
+        $array = array_map('trim', $array);
+        return $array;
     }
 }
 // v1 nice
