@@ -192,40 +192,16 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
 
         // Set up the main output directory for test reports
         // Path: installation_path/data/BDT/Reports
-        $outputDir = $this->getWorkbench()->getInstallationPath() .
+        $reportsDir = $this->getWorkbench()->getInstallationPath() .
             DIRECTORY_SEPARATOR . 'data' .
             DIRECTORY_SEPARATOR . 'axenox' .
             DIRECTORY_SEPARATOR . 'BDT' .
             DIRECTORY_SEPARATOR . 'Reports';
 
         // Create the output directory if it doesn't exist
-        if (!file_exists($outputDir)) {
-            // Create directory with full permissions (0777)
-            mkdir($outputDir, 0777, true);
-            yield 'Created HTML output directory at ' . $outputDir . PHP_EOL;
-
-            // Create .htaccess file to enable web access to test results
-            // This allows viewing the HTML reports through a web browser
-            $htaccessPath = dirname($outputDir) . DIRECTORY_SEPARATOR . '.htaccess';
-            if (!file_exists($htaccessPath)) {
-                $htaccessContent = "Options +Indexes\nAllow from all";
-                file_put_contents($htaccessPath, $htaccessContent);
-                yield 'Created .htaccess for test results access' . PHP_EOL;
-            }
-        }
-
-        // Create directory structure for storing test screenshots
-        // Path: installation_path/data/BDT/Reports/screenshots
-        $screenshotDir = $this->getWorkbench()->getInstallationPath() .
-            DIRECTORY_SEPARATOR . 'data' .
-            DIRECTORY_SEPARATOR . 'BDT' .
-            DIRECTORY_SEPARATOR . 'Reports' .
-            DIRECTORY_SEPARATOR . 'screenshots';
-
-        // Create screenshots directory if it doesn't exist
-        if (!file_exists($screenshotDir)) {
-            mkdir($screenshotDir, 0777, true);
-            yield 'Screenshot path created: ' . $screenshotDir . PHP_EOL;
+        if (!file_exists($reportsDir)) {
+            Filemanager::pathConstruct($reportsDir);
+            yield 'Created HTML Report directory at ' . StringDataType::substringAfter($reportsDir, $this->getWorkbench()->getInstallationPath()) . PHP_EOL;
         }
 
         // Save the updated YAML configuration
