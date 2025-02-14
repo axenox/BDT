@@ -190,20 +190,6 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
         yield from $loader;
         $yml = $loader->getReturn();
 
-        // Set up the main output directory for test reports
-        // Path: installation_path/data/BDT/Reports
-        $reportsDir = $this->getWorkbench()->getInstallationPath() .
-            DIRECTORY_SEPARATOR . 'data' .
-            DIRECTORY_SEPARATOR . 'axenox' .
-            DIRECTORY_SEPARATOR . 'BDT' .
-            DIRECTORY_SEPARATOR . 'Reports';
-
-        // Create the output directory if it doesn't exist
-        if (!file_exists($reportsDir)) {
-            Filemanager::pathConstruct($reportsDir);
-            yield 'Created HTML Report directory at ' . StringDataType::substringAfter($reportsDir, $this->getWorkbench()->getInstallationPath()) . PHP_EOL;
-        }
-
         // Save the updated YAML configuration
         // This also updates the base_url if it has changed
         $writer = $this->getYmlWriter($yml, $ymlPath);
