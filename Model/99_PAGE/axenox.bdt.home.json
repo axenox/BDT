@@ -11,7 +11,7 @@
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2024-12-02 09:10:33",
     "modified_by_user_selector": "0x31000000000000000000000000000000",
-    "modified_on": "2025-02-14 15:47:27",
+    "modified_on": "2025-02-14 16:00:58",
     "contents": {
         "object_alias": "exface.Core.DUMMY",
         "widget_type": "SplitHorizontal",
@@ -61,6 +61,13 @@
                                 "hint": "Set up an app to be tested",
                                 "commands": [
                                     "vendor/bin/action axenox.BDT:Behat init --addApp=<App alias>"
+                                ]
+                            },
+                            {
+                                "caption": "Restart Chrome",
+                                "hint": "Run preconfigured Chrome.bat in data folder",
+                                "commands": [
+                                    "data\\axenox\\BDT\\Chrome.bat"
                                 ]
                             },
                             {

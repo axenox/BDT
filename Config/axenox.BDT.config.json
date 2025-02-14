@@ -5,7 +5,7 @@
         "OPTIONS": {}
     },
     "BROWSERS.CHROME_HEADLESS": {
-        "START_ON_WINDOWS": "\"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromePortable\\GoogleChromePortable.exe\" --headless --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --user-data-dir=\"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromeUserData\"",
+        "START_ON_WINDOWS": "\"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromePortable\\GoogleChromePortable.exe\" --headless --disable-extensions --no-sandbox --disable-gpu --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --user-data-dir=\"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromeUserData\"",
         "START_ON_UNIX": "",
         "OPTIONS": {}
     },
