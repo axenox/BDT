@@ -6,6 +6,8 @@ use Behat\Behat\Context\Context;
 use Behat\Mink\Element\NodeElement;
 use Behat\MinkExtension\Context\MinkContext;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
+use exface\Core\CommonLogic\Workbench;
+use exface\Core\Interfaces\WorkbenchInterface;
 use PHPUnit\Framework\Assert;
 use Behat\Behat\Hook\Scope\BeforeScenarioScope;
 use Behat\Behat\Hook\Scope\AfterScenarioScope;
@@ -31,6 +33,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 {
     private $browser;
     private $scenarioName;
+
+    private $workbench = null;
     // private $screenshotDir; // Directory path for storing screenshots
 
 
@@ -43,33 +47,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function __construct()
     {
-        // // Get workbench root path
-        // $workbenchRoot = $this->getWorkbenchPath();
-
-        // // Create screenshot directory path using workbench path
-        // $this->screenshotDir = $workbenchRoot .
-        //     DIRECTORY_SEPARATOR . 'data' .
-        //     DIRECTORY_SEPARATOR . 'axenox' .
-        //     DIRECTORY_SEPARATOR . 'BDT' .
-        //     DIRECTORY_SEPARATOR . 'Reports' .
-        //     DIRECTORY_SEPARATOR . 'assets' .
-        //     DIRECTORY_SEPARATOR . 'screenshots' .
-        //     DIRECTORY_SEPARATOR;
-
-        // echo "Screenshot directory will be: " . $this->screenshotDir . "\n";
-
-        // // Create directory if it doesn't exist
-        // if (!file_exists($this->screenshotDir)) {
-        //     if (!mkdir($this->screenshotDir, 0777, true)) {
-        //         throw new \RuntimeException(
-        //             sprintf('Directory "%s" could not be created', $this->screenshotDir)
-        //         );
-        //     }
-        //     echo "Screenshot directory created successfully\n";
-        // }
+        $this->workbench = new Workbench();
+        $this->workbench->start();
     }
-
-
 
     /**
      * Dynamically determines workbench root path
@@ -78,24 +58,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     private function getWorkbenchPath(): string
     {
-        // vendor/axenox/bdt klasöründen root'a çıkma
-        $path = __DIR__;
-
-        // Navigate up until vendor directory
-        while (basename(dirname($path)) !== 'vendor' && strlen($path) > 3) {
-            $path = dirname($path);
-        }
-
-        // Go one level up from vendor to get workbench root
-        $workbenchRoot = dirname(dirname($path));
-
-        if (!file_exists($workbenchRoot)) {
-            throw new \RuntimeException(
-                sprintf('Could not determine workbench root path from %s', __DIR__)
-            );
-        }
-
-        return $workbenchRoot;
+        return $this->getWorkbench()->getInstallationPath();
     }
 
 
@@ -187,93 +150,89 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     /**
      * @Given I log in to the page :url
      * @Given I log in to the page :url as :userRole
+     * @Given I log in to the page :url as :userRole with locale :locale
      */
-    public function iLogInToPage(string $url, string $userRole = null)
+    public function iLogInToPage(string $url, string $userRoles = null, string $userLocale = null)
     {
         try {
-            $session = $this->getSession();
-            // TODO handle user roles here
-
+            // Setup the user and get the required login data
+            if ($userRoles !== null) {
+                $userRolesArray = explode(',', $userRoles);
+                $userRolesArray = array_map('trim', $userRolesArray);
+            } else {
+                $userRolesArray = [];
+            }
+            $loginFields = UI5Browser::setupUser($this->getWorkbench(), $userRolesArray, $userLocale);
+            $tabCaption = $loginFields['_tab'];
+            unset($loginFields['_tab']);
+            $btnCaption = $loginFields['_button'];
+            unset($loginFields['_button']);
+            
+            // Go to the page
             $this->iVisitPage($url);
 
-            // Find login form with retries
-            $username = null;
-            $maxAttempts = 10;
-            $attempts = 0;
+            // Find the correct authenticator tab. Keep retrying for 5
+            $this->getBrowser()->goToTab($tabCaption, null, 5);
 
-            while ($username === null && $attempts < $maxAttempts) {
-                $username = $this->browser->findInputByCaption('User Name');
-                if ($username === null) {
-                    sleep(1);
-                    $attempts++;
-                    echo "Debug - Login form searching... Attempt num: " . $attempts . "\n";
+            // Fill out the login form
+            foreach ($loginFields as $caption => $value) {
+                $input = $this->getBrowser()->findInputByCaption($caption);
+                Assert::assertNotNull($input, 'Cannot find login field "' . $caption . '"');
+                $input->setValue($value);
+            }
+            
+            // Clear XHR logs before login
+            $this->getBrowser()->clearXHRLog();
+
+            // Press login button
+            $loginButton = $this->getBrowser()->findButtonByCaption($btnCaption);
+            Assert::assertNotNull($loginButton, 'Cannot find login button "' . $btnCaption . '"');
+            $loginButton->click();
+
+            // Wait for login completion
+            sleep(3);
+            $this->getBrowser()->waitWhileAppBusy(60);
+            $this->getBrowser()->waitForAjaxFinished(30);
+
+            // Check for failed requests
+            $failedRequests = $this->getSession()->evaluateScript('
+                if (window.exfXHRLog && window.exfXHRLog.requests) {
+                    return window.exfXHRLog.requests.filter(function(req) {
+                        return req.status >= 300;
+                    }).map(function(req) {
+                        return {
+                            url: req.url || "unknown",
+                            status: req.status || 0,
+                            response: req.response || "No response"
+                        };
+                    });
                 }
+                return [];
+            ');
+
+            if (!empty($failedRequests)) {
+                $errorMsg = "Failed requests detected during login:\n";
+                foreach ($failedRequests as $req) {
+                    $errorMsg .= sprintf(
+                        "URL: %s\nStatus: %s\nResponse: %s\n\n",
+                        $req['url'],
+                        $req['status'],
+                        substr($req['response'], 0, 500)
+                    );
+                }
+                throw new \Exception($errorMsg);
             }
 
-            // Handle login form interaction
-            if ($username) {
-                $username->setValue('admin');
-
-                $password = $this->browser->findInputByCaption('Password');
-                if ($password) {
-                    $password->setValue('admin');
-
-                    $loginButton = $this->browser->findButtonByCaption('Login');
-                    if ($loginButton) {
-                        // Clear XHR logs before login
-                        $this->browser->clearXHRLog();
-
-                        $loginButton->click();
-
-                        // Wait for login completion
-                        sleep(3);
-                        $this->browser->waitWhileAppBusy(60);
-                        $this->browser->waitForAjaxFinished(30);
-
-                        // Check for failed requests
-                        $failedRequests = $this->getSession()->evaluateScript('
-                        if (window.exfXHRLog && window.exfXHRLog.requests) {
-                            return window.exfXHRLog.requests.filter(function(req) {
-                                return req.status >= 300;
-                            }).map(function(req) {
-                                return {
-                                    url: req.url || "unknown",
-                                    status: req.status || 0,
-                                    response: req.response || "No response"
-                                };
-                            });
-                        }
-                        return [];
-                    ');
-
-                        if (!empty($failedRequests)) {
-                            $errorMsg = "Failed requests detected during login:\n";
-                            foreach ($failedRequests as $req) {
-                                $errorMsg .= sprintf(
-                                    "URL: %s\nStatus: %s\nResponse: %s\n\n",
-                                    $req['url'],
-                                    $req['status'],
-                                    substr($req['response'], 0, 500)
-                                );
-                            }
-                            throw new \Exception($errorMsg);
-                        }
-
-                        // Check authentication status
-                        $statusCode = $this->getSession()->getStatusCode();
-                        if ($statusCode === 401) {
-                            throw new \Exception("Login failed: Unauthorized (401)");
-                        }
-
-                        return;
-                    }
-                }
+            // Check authentication status
+            // TODO make it simple to check, if we have an error status code. No need to write these
+            // get-if sequences every time. Also do not throw an exception, but 
+            $statusCode = $this->getSession()->getStatusCode();
+            if ($statusCode >= 400) {
+                throw new \Exception("Login failed: Unauthorized (401)");
             }
-
-            throw new \Exception("Login form elements could not be found");
-
         } catch (\Exception $e) {
             echo "Debug - Login error: " . $e->getMessage() . "\n";
+            $this->getWorkbench()->getLogger()->logException($e);
             throw $e; // throw error
         }
     }
@@ -290,10 +249,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         // Navigate to page
         $this->visitPath('/' . $url);
-        echo "Debug - First page is loading...\n";
+        echo "Debug - New page is loading...\n";
 
-        $this->browser = new UI5Browser($this->getSession(), $url);
-
+        $this->browser = new UI5Browser($this->getWorkbench(), $this->getSession(), $url);
         return;
     }
 
@@ -373,12 +331,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         while ($retryCount < $maxRetries) {
             try {
-                $this->browser->waitForPageIsFullyLoaded(10);
-                $this->browser->waitWhileAppBusy(30);
-                $this->browser->waitForAjaxFinished(30);
+                $this->getBrowser()->waitForPageIsFullyLoaded(10);
+                $this->getBrowser()->waitWhileAppBusy(30);
+                $this->getBrowser()->waitForAjaxFinished(30);
 
-                $this->browser->setObjectAlias($objectAlias);
-                $widgetNodes = $this->browser->findWidgets($widgetType, null, 5);
+                $this->getBrowser()->setObjectAlias($objectAlias);
+                $widgetNodes = $this->getBrowser()->findWidgets($widgetType, null, 5);
 
                 // Clear any existing highlights
                 $this->getSession()->executeScript('
@@ -513,9 +471,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         );
 
         // Wait for UI5 components to fully load
-        $this->browser->waitForPageIsFullyLoaded(10);
-        $this->browser->waitWhileAppBusy(30);
-        $this->browser->waitForAjaxFinished(10);
+        $this->getBrowser()->waitForPageIsFullyLoaded(10);
+        $this->getBrowser()->waitWhileAppBusy(30);
+        $this->getBrowser()->waitForAjaxFinished(10);
 
         // Find the main form container
         $form = $focusedNode->find('css', '.sapUiForm') ?? $focusedNode;
@@ -526,7 +484,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // echo "Content: " . $form->getText() . "\n";
 
         // Find widgets of the specified type within the form
-        $widgetNodes = $this->browser->findWidgets($widgetType, $form);
+        $widgetNodes = $this->getBrowser()->findWidgets($widgetType, $form);
 
         // // Debugging results
         // echo "\nDebug - Widget Search Results:\n";
@@ -572,7 +530,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         foreach ($fields->getHash() as $row) {
             // Find input by caption
-            $widget = $this->browser->findInputByCaption($row['widget_name']);
+            $widget = $this->getBrowser()->findInputByCaption($row['widget_name']);
             Assert::assertNotNull(
                 $widget,
                 sprintf('Cannot find input widget "%s"', $row['widget_name'])
@@ -582,8 +540,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $widget->setValue($row['value']);
 
             // Wait for potential UI updates
-            $this->browser->waitWhileAppBusy(5);
-            $this->browser->waitForAjaxFinished(5);
+            $this->getBrowser()->waitWhileAppBusy(5);
+            $this->getBrowser()->waitForAjaxFinished(5);
         }
     }
 
@@ -595,7 +553,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $filters = array_map('trim', explode(',', $filterList));
 
         // Input containerları bul
-        $inputContainers = $this->browser->getPage()->findAll('css', '.sapUiVlt.exfw-Filter');
+        $inputContainers = $this->getBrowser()->getPage()->findAll('css', '.sapUiVlt.exfw-Filter');
         $foundFilters = [];
 
         foreach ($inputContainers as $container) {
@@ -623,7 +581,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     // public function iEnterInFilter(string $value, string $filterName): void
     // {
     //     // // Önce doğru input container'ı bul
-    //     // $inputContainers = $this->browser->getPage()->findAll('css', '.sapUiVlt.exfw-Filter');
+    //     // $inputContainers = $this->getBrowser()->getPage()->findAll('css', '.sapUiVlt.exfw-Filter');
     //     // $targetInput = null;
 
     //     // foreach ($inputContainers as $container) {
@@ -640,8 +598,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     //     // );
 
     //     // $targetInput->setValue($value);
-    //     // $this->browser->waitWhileAppBusy(5);
-    //     // $this->browser->waitForAjaxFinished(5);
+    //     // $this->getBrowser()->waitWhileAppBusy(5);
+    //     // $this->getBrowser()->waitForAjaxFinished(5);
 
     //     $filterSelector = "//input[@placeholder='$filterName']"; // XPath veya CSS Selector
     //     $this->waitForElement($filterSelector); // Elementin yüklenmesini bekle
@@ -656,10 +614,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iEnterInFilter(string $value, string $filterName): void
     {
-        $this->browser->waitWhileAppBusy(5);
-        $this->browser->waitForAjaxFinished(5);
+        $this->getBrowser()->waitWhileAppBusy(5);
+        $this->getBrowser()->waitForAjaxFinished(5);
 
-        $inputContainers = $this->browser->getPage()->findAll('css', '.sapUiVlt.exfw-Filter');
+        $inputContainers = $this->getBrowser()->getPage()->findAll('css', '.sapUiVlt.exfw-Filter');
         $targetInput = null;
 
         foreach ($inputContainers as $container) {
@@ -674,8 +632,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         $targetInput->setValue($value);
 
-        $this->browser->waitWhileAppBusy(5);
-        $this->browser->waitForAjaxFinished(5);
+        $this->getBrowser()->waitWhileAppBusy(5);
+        $this->getBrowser()->waitForAjaxFinished(5);
     }
 
     protected function waitForElement($element, $timeout = 30)
@@ -735,13 +693,18 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     public function iSeeInColumn(string $text, string $columnName): void
     {
         try {
+            // TODO wait AFTER operations, not before them. Otherwise we would need to add such
+            // waiting blocks EVERYWHERE. Also make ONE main waitForPendingOperations() method,
+            // that will call all the detailed methods except for calling multiple methods
+            // everywhere.
+
             // Wait for any pending operations to complete
             // This ensures table data is fully loaded
-            $this->browser->waitForAjaxFinished(10);
-            $this->browser->waitWhileAppBusy(10);
+            $this->getBrowser()->waitForAjaxFinished(10);
+            $this->getBrowser()->waitWhileAppBusy(10);
 
             // Find UI5 DataTable on the page
-            $dataTables = $this->browser->findWidgets('DataTable');
+            $dataTables = $this->getBrowser()->findWidgets('DataTable');
             Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
             // Use the first table found
             $table = $dataTables[0];
@@ -801,6 +764,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     private function getCurrentUrlInfo(): array
     {
+        // TODO move this to the UI5Browser
         return $this->getSession()->evaluateScript('
         (function() {
             var baseUrl = window.location.href.split("#")[0];
@@ -846,7 +810,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $isInitialized = $this->getSession()->evaluateScript('return typeof window.exfXHRLog !== "undefined"');
 
             if (!$isInitialized) {
-                $this->browser->initializeXHRMonitoring();
+                $this->getBrowser()->initializeXHRMonitoring();
             }
 
             // Get requests info
@@ -922,9 +886,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     public function iClickButton(string $caption): void
     {
 
-        $this->browser->waitForPageIsFullyLoaded(10);
-        $this->browser->waitWhileAppBusy(30);
-        $this->browser->waitForAjaxFinished(30);
+        $this->getBrowser()->waitForPageIsFullyLoaded(10);
+        $this->getBrowser()->waitWhileAppBusy(30);
+        $this->getBrowser()->waitForAjaxFinished(30);
 
         // Log XHR count when checking for errors
         $this->logXHRCount('iClickButton start xhr Count');
@@ -932,14 +896,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Get requests before click button
         $beforeRequests = $this->getSession()->evaluateScript('return window.exfXHRLog.requests.slice();');
 
-        $btn = $this->browser->findButtonByCaption($caption);
+        $btn = $this->getBrowser()->findButtonByCaption($caption);
         $this->logXHRCount('iClickButton Count');
         Assert::assertNotNull($btn, 'Cannot find button "' . $caption . '"');
 
         $btn->click();
 
-        $this->browser->waitWhileAppBusy(30);
-        $this->browser->waitForAjaxFinished(30);
+        $this->getBrowser()->waitWhileAppBusy(30);
+        $this->getBrowser()->waitForAjaxFinished(30);
 
         // After request list of after clicking the button
         $afterRequests = $this->getSession()->evaluateScript('return window.exfXHRLog.requests;');
@@ -958,6 +922,18 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     /**
      * 
+     * @When I click tab ":caption"
+     * 
+     * @param string $caption
+     * @return void
+     */
+    public function iClickTab(string $caption)
+    {
+        $this->getBrowser()->goToTab($caption);
+    }
+
+    /**
+     * 
      * @When I type ":value" into ":caption"
      *
      * @param string $value
@@ -966,7 +942,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iTypeIntoWidgetWithCaption(string $value, string $caption): void
     {
-        $widget = $this->browser->findInputByCaption($caption);
+        $widget = $this->getBrowser()->findInputByCaption($caption);
         Assert::assertNotNull($widget, 'Cannot find input widget "' . $caption . '"');
         $widget->setValue($value);
     }
@@ -982,7 +958,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iLookAtWidget(string $widgetType, int $number = 1): void
     {
-        $widgetNodes = $this->browser->findWidgets($widgetType);
+        $widgetNodes = $this->getBrowser()->findWidgets($widgetType);
         $node = $widgetNodes[$number - 1];
         Assert::assertNotNull($node, 'Cannot find "' . $widgetType . '" no. ' . $number . '!');
         $this->focus($node);
@@ -1030,7 +1006,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         try {
             // Find all DataTable widgets on the page
-            $dataTables = $this->browser->findWidgets('DataTable');
+            $dataTables = $this->getBrowser()->findWidgets('DataTable');
             Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
             // Get the first DataTable found
             $dataTable = $dataTables[0];
@@ -1060,11 +1036,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         try {
             // Wait for any pending operations to complete
-            $this->browser->waitForAjaxFinished(10);
-            $this->browser->waitWhileAppBusy(10);
+            $this->getBrowser()->waitForAjaxFinished(10);
+            $this->getBrowser()->waitWhileAppBusy(10);
 
             // Find DataTable widgets
-            $dataTables = $this->browser->findWidgets('DataTable');
+            $dataTables = $this->getBrowser()->findWidgets('DataTable');
             Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
 
             // Get the first DataTable
@@ -1162,7 +1138,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
             if (!$isXHRLogInitialized) {
                 echo "\nWarning: XHR monitoring not initialized. Reinitializing...\n";
-                $this->browser->initializeXHRMonitoring();
+                $this->getBrowser()->initializeXHRMonitoring();
             }
 
             // Now we can safely get the logs
@@ -1176,11 +1152,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             echo $beforeLog;
 
             // Find and validate the button
-            $btn = $this->browser->findButtonByCaption($caption);
+            $btn = $this->getBrowser()->findButtonByCaption($caption);
             Assert::assertNotNull($btn, 'Cannot find button "' . $caption . '"');
 
             // Clear XHR logs
-            $this->browser->clearXHRLog();
+            $this->getBrowser()->clearXHRLog();
 
             // Debug information
             echo "\n------------ CLICKING BUTTON ------------\n";
@@ -1191,7 +1167,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
             // Wait for AJAX operations to complete
             $this->waitForAjaxComplete();
-            $this->browser->waitWhileAppBusy(5);
+            $this->getBrowser()->waitWhileAppBusy(5);
 
             // Show final state
             echo "\n------------ AFTER CLICK ------------\n";
@@ -1220,7 +1196,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     // {
     //     try {
     //         // Check AJAX status
-    //         $error = $this->browser->getAjaxError();
+    //         $error = $this->getBrowser()->getAjaxError();
     //         if ($error !== null) {
     //             echo "Debug - AJAX Error Detected: " . json_encode($error, JSON_PRETTY_PRINT) . "\n";
     //             // Prepare error details
@@ -1232,7 +1208,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     //         }
 
     //         // Ensure UI5 is not busy
-    //         $this->browser->waitWhileAppBusy(5);
+    //         $this->getBrowser()->waitWhileAppBusy(5);
     //         echo "Debug - AJAX request completed successfully.\n";
 
     //     } catch (\Exception $e) {
@@ -1253,7 +1229,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         while (time() - $start < $timeout) {
             // Check for AJAX errors
-            $error = $this->browser->getAjaxError();
+            $error = $this->getBrowser()->getAjaxError();
 
             // If no error, request is successful
             if ($error === null) {
@@ -1354,15 +1330,15 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     public function iWaitForUI5ComponentsToLoad()
     {
         try {
-            $this->browser->waitForPageIsFullyLoaded(10);
-            $this->browser->waitWhileAppBusy(30);
-            $this->browser->waitForAjaxFinished(30);
+            $this->getBrowser()->waitForPageIsFullyLoaded(10);
+            $this->getBrowser()->waitWhileAppBusy(30);
+            $this->getBrowser()->waitForAjaxFinished(30);
 
             // Her adımdan sonra hata kontrolü yap
             $this->assertNoErrors();
 
             // Verify UI5 is properly initialized
-            $ui5Ready = $this->browser->isUI5Ready();
+            $ui5Ready = $this->getBrowser()->isUI5Ready();
             Assert::assertTrue($ui5Ready, 'UI5 framework failed to initialize properly');
 
         } catch (\Exception $e) {
@@ -1468,6 +1444,23 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
     }
 
+    public function getWorkbench() : WorkbenchInterface
+    {
+        return $this->workbench;
+    }
 
+    public function __destruct()
+    {
+        UI5Browser::resetUser($this->workbench);
+        $this->workbench->stop();
+    }
+
+    protected function getBrowser() : UI5Browser
+    {
+        if ($this->browser === null) {
+            throw new \RuntimeException('BDT Browser not initialized!');
+        }
+        return $this->browser;
+    }
 }
 // v1 nice

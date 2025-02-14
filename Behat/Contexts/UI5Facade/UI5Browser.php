@@ -3,12 +3,20 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
 use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Session;
+use exface\Core\Actions\Login;
+use exface\Core\CommonLogic\Security\Authenticators\MetamodelAuthenticator;
 use exface\Core\CommonLogic\Workbench;
+use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Facades\AbstractAjaxFacade\AbstractAjaxFacade;
+use exface\Core\Factories\ActionFactory;
+use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\FacadeFactory;
+use exface\Core\Factories\MetaObjectFactory;
 use exface\Core\Factories\UiPageFactory;
 use exface\Core\Factories\WidgetFactory;
+use exface\Core\Interfaces\UserInterface;
+use exface\Core\Interfaces\WorkbenchInterface;
 use exface\UI5Facade\Facades\UI5Facade;
 use PHPUnit\Framework\Assert;
 
@@ -73,13 +81,13 @@ class UI5Browser
 
 
     // Constructor
-    public function __construct(Session $session, string $ui5AppUrl)
+    public function __construct(WorkbenchInterface $workbench, $session, string $ui5AppUrl)
     {
         $this->session = $session;
         // XHR izleme sistemini başlat
         $this->initializeXHRMonitoring();
         $this->waitForAppLoaded($ui5AppUrl);
-        $this->workbench = new Workbench();
+        $this->workbench = $workbench;
     }
 
     /**
@@ -445,6 +453,42 @@ class UI5Browser
         return $input;
     }
 
+    public function findTabByCaption(string $caption, NodeElement $parent = null) : ?NodeElement
+    {
+        // Find all label BDI elements (UI5 uses BDI for bidirectional text support)
+        $tabHeadings = ($parent ?? $this->getPage())->findAll('css', '.sapMITBItem .sapMITHTextContent ');
+
+        // Iterate through found labels to locate matching one
+        foreach ($tabHeadings as $tabHeading) {
+            if ($tabHeading->getText() === $caption && $tabHeading->isVisible()) {
+                return $tabHeading->getParent()->getParent()->getParent();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 
+     * @param string $caption
+     * @param \Behat\Mink\Element\NodeElement|null $parent
+     * @param int $attempts
+     * @return NodeElement|null
+     */
+    public function goToTab(string $caption, NodeElement $parent = null, int $attempts = 1) : ?NodeElement
+    {
+        $tab = $this->findTabByCaption($caption, $parent);
+        if ($tab === null && $attempts > 1) {
+            sleep(1);
+            $attempts--;
+            return $this->goToTab($caption, $parent, $attempts);
+        }
+        Assert::assertNotNull($tab, 'Cannot find tab "' . $caption . '"');
+        // If the tab is not active, click on it to switch to the right authenticator
+        if(! $tab->hasClass('sapMITBSelected')) {
+            $tab->click();
+        }
+        return $tab;
+    }
 
     /**
      * 
@@ -1358,5 +1402,72 @@ JS
     //     }
     // }
 
+    public static function setupUser(WorkbenchInterface $workbench, array $roles, string $locale = null) : array
+    {
+        $config = $workbench->getApp('axenox.BDT')->getConfig();
+        $userSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER');
+        $userSheet->getFilters()->addConditionFromString('USERNAME', $config->getOption('TEST_USER.USERNAME'), ComparatorDataType::EQUALS);
+        $userSheet->getColumns()->addFromSystemAttributes();
+        $userSheet->getColumns()->addMultiple([
+            'USERNAME'
+        ]);
+        $userSheet->dataRead();
+        if ($userSheet->isEmpty()) {
+            $userSheet->addRow([
+                'USERNAME' => $config->getOption('TEST_USER.USERNAME'),
+                'PASSWORD' => $config->getOption('TEST_USER.PASSWORD'),
+                'FIRST_NAME' => $config->getOption('TEST_USER.FIRST_NAME'),
+                'LAST_NAME' => $config->getOption('TEST_USER.LAST_NAME'),
+            ]);
+            $userSheet->dataCreate();
+        }
+        $userId = $userSheet->getUidColumn()->getValue(0);
+
+        if ($locale !== null) {
+            $userSheet->setCellValue('LOCALE', 0, $locale);
+        }
+
+        if (! empty($roles)) {
+            $roleSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER_ROLE');
+            $roleSheet->getColumns()->addFromSystemAttributes();
+            $roleSheet->getFilters()
+                ->addNestedOR()
+                    ->addConditionFromValueArray('ALIAS_WITH_NS', $roles)
+                    ->addConditionFromValueArray('NAME', $roles);
+            $roleSheet->dataRead();
+            
+            $userRoleSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER_ROLE_USERS');
+            $userRoleSheet->getFilters()->addConditionFromString('USER', $userId);
+            foreach ($roleSheet->getUidColumn()->getValues() as $roleUid) {
+                $userRoleSheet->addRow([
+                    'USER_ROLE' => $roleUid
+                ]);
+            }
+            $userSheet->setCellValue('USER_ROLE_USERS', 0, $userRoleSheet->exportUxonObject()->toArray());
+        }
+        $userSheet->dataUpdate();
+
+        $loginFields = [];
+        foreach ($workbench->getConfig()->getOption('SECURITY.AUTHENTICATORS') as $authUxon) {
+            if ($authUxon->getProperty('class') === '\\' . MetamodelAuthenticator::class) {
+                $loginDataObj = MetaObjectFactory::createFromString($workbench, 'exface.Core.LOGIN_DATA');
+                $loginFields['_tab'] = $authUxon->getProperty('name') ?? $workbench->getCoreApp()->getTranslator()->translate('SECURITY.SIGN_IN');
+                $loginFields[$loginDataObj->getAttribute('USERNAME')->getName()] = $config->getOption('TEST_USER.USERNAME');
+                $loginFields[$loginDataObj->getAttribute('PASSWORD')->getName()] = $config->getOption('TEST_USER.PASSWORD');
+                $loginAction = ActionFactory::createFromString($workbench, Login::class);
+                $loginFields['_button'] = $loginAction->getName();
+            }
+        }
+        return $loginFields;
+    }
+
+    public static function resetUser(WorkbenchInterface $workbench) : void
+    {
+        $config = $workbench->getApp('axenox.BDT')->getConfig();
+        $dataSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER_ROLE_USERS');
+        $dataSheet->getFilters()->addConditionFromString('USER__USERNAME', $config->getOption('TEST_USER.USERNAME'), ComparatorDataType::EQUALS);
+        $dataSheet->dataDelete();
+        return;
+    }
 }
 // v1 nice
