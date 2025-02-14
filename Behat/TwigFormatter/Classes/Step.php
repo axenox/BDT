@@ -28,14 +28,16 @@ class Step
     /**
      * @param string $screenshot
      */
-    public function setScreenshot($screenshot){
+    public function setScreenshot($screenshot)
+    {
         $this->screenshot = $screenshot;
     }
 
     /**
      * @return string
      */
-    public function getScreenshot(){
+    public function getScreenshot()
+    {
         return $this->screenshot;
     }
 
@@ -168,6 +170,19 @@ class Step
     }
 
     /**
+     * Adds output text to existing output
+     * @param string $output
+     */
+    public function addOutput($output)
+    {
+        if ($this->output === null) {
+            $this->output = $output;
+        } else {
+            $this->output .= "\n" . $output;
+        }
+    }
+
+    /**
      * @return mixed
      */
     public function getOutput()
@@ -198,32 +213,32 @@ class Step
     {
         $this->resultCode = $resultCode;
     }
-    
-     /**
+
+    /**
      * @return bool
      */
     public function isPassed()
     {
         return $this->resultCode == StepResult::PASSED;
     }
-    
-     /**
+
+    /**
      * @return bool
      */
     public function isSkipped()
     {
         return $this->resultCode == StepResult::SKIPPED;
     }
-    
-     /**
+
+    /**
      * @return bool
      */
     public function isPending()
     {
         return ($this->resultCode == StepResult::PENDING || $this->resultCode == StepResult::UNDEFINED);
     }
-    
-     /**
+
+    /**
      * @return bool
      */
     public function isFailed()
