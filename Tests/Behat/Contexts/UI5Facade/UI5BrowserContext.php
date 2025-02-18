@@ -170,7 +170,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             unset($loginFields['_tab']);
             $btnCaption = $loginFields['_button'];
             unset($loginFields['_button']);
-            
+
             // Go to the page
             $this->iVisitPage($url);
 
@@ -183,7 +183,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 Assert::assertNotNull($input, 'Cannot find login field "' . $caption . '"');
                 $input->setValue($value);
             }
-            
+
             // Clear XHR logs before login
             $this->getBrowser()->clearXHRLog();
 
@@ -581,63 +581,122 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
     }
 
-    // /**
-    //  * @When I enter :value in filter :filterName
-    //  */
-    // public function iEnterInFilter(string $value, string $filterName): void
-    // {
-    //     // // Önce doğru input container'ı bul
-    //     // $inputContainers = $this->getBrowser()->getPage()->findAll('css', '.sapUiVlt.exfw-Filter');
-    //     // $targetInput = null;
-
-    //     // foreach ($inputContainers as $container) {
-    //     //     $label = $container->find('css', '.sapMLabel bdi');
-    //     //     if ($label && trim($label->getText()) === $filterName) {
-    //     //         $targetInput = $container->find('css', '.sapMInputBaseInner');
-    //     //         break;
-    //     //     }
-    //     // }
-
-    //     // Assert::assertNotNull(
-    //     //     $targetInput,
-    //     //     sprintf('Cannot find filter input "%s"', $filterName)
-    //     // );
-
-    //     // $targetInput->setValue($value);
-    //     // $this->getBrowser()->waitWhileAppBusy(5);
-    //     // $this->getBrowser()->waitForAjaxFinished(5);
-
-    //     $filterSelector = "//input[@placeholder='$filterName']"; // XPath veya CSS Selector
-    //     $this->waitForElement($filterSelector); // Elementin yüklenmesini bekle
-    //     $this->fillField($filterSelector, $value);
-
-    //     // Arama kutusuna giriş yaptıktan sonra, DOM'un güncellenmesini bekle
-    //     $this->waitForTableUpdate();
-    // }
 
     /**
+     * Filter input handling for UI5 applications
+     * Supports both standard input fields and special UI5 components like ComboBox
+     * 
      * @When I enter :value in filter :filterName
+     * 
+     * @param string $value The value to enter/select in the filter
+     * @param string $filterName The name/label of the filter field
+     * @throws \RuntimeException if filter field cannot be found or interaction fails
      */
     public function iEnterInFilter(string $value, string $filterName): void
     {
+        // Wait for any pending UI5 operations to complete
         $this->getBrowser()->waitWhileAppBusy(5);
         $this->getBrowser()->waitForAjaxFinished(5);
 
+        // Find all filter containers in the page
         $inputContainers = $this->getBrowser()->getPage()->findAll('css', '.sapUiVlt.exfw-Filter');
         $targetInput = null;
 
+        // Iterate through containers to find matching filter
         foreach ($inputContainers as $container) {
             $label = $container->find('css', '.sapMLabel bdi');
             if ($label && trim($label->getText()) === $filterName) {
+                // First check if this is a ComboBox/MultiComboBox component
+                $comboBox = $container->find('css', '.sapMComboBoxBase, .sapMMultiComboBox');
+                if ($comboBox) {
+                    // Handle ComboBox type input
+                    $this->handleComboBoxInput($comboBox, $value);
+                    return;
+                }
+
+                // Check for Select type input
+                $select = $container->find('css', '.sapMSelect');
+                if ($select) {
+                    // Handle Select type input
+                    $this->handleSelectInput($select, $value);
+                    return;
+                }
+
+                // Standard handling for regular input fields
                 $targetInput = $container->find('css', 'input.sapMInputBaseInner');
                 break;
             }
         }
 
-        Assert::assertNotNull($targetInput, "Filter input '{$filterName}' not found");
+        // If a standard input field was found, set its value
+        if ($targetInput) {
+            $targetInput->setValue($value);
+            $this->getBrowser()->waitWhileAppBusy(5);
+            $this->getBrowser()->waitForAjaxFinished(5);
+        } else {
+            throw new \RuntimeException("Could not find input element for filter: {$filterName}");
+        }
+    }
 
-        $targetInput->setValue($value);
 
+    /**
+     * Handles input for ComboBox and MultiComboBox components
+     * 
+     * @param NodeElement $comboBox The ComboBox element to interact with
+     * @param string $value The value to select
+     * @throws \RuntimeException if value cannot be selected
+     */
+    private function handleComboBoxInput(NodeElement $comboBox, string $value): void
+    {
+        // Find and click the dropdown arrow
+        $arrow = $comboBox->find('css', '.sapMInputBaseIconContainer');
+        if (!$arrow) {
+            throw new \RuntimeException("Could not find ComboBox dropdown arrow");
+        }
+
+        // Open the dropdown
+        $arrow->click();
+        $this->getBrowser()->waitWhileAppBusy(2);
+
+        // Find and select the matching item from dropdown list
+        $item = $this->getBrowser()->getPage()->find(
+            'css',
+            ".sapMSelectList li:contains('{$value}'), " .
+            ".sapMComboBoxItem:contains('{$value}'), " .
+            ".sapMMultiComboBoxItem:contains('{$value}')"
+        );
+
+        if (!$item) {
+            throw new \RuntimeException("Could not find option '{$value}' in ComboBox list");
+        }
+
+        $item->click();
+        $this->getBrowser()->waitWhileAppBusy(5);
+        $this->getBrowser()->waitForAjaxFinished(5);
+    }
+
+
+    /**
+     * Handles input for Select components
+     * 
+     * @param NodeElement $select The Select element to interact with
+     * @param string $value The value to select
+     * @throws \RuntimeException if value cannot be selected
+     */
+    private function handleSelectInput(NodeElement $select, string $value): void
+    {
+        // Find and click the select to open options
+        $select->click();
+        $this->getBrowser()->waitWhileAppBusy(2);
+
+        // Find and select the matching item
+        $item = $this->getBrowser()->getPage()->find('css', ".sapMSelectList li:contains('{$value}')");
+
+        if (!$item) {
+            throw new \RuntimeException("Could not find option '{$value}' in Select list");
+        }
+
+        $item->click();
         $this->getBrowser()->waitWhileAppBusy(5);
         $this->getBrowser()->waitForAjaxFinished(5);
     }
@@ -704,22 +763,18 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             // that will call all the detailed methods except for calling multiple methods
             // everywhere.
 
-            // Wait for any pending operations to complete
-            // This ensures table data is fully loaded
+            // Wait for any pending operations
             $this->getBrowser()->waitForAjaxFinished(10);
             $this->getBrowser()->waitWhileAppBusy(10);
 
-            // Find UI5 DataTable on the page
+            // Find UI5 DataTable
             $dataTables = $this->getBrowser()->findWidgets('DataTable');
             Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
-            // Use the first table found
             $table = $dataTables[0];
 
-            // Find column headers using UI5's specific header cell class
+            // Find column index
             $headers = $table->findAll('css', '.sapUiTableHeaderCell label');
             $columnIndex = null;
-
-            // Search for the target column by header text
 
             foreach ($headers as $index => $header) {
                 if (trim($header->getText()) === $columnName) {
@@ -730,43 +785,115 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
             Assert::assertNotNull($columnIndex, "Column '$columnName' not found");
 
-            // Find all cells containing text in the table
-            $cells = $table->findAll('css', '.sapUiTableCell .sapMText');
+            // Get all rows
+            $rows = $table->findAll('css', '.sapUiTableRow');
             $found = false;
 
-            // Her columnIndex'inci hücreyi kontrol et
-            for ($i = $columnIndex; $i < count($cells); $i += count($headers)) {
-                if (strpos($cells[$i]->getText(), $text) !== false) {
-                    $found = true;
-                    break;
+            foreach ($rows as $row) {
+                $cells = $row->findAll('css', '.sapUiTableCell');
+                if (empty($cells) || !isset($cells[$columnIndex])) {
+                    continue;
+                }
+
+                $cell = $cells[$columnIndex];
+
+                // Detect UI5 component type based on cell content
+                if ($progressBar = $cell->find('css', '.sapMPI')) {
+                    // ProgressBar type component
+                    $textElements = $progressBar->findAll('css', '.sapMPIText');
+                    foreach ($textElements as $textElement) {
+                        if (trim($textElement->getText()) === $text) {
+                            $found = true;
+                            break 2;
+                        }
+                    }
+                } elseif ($objectStatus = $cell->find('css', '.sapMObjStatus')) {
+                    // ObjectStatus type component
+                    $textElement = $objectStatus->find('css', '.sapMObjStatusText');
+                    if ($textElement && trim($textElement->getText()) === $text) {
+                        $found = true;
+                        break;
+                    }
+                } elseif ($tokenizer = $cell->find('css', '.sapMTokenizer')) {
+                    // Token/MultiInput type component
+                    $tokens = $tokenizer->findAll('css', '.sapMToken');
+                    foreach ($tokens as $token) {
+                        $textElement = $token->find('css', '.sapMTokenText');
+                        if ($textElement && trim($textElement->getText()) === $text) {
+                            $found = true;
+                            break 2;
+                        }
+                    }
+                } else {
+                    // Standard text components (including links, labels etc)
+                    $textElements = $cell->findAll('css', '.sapMText, .sapMLnk, .sapMLabel');
+                    foreach ($textElements as $textElement) {
+                        if (trim($textElement->getText()) === $text) {
+                            $found = true;
+                            break 2;
+                        }
+                    }
                 }
             }
 
-            // If text wasn't found, provide detailed debug information
+            // Detailed debug information if text not found
             if (!$found) {
-                echo "\nSearching for: '$text' in column '$columnName' (index: $columnIndex)";
-                echo "\nFound headers: " . count($headers);
-                echo "\nFound cells: " . count($cells);
-                echo "\nSample cell texts:";
-                for ($i = 0; $i < min(5, count($cells)); $i++) {
-                    echo "\n - " . $cells[$i]->getText();
+                echo "\nSearching for: '$text' in column '$columnName'";
+                echo "\nColumn index: $columnIndex";
+                echo "\nFound rows: " . count($rows);
+
+                // Sample of actual values
+                echo "\nSample values in column:";
+                $sampleCount = 0;
+                foreach ($rows as $row) {
+                    if ($sampleCount >= 3)
+                        break;
+
+                    $cells = $row->findAll('css', '.sapUiTableCell');
+                    if (isset($cells[$columnIndex])) {
+                        $cell = $cells[$columnIndex];
+                        echo "\nCell HTML classes: " . $cell->getAttribute('class');
+
+                        // Show content based on component type
+                        if ($cell->find('css', '.sapMPI')) {
+                            $texts = $cell->findAll('css', '.sapMPIText');
+                            foreach ($texts as $t) {
+                                echo "\n - ProgressBar text: '" . trim($t->getText()) . "'";
+                            }
+                        } elseif ($cell->find('css', '.sapMObjStatus')) {
+                            $statusText = $cell->find('css', '.sapMObjStatusText');
+                            echo "\n - ObjectStatus text: '" . ($statusText ? trim($statusText->getText()) : 'none') . "'";
+                        } elseif ($cell->find('css', '.sapMTokenizer')) {
+                            $tokens = $cell->findAll('css', '.sapMTokenText');
+                            foreach ($tokens as $t) {
+                                echo "\n - Token text: '" . trim($t->getText()) . "'";
+                            }
+                        } else {
+                            $texts = $cell->findAll('css', '.sapMText, .sapMLnk, .sapMLabel');
+                            foreach ($texts as $t) {
+                                echo "\n - Text: '" . trim($t->getText()) . "'";
+                            }
+                        }
+                        $sampleCount++;
+                    }
                 }
             }
-            // Final assertion with meaningful error message
 
             Assert::assertTrue($found, "Text '$text' not found in column '$columnName'");
 
         } catch (\Exception $e) {
             throw new \RuntimeException(
                 sprintf(
-                    "Failed to find text '%s' in column '%s'. Error: %s",
+                    "Failed to find text '%s' in column '%s'. Error: %s\nLast cell HTML: %s",
                     $text,
                     $columnName,
-                    $e->getMessage()
+                    $e->getMessage(),
+                    isset($cell) ? $cell->getOuterHtml() : 'No cell context'
                 )
             );
         }
     }
+
 
     private function getCurrentUrlInfo(): array
     {
@@ -1193,35 +1320,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
 
 
-
-    // /**
-    //  * @Then AJAX requests should complete successfully
-    //  * @then Data is loaded
-    //  */
-    // public function ajaxRequestShouldCompleteSuccessfully(): void
-    // {
-    //     try {
-    //         // Check AJAX status
-    //         $error = $this->getBrowser()->getAjaxError();
-    //         if ($error !== null) {
-    //             echo "Debug - AJAX Error Detected: " . json_encode($error, JSON_PRETTY_PRINT) . "\n";
-    //             // Prepare error details
-    //             $errorDetails = "AJAX request failed:\n";
-    //             $errorDetails .= "Type: " . $error['type'] . "\n";
-    //             $errorDetails .= "Message: " . ($error['message'] ?? 'Unknown error') . "\n";
-
-    //             throw new \Exception($errorDetails);
-    //         }
-
-    //         // Ensure UI5 is not busy
-    //         $this->getBrowser()->waitWhileAppBusy(5);
-    //         echo "Debug - AJAX request completed successfully.\n";
-
-    //     } catch (\Exception $e) {
-    //         echo "Debug - AJAX Error: " . $e->getMessage() . "\n"; 
-    //         throw $e;
-    //     }
-    // }
+ 
 
     /**
      * Waits for AJAX requests to complete
@@ -1261,29 +1360,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         throw new \Exception($errorMsg);
     }
 
-    // /**
-    //  * @Then AJAX requests should not have any errors
-    //  */
-    // public function ajaxRequestsShouldNotHaveErrors(): void
-    // {
-    //     /**
-    //      * Main method to check for any AJAX, UI5, or network errors
-    //      * Coordinates all error checks and handles exceptions
-    //      */
-    //     try {
-    //         // Check XHR errors
-    //         $this->checkXHRErrors();
-
-    //         // Check UI5 framework errors
-    //         $this->checkUI5Errors();
-
-    //         // Check network resource errors
-    //         $this->checkNetworkErrors();
-
-    //     } catch (\Exception $e) { 
-    //         throw $e;
-    //     }
-    // }
+  
 
     private function throwFormattedError(string $errorTitle, array $errors, array $fieldMappings): void
     {
@@ -1450,7 +1527,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
     }
 
-    public function getWorkbench() : WorkbenchInterface
+    public function getWorkbench(): WorkbenchInterface
     {
         return $this->workbench;
     }
@@ -1461,7 +1538,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->workbench->stop();
     }
 
-    protected function getBrowser() : UI5Browser
+    protected function getBrowser(): UI5Browser
     {
         if ($this->browser === null) {
             throw new \RuntimeException('BDT Browser not initialized!');
@@ -1469,7 +1546,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         return $this->browser;
     }
 
-    protected function splitArgument(string $delimitedList = null, string $delimiter = ',') : array
+    protected function splitArgument(string $delimitedList = null, string $delimiter = ','): array
     {
         if ($delimitedList === null) {
             return [];
