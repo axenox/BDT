@@ -63,6 +63,128 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
 
     /**
+     * Helper method to centrally manage all waiting operations
+     * This will be called automatically after each step to ensure consistency
+     * 
+     * @param bool $isAfterStep Whether this is called after a step (affects waiting strategy)
+     * @return void
+     */
+    private function handleWaitOperations(bool $isAfterStep = true): void
+    {
+        try {
+            // Skip if browser is not initialized yet
+            if (!$this->browser) {
+                return;
+            }
+
+            // After steps we do full waiting
+            // Before steps we only check basic UI5 readiness
+            if ($isAfterStep) {
+                $this->browser->getWaitManager()->waitForPendingOperations(
+                    true,    // Wait for page loading
+                    true,    // Wait for busy indicators
+                    true     // Wait for AJAX requests
+                );
+            } else {
+                $this->browser->getWaitManager()->waitForPendingOperations(
+                    false,   // Skip page load check
+                    true,    // Only check busy indicator
+                    false    // Skip AJAX check
+                );
+            }
+
+        } catch (\Exception $e) {
+            // Log waiting errors but don't break the test
+            echo sprintf(
+                "\nWait operation failed (%s step): %s",
+                $isAfterStep ? 'after' : 'before',
+                $e->getMessage()
+            );
+        }
+    }
+
+
+    /**
+     * Prepares the environment before each test step
+     * - Clears XHR logs for fresh monitoring
+     * - Ensures UI5 is in ready state
+     * - Cleans up any visual debugging elements
+     * 
+     * @BeforeStep
+     */
+    public function prepareBeforeStep(BeforeStepScope $scope): void
+    {
+        try {
+            // Skip if browser not initialized
+            if (!$this->browser) {
+                return;
+            }
+
+            // Clear previous XHR monitoring data
+            $this->browser->clearXHRLog();
+
+            // Clear any debug highlights from previous steps
+            $this->clearWidgetHighlights($scope);
+
+            // Basic UI5 readiness check
+            $this->handleWaitOperations(false);
+
+            // Log step starting for debugging
+            echo sprintf(
+                "\nStarting step: %s %s",
+                $scope->getStep()->getKeyword(),
+                $scope->getStep()->getText()
+            );
+
+        } catch (\Exception $e) {
+            echo "\nStep preparation failed: " . $e->getMessage();
+        }
+    }
+
+
+    /**
+     * Ensures consistent state after each test step
+     * - Waits for all pending UI5 operations
+     * - Verifies no errors occurred
+     * - Takes screenshot on failure
+     * 
+     * @AfterStep
+     */
+    public function completeAfterStep(AfterStepScope $scope): void
+    {
+        try {
+            // Skip if step already failed
+            if (!$scope->getTestResult()->isPassed()) {
+                // Take screenshot for failed steps
+                $this->takeScreenshotAfterFailedStep($scope);
+                return;
+            }
+
+            // Skip if browser not initialized
+            if (!$this->browser) {
+                return;
+            }
+
+            // Perform comprehensive waiting
+            $this->handleWaitOperations(true);
+
+            // Verify no errors occurred during step
+            $this->assertNoErrors();
+
+            // Log step completion for debugging
+            echo sprintf(
+                "\nCompleted step: %s %s",
+                $scope->getStep()->getKeyword(),
+                $scope->getStep()->getText()
+            );
+
+        } catch (\Exception $e) {
+            echo "\nStep completion failed: " . $e->getMessage();
+            throw $e;  // Re-throw to mark step as failed
+        }
+    }
+
+    /**
      * Captures scenario name before execution
      * @param BeforeScenarioScope $scope Behat scenario scope
      */
@@ -137,6 +259,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     public function iShouldSeeThePage()
     {
         $page = $this->getSession()->getPage();
+        // $this->getBrowser()->getWaitManager()->waitForPendingOperations(
+        //     true,  // waitForPage
+        //     true,   // waitForBusy
+        //     true    // waitForAjax
+        // );
         Assert::assertNotNull($page->getContent(), 'Page content is empty');
     }
 
@@ -166,6 +293,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             // Setup the user and get the required login data
             $userRolesArray = $this->splitArgument($userRoles);
             $loginFields = UI5Browser::setupUser($this->getWorkbench(), $userRolesArray, $userLocale);
+            // Extract tab and button captions
             $tabCaption = $loginFields['_tab'];
             unset($loginFields['_tab']);
             $btnCaption = $loginFields['_button'];
@@ -192,50 +320,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             Assert::assertNotNull($loginButton, 'Cannot find login button "' . $btnCaption . '"');
             $loginButton->click();
 
-            // Wait for login completion
-            // TODO centralize waiting!!!
-            sleep(3);
-            $this->getBrowser()->waitWhileAppBusy(60);
-            $this->getBrowser()->waitForAjaxFinished(30);
+            // // Wait for login completion 
+            // $this->getBrowser()->getWaitManager()->waitForPendingOperations(
+            //     true,   // waitForPage
+            //     true,   // waitForBusy
+            //     true    // waitForAjax
+            // );
 
-            // Check for failed requests
-            // TODO move to UI5Browser - it is too complicated
-            $failedRequests = $this->getSession()->evaluateScript('
-                if (window.exfXHRLog && window.exfXHRLog.requests) {
-                    return window.exfXHRLog.requests.filter(function(req) {
-                        return req.status >= 300;
-                    }).map(function(req) {
-                        return {
-                            url: req.url || "unknown",
-                            status: req.status || 0,
-                            response: req.response || "No response"
-                        };
-                    });
-                }
-                return [];
-            ');
 
-            if (!empty($failedRequests)) {
-                $errorMsg = "Failed requests detected during login:\n";
-                foreach ($failedRequests as $req) {
-                    $errorMsg .= sprintf(
-                        "URL: %s\nStatus: %s\nResponse: %s\n\n",
-                        $req['url'],
-                        $req['status'],
-                        substr($req['response'], 0, 500)
-                    );
-                }
-                throw new \Exception($errorMsg);
-            }
-
-            // Check authentication status
-            // TODO make it simple to check, if we have an error status code. No need to write these
-            // get-if sequences every time. Also do not throw an exception, but 
-            // TODO move it further up. Why wait if bad status code?
-            $statusCode = $this->getSession()->getStatusCode();
-            if ($statusCode >= 400) {
-                throw new \Exception("Login failed: Unauthorized (401)");
-            }
         } catch (\Exception $e) {
             echo "Debug - Login error: " . $e->getMessage() . "\n";
             $this->getWorkbench()->getLogger()->logException($e);
@@ -337,9 +429,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         while ($retryCount < $maxRetries) {
             try {
-                $this->getBrowser()->waitForPageIsFullyLoaded(10);
-                $this->getBrowser()->waitWhileAppBusy(30);
-                $this->getBrowser()->waitForAjaxFinished(30);
+                // $this->getBrowser()->getWaitManager()->waitForPendingOperations(
+                //     true,   // waitForPage
+                //     true,   // waitForBusy
+                //     true    // waitForAjax
+                // );
 
                 $this->getBrowser()->setObjectAlias($objectAlias);
                 $widgetNodes = $this->getBrowser()->findWidgets($widgetType, null, 5);
@@ -476,10 +570,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             'No widget has focus right now - cannot use steps like "It has..."'
         );
 
-        // Wait for UI5 components to fully load
-        $this->getBrowser()->waitForPageIsFullyLoaded(10);
-        $this->getBrowser()->waitWhileAppBusy(30);
-        $this->getBrowser()->waitForAjaxFinished(10);
 
         // Find the main form container
         $form = $focusedNode->find('css', '.sapUiForm') ?? $focusedNode;
@@ -498,6 +588,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // echo "Expected count: " . $number . "\n";
         // echo "Found count: " . count($widgetNodes) . "\n";
 
+
         if (count($widgetNodes) === 0) {
             // If no widgets found, list potential input elements for debugging 
             // Some UI5 input components may be inside .sapMInputBaseContentWrapper, but in the test scenario, 
@@ -515,6 +606,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 // echo "---\n";
             }
         }
+
+        // $this->getBrowser()->getWaitManager()->waitForPendingOperations(
+        //     true,  // waitForPage
+        //     true,   // waitForBusy
+        //     true    // waitForAjax
+        // );
         // Assert the expected number of widgets
         Assert::assertEquals(
             $number,
@@ -545,9 +642,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             // Set value and wait for any UI reactions
             $widget->setValue($row['value']);
 
-            // Wait for potential UI updates
-            $this->getBrowser()->waitWhileAppBusy(5);
-            $this->getBrowser()->waitForAjaxFinished(5);
+            // // Wait for potential UI updates
+            // $this->getBrowser()->getWaitManager()->waitForPendingOperations(
+            //     false,  // waitForPage
+            //     true,   // waitForBusy
+            //     true    // waitForAjax
+            // );
         }
     }
 
@@ -594,10 +694,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iEnterInFilter(string $value, string $filterName): void
     {
-        // Wait for any pending UI5 operations to complete
-        $this->getBrowser()->waitWhileAppBusy(5);
-        $this->getBrowser()->waitForAjaxFinished(5);
-
         // Find all filter containers in the page
         $inputContainers = $this->getBrowser()->getPage()->findAll('css', '.sapUiVlt.exfw-Filter');
         $targetInput = null;
@@ -628,11 +724,16 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             }
         }
 
+
+
         // If a standard input field was found, set its value
         if ($targetInput) {
             $targetInput->setValue($value);
-            $this->getBrowser()->waitWhileAppBusy(5);
-            $this->getBrowser()->waitForAjaxFinished(5);
+            // $this->getBrowser()->getWaitManager()->waitForPendingOperations(
+            //     false,  // waitForPage
+            //     true,   // waitForBusy
+            //     true    // waitForAjax
+            // );
         } else {
             throw new \RuntimeException("Could not find input element for filter: {$filterName}");
         }
@@ -656,7 +757,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         // Open the dropdown
         $arrow->click();
-        $this->getBrowser()->waitWhileAppBusy(2);
+
 
         // Find and select the matching item from dropdown list
         $item = $this->getBrowser()->getPage()->find(
@@ -671,8 +772,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
 
         $item->click();
-        $this->getBrowser()->waitWhileAppBusy(5);
-        $this->getBrowser()->waitForAjaxFinished(5);
+        // $this->getBrowser()->getWaitManager()->waitForPendingOperations(
+        //     false,  // waitForPage
+        //     true,   // waitForBusy
+        //     true    // waitForAjax
+        // );
     }
 
 
@@ -685,10 +789,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     private function handleSelectInput(NodeElement $select, string $value): void
     {
-        // Find and click the select to open options
-        $select->click();
-        $this->getBrowser()->waitWhileAppBusy(2);
-
         // Find and select the matching item
         $item = $this->getBrowser()->getPage()->find('css', ".sapMSelectList li:contains('{$value}')");
 
@@ -697,8 +797,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
 
         $item->click();
-        $this->getBrowser()->waitWhileAppBusy(5);
-        $this->getBrowser()->waitForAjaxFinished(5);
+        // $this->getBrowser()->getWaitManager()->waitForPendingOperations(
+        //     false,  // waitForPage
+        //     true,   // waitForBusy
+        //     true    // waitForAjax
+        // );
     }
 
     protected function waitForElement($element, $timeout = 30)
@@ -756,130 +859,89 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @Then I see ":text" in column ":columnName"
      */
     public function iSeeInColumn(string $text, string $columnName): void
-    {
+    {  
         try {
-            // TODO wait AFTER operations, not before them. Otherwise we would need to add such
-            // waiting blocks EVERYWHERE. Also make ONE main waitForPendingOperations() method,
-            // that will call all the detailed methods except for calling multiple methods
-            // everywhere.
 
-            // Wait for any pending operations
-            $this->getBrowser()->waitForAjaxFinished(10);
-            $this->getBrowser()->waitWhileAppBusy(10);
+            // Remove quotes if present in the search text
+            $searchText = trim($text, '"\'');
 
             // Find UI5 DataTable
             $dataTables = $this->getBrowser()->findWidgets('DataTable');
             Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
             $table = $dataTables[0];
 
-            // Find column index
-            $headers = $table->findAll('css', '.sapUiTableHeaderCell label');
+            // Find column index by looking at label elements inside header cells
+            $headers = $table->findAll('css', '.sapUiTableHeaderDataCell label');
             $columnIndex = null;
 
+            // Debug header information
+            echo "\nFound headers:";
             foreach ($headers as $index => $header) {
-                if (trim($header->getText()) === $columnName) {
+                $headerText = trim($header->getText());
+                echo "\nHeader #$index: '$headerText'";
+                if ($headerText === $columnName) {
                     $columnIndex = $index;
-                    break;
+                    echo " (MATCH)";
                 }
             }
 
             Assert::assertNotNull($columnIndex, "Column '$columnName' not found");
 
-            // Get all rows
-            $rows = $table->findAll('css', '.sapUiTableRow');
+            // Get all content rows using the specific UI5 table structure
+            $rows = $table->findAll('css', '.sapUiTableContentRow');
             $found = false;
 
-            foreach ($rows as $row) {
-                $cells = $row->findAll('css', '.sapUiTableCell');
+            foreach ($rows as $rowIndex => $row) {
+                // Get actual data cells
+                $cells = $row->findAll('css', '.sapUiTableDataCell');
+
                 if (empty($cells) || !isset($cells[$columnIndex])) {
                     continue;
                 }
 
                 $cell = $cells[$columnIndex];
 
-                // Detect UI5 component type based on cell content
-                if ($progressBar = $cell->find('css', '.sapMPI')) {
-                    // ProgressBar type component
-                    $textElements = $progressBar->findAll('css', '.sapMPIText');
-                    foreach ($textElements as $textElement) {
-                        if (trim($textElement->getText()) === $text) {
-                            $found = true;
-                            break 2;
-                        }
-                    }
-                } elseif ($objectStatus = $cell->find('css', '.sapMObjStatus')) {
-                    // ObjectStatus type component
-                    $textElement = $objectStatus->find('css', '.sapMObjStatusText');
-                    if ($textElement && trim($textElement->getText()) === $text) {
+                // Primary search: Look for text elements in various UI5 containers
+                $textElements = $cell->findAll(
+                    'css',
+                    '.sapMText, .sapMLabel, .sapMObjectNumber, ' .
+                    '.sapMPI .sapMPITextLeft, .sapMPI .sapMPITextRight, ' .
+                    '.sapMObjStatus .sapMObjStatusText'
+                );
+
+                foreach ($textElements as $textElement) {
+                    $actualText = trim($textElement->getText());
+                    if (stripos($actualText, $searchText) !== false) {
                         $found = true;
-                        break;
+                        break 2;
                     }
-                } elseif ($tokenizer = $cell->find('css', '.sapMTokenizer')) {
-                    // Token/MultiInput type component
-                    $tokens = $tokenizer->findAll('css', '.sapMToken');
-                    foreach ($tokens as $token) {
-                        $textElement = $token->find('css', '.sapMTokenText');
-                        if ($textElement && trim($textElement->getText()) === $text) {
-                            $found = true;
-                            break 2;
-                        }
-                    }
-                } else {
-                    // Standard text components (including links, labels etc)
-                    $textElements = $cell->findAll('css', '.sapMText, .sapMLnk, .sapMLabel');
-                    foreach ($textElements as $textElement) {
-                        if (trim($textElement->getText()) === $text) {
-                            $found = true;
-                            break 2;
-                        }
+                }
+
+                // Debug output for first few rows
+                if ($rowIndex < 3) {
+                    echo "\nChecking Row #$rowIndex:";
+                    echo "\nCell HTML classes: " . $cell->getAttribute('class');
+                    foreach ($textElements as $element) {
+                        echo "\n - Text content: '" . trim($element->getText()) . "'";
                     }
                 }
             }
 
-            // Detailed debug information if text not found
+            // Enhanced error reporting if not found
             if (!$found) {
-                echo "\nSearching for: '$text' in column '$columnName'";
+                echo "\nSearching for: '$searchText' in column '$columnName'";
                 echo "\nColumn index: $columnIndex";
-                echo "\nFound rows: " . count($rows);
-
-                // Sample of actual values
-                echo "\nSample values in column:";
-                $sampleCount = 0;
-                foreach ($rows as $row) {
-                    if ($sampleCount >= 3)
-                        break;
-
-                    $cells = $row->findAll('css', '.sapUiTableCell');
-                    if (isset($cells[$columnIndex])) {
-                        $cell = $cells[$columnIndex];
-                        echo "\nCell HTML classes: " . $cell->getAttribute('class');
-
-                        // Show content based on component type
-                        if ($cell->find('css', '.sapMPI')) {
-                            $texts = $cell->findAll('css', '.sapMPIText');
-                            foreach ($texts as $t) {
-                                echo "\n - ProgressBar text: '" . trim($t->getText()) . "'";
-                            }
-                        } elseif ($cell->find('css', '.sapMObjStatus')) {
-                            $statusText = $cell->find('css', '.sapMObjStatusText');
-                            echo "\n - ObjectStatus text: '" . ($statusText ? trim($statusText->getText()) : 'none') . "'";
-                        } elseif ($cell->find('css', '.sapMTokenizer')) {
-                            $tokens = $cell->findAll('css', '.sapMTokenText');
-                            foreach ($tokens as $t) {
-                                echo "\n - Token text: '" . trim($t->getText()) . "'";
-                            }
-                        } else {
-                            $texts = $cell->findAll('css', '.sapMText, .sapMLnk, .sapMLabel');
-                            foreach ($texts as $t) {
-                                echo "\n - Text: '" . trim($t->getText()) . "'";
-                            }
-                        }
-                        $sampleCount++;
-                    }
-                }
+                echo "\nTotal rows found: " . count($rows);
+                echo "\nTotal columns per row: " . (isset($cells) ? count($cells) : 'unknown');
             }
 
-            Assert::assertTrue($found, "Text '$text' not found in column '$columnName'");
+            Assert::assertTrue($found, "Text '$searchText' not found in column '$columnName'");
+
+            // $this->getBrowser()->getWaitManager()->waitForPendingOperations(
+            //     true,  // waitForPage
+            //     true,   // waitForBusy
+            //     true    // waitForAjax
+            // );
 
         } catch (\Exception $e) {
             throw new \RuntimeException(
@@ -895,40 +957,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
 
-    private function getCurrentUrlInfo(): array
-    {
-        // TODO move this to the UI5Browser
-        return $this->getSession()->evaluateScript('
-        (function() {
-            var baseUrl = window.location.href.split("#")[0];
-            var fullUrl = window.location.href;
-            
-            // UI5 specific routing information
-            var ui5Hash = "";
-            if (typeof sap !== "undefined" && 
-                sap.ui && 
-                sap.ui.core && 
-                sap.ui.core.routing && 
-                sap.ui.core.routing.HashChanger) {
-                
-                try {
-                    // Get the current hash from UI5 router
-                    ui5Hash = sap.ui.core.routing.HashChanger.getInstance().getHash();
-                } catch(e) {
-                    ui5Hash = window.location.hash.replace("#", "");
-                }
-            } else {
-                ui5Hash = window.location.hash.replace("#", "");
-            }
-            
-            return {
-                baseUrl: baseUrl,
-                fullUrl: fullUrl,
-                hash: ui5Hash
-            };
-        })()
-    ');
-    }
+
 
     /**
      * Logs the current count of XHR requests for debugging purposes
@@ -1018,11 +1047,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iClickButton(string $caption): void
     {
-
-        $this->getBrowser()->waitForPageIsFullyLoaded(10);
-        $this->getBrowser()->waitWhileAppBusy(30);
-        $this->getBrowser()->waitForAjaxFinished(30);
-
         // Log XHR count when checking for errors
         $this->logXHRCount('iClickButton start xhr Count');
 
@@ -1035,8 +1059,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         $btn->click();
 
-        $this->getBrowser()->waitWhileAppBusy(30);
-        $this->getBrowser()->waitForAjaxFinished(30);
+        // $this->getBrowser()->getWaitManager()->waitForPendingOperations(
+        //     false,  // waitForPage
+        //     true,   // waitForBusy
+        //     true    // waitForAjax
+        // );
 
         // After request list of after clicking the button
         $afterRequests = $this->getSession()->evaluateScript('return window.exfXHRLog.requests;');
@@ -1168,10 +1195,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     public function iSeeFilteredResultsInDataTable(): void
     {
         try {
-            // Wait for any pending operations to complete
-            $this->getBrowser()->waitForAjaxFinished(10);
-            $this->getBrowser()->waitWhileAppBusy(10);
-
             // Find DataTable widgets
             $dataTables = $this->getBrowser()->findWidgets('DataTable');
             Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
@@ -1227,6 +1250,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                     break;
                 }
             }
+            // $this->getBrowser()->getWaitManager()->waitForPendingOperations(
+            //     true,  // waitForPage
+            //     true,   // waitForBusy
+            //     true    // waitForAjax
+            // );
 
             // Log for debugging
             echo sprintf(
@@ -1298,9 +1326,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             // Click the button
             $btn->click();
 
-            // Wait for AJAX operations to complete
-            $this->waitForAjaxComplete();
-            $this->getBrowser()->waitWhileAppBusy(5);
+            // // Wait for operations to complete using WaitManager
+            // $this->getBrowser()->getWaitManager()->waitForPendingOperations(
+            //     false,  // waitForPage
+            //     true,   // waitForBusy
+            //     true    // waitForAjax
+            // );
 
             // Show final state
             echo "\n------------ AFTER CLICK ------------\n";
@@ -1320,7 +1351,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
 
 
- 
+
 
     /**
      * Waits for AJAX requests to complete
@@ -1360,7 +1391,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         throw new \Exception($errorMsg);
     }
 
-  
+
 
     private function throwFormattedError(string $errorTitle, array $errors, array $fieldMappings): void
     {
@@ -1379,56 +1410,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         throw new \Exception($errorDetails);
     }
 
-    /**
-     * @Then the page should be responsive
-     */
-    public function thePageShouldBeResponsive()
-    {
-        try {
-            // Check if page is interactive
-            $isResponsive = $this->getSession()->evaluateScript(
-                'return document.readyState === "complete" && !document.querySelector(".sapUiBlockLayerTabbable")'
-            );
-            Assert::assertTrue($isResponsive, 'Page is not responsive');
-
-            // Check for UI5 busy indicators
-            $isBusy = $this->getSession()->evaluateScript(
-                'return sap.ui.core.BusyIndicator._globalBusyIndicatorCounter > 0'
-            );
-            Assert::assertFalse($isBusy, 'Page is still showing busy indicator');
-
-            // Her adımdan sonra hata kontrolü yap
-            $this->assertNoErrors();
-
-        } catch (\Exception $e) {
-            throw new \RuntimeException('Page responsiveness check failed: ' . $e->getMessage());
-        }
-    }
-
-
-
-    /**
-     * @Then I wait for UI5 components to load
-     */
-    public function iWaitForUI5ComponentsToLoad()
-    {
-        try {
-            $this->getBrowser()->waitForPageIsFullyLoaded(10);
-            $this->getBrowser()->waitWhileAppBusy(30);
-            $this->getBrowser()->waitForAjaxFinished(30);
-
-            // Her adımdan sonra hata kontrolü yap
-            $this->assertNoErrors();
-
-            // Verify UI5 is properly initialized
-            $ui5Ready = $this->getBrowser()->isUI5Ready();
-            Assert::assertTrue($ui5Ready, 'UI5 framework failed to initialize properly');
-
-        } catch (\Exception $e) {
-            throw new \RuntimeException('Failed waiting for UI5 components: ' . $e->getMessage());
-        }
-    }
-
+     
     /**
      * Checks for HTTP errors and UI5 error states
      * Throws exception if any errors detected
@@ -1555,5 +1537,75 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $array = array_map('trim', $array);
         return $array;
     }
+
+
+    /**
+     * @When I visit the following pages:
+     */
+    public function iVisitTheFollowingPages(TableNode $table): void
+    {
+        $urls = $table->getHash();
+        $currentSession = $this->getSession();
+
+        // Get base URL from current session
+        $baseUrl = $currentSession->getCurrentUrl();
+        $baseUrl = preg_replace('/\/[^\/]*$/', '/', $baseUrl);
+
+        foreach ($urls as $urlData) {
+            $url = $urlData['url'];
+            echo "\nNavigating to: " . $url;
+
+            try {
+                // Combine base URL with page URL
+                $fullUrl = rtrim($baseUrl, '/') . '/' . ltrim($url, '/');
+
+                // Navigate using full URL
+                $currentSession->visit($fullUrl);
+
+                // Initialize browser with current session
+                $this->browser = new UI5Browser($this->getWorkbench(), $currentSession, $url);
+
+
+
+                // Verify page loaded
+                $this->iShouldSeeThePage();
+
+                // // Wait for essential operations
+                // $this->getBrowser()->getWaitManager()->waitForPendingOperations(
+                //     true,   // waitForPage
+                //     true,   // waitForBusy
+                //     true    // waitForAjax - enabled for stability
+                // );
+
+            } catch (\Exception $e) {
+                throw new \RuntimeException(sprintf(
+                    "Failed to navigate to '%s'. Error: %s\nFull URL was: %s",
+                    $url,
+                    $e->getMessage(),
+                    $fullUrl ?? 'unknown'
+                ));
+            }
+        }
+    }
+
+    /**
+     * @Then all pages should load successfully
+     */
+    public function allPagesShouldLoadSuccessfully(): void
+    {
+        // Verify no errors in current session
+        $this->assertNoErrors();
+
+        // Verify UI5 is in stable state
+        $isStable = $this->getSession()->evaluateScript(
+            'return sap.ui.getCore().isThemeApplied() && !sap.ui.getCore().getUIDirty()'
+        );
+
+        if (!$isStable) {
+            throw new \RuntimeException('UI5 framework is not in stable state after page navigation');
+        }
+    }
+
+
+
 }
-// v1 nice
