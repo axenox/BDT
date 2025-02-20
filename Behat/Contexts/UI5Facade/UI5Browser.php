@@ -26,22 +26,65 @@ use PHPUnit\Framework\Assert;
  * @author Andrej Kabachnik
  */
 class UI5Browser
-{
-    private $lastError = null;
-
+{ 
     private $session;
-
     private $workbench = null;
-
     private $facade = null;
+    private $objectAlias = null;
+    private UI5WaitManager $waitManager;
+
+
+    public function __construct(WorkbenchInterface $workbench, $session, string $ui5AppUrl)
+    {
+        $this->session = $session;
+        $this->workbench = $workbench;
+        $this->waitManager = new UI5WaitManager($session);
+
+        // Initialize XHR monitoring
+        $this->initializeXHRMonitoring();
+        // Initial app load using waitManager
+        $this->waitManager->waitForAppLoaded($ui5AppUrl);
+    }
 
     /**
-     * Property to store the object alias for widget filtering
-     * Used to narrow down widget search results based on specific text/alias
-     * @var string|null
+     * Gets the wait manager instance
      */
-    private $objectAlias = null;
+    public function getWaitManager(): UI5WaitManager
+    {
+        return $this->waitManager;
+    }
 
+    /**
+     * 
+     * @return \Behat\Mink\Session
+     */
+    protected function getSession(): Session
+    {
+        return $this->session;
+    }
+
+
+    /**
+     * 
+     * @return Workbench
+     */
+    public function getWorkbench()
+    {
+        return $this->workbench;
+    }
+
+    /**
+     * 
+     * @return \exface\UI5Facade\Facades\UI5Facade
+     */
+    public function getFacade(): UI5Facade
+    {
+        if ($this->facade === null) {
+            $this->facade = FacadeFactory::createFromString(UI5Facade::class, $this->getWorkbench());
+        }
+        return $this->facade;
+    }
+ 
     /**
      * Sets the object alias used for filtering widget search results
      * This allows targeting specific widgets that contain the given alias text
@@ -78,17 +121,46 @@ class UI5Browser
     // $widgets = $browser->findWidgets("DataTable");
     // // This will only find tables containing the word "Customer"
 
-
-
-    // Constructor
-    public function __construct(WorkbenchInterface $workbench, $session, string $ui5AppUrl)
+    public function getPage()
     {
-        $this->session = $session;
-        // XHR izleme sistemini başlat
-        $this->initializeXHRMonitoring();
-        $this->waitForAppLoaded($ui5AppUrl);
-        $this->workbench = $workbench;
+        return $this->session->getPage();
     }
+
+ 
+    
+   /**
+     * Clears the XHR (XMLHttpRequest) monitoring log and resets error state
+     * 
+     * This function performs two main cleanup tasks:
+     * 1. Clears the XHR log array in the browser (window.exfXHRLog)
+     * 2. Resets the internal error tracking state
+     * 
+     * Use cases:
+     * - Before starting a new test scenario
+     * - After completing a test case
+     * - When needing to reset monitoring state
+     * - Before capturing new AJAX requests
+     * 
+     * Note: This should be called before any new AJAX monitoring to ensure
+     * clean state and prevent mixing logs from different test scenarios
+     * 
+     * @return void
+     * @see initializeXHRMonitoring() For the setup of the logging system
+     */
+    public function clearXHRLog(): void
+    {
+        $this->getSession()->evaluateScript(
+            <<<JS
+            window.exfXHRLog = {
+                requests: [],
+                lastRequest: null,
+                errors: []
+            };
+            JS
+        );
+    }
+
+
 
     /**
      * Initializes XHR and AJAX Request Monitoring System
@@ -274,37 +346,7 @@ class UI5Browser
         }
     }
 
-    /**
-     * Clears the XHR (XMLHttpRequest) monitoring log and resets error state
-     * 
-     * This function performs two main cleanup tasks:
-     * 1. Clears the XHR log array in the browser (window.exfXHRLog)
-     * 2. Resets the internal error tracking state
-     * 
-     * Use cases:
-     * - Before starting a new test scenario
-     * - After completing a test case
-     * - When needing to reset monitoring state
-     * - Before capturing new AJAX requests
-     * 
-     * Note: This should be called before any new AJAX monitoring to ensure
-     * clean state and prevent mixing logs from different test scenarios
-     * 
-     * @return void
-     * @see initializeXHRMonitoring() For the setup of the logging system
-     */
-    public function clearXHRLog(): void
-    {
-        $this->getSession()->evaluateScript(
-            <<<JS
-            window.exfXHRLog = {
-                requests: [],
-                lastRequest: null,
-                errors: []
-            };
-            JS
-        );
-    }
+ 
 
 
 
@@ -312,87 +354,9 @@ class UI5Browser
 
 
 
-    /**
-     * Waits for OpenUI5 framework to load and initialize
-     * 
-     * @param int $timeoutInSeconds Maximum time to wait for UI5 loading (default: 30 seconds)
-     * @return bool Returns true if UI5 loaded successfully, false otherwise
-     * 
-     * Step-by-step process:
-     * 1. Checks if global 'sap' object exists
-     * 2. Verifies sap.ui namespace is available
-     * 3. Confirms sap.ui.getCore() method exists
-     * 4. Validates core object is accessible
-     * 5. Ensures core.getLoadedLibraries function is available
-     */
-    protected function waitForUI5Loading(int $timeoutInSeconds = 30): bool
-    {
-        return $this->getSession()->wait(
-            $timeoutInSeconds * 1000,
-            <<<JS
-            (function() {
-                // Check if base SAP namespace exists
-                if (typeof sap === 'undefined') {
-                    console.log('SAP not defined');
-                    return false;
-                }
-                
-                // Verify UI namespace is available
-                if (typeof sap.ui === 'undefined') {
-                    console.log('sap.ui not defined');
-                    return false;
-                }
-                
-                // Confirm core method exists
-                if (typeof sap.ui.getCore === 'undefined') {
-                    console.log('sap.ui.getCore not defined');
-                    return false;
-                }
-                
-                // Get core instance and validate
-                var core = sap.ui.getCore();
-                if (!core) {
-                    console.log('core not available');
-                    return false;
-                }
-                
-                // Final check - ensure core libraries are loaded
-                return typeof core.getLoadedLibraries === 'function';
-            })()
-    JS
-        );
-    }
+    
 
-    /**
-     * Waits for UI5 controls to render in the page
-     * 
-     * @param int $timeoutInSeconds Maximum wait time (default: 30 seconds)
-     * @return bool Returns true if UI5 controls are found, false if timeout reached
-     * 
-     * Verification process:
-     * 1. Checks if UI5 framework is loaded (sap and sap.ui objects)
-     * 2. Searches page content for UI5-specific markers:
-     *    - 'sapUiView' - indicates presence of UI5 views
-     *    - 'sapMPage' - indicates presence of UI5 mobile pages
-     */
-    protected function waitForUI5Controls(int $timeoutInSeconds = 30): bool
-    {
-        return $this->getSession()->wait(
-            $timeoutInSeconds * 1000,
-            <<<JS
-            (function() {
-                // Verify UI5 base requirements
-                if (typeof sap === 'undefined' || typeof sap.ui === 'undefined') return false;
-                
-                // Search page content for UI5 view markers
-                var content = document.body.innerHTML;
-                
-                // Check for either standard view or mobile page indicators
-                return content.indexOf('sapUiView') !== -1 || content.indexOf('sapMPage') !== -1;
-            })()
-    JS
-        );
-    }
+     
 
     /**
      * Finds an input element by its associated label caption in a UI5 application
@@ -453,7 +417,7 @@ class UI5Browser
         return $input;
     }
 
-    public function findTabByCaption(string $caption, NodeElement $parent = null) : ?NodeElement
+    public function findTabByCaption(string $caption, NodeElement $parent = null): ?NodeElement
     {
         // Find all label BDI elements (UI5 uses BDI for bidirectional text support)
         $tabHeadings = ($parent ?? $this->getPage())->findAll('css', '.sapMITBItem .sapMITHTextContent ');
@@ -474,17 +438,17 @@ class UI5Browser
      * @param int $attempts
      * @return NodeElement|null
      */
-    public function goToTab(string $caption, NodeElement $parent = null, int $attempts = 1) : ?NodeElement
+    public function goToTab(string $caption, NodeElement $parent = null, int $attempts = 1): ?NodeElement
     {
         $tab = $this->findTabByCaption($caption, $parent);
         if ($tab === null && $attempts > 1) {
-            sleep(1);
+            // $this->waitManager->waitForPendingOperations(false, true, true);  // Replace sleep(1)
             $attempts--;
             return $this->goToTab($caption, $parent, $attempts);
         }
         Assert::assertNotNull($tab, 'Cannot find tab "' . $caption . '"');
         // If the tab is not active, click on it to switch to the right authenticator
-        if(! $tab->hasClass('sapMITBSelected')) {
+        if (!$tab->hasClass('sapMITBSelected')) {
             $tab->click();
         }
         return $tab;
@@ -512,288 +476,11 @@ class UI5Browser
         return $button;
     }
 
-    public function getPage()
-    {
-        return $this->session->getPage();
-    }
+  
+ 
+   
 
-    /**
-     * Waits the complete UI5 application loading process
-     * 
-     * @param string $pageUrl URL of the UI5 application
-     * @return void
-     * 
-     * Loading sequence:
-     * 1. Waits for initial page load completion
-     * 2. Ensures UI5 framework is loaded
-     * 3. Waits for UI5 controls to render
-     * 4. Validates app ID presence
-     * 5. Checks bussy state resolution
-     * 6. Confirm AJAX requests completion
-     */
-    protected function waitForAppLoaded(string $pageUrl)
-    {
-        // Wait for initial page DOM to be ready
-        $this->waitForPageIsFullyLoaded(10);
-
-        // Ensure UI5 framework is loaded and initialized
-        if (!$this->waitForUI5Loading(30)) {
-            error_log("Warning: UI5 failed to load or not ready");
-        }
-
-        // Wait for UI5 controls to be rendered
-        if (!$this->waitForUI5Controls(30)) {
-            error_log("Warning: UI5 controls failed to load");
-        }
-
-        // Extract and validate app ID from URL
-        $appId = StringDataType::substringBefore($pageUrl, '.html', $pageUrl) . '.app';
-        $this->waitForNodeId($appId, 30);
-
-        // Check app's busy state and AJAX completion
-        $this->waitWhileAppBusy(30);
-        $this->waitForAjaxFinished(30);
-    }
-
-
-    /**
-     * Waits for UI5 controls to render in the page
-     * 
-     * @param string $componentType
-     * @param int $timeoutInSeconds Maximum wait time (default: 30 seconds)
-     * @return bool Returns true if UI5 controls are found, false if timeout reached
-     * 
-     * Verification process:
-     * 1. Checks if UI5 framework is loaded (sap and sap.ui objects)
-     * 2. Searches page content for UI5-specific markers:
-     *    - 'sapUiView' - indicates presence of UI5 views
-     *    - 'sapMPage' - indicates presence of UI5 mobile pages
-     */
-    public function waitForUI5Component(string $componentType, int $timeoutInSeconds = 30): bool
-    {
-        return $this->getSession()->wait(
-            $timeoutInSeconds * 1000,
-            <<<JS
-            (function() {
-                // Check for UI5 framework availability
-                if (typeof sap === 'undefined' || typeof sap.ui === 'undefined') return false;
-                
-                // Look for elements with component-specific class
-                var elements = document.getElementsByClassName('sap{$componentType}');
-                
-                // Return true if at least one component found
-                return elements.length > 0;
-            })()
-    JS
-        );
-    }
-
-    /**
-     * Checks the complete UI5 application loading process
-     * 
-     * @param string $pageUrl URL of the UI5 application
-     * @return void
-     * 
-     * Loading sequence:
-     * 1. Waits for initial page load completion
-     * 2. Ensures UI5 framework is loaded
-     * 3. Waits for UI5 controls to render
-     * 4. Validates app ID presence
-     * 5. Checks busy state resolution
-     * 6. Confirms AJAX requests completion
-     */
-    public function isUI5Ready(): bool
-    {
-        return $this->getSession()->evaluateScript(
-            <<<JS
-            (function() {
-                // Verify UI5 framework existence
-                if (typeof sap === 'undefined' || typeof sap.ui === 'undefined') return false;
-                
-                // Get and validate core object
-                var core = sap.ui.getCore();
-                
-                // Check core functionality
-                return core && typeof core.getLoadedLibraries === 'function';
-            })()
-    JS
-        );
-    }
-
-
-    /**
-     * 
-     * @param string $id
-     * @param int $timeoutInSeconds
-     * @return void
-     */
-    protected function waitForNodeId(string $id, int $timeoutInSeconds = 10)
-    {
-        $page = $this->getPage();
-        $page->waitFor(
-            $timeoutInSeconds * 1000,
-            function () use ($page, $id) {
-                $app = $page->findById($id);
-                return $app && $app->isVisible();
-            }
-        );
-    }
-
-
-
-
-
-    /**
-     * 
-     * @param int $timeoutInSeconds
-     * @return bool
-     */
-    public function waitWhileAppBusy(int $timeoutInSeconds = 10): bool
-    {
-        return $this->getSession()->wait(
-            $timeoutInSeconds * 1000,
-            <<<JS
-            (function() {
-                if (document.readyState !== "complete") {
-                    return false;
-                }
-                if ((typeof $ !== 'undefined') && $.active !== 0) {
-                    return false;
-                }/*
-                if ((typeof XMLHttpRequest !== 'undefined') && XMLHttpRequest.prototype.readyState !== 4) {
-                    return false;
-                }*/
-                if ((typeof exfLauncher === 'undefined') || exfLauncher === undefined) {
-                    return false;
-                }
-                return exfLauncher.isBusy() === false;
-            })()
-JS
-        );
-    }
-
-    /**
-     * Enhanced version of waitForAjaxFinished method
-     * 
-     * UPDATES:
-     * - Added checkAjaxRequestStatus validation
-     * - Improved error detection
-     * - Better handling of UI5 busy states
-     * 
-     * This method now:
-     * 1. Waits for jQuery AJAX requests
-     * 2. Checks UI5 BusyIndicator
-     * 3. Validates overall AJAX status
-     * 
-     * @param int $timeoutInSeconds Maximum time to wait for AJAX completion
-     * @return bool True if all AJAX requests completed successfully
-     */
-    public function waitForAjaxFinished(int $timeoutInSeconds = 30): bool
-    {
-        $result = $this->getSession()->wait(
-            $timeoutInSeconds * 1000,
-            <<<JS
-            (function() {
-                // Check active jQuery requests
-                if (typeof jQuery !== 'undefined' && jQuery.active !== 0) {
-                    return false;
-                }
-                
-                // Check UI5 busy indicators
-                if (typeof sap !== 'undefined' && sap.ui && sap.ui.core) {
-                    if (sap.ui.core.BusyIndicator._globalBusyIndicatorCounter > 0) {
-                        return false;
-                    }
-                }
-                
-                // Check for errors in XHR log
-                if (window.exfXHRLog && window.exfXHRLog.requests) {
-                    var failedRequests = window.exfXHRLog.requests.filter(function(req) {
-                        return req.status >= 400 || 
-                               (req.response && (
-                                   req.response.includes("SQL error") || 
-                                   req.response.includes("error") ||
-                                   req.response.includes("Exception")
-                               ));
-                    });
-                    
-                    if (failedRequests.length > 0) {
-                        window.exfXHRLog.errors.push({
-                            type: 'HTTPError',
-                            message: 'Failed requests detected',
-                            details: failedRequests
-                        });
-                        return true; // Return true to stop waiting and handle error
-                    }
-                }
-                
-                return true;
-            })()
-            JS
-        );
-
-        if (!$result) {
-            return false;
-        }
-
-        // // Check for errors after requests complete
-        // $error = $this->getAjaxError();
-        // if ($error !== null) {
-        //     echo "\nAJAX Error detected:";
-        //     echo "\nType: " . ($error['type'] ?? 'Unknown');
-        //     echo "\nStatus: " . ($error['status'] ?? 'Unknown');
-        //     echo "\nResponse: " . substr(($error['responseText'] ?? ''), 0, 500);
-        //     return false;
-        // }
-
-        return true;
-    }
-
-    // /**
-    //  * Checks if all AJAX requests completed successfully
-    //  * 
-    //  * Validates HTTP status codes, UI5 errors, and busy state.
-    //  * Stores any detected errors in lastError property.
-    //  * 
-    //  * @return bool true if successful, false if errors found
-    //  * @see getLastError() For error details
-    //  */
-    // public function checkAjaxRequestStatus(): bool
-    // {
-    //     // First check if there's an existing error
-    //     $error = $this->getAjaxError();
-    //     if ($error !== null) {
-    //         // Store the error details for later retrieval
-    //         $this->lastError = $error;
-    //         return false;
-    //     }
-    //     return true;
-    // }
-
-    /**
-     * Gets the last error
-     */
-    public function getLastError(): ?array
-    {
-        return $this->lastError;
-    }
-
-    /**
-     * 
-     * @param mixed $timeoutInSeconds
-     * @return void
-     */
-    public function waitForPageIsFullyLoaded($timeoutInSeconds = 5)
-    {
-        $this->getSession()->wait(
-            $timeoutInSeconds * 1000,
-            <<<JS
-            document.readyState === "complete"
-JS
-        );
-    }
-
-
+     
     /**
      * Enhanced findWidgets method with better widget detection
      * 
@@ -1161,35 +848,7 @@ JS
         return $type;
     }
 
-    /**
-     * 
-     * @return \Behat\Mink\Session
-     */
-    protected function getSession(): Session
-    {
-        return $this->session;
-    }
 
-    /**
-     * 
-     * @return Workbench
-     */
-    public function getWorkbench()
-    {
-        return $this->workbench;
-    }
-
-    /**
-     * 
-     * @return \exface\UI5Facade\Facades\UI5Facade
-     */
-    public function getFacade(): UI5Facade
-    {
-        if ($this->facade === null) {
-            $this->facade = FacadeFactory::createFromString(UI5Facade::class, $this->getWorkbench());
-        }
-        return $this->facade;
-    }
 
     /**
      * 
@@ -1208,201 +867,8 @@ JS
         return $widget;
     }
 
-
-    protected function logXHRCount(string $context = '')
-    {
-        $xhrCount = $this->getSession()->evaluateScript('return window._xhrLog ? window._xhrLog.length : 0;');
-        echo "\n[DEBUG] " . ($context ? "{$context} - " : '') . "XHR Log Count: " . $xhrCount . "\n";
-    }
-
-    /**
-     * Checks for any errors in AJAX requests, UI5 state, or JavaScript
-     * 
-     * @return array|null Error details if any found, null if all clear
-     */
-    public function getAjaxError(): ?array
-    {
-        try {
-            // Check for JavaScript errors
-            $jsErrors = $this->getSession()->evaluateScript('
-            if (window.exfXHRLog && window.exfXHRLog.errors) {
-                return window.exfXHRLog.errors.filter(function(err) {
-                    return err.type === "JSError";
-                });
-            }
-            return [];
-        ');
-
-            if (!empty($jsErrors)) {
-                return [
-                    'type' => 'JavaScript',
-                    'message' => $jsErrors[0]['message'] ?? 'Unknown JavaScript error'
-                ];
-            }
-
-            // Check for UI5 MessageManager errors
-            $ui5Errors = $this->getSession()->evaluateScript('
-            if (typeof sap !== "undefined" && sap.ui && sap.ui.getCore()) {
-                var messageManager = sap.ui.getCore().getMessageManager();
-                if (messageManager && messageManager.getMessageModel) {
-                    return messageManager.getMessageModel().getData().filter(function(msg) {
-                        return msg.type === "Error" || msg.type === "Fatal";
-                    });
-                }
-            }
-            return [];
-        ');
-
-            if (!empty($ui5Errors)) {
-                return [
-                    'type' => 'UI5',
-                    'message' => $ui5Errors[0]['message'] ?? 'UI5 framework error'
-                ];
-            }
-
-            // Check for failed HTTP requests with enhanced error parsing
-            $failedRequests = $this->getSession()->evaluateScript('
-        if (window.exfXHRLog && window.exfXHRLog.requests) {
-            return window.exfXHRLog.requests.filter(function(req) {
-                return req.status >= 300 );
-            }).map(function(req) {
-                try {
-                    return {
-                        status: req.status,
-                        response: req.response,
-                        parsed: JSON.parse(req.response) 
-                    };
-                } catch(e) {
-                    return {
-                        status: req.status,
-                        response: req.response,
-                        parsed: null
-                    };
-                }
-            });
-        }
-        return [];
-    ');
-
-            if (!empty($failedRequests)) {
-                $lastFailedRequest = end($failedRequests);
-                $error = [
-                    'type' => 'HTTP',
-                    'status' => $lastFailedRequest['status'] ?? 'unknown',
-                    'message' => mb_substr($lastFailedRequest['response'] ?? '', 0, 500)
-                ];
-
-                // Add structured error info if available
-                if (isset($lastFailedRequest['parsed']['error'])) {
-                    $error['structured'] = $lastFailedRequest['parsed']['error'];
-                }
-
-                return $error;
-            }
-
-            return null;
-
-        } catch (\Exception $e) {
-            return [
-                'type' => 'Exception',
-                'message' => $e->getMessage()
-            ];
-        }
-    }
-
-    //
-
-    // /**
-    //  * Checks for UI5 framework specific errors
-    //  * 
-    //  * @throws \RuntimeException if UI5 errors are detected
-    //  */
-    // public function checkUI5Errors(): void
-    // {
-    //     $ui5Errors = $this->getSession()->evaluateScript('
-    //     if (typeof sap !== "undefined" && sap.ui && sap.ui.getCore()) {
-    //         var messageManager = sap.ui.getCore().getMessageManager();
-    //         if (messageManager && messageManager.getMessageModel) {
-    //             return messageManager.getMessageModel().getData().filter(function(msg) {
-    //                 return msg.type === "Error" || msg.type === "Fatal";
-    //             });
-    //         }
-    //     }
-    //     return [];
-    // ');
-
-    //     if (!empty($ui5Errors)) {
-    //         $errorDetails = "\nUI5 Framework Errors Detected:";
-    //         foreach ($ui5Errors as $error) {
-    //             $errorDetails .= sprintf(
-    //                 "\nType: %s, Message: %s",
-    //                 $error['type'] ?? 'unknown',
-    //                 $error['message'] ?? 'unknown'
-    //             );
-    //         }
-    //         throw new \RuntimeException($errorDetails);
-    //     }
-    // }
-    // /**
-    //  * Checks for XHR (XMLHttpRequest) related errors
-    //  * 
-    //  * @throws \RuntimeException if XHR errors are detected
-    //  */
-    // public function checkXHRErrors(): void
-    // {
-    //     $errors = $this->getSession()->evaluateScript('
-    //     if (window.exfXHRLog && window.exfXHRLog.errors) {
-    //         return window.exfXHRLog.errors;
-    //     }
-    //     return [];
-    // ') ?? [];
-
-    //     if (!empty($errors)) {
-    //         $lastError = end($errors);
-    //         $errorDetails = "\nXHR Error Detected:";
-    //         $errorDetails .= "\nType: " . ($lastError['type'] ?? 'Unknown');
-    //         $errorDetails .= "\nMessage: " . ($lastError['message'] ?? 'No message');
-    //         throw new \RuntimeException($errorDetails);
-    //     }
-    // }
-
-    // /**
-    //  * Checks for network resource loading errors
-    //  * 
-    //  * @throws \RuntimeException if network errors are detected
-    //  */
-    // public function checkNetworkErrors(): void
-    // {
-    //     $failedRequests = $this->getSession()->evaluateScript('
-    //     if (window.exfXHRLog && window.exfXHRLog.requests) {
-    //         return window.exfXHRLog.requests.filter(function(req) {
-    //             return req.status >= 400;
-    //         }).map(function(req) {
-    //             return {
-    //                 url: req.url || "unknown",
-    //                 status: req.status || 0,
-    //                 response: (req.response || "").substring(0, 200)
-    //             };
-    //         });
-    //     }
-    //     return [];
-    // ');
-
-    //     if (!empty($failedRequests)) {
-    //         $errorDetails = "\nNetwork Request Failures Detected:";
-    //         foreach ($failedRequests as $request) {
-    //             $errorDetails .= sprintf(
-    //                 "\nURL: %s, Status: %s, Response: %s",
-    //                 $request['url'],
-    //                 $request['status'],
-    //                 $request['response']
-    //             );
-    //         }
-    //         throw new \RuntimeException($errorDetails);
-    //     }
-    // }
-
-    public static function setupUser(WorkbenchInterface $workbench, array $roles, string $locale = null) : array
+ 
+    public static function setupUser(WorkbenchInterface $workbench, array $roles, string $locale = null): array
     {
         $config = $workbench->getApp('axenox.BDT')->getConfig();
         $userSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER');
@@ -1428,15 +894,15 @@ JS
             $userSheet->setCellValue('LOCALE', 0, $locale);
         }
 
-        if (! empty($roles)) {
+        if (!empty($roles)) {
             $roleSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER_ROLE');
             $roleSheet->getColumns()->addFromSystemAttributes();
             $roleSheet->getFilters()
                 ->addNestedOR()
-                    ->addConditionFromValueArray('ALIAS_WITH_NS', $roles)
-                    ->addConditionFromValueArray('NAME', $roles);
+                ->addConditionFromValueArray('ALIAS_WITH_NS', $roles)
+                ->addConditionFromValueArray('NAME', $roles);
             $roleSheet->dataRead();
-            
+
             $userRoleSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER_ROLE_USERS');
             $userRoleSheet->getFilters()->addConditionFromString('USER', $userId);
             foreach ($roleSheet->getUidColumn()->getValues() as $roleUid) {
@@ -1462,7 +928,7 @@ JS
         return $loginFields;
     }
 
-    public static function resetUser(WorkbenchInterface $workbench) : void
+    public static function resetUser(WorkbenchInterface $workbench): void
     {
         $config = $workbench->getApp('axenox.BDT')->getConfig();
         $dataSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER_ROLE_USERS');
@@ -1470,5 +936,39 @@ JS
         $dataSheet->dataDelete();
         return;
     }
-}
-// v1 nice
+
+    private function getCurrentUrlInfo(): array
+    {
+      
+        return $this->getSession()->evaluateScript('
+        (function() {
+            var baseUrl = window.location.href.split("#")[0];
+            var fullUrl = window.location.href;
+            
+            // UI5 specific routing information
+            var ui5Hash = "";
+            if (typeof sap !== "undefined" && 
+                sap.ui && 
+                sap.ui.core && 
+                sap.ui.core.routing && 
+                sap.ui.core.routing.HashChanger) {
+                
+                try {
+                    // Get the current hash from UI5 router
+                    ui5Hash = sap.ui.core.routing.HashChanger.getInstance().getHash();
+                } catch(e) {
+                    ui5Hash = window.location.hash.replace("#", "");
+                }
+            } else {
+                ui5Hash = window.location.hash.replace("#", "");
+            }
+            
+            return {
+                baseUrl: baseUrl,
+                fullUrl: fullUrl,
+                hash: ui5Hash
+            };
+        })()
+    ');
+    }
+} 
