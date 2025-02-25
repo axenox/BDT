@@ -28,6 +28,7 @@ use axenox\BDT\Behat\TwigFormatter\Printer\FileOutputPrinter;
 use axenox\BDT\Behat\TwigFormatter\Renderer\BaseRenderer;
 use exface\Core\CommonLogic\Filemanager;
 use exface\Core\DataTypes\FilePathDataType;
+use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 
 global $suiteStartDate, $suiteEndDate, $featureStartDate, $featureEndDate, $scenarioStartDate, $scenarioEndDate, $stepStartDate, $stepEndDate;
 
@@ -724,13 +725,17 @@ class BehatFormatter implements Formatter
 
 
     /**
-     * @param AfterStepTested $event
+     * Handles the event triggered after a step is tested
+     * Collects step information, manages error reporting, and handles screenshots
+     * @param AfterStepTested $event The event containing information about the tested step
      */
     public function onAfterStepTested(AfterStepTested $event)
     {
         error_log("\n=== onAfterStepTested Start ===");
         $result = $event->getTestResult();
 
+
+        // Create a new Step object and populate it with data from the event
         $step = new Step();
         $step->setKeyword($event->getStep()->getKeyword());
         $step->setText($event->getStep()->getText());
@@ -739,56 +744,30 @@ class BehatFormatter implements Formatter
         $step->setResult($result);
         $step->setResultCode($result->getResultCode());
 
-        // If step failed, collect error information
+        // If step failed, collect error information for reporting
         if (!$result->isPassed()) {
             $exception = $result instanceof ExecutedStepResult ? $result->getException() : null;
             if ($exception) {
-                $errorMessage = "(";
-                $errorMessage .= "During the page operation, founded an issue:\n\n";
+                $errorManager = ErrorManager::getInstance();
 
-                // Parse exception message to extract error details
-                $message = $exception->getMessage();
+                // If there are no errors already in the ErrorManager, create a new error message
+                if (!$errorManager->hasErrors()) {
+                    $errorMessage = "(";
+                    $errorMessage .= "During the page operation, founded an issue:\n\n";
+                    $message = $exception->getMessage();
+                    $errorMessage .= "------------------------\n";
+                    $errorMessage .= ")";
 
-                // Check if message contains HTTP error details
-                if (preg_match('/status code: (\d+)/', $message, $matches)) {
-                    $errorMessage .= sprintf(
-                        "Type: Network\nStatus: %s\n",
-                        $matches[1]
-                    );
+                    $step->addOutput($errorMessage);
+                } else {
+                    // Get the existing error from ErrorManager
+                    $error = $errorManager->getFirstError();
+                    $step->addOutput($errorManager->formatErrorMessage($error));
                 }
-
-                // Check for SQL errors
-                if (strpos($message, 'SQL query failed') !== false) {
-                    $errorMessage .= sprintf(
-                        "Type: Database\nMessage: %s\n",
-                        $message
-                    );
-                }
-
-                // Check for UI5 specific errors
-                if (strpos($message, 'UI5') !== false || strpos($message, 'sap') !== false) {
-                    $errorMessage .= sprintf(
-                        "Type: Database\nMessage: %s\n",
-                        $message
-                    );
-                }
-
-                // If no specific error type detected, add as generic error
-                if (strpos($errorMessage, "Tip:") === false) {
-                    $errorMessage .= sprintf(
-                        "Type: Database\nMessage: %s\n",
-                        $message
-                    );
-                }
-
-                $errorMessage .= "------------------------\n";
-                $errorMessage .= ")";
-
-                $step->addOutput($errorMessage);
             }
         }
 
-        // Handle screenshots
+        // Handle screenshots for passed "Then" steps or steps with specific result code
         if (($step->getResultCode() == "99") || ($step->getResult()->isPassed() && $step->getKeyword() === "Then")) {
             $screenshot = self::buildScreenshotFilename(
                 $event->getSuite()->getName(),
@@ -796,8 +775,10 @@ class BehatFormatter implements Formatter
                 $event->getStep()->getLine()
             );
 
+            // Check if screenshot exists in temporary location
             $tempPath = getcwd() . DIRECTORY_SEPARATOR . ".tmp_behatFormatter" . DIRECTORY_SEPARATOR . $screenshot;
             if (file_exists($tempPath)) {
+                // Build the path to the screenshot in the assets directory
                 $screenshot = 'assets/'
                     . FilePathDataType::findFileName($this->assetsSubfolder)
                     . '/screenshots/'
@@ -858,3 +839,6 @@ class BehatFormatter implements Formatter
             . ".png";
     }
 }
+
+
+// v1
