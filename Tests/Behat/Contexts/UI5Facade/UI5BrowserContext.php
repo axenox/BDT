@@ -986,6 +986,121 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
     }
 
+    /**
+     * @When I select :rowIndex row on the :tableIndex table  
+     */
+    public function iSelectRow($rowIndex, $tableIndex)
+    {
+        try {
+            $page = $this->getBrowser()->getPage();
+
+            // Convert index to integer and remove any non-numeric characters (e.g., ".")
+            $rowNumber = filter_var($rowIndex, FILTER_SANITIZE_NUMBER_INT);
+            $tableNumber = filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT);
+
+            echo "Row Nr: " . $rowNumber . "\n";
+            echo "Table Nr: " . $tableNumber . "\n";
+
+            if (!is_numeric($rowNumber) || $rowNumber < 1) {
+                throw new Exception("Invalid row index: '{$rowIndex}'. It should be a positive number.");
+            }
+
+
+            $splitBar = $page->findAll('css', '.sapUiLoSplitterBar');
+            echo "Splitbar count: " . count($splitBar) . "\n";
+
+            // Check if there is more than one table 
+            if (count($splitBar) > 0) {
+
+                //$rows = $page->findAll('css', '.panel:nth-of-type('.$tableNumber.').sapUiTableRow');
+                $parents = $page->findAll('css', '.exfw-DataTable');
+                $rows = $parents[$tableNumber - 1]->findAll('css', '.sapUiTableRow');
+
+                $selectedRow = $rows[$rowNumber];
+
+                Assert::assertNotNull($selectedRow, "Element Not Found");
+
+                $this->getSession()->wait(1000, false);
+
+                $selectedRow->click();
+
+                // Check if the row really selected
+                echo $selectedRow->getAttribute('aria-selected');
+                Assert::assertTrue($selectedRow->getAttribute('aria-selected') === 'true', "{$rowIndex}. row could not be selected");
+
+
+            } else {
+
+                echo "\n ***One Panel Found*** \n";
+
+                $rows = $page->findAll('css', '.sapUiTableRow');
+                $selectedRow = $rows[$rowNumber];
+                Assert::assertNotNull($selectedRow, "Element Not Found");
+
+                //TODO: Wait for any pending operations to complete add here centralized wait
+                $this->getSession()->wait(1000, false);
+
+                $selectedRow->click();
+                echo $selectedRow->getAttribute('aria-selected');
+                Assert::assertTrue($selectedRow->getAttribute('aria-selected') === 'true', "{$rowIndex}. row could not be selected");
+
+
+            }
+        } catch (\Exception $e) {
+            $this->handleContextError($e, 'UI5', 'iSelectRow');
+            throw $e;
+        }
+
+    }
+
+
+
+
+
+    /**
+     * @When I click button :caption on the :tableIndex table
+     */
+    public function iclickButtonOnTable($caption, $tableIndex)
+    {
+        try {
+            $page = $this->getBrowser()->getPage();
+
+            // Convert index to integer and remove any non-numeric characters (e.g., ".")
+            $tableNumber = (int) filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT);
+            echo $caption;
+            echo $tableNumber;
+
+            $this->getSession()->wait(1000, false);
+            $splitBar = $page->findAll('css', '.sapUiLoSplitterBar');
+            $this->getSession()->wait(1000, false);
+
+            echo "\n **** Splitbar count: " . count($splitBar) . " ****** \n";
+
+            // Check if there is more than one table 
+            if (count($splitBar) > 0) {
+
+                //$parent = $page->findAll('css', '.sapUiLoSplitterContent:nth-of-type('.$tableNumber.')');
+                $parents = $page->findAll('css', '.exfw-DataTable');
+                $btn = $this->getBrowser()->findButtonByCaption($caption, $parents[$tableNumber - 1]);
+                Assert::assertNotNull($btn, 'Cannot find button "' . $caption . '"');
+
+                $btn->click();
+
+            } else {
+                echo "***One Panel Found***";
+
+                $btn = $this->getBrowser()->findButtonByCaption($caption);
+                Assert::assertNotNull($btn, 'Cannot find button "' . $caption . '"');
+
+                $btn->click();
+            }
+        } catch (\Exception $e) {
+            $this->handleContextError($e, 'UI5', 'iclickButtonOnTable');
+            throw $e;
+        }
+
+    }
+
 
     /**
      * @BeforeScenario
