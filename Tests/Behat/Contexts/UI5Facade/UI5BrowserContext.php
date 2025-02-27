@@ -1005,14 +1005,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 throw new Exception("Invalid row index: '{$rowIndex}'. It should be a positive number.");
             }
 
+            // Save the last selected table number for to use for like clickTableOverflowButton calls
+            $this->lastSelectedTable = $tableNumber;
 
             $splitBar = $page->findAll('css', '.sapUiLoSplitterBar');
             echo "Splitbar count: " . count($splitBar) . "\n";
 
             // Check if there is more than one table 
             if (count($splitBar) > 0) {
-
-                //$rows = $page->findAll('css', '.panel:nth-of-type('.$tableNumber.').sapUiTableRow');
                 $parents = $page->findAll('css', '.exfw-DataTable');
                 $rows = $parents[$tableNumber - 1]->findAll('css', '.sapUiTableRow');
 
@@ -1027,10 +1027,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 // Check if the row really selected
                 echo $selectedRow->getAttribute('aria-selected');
                 Assert::assertTrue($selectedRow->getAttribute('aria-selected') === 'true', "{$rowIndex}. row could not be selected");
-
-
             } else {
-
                 echo "\n ***One Panel Found*** \n";
 
                 $rows = $page->findAll('css', '.sapUiTableRow');
@@ -1043,14 +1040,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 $selectedRow->click();
                 echo $selectedRow->getAttribute('aria-selected');
                 Assert::assertTrue($selectedRow->getAttribute('aria-selected') === 'true', "{$rowIndex}. row could not be selected");
-
-
             }
         } catch (\Exception $e) {
             $this->handleContextError($e, 'UI5', 'iSelectRow');
             throw $e;
         }
-
     }
 
 
@@ -1099,6 +1093,232 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             throw $e;
         }
 
+    }
+
+
+    /**
+     * Clicks the overflow button on the specified table
+     * 
+     * @Then I click the overflow button on table :tableIndex
+     * @Then I click the overflow button
+     * 
+     * @param string|null $tableIndex Table index (optional)
+     * @return void
+     */
+    public function clickTableOverflowButton($tableIndex = null): void
+    {
+        try {
+            // If a table index is provided, convert it to an integer
+            $tableNumber = null;
+            if ($tableIndex !== null) {
+                $tableNumber = (int) filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT);
+            }
+
+            // If no table index is provided and a last selected table exists, use the last selected table
+            if ($tableNumber === null && isset($this->lastSelectedTable)) {
+                $tableNumber = $this->lastSelectedTable;
+            }
+
+            // Click the overflow button
+            $this->clickOverflowButton($tableNumber);
+
+        } catch (\Exception $e) {
+            $this->handleContextError($e, 'UI5', 'clickTableOverflowButton');
+            throw $e;
+        }
+    }
+
+    /**
+     * Clicks the overflow button of the selected table
+     * 
+     * @param int|null $tableIndex The table index (1-based) of the overflow button to click
+     * @return void
+     */
+    public function clickOverflowButton(int $tableIndex = null): void
+    {
+        try {
+            // Check if the browser object is initialized
+            if (!$this->browser) {
+                throw new \RuntimeException("Browser is not initialized. You need to visit a page first.");
+            }
+
+            $page = $this->getBrowser()->getPage();
+
+            // If a table index is provided, find the overflow button of that table
+            if ($tableIndex !== null) {
+                // Find all tables
+                $tables = $page->findAll('css', '.exfw-DataTable, .sapUiTable, .sapMTable');
+
+                if (count($tables) < $tableIndex) {
+                    throw new \RuntimeException("Table not found at the specified index: " . $tableIndex);
+                }
+
+                // Get the table at the specified index (convert to 0-based index)
+                $targetTable = $tables[$tableIndex - 1];
+
+                // Find the overflow button in this table
+                $overflowButton = $targetTable->find('css', 'button[id*="overflowButton"], button[id*="tableMenuButton"]');
+
+                if (!$overflowButton) {
+                    // Alternatively, search for the overflow button in the table's toolbar
+                    $toolbar = $targetTable->find('css', '.sapMTB, .sapUiTableTbr');
+                    if ($toolbar) {
+                        $overflowButton = $toolbar->find('css', 'button[id*="overflowButton"]');
+                    }
+                }
+            } else {
+                // If no table index is provided, find the first overflow button on the page
+                $overflowButton = $page->find('css', 'button[id*="overflowButton"]');
+            }
+
+            // If no overflow button was found, throw an error
+            if (!$overflowButton) {
+                throw new \RuntimeException("Overflow butonu bulunamadı" .
+                    ($tableIndex ? " (Tablo indeksi: $tableIndex)" : ""));
+            }
+
+            // Click the button
+            $overflowButton->click();
+
+            // Wait briefly
+            $this->getSession()->wait(1000);
+
+            // Verify the click was successful
+            // In UI5, a popup or popover element usually appears when a menu is opened
+            $menu = $page->find('css', '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu');
+
+            if (!$menu) {
+                // Try clicking via JavaScript as an alternative method
+                $buttonId = $overflowButton->getAttribute('id');
+                $this->getSession()->executeScript("
+                var element = document.getElementById('$buttonId');
+                if (element) {
+                    element.click();
+                    return true;
+                }
+                return false;
+            ");
+
+                // Wait again and check
+                $this->getSession()->wait(1000);
+                $menu = $page->find('css', '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu');
+            }
+
+            echo "✓ Overflow button clicked successfully\n";
+
+        } catch (\Exception $e) {
+            $this->handleContextError($e, 'UI5', 'clickOverflowButton');
+            throw $e;
+        }
+    }
+
+
+
+    /**
+     * @Then an XLSX file should be downloaded
+     */
+    public function anXlsxFileShouldBeDownloaded(): void
+    {
+        try {
+            // First check for the toast message
+            $this->verifyToastMessage("Download ready");
+
+            // Wait for a few seconds to ensure the file has been fully downloaded
+            sleep(15);
+
+            // Get the download directory from configuration
+            $config = $this->getWorkbench()->getApp('axenox.BDT')->getConfig();
+            $downloadDir = $config->getOption('TEST_DOWNLOADS.DIRECTORY_WINDOWS');
+
+            // Ensure the download directory exists
+            if (!file_exists($downloadDir) || !is_dir($downloadDir)) {
+                throw new \RuntimeException("Download directory does not exist: $downloadDir");
+            }
+
+            // Retrieve the latest XLSX file from the download directory
+            $latestFile = null;
+            $latestTime = 0;
+            $oneMinuteAgo = time() - 60;
+
+            $files = scandir($downloadDir);
+            foreach ($files as $file) {
+                $filePath = $downloadDir . DIRECTORY_SEPARATOR . $file;
+
+                // Check if the item is a file and modified within the last minute
+                if (is_file($filePath) && filemtime($filePath) >= $oneMinuteAgo) {
+                    // Ensure the file has an XLSX extension
+                    if (strtolower(pathinfo($file, PATHINFO_EXTENSION)) === 'xlsx') {
+                        if (filemtime($filePath) > $latestTime) {
+                            $latestTime = filemtime($filePath);
+                            $latestFile = $file;
+                        }
+                    }
+                }
+            }
+
+            // Verify if a valid XLSX file was found
+            if ($latestFile) {
+                echo "✓ Latest downloaded file: $latestFile\n";
+            } else {
+                throw new \RuntimeException("No recently downloaded XLSX file found in: $downloadDir");
+            }
+        } catch (\Exception $e) {
+            $this->handleContextError($e, 'UI5', 'anXlsxFileShouldBeDownloaded');
+            throw new \RuntimeException('Download test failed: ' . $e->getMessage(), 0, $e);
+        }
+    }
+
+    /**
+     * Verifies that a toast message appears with the expected text
+     * 
+     * @param string $expectedText The text (or part of text) expected in the toast
+     * @param int $timeout Maximum time to wait for the toast in seconds
+     * @return void
+     * @throws \RuntimeException if toast message is not found
+     */
+    private function verifyToastMessage(string $expectedText, int $timeout = 30): void
+    {
+        try {
+            // Start timer
+            $start = time();
+            $toastFound = false;
+
+            // Try to find the toast message with retries
+            while ((time() - $start) < $timeout && !$toastFound) {
+                // Look for toast message elements
+                $toastElements = $this->getBrowser()->getPage()->findAll('css', '.sapMMessageToast');
+
+                foreach ($toastElements as $toast) {
+                    $toastText = $toast->getText();
+                    echo "Found toast: $toastText\n";
+
+                    // Check if the toast contains the expected text
+                    if (strpos($toastText, $expectedText) !== false) {
+                        echo "✓ Found expected toast message: \"$toastText\"\n";
+                        $toastFound = true;
+                        break;
+                    }
+                }
+
+                if (!$toastFound) {
+                    // Wait a short time before retrying
+                    usleep(500000); // 0.5 seconds
+                }
+            }
+
+            // Assert that the toast was found
+            if (!$toastFound) {
+                throw new \RuntimeException(
+                    "Expected toast message containing \"$expectedText\" did not appear within $timeout seconds"
+                );
+            }
+
+            // Wait a moment to let the toast disappear (if needed)
+            sleep(1);
+        } catch (\Exception $e) {
+            $this->handleContextError($e, 'UI5', 'verifyToastMessage');
+            throw $e;
+        }
     }
 
 
