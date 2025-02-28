@@ -12,5 +12,6 @@
     "TEST_USER.USERNAME": "bdt_test",
     "TEST_USER.PASSWORD": "BDT!test54321",
     "TEST_USER.FIRST_NAME": "BDT",
-    "TEST_USER.LAST_NAME": "Test User"
+    "TEST_USER.LAST_NAME": "Test User",
+    "TEST_DOWNLOADS.DIRECTORY_WINDOWS": "C:\\Users\\ibrahim.karayilan\\Downloads"
 }
