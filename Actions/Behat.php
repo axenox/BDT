@@ -8,6 +8,7 @@ use exface\Core\DataTypes\ServerSoftwareDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\Actions\ActionInputMissingError;
 use exface\Core\Facades\ConsoleFacade\CommandRunner;
+use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Interfaces\Tasks\CliTaskInterface;
 use exface\Core\Interfaces\Tasks\TaskInterface;
 use exface\Core\Interfaces\DataSources\DataTransactionInterface;
@@ -123,12 +124,17 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
         return $wbPath . DIRECTORY_SEPARATOR . 'behat.yml';
     }
 
-    protected function doIncludeApp(string $alias): \Generator
+    protected function doIncludeApp(string $alias, array &$yml = null): \Generator
     {
-        $ymlPath = $this->getGlobalYmlPath();
-        $loader = $this->getYmlReader($ymlPath);
-        yield from $loader;
-        $yml = $loader->getReturn();
+        if ($yml === null) {
+            $ymlPath = $this->getGlobalYmlPath();
+            $loader = $this->getYmlReader($ymlPath);
+            yield from $loader;
+            $yml = $loader->getReturn();
+            $saveYml = true;
+        } else {
+            $saveYml = false;
+        }
 
         $app = $this->getWorkbench()->getApp($alias);
         $appDir = $app->getDirectoryAbsolutePath();
@@ -163,23 +169,25 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
             yield 'App already included.' . PHP_EOL;
         }
 
-        $writer = $this->getYmlWriter($yml, $ymlPath);
-        yield from $writer;
+        if ($saveYml === true) {
+            $writer = $this->getYmlWriter($yml, $ymlPath);
+            yield from $writer;
+        }
     }
 
     /**
      * Initialize the Behat testing environment
      * 
      * This method performs the following tasks:
-     * 1. Sets up the global Behat YAML configuration
-     * 2. Creates necessary directories for screenshots and test reports
-     * 3. Generates unique filenames for test reports
-     * 5. Sets up web access configurations
+     * - Sets up the global Behat YAML configuration
+     * - Make sure all installed apps are included in the config
+     * - Sets up web access configurations
      * 
      * @return \Generator Yields status messages during the initialization process
      */
     protected function doInit(): \Generator
     {
+        $idt = '  ';
         // Get the path where the global Behat YAML configuration will be stored
         // This is in the root directory of the installation
         $ymlPath = $this->getGlobalYmlPath();
@@ -189,6 +197,26 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
         $loader = $this->getYmlReader($ymlPath);
         yield from $loader;
         $yml = $loader->getReturn();
+
+
+        // Make sure all apps with features are registered in the global behat config
+        yield 'Checking configuration of installed apps:' . PHP_EOL;
+        $featuresSheet = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.BEHAT_FEATURE');
+        $featuresSheet->getColumns()->addMultiple([
+            'APP__ALIAS'
+        ]);
+        $featuresSheet->dataRead();
+        $appsAdded = [];
+        foreach ($featuresSheet->getRows() as $row) {
+            $appAlias = $row['APP__ALIAS'];
+            if (! in_array($appAlias, $appsAdded)) {
+                yield $idt . 'Found BDT features for app "' . $appAlias . '"' . PHP_EOL;
+                foreach ($this->doIncludeApp($appAlias, $yml) as $msg) {
+                    yield $idt . $idt . $msg;
+                }
+                $appsAdded[] = $appAlias;
+            }
+        }
 
         // Save the updated YAML configuration
         // This also updates the base_url if it has changed
