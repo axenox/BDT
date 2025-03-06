@@ -85,9 +85,9 @@
     ],
     "rows": [
         {
-            "_EXPORT_SUMMARY": "Features [axenox.BDT.BEHAT_FEATURE]",
+            "_EXPORT_SUMMARY": "Feature files [axenox.BDT.BEHAT_FEATURE]",
             "CREATED_ON": "2024-12-02 09:41:20",
-            "MODIFIED_ON": "2024-12-03 12:19:08",
+            "MODIFIED_ON": "2025-03-06 16:00:25",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11ef9022353fc90a9022025041000001",
@@ -95,7 +95,7 @@
             "WRITABLE_FLAG": 1,
             "COMMENTS": "",
             "DOCS": "",
-            "NAME": "Features",
+            "NAME": "Feature files",
             "INHERIT_DATA_SOURCE_BASE_OBJECT": 1,
             "DATA_SOURCE": "0x11e6afd8d2fa47e78943e4b318306b9a",
             "APP": "0x11efa2214f96c8b8a221025041000001",
@@ -114,8 +114,14 @@
                         "disabled": false
                     },
                     {
-                        "attribute_alias": "PATHNAME_RELATIVE",
-                        "width": 2
+                        "attribute_alias": "PATH_RELATIVE",
+                        "width": 2,
+                        "disabled": false
+                    },
+                    {
+                        "attribute_alias": "FILENAME",
+                        "width": 2,
+                        "disabled": false
                     }
                 ]
             },
