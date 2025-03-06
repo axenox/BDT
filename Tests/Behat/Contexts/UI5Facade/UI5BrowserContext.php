@@ -791,7 +791,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             /**
              * @var \Behat\Mink\Element\NodeElement $tableNode
              */
-            $tableNode = $this->getFocusedNode();
+            $tableNode = $this->getBrowser()->getFocusedNode();
             Assert::assertNotNull($tableNode, 'No widget has focus right now - cannot use steps like "it has..."');
             $colNode = $tableNode->find('css', 'td');
             Assert::assertNotNull($colNode, 'Column "' . $caption, '" not found');
