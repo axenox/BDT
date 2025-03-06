@@ -5,6 +5,7 @@ use exface\Core\CommonLogic\UxonObject;
 use exface\Core\CommonLogic\WorkbenchCache;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\PhpFilePathDataType;
+use exface\Core\DataTypes\StringDataType;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Interfaces\DataSheets\DataSheetInterface;
 use exface\Core\Widgets\InputCustom;
@@ -89,10 +90,17 @@ JS;
         $steps = $this->findStepsInContexts();
         $aceCompletions = [];
         foreach ($steps as $phrase) {
+            $key = StringDataType::substringBefore($phrase, ' ');
             $aceCompletions[] = [
                 'caption' => $phrase,
                 'value' => $phrase,
-                'meta' => 'steps'
+                'meta' => $key
+            ];
+            $andPhrase = 'And' . StringDataType::substringAfter($phrase, $key);
+            $aceCompletions[] = [
+                'caption' => $andPhrase,
+                'value' => $andPhrase,
+                'meta' => $key
             ];
         }
         return json_encode($aceCompletions);

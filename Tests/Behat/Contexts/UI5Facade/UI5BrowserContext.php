@@ -224,7 +224,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     /**
      * Verifies that the page content is accessible and not empty
      * 
-     * @Then /^I should see the page$/
+     * @Then I should see the page
      */
     public function iShouldSeeThePage()
     {
@@ -431,7 +431,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * Verifies that the currently focused element contains a specified number of widgets
      * of a given type. Used after focusing on a container element.
      * 
-     * @Then It has :number widget of type ":widgetType"
+     * @Then it has :number widget of type ":widgetType"
      * 
      * @param int $number Expected number of widgets
      * @param string $widgetType Type of widget to look for
@@ -520,7 +520,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * Verifies that a focused widget (typically a form or filter group) contains the 
      * specified filters by name
      * 
-     * @Then It has filters: :filterList
+     * @Then it has filters: :filterList
      * 
      * @param string $filterList Comma-separated list of expected filter names
      */
