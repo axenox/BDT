@@ -7,6 +7,7 @@ use Behat\Mink\Element\NodeElement;
 use Behat\MinkExtension\Context\MinkContext;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use exface\Core\CommonLogic\Workbench;
+use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Interfaces\WorkbenchInterface;
 use PHPUnit\Framework\Assert;
 use Behat\Behat\Hook\Scope\BeforeScenarioScope;
@@ -1347,7 +1348,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     protected function getBrowser(): UI5Browser
     {
         if ($this->browser === null) {
-            throw new \RuntimeException('BDT Browser not initialized!');
+            $e = new RuntimeException('BDT Browser not initialized!');
+            $this->getWorkbench()->getLogger()->logException($e);
+            throw $e;
         }
         return $this->browser;
     }
@@ -1387,7 +1390,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             'type' => $type,         // Type of the error
             'message' => $e->getMessage(), // Error message from exception
             'source' => $source,     // Source method where error occurred
-            'url' => $this->getBrowser()->getCurrentUrlWithHash(), // Current URL with hash
+            'url' => $this->browser === null ? null : $this->getBrowser()->getCurrentUrlWithHash(), // Current URL with hash
         ];
 
         // Add additional data if provided
