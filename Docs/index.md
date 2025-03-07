@@ -12,6 +12,10 @@
 
 ## Developing Behat contexts and steps
 
+### Write tests
+
+- [Introduction to the Gherkin language](Introduction/Writing_tests_-_Gherkin_language.md)
+
 ### Debug a test
 
 You will need a local workbench installation as described in the [installation guied](https://github.com/ExFace/Core/blob/1.x-dev/Docs/Installation/index.md) and a PHP IDE like Visual Studio Code with PHP debugging set up correctly.
