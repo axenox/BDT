@@ -149,7 +149,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
                     'suites' => [
                         $app->getAliasWithNamespace() => [
                             'paths' => ['%paths.base%/vendor/' . StringDataType::substringAfter(FilePathDataType::normalize($pathToFeatures), '/vendor/')],
-                            'contexts' => ['axenox\BDT\Behat\Tests\Contexts\UI5Facade\UI5BrowserContext']
+                            'contexts' => ['axenox\BDT\Tests\Behat\Contexts\UI5Facade\UI5BrowserContext']
                         ]
                     ]
                 ]
@@ -209,7 +209,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
         $appsAdded = [];
         foreach ($featuresSheet->getRows() as $row) {
             $appAlias = $row['APP__ALIAS'];
-            if (! in_array($appAlias, $appsAdded)) {
+            if ($appAlias && ! in_array($appAlias, $appsAdded)) {
                 yield $idt . 'Found BDT features for app "' . $appAlias . '"' . PHP_EOL;
                 foreach ($this->doIncludeApp($appAlias, $yml) as $msg) {
                     yield $idt . $idt . $msg;
