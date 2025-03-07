@@ -7,6 +7,7 @@ use Behat\Mink\Element\NodeElement;
 use Behat\MinkExtension\Context\MinkContext;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use exface\Core\CommonLogic\Workbench;
+use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Interfaces\WorkbenchInterface;
 use PHPUnit\Framework\Assert;
@@ -313,6 +314,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     public function iVisitPage(string $url): void
     {
         try {
+            if ($url && ! StringDataType::endsWith($url, '.html')) {
+                $url .= '.html';
+            }
+            
             // Navigate to the page using Mink's path navigation
             $this->visitPath('/' . $url);
             echo "Debug - New page is loading...\n";
