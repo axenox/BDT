@@ -1,0 +1,7 @@
+default:
+    suites:
+        axenox.BDT:
+            paths:
+                - '%paths.base%/vendor/axenox/bdt/Tests/Behat/Features'
+            contexts:
+                - axenox\BDT\Tests\Behat\Contexts\UI5Facade\UI5BrowserContext
