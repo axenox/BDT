@@ -88,18 +88,59 @@ JS;
     protected function buildJsCompletionsArray() : string
     {
         $steps = $this->findStepsInContexts();
-        $aceCompletions = [];
+        $aceCompletions = [
+            ['caption' => 'Given', 'value' => 'Given ', 'meta' => 'Keyword'],
+            ['caption' => 'When', 'value' => 'When ', 'meta' => 'Keyword'],
+            ['caption' => 'Then', 'value' => 'Then ', 'meta' => 'Keyword'],
+            ['caption' => 'And', 'value' => 'And ', 'meta' => 'Keyword'],
+            ['caption' => 'But', 'value' => 'But ', 'meta' => 'Keyword'],
+            [
+                'caption' => 'Scenario - a set of steps to be tested',
+                'value' => <<<TXT
+Scenario: [name]
+        # steps here
+TXT             ,
+                'meta' => 'Template'
+            ],
+            [
+                'caption' => 'Scenario outline - template to run for multiple inputs',
+                'value' => <<<TXT
+Scenario outline: [name]
+        # steps here with "<myVar1>" and "<myVar2>" as placeholders
+        Examples:
+        | myVar1 | myVar2 |
+        | value1 | value2 |
+TXT             ,
+                'meta' => 'Template'
+            ],
+            [
+                'caption' => 'Feature - a new feature file',
+                'value' => <<<TXT
+Feature: [name]
+    In order to write good automated tests
+    As a test manager
+    I need to fill out templates provided by this editor
+
+    Scenario:
+        # steps here
+TXT,
+                'meta' => 'Template'
+            ],
+            [
+                'caption' => 'Background - steps to run before every scenario',
+                'value' => <<<TXT
+# Do this before every scenario
+Background: [name]
+        # steps here
+TXT             ,
+                'meta' => 'Keyword'
+            ]
+        ];
         foreach ($steps as $phrase) {
-            $key = StringDataType::substringBefore($phrase, ' ');
+            list($key, $step) = explode(' ', $phrase, 2);
             $aceCompletions[] = [
-                'caption' => $phrase,
-                'value' => $phrase,
-                'meta' => $key
-            ];
-            $andPhrase = 'And' . StringDataType::substringAfter($phrase, $key);
-            $aceCompletions[] = [
-                'caption' => $andPhrase,
-                'value' => $andPhrase,
+                'caption' => $step,
+                'value' => $step,
                 'meta' => $key
             ];
         }
