@@ -38,14 +38,23 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private $scenarioName;
 
     private $workbench = null;
+    private $debug = false;
 
     /** 
      * Initializes and starts the workbench for the test environment
      */
-    public function __construct()
+    public function __construct(bool $debug = false) // Update constructor
     {
         $this->workbench = new Workbench();
         $this->workbench->start();
+        $this->debug = $debug; // Add this line
+    }
+
+    private function logDebug(string $message): void
+    {
+        if ($this->debug) {
+            echo $message . PHP_EOL; // Debug modu açıksa mesajı yazdırır
+        }
     }
 
     /**
@@ -96,12 +105,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 // Set Error Id for reference
                 ErrorManager::getInstance()->setLastLogId($wrappedException->getId());
 
-                // Display LogID for debugging purposes
-                echo "LogID: " . $wrappedException->getId() . "\n";
+                // Display LogID for debugging purposes 
+                $this->logDebug("LogID: " . $wrappedException->getId() . "\n");
             }
         } catch (\Exception $e) {
-            // Handle errors in the error handling itself
-            echo "\nError in error logging: " . $e->getMessage() . "\n";
+            // Handle errors in the error handling itself 
+            $this->logDebug("\nError in error logging: " . $e->getMessage() . "\n");
             $this->getWorkbench()->getLogger()->logException($e);
         }
     }
@@ -136,11 +145,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $this->getBrowser()->handleStepWaitOperations(false);
 
             // Log step beginning for debugging purposes
-            echo sprintf(
+            $this->logDebug(sprintf(
                 "\nStarting step: %s %s",
                 $scope->getStep()->getKeyword(),
                 $scope->getStep()->getText()
-            );
+            ));
+
 
         } catch (\Exception $e) {
             // Record any setup errors in the ErrorManager
@@ -183,11 +193,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $this->browser->getWaitManager()->validateNoErrors();
 
             // Log step completion for debugging
-            echo sprintf(
+            $this->logDebug(sprintf(
                 "\nCompleted step: %s %s",
                 $scope->getStep()->getKeyword(),
                 $scope->getStep()->getText()
-            );
+            ));
+
+
 
         } catch (\Exception $e) {
             // Add error to the ErrorManager
@@ -217,7 +229,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Initialize XHR monitoring if browser is available
         if ($this->browser) {
             $this->browser->initializeXHRMonitoring();
-            echo "\nXHR monitoring initialized for scenario: " . $this->scenarioName . "\n";
+            $this->logDebug("\nXHR monitoring initialized for scenario: " . $this->scenarioName . "\n");
         }
     }
 
@@ -293,7 +305,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         } catch (\Exception $e) {
             // Log debugging information and handle the error
-            echo "Debug - Login error: " . $e->getMessage() . "\n";
+            $this->logDebug("Debug - Login error: " . $e->getMessage() . "\n");
+
             $this->getWorkbench()->getLogger()->logException($e);
             $this->handleContextError($e, 'UI5', 'iLogInToPage');
             throw $e;
@@ -314,14 +327,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     public function iVisitPage(string $url): void
     {
         try {
-            if ($url && ! StringDataType::endsWith($url, '.html')) {
+            if ($url && !StringDataType::endsWith($url, '.html')) {
                 $url .= '.html';
             }
-            
+
             // Navigate to the page using Mink's path navigation
             $this->visitPath('/' . $url);
-            echo "Debug - New page is loading...\n";
-
+            $this->logDebug("Debug - New page is loading...\n");
             // Initialize the UI5Browser with the current session and URL
             $this->browser = new UI5Browser($this->getWorkbench(), $this->getSession(), $url);
             return;
@@ -910,11 +922,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
 
             // Log for debugging
-            echo sprintf(
+            $this->logDebug(sprintf(
                 "Found table with %d rows. Filter indicators: %s\n",
                 count($rows),
                 $hasFilter ? 'present' : 'not present'
-            );
+            ));
 
         } catch (\Exception $e) {
             $this->handleContextError($e, 'UI5', 'iSeeFilteredResultsInDataTable');
@@ -1003,9 +1015,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             // Convert index to integer and remove any non-numeric characters (e.g., ".")
             $rowNumber = filter_var($rowIndex, FILTER_SANITIZE_NUMBER_INT);
             $tableNumber = filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT);
+            $this->logDebug("Row Nr: " . $rowNumber . "\n");
+            $this->logDebug("Table Nr: " . $tableNumber . "\n");
 
-            echo "Row Nr: " . $rowNumber . "\n";
-            echo "Table Nr: " . $tableNumber . "\n";
 
             if (!is_numeric($rowNumber) || $rowNumber < 1) {
                 throw new Exception("Invalid row index: '{$rowIndex}'. It should be a positive number.");
@@ -1015,7 +1027,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $this->lastSelectedTable = $tableNumber;
 
             $splitBar = $page->findAll('css', '.sapUiLoSplitterBar');
-            echo "Splitbar count: " . count($splitBar) . "\n";
+
+            $this->logDebug("Splitbar count: " . count($splitBar) . "\n");
 
             // Check if there is more than one table 
             if (count($splitBar) > 0) {
@@ -1030,12 +1043,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
                 $selectedRow->click();
 
-                // Check if the row really selected
-                echo $selectedRow->getAttribute('aria-selected');
+                // Check if the row really selected 
+                $this->logDebug($selectedRow->getAttribute('aria-selected'));
                 Assert::assertTrue($selectedRow->getAttribute('aria-selected') === 'true', "{$rowIndex}. row could not be selected");
             } else {
-                echo "\n ***One Panel Found*** \n";
-
+                $this->logDebug(message: "\n ***One Panel Found*** \n");
                 $rows = $page->findAll('css', '.sapUiTableRow');
                 $selectedRow = $rows[$rowNumber];
                 Assert::assertNotNull($selectedRow, "Element Not Found");
@@ -1044,7 +1056,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 $this->getSession()->wait(1000, false);
 
                 $selectedRow->click();
-                echo $selectedRow->getAttribute('aria-selected');
+                $this->logDebug($selectedRow->getAttribute('aria-selected'));
                 Assert::assertTrue($selectedRow->getAttribute('aria-selected') === 'true', "{$rowIndex}. row could not be selected");
             }
         } catch (\Exception $e) {
@@ -1067,15 +1079,15 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
             // Convert index to integer and remove any non-numeric characters (e.g., ".")
             $tableNumber = (int) filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT);
-            echo $caption;
-            echo $tableNumber;
+            $this->logDebug($caption . "\n");
+            $this->logDebug($tableNumber . "\n"); 
 
             $this->getSession()->wait(1000, false);
             $splitBar = $page->findAll('css', '.sapUiLoSplitterBar');
             $this->getSession()->wait(1000, false);
 
-            echo "\n **** Splitbar count: " . count($splitBar) . " ****** \n";
-
+        
+            $this->logDebug("\n **** Splitbar count: " . count($splitBar) . " ****** \n");
             // Check if there is more than one table 
             if (count($splitBar) > 0) {
 
@@ -1086,9 +1098,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
                 $btn->click();
 
-            } else {
-                echo "***One Panel Found***";
-
+            } else { 
+                $this->logDebug("***One Panel Found***" . "\n");
                 $btn = $this->getBrowser()->findButtonByCaption($caption);
                 Assert::assertNotNull($btn, 'Cannot find button "' . $caption . '"');
 
@@ -1209,9 +1220,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 $this->getSession()->wait(1000);
                 $menu = $page->find('css', '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu');
             }
-
-            echo "✓ Overflow button clicked successfully\n";
-
+ 
+            $this->logDebug("✓ Overflow button clicked successfully\n");
         } catch (\Exception $e) {
             $this->handleContextError($e, 'UI5', 'clickOverflowButton');
             throw $e;
@@ -1263,8 +1273,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             }
 
             // Verify if a valid XLSX file was found
-            if ($latestFile) {
-                echo "✓ Latest downloaded file: $latestFile\n";
+            if ($latestFile) { 
+                $this->logDebug("✓ Latest downloaded file: $latestFile\n");
             } else {
                 throw new \RuntimeException("No recently downloaded XLSX file found in: $downloadDir");
             }
@@ -1296,11 +1306,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
                 foreach ($toastElements as $toast) {
                     $toastText = $toast->getText();
-                    echo "Found toast: $toastText\n";
+                
+                    $this->logDebug("Found toast: $toastText\n");
 
                     // Check if the toast contains the expected text
                     if (strpos($toastText, $expectedText) !== false) {
-                        echo "✓ Found expected toast message: \"$toastText\"\n";
+                     
+                        $this->logDebug("✓ Found expected toast message: \"$toastText\"\n");
                         $toastFound = true;
                         break;
                     }
@@ -1335,7 +1347,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         if ($this->browser) {
             $this->browser->clearXHRLog();
-            echo "\nXHR logs cleared before scenario: " . $scope->getScenario()->getTitle() . "\n";
+            $this->logDebug("\nXHR logs cleared before scenario: " . $scope->getScenario()->getTitle() . "\n"); 
         }
     }
 

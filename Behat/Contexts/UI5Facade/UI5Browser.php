@@ -542,10 +542,13 @@ class UI5Browser
 
         } catch (\Exception $e) {
             throw new \RuntimeException(
+                // sprintf(
+                //     "Failed to verify table content. Error: %s\nTable structure: %s",
+                //     $e->getMessage(),
+                //     $table->getOuterHtml()
+                // )
                 sprintf(
-                    "Failed to verify table content. Error: %s\nTable structure: %s",
-                    $e->getMessage(),
-                    $table->getOuterHtml()
+                    "Failed to verify table content"
                 )
             );
         }
