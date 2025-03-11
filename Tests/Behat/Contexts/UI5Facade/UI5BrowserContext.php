@@ -53,7 +53,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private function logDebug(string $message): void
     {
         if ($this->debug) {
-            echo $message . PHP_EOL; // Debug modu açıksa mesajı yazdırır
+            echo $message . PHP_EOL; // If debug mode is true, it writes the messages
         }
     }
 
@@ -105,6 +105,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 // Set Error Id for reference
                 ErrorManager::getInstance()->setLastLogId($wrappedException->getId());
 
+                echo "LogID: " . $wrappedException->getId() . "\n";
                 // Display LogID for debugging purposes 
                 $this->logDebug("LogID: " . $wrappedException->getId() . "\n");
             }
