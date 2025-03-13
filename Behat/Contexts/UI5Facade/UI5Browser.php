@@ -542,10 +542,13 @@ class UI5Browser
 
         } catch (\Exception $e) {
             throw new \RuntimeException(
+                // sprintf(
+                //     "Failed to verify table content. Error: %s\nTable structure: %s",
+                //     $e->getMessage(),
+                //     $table->getOuterHtml()
+                // )
                 sprintf(
-                    "Failed to verify table content. Error: %s\nTable structure: %s",
-                    $e->getMessage(),
-                    $table->getOuterHtml()
+                    "Failed to verify table content"
                 )
             );
         }
@@ -858,7 +861,7 @@ class UI5Browser
 
 
 
-      /**
+    /**
      * Enhanced findWidgets method with better widget detection
      * Finds widgets of a specific type in the UI, with support for different
      * UI5 control types and filtering by object alias
@@ -1051,7 +1054,7 @@ class UI5Browser
                 return false;
             }
         });
- 
+
 
         return array_values(array_filter($widgets, function ($widget) {
             try {
@@ -1061,6 +1064,42 @@ class UI5Browser
             }
         }));
     }
+
+    /**
+     * Find a button within exfw-datatable with exact text match
+     * 
+     * This method searches for buttons inside exfw-datatable divs
+     * with a specific text in the <bdi> element
+     * 
+     * @param string $buttonText The exact text to search for in the button
+     * @param string|null $tableName Optional table/section name to narrow down search
+     * @return NodeElement|null The found button or null if not found
+     */
+    public function findButton(string $buttonText, string $tableName = null): ?NodeElement
+    {
+        // Construct base XPath to find buttons in exfw-datatable with exact <bdi> text
+        $xpath = sprintf(
+            "//div[contains(@class, 'exfw-datatable')]" .  // Find within datatable divs
+            "//button[.//bdi[text()='%s']]",  // Button with <bdi> containing exact text
+            $buttonText
+        );
+
+        // If a specific table/section name is provided, refine the search
+        if ($tableName) {
+            $xpath = sprintf(
+                "//div[contains(@class, 'exfw-datatable') and contains(@id, '%s')]" . // Specific datatable
+                "//button[.//bdi[text()='%s']]",  // Button with exact text
+                $tableName,
+                $buttonText
+            );
+        }
+
+        // Perform the XPath search and return the result
+        $button = $this->getSession()->find('xpath', $xpath);
+
+        return $button;
+    }
+
 
     /**
      * Validates if a DOM element represents a proper UI5 table structure
@@ -1325,4 +1364,4 @@ class UI5Browser
     ');
     }
 
-} 
+}

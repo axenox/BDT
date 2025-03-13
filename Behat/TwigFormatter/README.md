@@ -86,3 +86,52 @@ class FeatureContext extends elkan\BehatFormatter\Context\BehatFormatterContext
 
 Authors: https://github.com/ElkanRoelen/BehatFormatter/graphs/contributors
 
+
+
+General Architectural Flow
+Error Handling Layers:
+ErrorManager: Central error management class
+GlobalExceptionListener: Captures errors during the Behat testing process
+FacadeBrowserException: Special browser-based error management
+BehatFormatter: Reporting test results
+
+Detailed Component Analysis
+
+1-ErrorManager (axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager) 
+Collects and manages errors
+Features:
+Prevents error duplication
+Standardizes errors
+Error hashing mechanism
+Time-based error filtering
+Core Methods:
+addError(): Adds a new error
+getErrors(): Retrieves all errors
+hasErrors(): Checks for the existence of errors
+clearErrors(): Clears errors
+
+2-GlobalExceptionListener (axenox\BDT\Behat\Listeners\GlobalExceptionListener)
+Captures errors at different stages of the Behat testing process
+Listens to events:
+afterSuite
+afterScenario
+afterStep
+
+3-FacadeBrowserException (axenox\BDT\Exceptions\FacadeBrowserException)
+A special error class extending RuntimeException
+Manages browser-based errors within the Behat test context
+
+4-BehatFormatter (axenox\BDT\Behat\TwigFormatter\Formatter\BehatFormatter)
+Converts test results into an HTML report
+Creates reports using Twig templates
+Collects detailed test statistics:
+Successful/failed scenarios
+Steps
+Timing information
+
+Workflow
+Test is initiated
+GlobalExceptionListener listens to the test process
+If any error occurs, it reports to ErrorManager
+ErrorManager standardizes and stores the error
+BehatFormatter generates a consolidated report at the end of the test

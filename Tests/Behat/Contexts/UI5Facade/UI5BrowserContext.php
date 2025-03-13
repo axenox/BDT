@@ -38,14 +38,23 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private $scenarioName;
 
     private $workbench = null;
+    private $debug = false;
 
     /** 
      * Initializes and starts the workbench for the test environment
      */
-    public function __construct()
+    public function __construct(bool $debug = false) // Update constructor
     {
         $this->workbench = new Workbench();
         $this->workbench->start();
+        $this->debug = $debug; // Add this line
+    }
+
+    private function logDebug(string $message): void
+    {
+        if ($this->debug) {
+            echo $message . PHP_EOL; // If debug mode is true, it writes the messages
+        }
     }
 
     /**
@@ -67,43 +76,49 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function logFailedStep(AfterStepScope $scope)
     {
-        try {
-            $result = $scope->getTestResult();
 
-            // Handle different result types
-            if (!$result->isPassed()) {
+        $result = $scope->getTestResult();
 
-
-                // Get exception based on result type
-                $exception = null;
-                if (method_exists($result, 'getException')) {
-                    $exception = $result->getException();
-                } elseif ($result instanceof UndefinedStepResult) {
-                    $exception = new \RuntimeException('Step is not defined: ' . $scope->getStep()->getText());
-                } else {
-                    $exception = new \RuntimeException('Step failed without exception details');
-                }
-
-                // Convert to our exception type for consistent handling
-                $wrappedException = new \exface\Core\Exceptions\RuntimeException(
-                    $exception->getMessage(),
-                    null,
-                    $exception
-                );
-
-                // Log with full details to the workbench log
-                $this->getWorkbench()->getLogger()->logException($wrappedException);
-                // Set Error Id for reference
-                ErrorManager::getInstance()->setLastLogId($wrappedException->getId());
-
-                // Display LogID for debugging purposes
-                echo "LogID: " . $wrappedException->getId() . "\n";
+        // Handle different result types
+        if (!$result->isPassed()) {
+            // Get exception based on result type
+            $exception = null;
+            if (method_exists($result, 'getException')) {
+                $exception = $result->getException();
+            } elseif ($result instanceof UndefinedStepResult) {
+                $exception = new \RuntimeException('Step is not defined: ' . $scope->getStep()->getText());
+            } else {
+                $exception = new \RuntimeException('Step failed without exception details');
             }
-        } catch (\Exception $e) {
-            // Handle errors in the error handling itself
-            echo "\nError in error logging: " . $e->getMessage() . "\n";
-            $this->getWorkbench()->getLogger()->logException($e);
+
+            // Convert to our exception type for consistent handling
+            $wrappedException = new \exface\Core\Exceptions\RuntimeException(
+                $exception->getMessage(),
+                null,
+                $exception
+            );
+
+            // Log with full details to the workbench log
+            $this->getWorkbench()->getLogger()->logException($wrappedException);
+
+            // Set Error Id for reference
+            ErrorManager::getInstance()->setLastLogId($wrappedException->getId());
+
+            echo "Wrapped Exception LogId 1:" . $wrappedException->getId() . "\n";
+
+            // Add to ErrorManager as a Behat exception
+            ErrorManager::getInstance()->addError([
+                'type' => 'BehatException',
+                'message' => $exception->getMessage(),
+                'status' => $exception->getCode(),
+                'stack' => $exception->getTraceAsString(),
+            ], 'AfterStep');
+
+            echo "LogID: " . $wrappedException->getId() . "\n";
+            // Display LogID for debugging purposes 
+            $this->logDebug("LogID: " . $wrappedException->getId() . "\n");
         }
+
     }
 
 
@@ -117,38 +132,33 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function prepareBeforeStep(BeforeStepScope $scope): void
     {
-        try {
-            // Skip if browser hasn't been initialized yet
-            if (!$this->browser) {
-                return;
-            }
 
-            // Clear the ErrorManager for a fresh start
-            ErrorManager::getInstance()->clearErrors();
-
-            // Clear XHR logs to monitor only current step's network activity
-            $this->browser->clearXHRLog();
-
-            // Remove any widget highlights from previous steps
-            $this->getBrowser()->clearWidgetHighlights();
-
-            // Perform basic UI5 readiness checks
-            $this->getBrowser()->handleStepWaitOperations(false);
-
-            // Log step beginning for debugging purposes
-            echo sprintf(
-                "\nStarting step: %s %s",
-                $scope->getStep()->getKeyword(),
-                $scope->getStep()->getText()
-            );
-
-        } catch (\Exception $e) {
-            // Record any setup errors in the ErrorManager
-            ErrorManager::getInstance()->addError([
-                'type' => 'StepPreparation',
-                'message' => $e->getMessage()
-            ], 'BeforeStep');
+        // Skip if browser hasn't been initialized yet
+        if (!$this->browser) {
+            return;
         }
+
+        // Clear the ErrorManager for a fresh start
+        ErrorManager::getInstance()->clearErrors();
+
+        // Clear XHR logs to monitor only current step's network activity
+        $this->browser->clearXHRLog();
+
+        // Remove any widget highlights from previous steps
+        $this->getBrowser()->clearWidgetHighlights();
+
+        // Perform basic UI5 readiness checks
+        $this->getBrowser()->handleStepWaitOperations(false);
+
+        // Log step beginning for debugging purposes
+        $this->logDebug(sprintf(
+            "\nStarting step: %s %s",
+            $scope->getStep()->getKeyword(),
+            $scope->getStep()->getText()
+        ));
+
+
+
     }
 
 
@@ -165,44 +175,30 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         $errorManager = ErrorManager::getInstance();
 
-        try {
-            // Skip if step already failed
-            if (!$scope->getTestResult()->isPassed()) {
-                return;
-            }
 
-            // Skip if browser hasn't been initialized yet
-            if (!$this->browser) {
-                return;
-            }
-
-            // Comprehensive waiting operations to ensure UI stabilization
-            $this->getBrowser()->handleStepWaitOperations(true);
-
-            // Check for any errors that occurred
-            $this->browser->getWaitManager()->validateNoErrors();
-
-            // Log step completion for debugging
-            echo sprintf(
-                "\nCompleted step: %s %s",
-                $scope->getStep()->getKeyword(),
-                $scope->getStep()->getText()
-            );
-
-        } catch (\Exception $e) {
-            // Add error to the ErrorManager
-            $errorManager->addError([
-                'type' => 'StepCompletion',
-                'message' => $e->getMessage()
-            ], 'AfterStep');
-
-
-            // Only throw the first error encountered
-            if ($errorManager->hasErrors()) {
-                $firstError = $errorManager->getFirstError();
-                throw new \RuntimeException($errorManager->formatErrorMessage($firstError));
-            }
+        // Skip if step already failed
+        if (!$scope->getTestResult()->isPassed()) {
+            return;
         }
+
+        // Skip if browser hasn't been initialized yet
+        if (!$this->browser) {
+            return;
+        }
+
+        // Comprehensive waiting operations to ensure UI stabilization
+        $this->getBrowser()->handleStepWaitOperations(true);
+
+        // Check for any errors that occurred
+        $this->browser->getWaitManager()->validateNoErrors();
+
+        // Log step completion for debugging
+        $this->logDebug(sprintf(
+            "\nCompleted step: %s %s",
+            $scope->getStep()->getKeyword(),
+            $scope->getStep()->getText()
+        ));
+
     }
 
     /**
@@ -217,7 +213,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Initialize XHR monitoring if browser is available
         if ($this->browser) {
             $this->browser->initializeXHRMonitoring();
-            echo "\nXHR monitoring initialized for scenario: " . $this->scenarioName . "\n";
+            $this->logDebug("\nXHR monitoring initialized for scenario: " . $this->scenarioName . "\n");
         }
     }
 
@@ -229,16 +225,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iShouldSeeThePage()
     {
-        try {
-            // Get the current page object
-            $page = $this->getSession()->getPage();
+        // Get the current page object
+        $page = $this->getSession()->getPage();
 
-            // Assert that page content exists and is not empty
-            Assert::assertNotNull($page->getContent(), 'Page content is empty');
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'iShouldSeeThePage');
-            throw $e;
-        }
+        // Assert that page content exists and is not empty
+        Assert::assertNotNull($page->getContent(), 'Page content is empty');
+
     }
 
 
@@ -259,46 +251,36 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iLogInToPage(string $url, string $userRoles = null, string $userLocale = null)
     {
-        try {
-            // Setup the user and get the required login data
-            $userRolesArray = $this->splitArgument($userRoles);
-            $loginFields = UI5Browser::setupUser($this->getWorkbench(), $userRolesArray, $userLocale);
-            // Extract tab and button captions from the login field data
-            $tabCaption = $loginFields['_tab'];
-            unset($loginFields['_tab']);
-            $btnCaption = $loginFields['_button'];
-            unset($loginFields['_button']);
 
-            // Go to the page
-            $this->iVisitPage($url);
+        // Setup the user and get the required login data
+        $userRolesArray = $this->splitArgument($userRoles);
+        $loginFields = UI5Browser::setupUser($this->getWorkbench(), $userRolesArray, $userLocale);
+        // Extract tab and button captions from the login field data
+        $tabCaption = $loginFields['_tab'];
+        unset($loginFields['_tab']);
+        $btnCaption = $loginFields['_button'];
+        unset($loginFields['_button']);
 
-            // Find the correct authenticator tab. Keep retrying for 5
-            $this->getBrowser()->goToTab($tabCaption, null, 5);
+        // Go to the page
+        $this->iVisitPage($url);
 
-            // Fill out the login form
-            foreach ($loginFields as $caption => $value) {
-                $input = $this->getBrowser()->findInputByCaption($caption);
-                Assert::assertNotNull($input, 'Cannot find login field "' . $caption . '"');
-                $input->setValue($value);
-            }
+        // Find the correct authenticator tab. Keep retrying for 5
+        $this->getBrowser()->goToTab($tabCaption, null, 5);
 
-            // Clear XHR logs before login
-            $this->getBrowser()->clearXHRLog();
-
-            // Find and click the login button
-            $loginButton = $this->getBrowser()->findButtonByCaption($btnCaption);
-            Assert::assertNotNull($loginButton, 'Cannot find login button "' . $btnCaption . '"');
-            $loginButton->click();
-
-
-        } catch (\Exception $e) {
-            // Log debugging information and handle the error
-            echo "Debug - Login error: " . $e->getMessage() . "\n";
-            $this->getWorkbench()->getLogger()->logException($e);
-            $this->handleContextError($e, 'UI5', 'iLogInToPage');
-            throw $e;
+        // Fill out the login form
+        foreach ($loginFields as $caption => $value) {
+            $input = $this->getBrowser()->findInputByCaption($caption);
+            Assert::assertNotNull($input, 'Cannot find login field "' . $caption . '"');
+            $input->setValue($value);
         }
 
+        // Clear XHR logs before login
+        $this->getBrowser()->clearXHRLog();
+
+        // Find and click the login button
+        $loginButton = $this->getBrowser()->findButtonByCaption($btnCaption);
+        Assert::assertNotNull($loginButton, 'Cannot find login button "' . $btnCaption . '"');
+        $loginButton->click();
 
     }
 
@@ -313,22 +295,27 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iVisitPage(string $url): void
     {
-        try {
-            if ($url && ! StringDataType::endsWith($url, '.html')) {
+        // try {
+            if ($url && !StringDataType::endsWith($url, '.html')) {
                 $url .= '.html';
             }
-            
+            echo "Debug - 1"; 
             // Navigate to the page using Mink's path navigation
             $this->visitPath('/' . $url);
-            echo "Debug - New page is loading...\n";
-
+            echo "Debug - 2"; 
+            $this->logDebug("Debug - New page is loading...\n");
+            echo "Debug - 3"; 
             // Initialize the UI5Browser with the current session and URL
             $this->browser = new UI5Browser($this->getWorkbench(), $this->getSession(), $url);
+            echo "Debug - 4"; 
             return;
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'iVisitPage');
-            throw $e;
-        }
+        // } catch (FacadeBrowserException $e) {
+        //     echo "Debug - 5"; 
+        //     // Hata durumunda, DebugMessage kullanarak hata widget'ı oluşturma
+        //     $debugMessage = new DebugMessage($this->getWorkbench());
+        //     $e->createDebugWidget($debugMessage);
+        //     throw $e;
+        // }  
     }
 
 
@@ -349,86 +336,83 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeWidgets(int $number, string $widgetType, string $objectAlias = null): void
     {
-        try {
-            $maxRetries = 5;
-            $retryCount = 0;
-            $widgetNodes = [];
 
-            // Retry loop to handle async UI rendering
-            while ($retryCount < $maxRetries) {
-                try {
-                    // Set object alias if provided and find widgets
-                    $this->getBrowser()->setObjectAlias($objectAlias);
-                    $widgetNodes = $this->getBrowser()->findWidgets($widgetType, null, 5);
+        $maxRetries = 5;
+        $retryCount = 0;
+        $widgetNodes = [];
 
-                    // Clear previous highlights and highlight found widgets
-                    $this->getBrowser()->clearWidgetHighlights();
-                    foreach ($widgetNodes as $index => $node) {
-                        $location = $this->getBrowser()->getWidgetLocation($node);
-                        $this->getBrowser()->highlightWidget($node, $widgetType, $index);
-                    }
+        // Retry loop to handle async UI rendering
+        while ($retryCount < $maxRetries) {
+            try {
+                // Set object alias if provided and find widgets
+                $this->getBrowser()->setObjectAlias($objectAlias);
+                $widgetNodes = $this->getBrowser()->findWidgets($widgetType, null, 5);
 
-                    // Success criteria depends on widget type
-                    if ($widgetType === 'DataTable') {
-                        // For DataTables, we need at least the specified number
-                        if (count($widgetNodes) >= $number) {
-                            break;
-                        }
-                    } else {
-                        // For other widgets, we need exactly the specified number
-                        if (count($widgetNodes) === $number) {
-                            break;
-                        }
-                    }
-
-                    // Retry with delay
-                    $retryCount++;
-                    sleep(5);
-
-                } catch (\Exception $e) {
-                    $retryCount++;
-                    sleep(5);
-                    continue;
+                // Clear previous highlights and highlight found widgets
+                $this->getBrowser()->clearWidgetHighlights();
+                foreach ($widgetNodes as $index => $node) {
+                    $location = $this->getBrowser()->getWidgetLocation($node);
+                    $this->getBrowser()->highlightWidget($node, $widgetType, $index);
                 }
-            }
 
-            // Verify the correct number of widgets was found
-            if ($widgetType === 'DataTable') {
-                // For DataTables, we need at least the specified number
-                Assert::assertGreaterThanOrEqual(
-                    $number,
-                    count($widgetNodes),
-                    sprintf(
-                        "Expected at least %d '%s' widget(s), Found: %d\nURL: %s",
-                        $number,
-                        $widgetType,
-                        count($widgetNodes),
-                        $this->getSession()->getCurrentUrl()
-                    )
-                );
-            } else {
-                // For other widgets, we need exactly the specified number
-                Assert::assertEquals(
-                    $number,
-                    count($widgetNodes),
-                    sprintf(
-                        "Expected exactly %d '%s' widget(s), Found: %d\nURL: %s",
-                        $number,
-                        $widgetType,
-                        count($widgetNodes),
-                        $this->getSession()->getCurrentUrl()
-                    )
-                );
-            }
+                // Success criteria depends on widget type
+                if ($widgetType === 'DataTable') {
+                    // For DataTables, we need at least the specified number
+                    if (count($widgetNodes) >= $number) {
+                        break;
+                    }
+                } else {
+                    // For other widgets, we need exactly the specified number
+                    if (count($widgetNodes) === $number) {
+                        break;
+                    }
+                }
 
-            // Focus on the first widget if only one was found
-            if (count($widgetNodes) === 1) {
-                $this->getBrowser()->focus($widgetNodes[0]);
+                // Retry with delay
+                $retryCount++;
+                sleep(5);
+
+            } catch (\Exception $e) {
+                $retryCount++;
+                sleep(5);
+                continue;
             }
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'iSeeWidgets');
-            throw $e;
         }
+
+        // Verify the correct number of widgets was found
+        if ($widgetType === 'DataTable') {
+            // For DataTables, we need at least the specified number
+            Assert::assertGreaterThanOrEqual(
+                $number,
+                count($widgetNodes),
+                sprintf(
+                    "Expected at least %d '%s' widget(s), Found: %d\nURL: %s",
+                    $number,
+                    $widgetType,
+                    count($widgetNodes),
+                    $this->getSession()->getCurrentUrl()
+                )
+            );
+        } else {
+            // For other widgets, we need exactly the specified number
+            Assert::assertEquals(
+                $number,
+                count($widgetNodes),
+                sprintf(
+                    "Expected exactly %d '%s' widget(s), Found: %d\nURL: %s",
+                    $number,
+                    $widgetType,
+                    count($widgetNodes),
+                    $this->getSession()->getCurrentUrl()
+                )
+            );
+        }
+
+        // Focus on the first widget if only one was found
+        if (count($widgetNodes) === 1) {
+            $this->getBrowser()->focus($widgetNodes[0]);
+        }
+
     }
 
 
@@ -443,50 +427,47 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function itHasWidgetsOfType(int $number, string $widgetType): void
     {
-        try {
-            // Get the currently focused node
-            $focusedNode = $this->getBrowser()->getFocusedNode();
-            Assert::assertNotNull(
-                $focusedNode,
-                'No widget has focus right now - cannot use steps like "It has..."'
-            );
+
+        // Get the currently focused node
+        $focusedNode = $this->getBrowser()->getFocusedNode();
+        Assert::assertNotNull(
+            $focusedNode,
+            'No widget has focus right now - cannot use steps like "It has..."'
+        );
 
 
-            // Find the main form container within the focused node
-            $form = $focusedNode->find('css', '.sapUiForm') ?? $focusedNode;
+        // Find the main form container within the focused node
+        $form = $focusedNode->find('css', '.sapUiForm') ?? $focusedNode;
 
-            // Find widgets of the specified type within the form
-            $widgetNodes = $this->getBrowser()->findWidgets($widgetType, $form);
+        // Find widgets of the specified type within the form
+        $widgetNodes = $this->getBrowser()->findWidgets($widgetType, $form);
 
-            if (count($widgetNodes) === 0) {
-                // If no widgets found, list potential input elements for debugging 
-                // Some UI5 input components may be inside .sapMInputBaseContentWrapper, but in the test scenario, 
-                //    only the actual input fields need to be found
-                // echo "\nAll potential input elements:\n";
-                $allElements = $form->findAll('css', '.sapMInputBase:not(.sapMInputBaseContentWrapper)');
+        if (count($widgetNodes) === 0) {
+            // If no widgets found, list potential input elements for debugging 
+            // Some UI5 input components may be inside .sapMInputBaseContentWrapper, but in the test scenario, 
+            //    only the actual input fields need to be found
+            // echo "\nAll potential input elements:\n";
+            $allElements = $form->findAll('css', '.sapMInputBase:not(.sapMInputBaseContentWrapper)');
 
-                foreach ($allElements as $index => $element) {
+            foreach ($allElements as $index => $element) {
 
-                    $inner = $element->find('css', '.sapMInputBaseInner');
+                $inner = $element->find('css', '.sapMInputBaseInner');
 
-                }
             }
-
-            // Assert the expected number of widgets
-            Assert::assertEquals(
-                $number,
-                count($widgetNodes),
-                sprintf(
-                    "Expected %d widgets of type '%s', found %d",
-                    $number,
-                    $widgetType,
-                    count($widgetNodes)
-                )
-            );
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'itHasWidgetsOfType');
-            throw $e;
         }
+
+        // Assert the expected number of widgets
+        Assert::assertEquals(
+            $number,
+            count($widgetNodes),
+            sprintf(
+                "Expected %d widgets of type '%s', found %d",
+                $number,
+                $widgetType,
+                count($widgetNodes)
+            )
+        );
+
     }
 
 
@@ -500,23 +481,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iFillTheFollowingFields(TableNode $fields): void
     {
-        try {
-            // Process each row in the table
-            foreach ($fields->getHash() as $row) {
-                // Find input by caption
-                $widget = $this->getBrowser()->findInputByCaption($row['widget_name']);
-                Assert::assertNotNull(
-                    $widget,
-                    sprintf('Cannot find input widget "%s"', $row['widget_name'])
-                );
 
-                // Set value and wait for any UI reactions
-                $widget->setValue($row['value']);
+        // Process each row in the table
+        foreach ($fields->getHash() as $row) {
+            // Find input by caption
+            $widget = $this->getBrowser()->findInputByCaption($row['widget_name']);
+            Assert::assertNotNull(
+                $widget,
+                sprintf('Cannot find input widget "%s"', $row['widget_name'])
+            );
 
-            }
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'iFillTheFollowingFields');
-            throw $e;
+            // Set value and wait for any UI reactions
+            $widget->setValue($row['value']);
+
         }
 
     }
@@ -531,37 +508,34 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function itHasFilters(string $filterList): void
     {
-        try {
-            // Parse the comma-separated filter list
-            $filters = array_map('trim', explode(',', $filterList));
 
-            // Find all filter containers in the page
-            $inputContainers = $this->getBrowser()->getPage()->findAll('css', '.sapUiVlt.exfw-Filter');
-            $foundFilters = [];
+        // Parse the comma-separated filter list
+        $filters = array_map('trim', explode(',', $filterList));
 
-            // Extract filter labels from each container
-            foreach ($inputContainers as $container) {
-                $label = $container->find('css', '.sapMLabel bdi');
-                if ($label) {
-                    $foundFilters[] = trim($label->getText());
-                }
+        // Find all filter containers in the page
+        $inputContainers = $this->getBrowser()->getPage()->findAll('css', '.sapUiVlt.exfw-Filter');
+        $foundFilters = [];
+
+        // Extract filter labels from each container
+        foreach ($inputContainers as $container) {
+            $label = $container->find('css', '.sapMLabel bdi');
+            if ($label) {
+                $foundFilters[] = trim($label->getText());
             }
-
-            // Verify each expected filter is present
-            foreach ($filters as $filter) {
-                Assert::assertTrue(
-                    in_array($filter, $foundFilters),
-                    sprintf(
-                        'Filter "%s" not found. Available filters: %s',
-                        $filter,
-                        implode(', ', $foundFilters)
-                    )
-                );
-            }
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'itHasFilters');
-            throw $e;
         }
+
+        // Verify each expected filter is present
+        foreach ($filters as $filter) {
+            Assert::assertTrue(
+                in_array($filter, $foundFilters),
+                sprintf(
+                    'Filter "%s" not found. Available filters: %s',
+                    $filter,
+                    implode(', ', $foundFilters)
+                )
+            );
+        }
+
     }
 
 
@@ -577,48 +551,45 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iEnterInFilter(string $value, string $filterName): void
     {
-        try {
-            // Find all filter containers in the page
-            $inputContainers = $this->getBrowser()->getPage()->findAll('css', '.sapUiVlt.exfw-Filter');
-            $targetInput = null;
 
-            // Iterate through containers to find matching filter
-            foreach ($inputContainers as $container) {
-                $label = $container->find('css', '.sapMLabel bdi');
-                if ($label && trim($label->getText()) === $filterName) {
-                    // First check if this is a ComboBox/MultiComboBox component
-                    $comboBox = $container->find('css', '.sapMComboBoxBase, .sapMMultiComboBox');
-                    if ($comboBox) {
-                        // Handle ComboBox type input
-                        $this->getBrowser()->handleComboBoxInput($comboBox, $value);
-                        return;
-                    }
+        // Find all filter containers in the page
+        $inputContainers = $this->getBrowser()->getPage()->findAll('css', '.sapUiVlt.exfw-Filter');
+        $targetInput = null;
 
-                    // Check for Select type input
-                    $select = $container->find('css', '.sapMSelect');
-                    if ($select) {
-                        // Handle Select type input
-                        $this->getBrowser()->handleSelectInput($select, $value);
-                        return;
-                    }
-
-                    // Standard handling for regular input fields
-                    $targetInput = $container->find('css', 'input.sapMInputBaseInner');
-                    break;
+        // Iterate through containers to find matching filter
+        foreach ($inputContainers as $container) {
+            $label = $container->find('css', '.sapMLabel bdi');
+            if ($label && trim($label->getText()) === $filterName) {
+                // First check if this is a ComboBox/MultiComboBox component
+                $comboBox = $container->find('css', '.sapMComboBoxBase, .sapMMultiComboBox');
+                if ($comboBox) {
+                    // Handle ComboBox type input
+                    $this->getBrowser()->handleComboBoxInput($comboBox, $value);
+                    return;
                 }
-            }
 
-            // If a standard input field was found, set its value
-            if ($targetInput) {
-                $targetInput->setValue($value);
+                // Check for Select type input
+                $select = $container->find('css', '.sapMSelect');
+                if ($select) {
+                    // Handle Select type input
+                    $this->getBrowser()->handleSelectInput($select, $value);
+                    return;
+                }
 
-            } else {
-                throw new \RuntimeException("Could not find input element for filter: {$filterName}");
+                // Standard handling for regular input fields
+                $targetInput = $container->find('css', 'input.sapMInputBaseInner');
+                break;
             }
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'iEnterInFilter');
-            throw $e;
         }
+
+        // If a standard input field was found, set its value
+        if ($targetInput) {
+            $targetInput->setValue($value);
+
+        } else {
+            throw new \RuntimeException("Could not find input element for filter: {$filterName}");
+        }
+
     }
 
 
@@ -632,36 +603,32 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     private function handleComboBoxInput(NodeElement $comboBox, string $value): void
     {
-        try {
-            // Find the dropdown arrow element
-            $arrow = $comboBox->find('css', '.sapMInputBaseIconContainer');
-            if (!$arrow) {
-                throw new \RuntimeException("Could not find ComboBox dropdown arrow");
-            }
 
-            // Click to open the dropdown
-            $arrow->click();
-
-            // Find and select the matching item from dropdown list
-            // Uses CSS selectors to find items containing the value text
-            $item = $this->getBrowser()->getPage()->find(
-                'css',
-                ".sapMSelectList li:contains('{$value}'), " .
-                ".sapMComboBoxItem:contains('{$value}'), " .
-                ".sapMMultiComboBoxItem:contains('{$value}')"
-            );
-
-            // Verify the item was found in the dropdown
-            if (!$item) {
-                throw new \RuntimeException("Could not find option '{$value}' in ComboBox list");
-            }
-
-            // Click on the matching item to select it
-            $item->click();
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'handleComboBoxInput');
-            throw $e;
+        // Find the dropdown arrow element
+        $arrow = $comboBox->find('css', '.sapMInputBaseIconContainer');
+        if (!$arrow) {
+            throw new \RuntimeException("Could not find ComboBox dropdown arrow");
         }
+
+        // Click to open the dropdown
+        $arrow->click();
+
+        // Find and select the matching item from dropdown list
+        // Uses CSS selectors to find items containing the value text
+        $item = $this->getBrowser()->getPage()->find(
+            'css',
+            ".sapMSelectList li:contains('{$value}'), " .
+            ".sapMComboBoxItem:contains('{$value}'), " .
+            ".sapMMultiComboBoxItem:contains('{$value}')"
+        );
+
+        // Verify the item was found in the dropdown
+        if (!$item) {
+            throw new \RuntimeException("Could not find option '{$value}' in ComboBox list");
+        }
+
+        // Click on the matching item to select it
+        $item->click();
 
     }
 
@@ -678,19 +645,16 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeInColumn(string $text, string $columnName): void
     {
-        try {
-            // Find all DataTable widgets on the page
-            $dataTables = $this->getBrowser()->findWidgets('DataTable');
-            Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
 
-            // Verify the first DataTable contains the expected text in the specified column
-            $this->getBrowser()->verifyTableContent($dataTables[0], [
-                ['column' => $columnName, 'text' => $text]
-            ]);
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'iSeeInColumn');
-            throw $e;
-        }
+        // Find all DataTable widgets on the page
+        $dataTables = $this->getBrowser()->findWidgets('DataTable');
+        Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
+
+        // Verify the first DataTable contains the expected text in the specified column
+        $this->getBrowser()->verifyTableContent($dataTables[0], [
+            ['column' => $columnName, 'text' => $text]
+        ]);
+
     }
 
 
@@ -703,19 +667,16 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iClickButton(string $caption): void
     {
-        try {
-            // Find the button by its caption text
-            $btn = $this->getBrowser()->findButtonByCaption($caption);
-            if (!$btn) {
-                throw new \exface\Core\Exceptions\RuntimeException(
-                    sprintf('Cannot find button "%s"', $caption)
-                );
-            }
-            $btn->click();
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'iClickButton');
-            throw $e;
+
+        // Find the button by its caption text
+        $btn = $this->getBrowser()->findButtonByCaption($caption);
+        if (!$btn) {
+            throw new \exface\Core\Exceptions\RuntimeException(
+                sprintf('Cannot find button "%s"', $caption)
+            );
         }
+        $btn->click();
+
     }
 
     /**
@@ -742,16 +703,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iTypeIntoWidgetWithCaption(string $value, string $caption): void
     {
-        try {
-            // Find the input widget by its caption
-            $widget = $this->getBrowser()->findInputByCaption($caption);
-            Assert::assertNotNull($widget, 'Cannot find input widget "' . $caption . '"');
-            // Set the input value
-            $widget->setValue($value);
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'iTypeIntoWidgetWithCaption');
-            throw $e;
-        }
+
+        // Find the input widget by its caption
+        $widget = $this->getBrowser()->findInputByCaption($caption);
+        Assert::assertNotNull($widget, 'Cannot find input widget "' . $caption . '"');
+        // Set the input value
+        $widget->setValue($value);
+
     }
 
     /**
@@ -767,17 +725,54 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iLookAtWidget(string $widgetType, int $number = 1): void
     {
+
+        // Find all widgets of the specified type
+        $widgetNodes = $this->getBrowser()->findWidgets($widgetType);
+        // Get the widget at the specified position (1-based index)
+        $node = $widgetNodes[$number - 1];
+        Assert::assertNotNull($node, 'Cannot find "' . $widgetType . '" no. ' . $number . '!');
+        // Set focus to this widget
+        $this->getBrowser()->focus($node);
+
+    }
+
+    /**
+     * Verify the existence of a button with specific text
+     * 
+     * This method supports multiple scenarios for button verification:
+     * - Check button existence by text
+     * - Check button existence in a specific table/section
+     * 
+     * @Then I should see button :buttonText
+     * @Then I should see a button with text :buttonText
+     * @Then I should see button :buttonText at the :tableName
+     * 
+     * @param string $buttonText The text of the button to find
+     * @param string|null $tableName Optional table/section name
+     * @throws \Exception If button is not found
+     */
+    public function iShouldSeeButton(string $buttonText, string $tableName = null)
+    {
         try {
-            // Find all widgets of the specified type
-            $widgetNodes = $this->getBrowser()->findWidgets($widgetType);
-            // Get the widget at the specified position (1-based index)
-            $node = $widgetNodes[$number - 1];
-            Assert::assertNotNull($node, 'Cannot find "' . $widgetType . '" no. ' . $number . '!');
-            // Set focus to this widget
-            $this->getBrowser()->focus($node);
+            // Attempt to find the button using the findButton method
+            $button = $this->getBrowser()->findButton($buttonText, $tableName);
+
+            // Assert that the button is found
+            Assert::assertNotNull(
+                $button,
+                sprintf(
+                    "Button with text '%s' %s not found",
+                    $buttonText,
+                    $tableName ? "in table/section '$tableName'" : ""
+                )
+            );
+
+            // Optional: Highlight the found button for visual confirmation
+            $this->getBrowser()->highlightWidget($button, 'Button');
+
         } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'iLookAtWidget');
-            throw $e;
+            // Fail the test if an unexpected error occurs
+            Assert::fail($e->getMessage());
         }
     }
 
@@ -792,18 +787,15 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function itHasColumn(string $caption): void
     {
-        try {
-            /**
-             * @var \Behat\Mink\Element\NodeElement $tableNode
-             */
-            $tableNode = $this->getBrowser()->getFocusedNode();
-            Assert::assertNotNull($tableNode, 'No widget has focus right now - cannot use steps like "it has..."');
-            $colNode = $tableNode->find('css', 'td');
-            Assert::assertNotNull($colNode, 'Column "' . $caption, '" not found');
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'itHasColumn');
-            throw $e;
-        }
+
+        /**
+         * @var \Behat\Mink\Element\NodeElement $tableNode
+         */
+        $tableNode = $this->getBrowser()->getFocusedNode();
+        Assert::assertNotNull($tableNode, 'No widget has focus right now - cannot use steps like "it has..."');
+        $colNode = $tableNode->find('css', 'td');
+        Assert::assertNotNull($colNode, 'Column "' . $caption, '" not found');
+
     }
 
 
@@ -817,30 +809,27 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function theDataTableContains(string $text): void
     {
-        try {
-            // Find all DataTable widgets on the page
-            $dataTables = $this->getBrowser()->findWidgets('DataTable');
-            Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
-            // Get the first DataTable found
-            $dataTable = $dataTables[0];
 
-            // Search for text in all table cells
-            $found = false;
-            $cells = $dataTable->findAll('css', 'td');
-            // Check each cell for the specified text
-            foreach ($cells as $cell) {
-                if (strpos($cell->getText(), $text) !== false) {
-                    $found = true;
-                    break;
-                }
+        // Find all DataTable widgets on the page
+        $dataTables = $this->getBrowser()->findWidgets('DataTable');
+        Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
+        // Get the first DataTable found
+        $dataTable = $dataTables[0];
+
+        // Search for text in all table cells
+        $found = false;
+        $cells = $dataTable->findAll('css', 'td');
+        // Check each cell for the specified text
+        foreach ($cells as $cell) {
+            if (strpos($cell->getText(), $text) !== false) {
+                $found = true;
+                break;
             }
-            // Assert that text was found, throw exception if not
-            Assert::assertTrue($found, "Text '$text' not found in DataTable");
-
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'theDataTableContains');
-            throw $e;
         }
+        // Assert that text was found, throw exception if not
+        Assert::assertTrue($found, "Text '$text' not found in DataTable");
+
+
     }
 
     /**
@@ -851,75 +840,71 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeFilteredResultsInDataTable(): void
     {
-        try {
-            // Find DataTable widgets
-            $dataTables = $this->getBrowser()->findWidgets('DataTable');
-            Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
 
-            // Get the first DataTable
-            $dataTable = $dataTables[0];
+        // Find DataTable widgets
+        $dataTables = $this->getBrowser()->findWidgets('DataTable');
+        Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
 
-            // Look for different types of UI5 table classes
-            $ui5TableSelectors = [
-                '.sapMTable',        // Standard table
-                '.sapUiTable',       // Grid table
-                '.sapMList'          // List that might be used as table
-            ];
+        // Get the first DataTable
+        $dataTable = $dataTables[0];
 
-            $ui5Table = null;
-            foreach ($ui5TableSelectors as $selector) {
-                $ui5Table = $dataTable->find('css', $selector);
-                if ($ui5Table !== null) {
-                    break;
-                }
+        // Look for different types of UI5 table classes
+        $ui5TableSelectors = [
+            '.sapMTable',        // Standard table
+            '.sapUiTable',       // Grid table
+            '.sapMList'          // List that might be used as table
+        ];
+
+        $ui5Table = null;
+        foreach ($ui5TableSelectors as $selector) {
+            $ui5Table = $dataTable->find('css', $selector);
+            if ($ui5Table !== null) {
+                break;
             }
-
-            Assert::assertNotNull(
-                $ui5Table,
-                'No UI5 Table element found. Available classes: ' .
-                implode(', ', array_map(function ($class) use ($dataTable) {
-                    return $dataTable->find('css', $class) ? "$class (found)" : "$class (not found)";
-                }, $ui5TableSelectors))
-            );
-
-            // Check for both standard rows and tree table rows
-            $rows = $ui5Table->findAll('css', 'tr.sapMListItem, tr.sapUiTableRow');
-
-            // Also check for no data indicator
-            $noDataText = $ui5Table->find('css', '.sapMListNoData, .sapUiTableCtrlEmpty');
-            if ($noDataText) {
-                // If we have a no-data indicator, that's also a valid state
-                return;
-            }
-
-            Assert::assertNotEmpty($rows, 'No rows found in filtered results');
-
-            // Check for filter indicators
-            $filterIndicators = [
-                '.sapMTableFilterIcon',     // Standard table filter
-                '.sapUiTableColFiltered'    // Grid table filter
-            ];
-
-            $hasFilter = false;
-            foreach ($filterIndicators as $selector) {
-                if ($dataTable->find('css', $selector)) {
-                    $hasFilter = true;
-                    break;
-                }
-            }
-
-
-            // Log for debugging
-            echo sprintf(
-                "Found table with %d rows. Filter indicators: %s\n",
-                count($rows),
-                $hasFilter ? 'present' : 'not present'
-            );
-
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'iSeeFilteredResultsInDataTable');
-            throw $e;
         }
+
+        Assert::assertNotNull(
+            $ui5Table,
+            'No UI5 Table element found. Available classes: ' .
+            implode(', ', array_map(function ($class) use ($dataTable) {
+                return $dataTable->find('css', $class) ? "$class (found)" : "$class (not found)";
+            }, $ui5TableSelectors))
+        );
+
+        // Check for both standard rows and tree table rows
+        $rows = $ui5Table->findAll('css', 'tr.sapMListItem, tr.sapUiTableRow');
+
+        // Also check for no data indicator
+        $noDataText = $ui5Table->find('css', '.sapMListNoData, .sapUiTableCtrlEmpty');
+        if ($noDataText) {
+            // If we have a no-data indicator, that's also a valid state
+            return;
+        }
+
+        Assert::assertNotEmpty($rows, 'No rows found in filtered results');
+
+        // Check for filter indicators
+        $filterIndicators = [
+            '.sapMTableFilterIcon',     // Standard table filter
+            '.sapUiTableColFiltered'    // Grid table filter
+        ];
+
+        $hasFilter = false;
+        foreach ($filterIndicators as $selector) {
+            if ($dataTable->find('css', $selector)) {
+                $hasFilter = true;
+                break;
+            }
+        }
+
+
+        // Log for debugging
+        $this->logDebug(sprintf(
+            "Found table with %d rows. Filter indicators: %s\n",
+            count($rows),
+            $hasFilter ? 'present' : 'not present'
+        ));
+
     }
 
 
@@ -929,43 +914,29 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iVisitTheFollowingPages(TableNode $table): void
     {
-        try {
-            $urls = $table->getHash();
-            $currentSession = $this->getSession();
 
-            // Get base URL from current session
-            $baseUrl = $currentSession->getCurrentUrl();
-            $baseUrl = preg_replace('/\/[^\/]*$/', '/', $baseUrl);
+        $urls = $table->getHash();
+        $currentSession = $this->getSession();
 
-            foreach ($urls as $urlData) {
-                $url = $urlData['url'];
+        // Get base URL from current session
+        $baseUrl = $currentSession->getCurrentUrl();
+        $baseUrl = preg_replace('/\/[^\/]*$/', '/', $baseUrl);
 
-                try {
-                    // Combine base URL with page URL
-                    $fullUrl = rtrim($baseUrl, '/') . '/' . ltrim($url, '/');
-
-                    // Navigate using full URL
-                    $currentSession->visit($fullUrl);
-
-                    // Initialize browser with current session
-                    $this->browser = new UI5Browser($this->getWorkbench(), $currentSession, $url);
-
-                    // Verify page loaded
-                    $this->iShouldSeeThePage();
+        foreach ($urls as $urlData) {
+            $url = $urlData['url'];
 
 
-                } catch (\Exception $e) {
-                    throw new \RuntimeException(sprintf(
-                        "Failed to navigate to '%s'. Error: %s\nFull URL was: %s",
-                        $url,
-                        $e->getMessage(),
-                        $fullUrl ?? 'unknown'
-                    ));
-                }
-            }
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'iVisitTheFollowingPages');
-            throw $e;
+            // Combine base URL with page URL
+            $fullUrl = rtrim($baseUrl, '/') . '/' . ltrim($url, '/');
+
+            // Navigate using full URL
+            $currentSession->visit($fullUrl);
+
+            // Initialize browser with current session
+            $this->browser = new UI5Browser($this->getWorkbench(), $currentSession, $url);
+
+            // Verify page loaded
+            $this->iShouldSeeThePage();
         }
     }
 
@@ -974,22 +945,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function allPagesShouldLoadSuccessfully(): void
     {
-        try {
-            // Verify no errors in current session
-            $this->browser->getWaitManager()->validateNoErrors();
 
-            // Verify UI5 is in stable state
-            $isStable = $this->getSession()->evaluateScript(
-                'return sap.ui.getCore().isThemeApplied() && !sap.ui.getCore().getUIDirty()'
-            );
+        // Verify no errors in current session
+        $this->browser->getWaitManager()->validateNoErrors();
 
-            if (!$isStable) {
-                throw new \RuntimeException('UI5 framework is not in stable state after page navigation');
-            }
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'allPagesShouldLoadSuccessfully');
-            throw $e;
+        // Verify UI5 is in stable state
+        $isStable = $this->getSession()->evaluateScript(
+            'return sap.ui.getCore().isThemeApplied() && !sap.ui.getCore().getUIDirty()'
+        );
+
+        if (!$isStable) {
+            throw new \RuntimeException('UI5 framework is not in stable state after page navigation');
         }
+
     }
 
     /**
@@ -997,60 +965,57 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSelectRow($rowIndex, $tableIndex)
     {
-        try {
-            $page = $this->getBrowser()->getPage();
 
-            // Convert index to integer and remove any non-numeric characters (e.g., ".")
-            $rowNumber = filter_var($rowIndex, FILTER_SANITIZE_NUMBER_INT);
-            $tableNumber = filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT);
+        $page = $this->getBrowser()->getPage();
 
-            echo "Row Nr: " . $rowNumber . "\n";
-            echo "Table Nr: " . $tableNumber . "\n";
+        // Convert index to integer and remove any non-numeric characters (e.g., ".")
+        $rowNumber = filter_var($rowIndex, FILTER_SANITIZE_NUMBER_INT);
+        $tableNumber = filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT);
+        $this->logDebug("Row Nr: " . $rowNumber . "\n");
+        $this->logDebug("Table Nr: " . $tableNumber . "\n");
 
-            if (!is_numeric($rowNumber) || $rowNumber < 1) {
-                throw new Exception("Invalid row index: '{$rowIndex}'. It should be a positive number.");
-            }
 
-            // Save the last selected table number for to use for like clickTableOverflowButton calls
-            $this->lastSelectedTable = $tableNumber;
-
-            $splitBar = $page->findAll('css', '.sapUiLoSplitterBar');
-            echo "Splitbar count: " . count($splitBar) . "\n";
-
-            // Check if there is more than one table 
-            if (count($splitBar) > 0) {
-                $parents = $page->findAll('css', '.exfw-DataTable');
-                $rows = $parents[$tableNumber - 1]->findAll('css', '.sapUiTableRow');
-
-                $selectedRow = $rows[$rowNumber];
-
-                Assert::assertNotNull($selectedRow, "Element Not Found");
-
-                $this->getSession()->wait(1000, false);
-
-                $selectedRow->click();
-
-                // Check if the row really selected
-                echo $selectedRow->getAttribute('aria-selected');
-                Assert::assertTrue($selectedRow->getAttribute('aria-selected') === 'true', "{$rowIndex}. row could not be selected");
-            } else {
-                echo "\n ***One Panel Found*** \n";
-
-                $rows = $page->findAll('css', '.sapUiTableRow');
-                $selectedRow = $rows[$rowNumber];
-                Assert::assertNotNull($selectedRow, "Element Not Found");
-
-                //TODO: Wait for any pending operations to complete add here centralized wait
-                $this->getSession()->wait(1000, false);
-
-                $selectedRow->click();
-                echo $selectedRow->getAttribute('aria-selected');
-                Assert::assertTrue($selectedRow->getAttribute('aria-selected') === 'true', "{$rowIndex}. row could not be selected");
-            }
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'iSelectRow');
-            throw $e;
+        if (!is_numeric($rowNumber) || $rowNumber < 1) {
+            throw new Exception("Invalid row index: '{$rowIndex}'. It should be a positive number.");
         }
+
+        // Save the last selected table number for to use for like clickTableOverflowButton calls
+        $this->lastSelectedTable = $tableNumber;
+
+        $splitBar = $page->findAll('css', '.sapUiLoSplitterBar');
+
+        $this->logDebug("Splitbar count: " . count($splitBar) . "\n");
+
+        // Check if there is more than one table 
+        if (count($splitBar) > 0) {
+            $parents = $page->findAll('css', '.exfw-DataTable');
+            $rows = $parents[$tableNumber - 1]->findAll('css', '.sapUiTableRow');
+
+            $selectedRow = $rows[$rowNumber];
+
+            Assert::assertNotNull($selectedRow, "Element Not Found");
+
+            $this->getSession()->wait(1000, false);
+
+            $selectedRow->click();
+
+            // Check if the row really selected 
+            $this->logDebug($selectedRow->getAttribute('aria-selected'));
+            Assert::assertTrue($selectedRow->getAttribute('aria-selected') === 'true', "{$rowIndex}. row could not be selected");
+        } else {
+            $this->logDebug(message: "\n ***One Panel Found*** \n");
+            $rows = $page->findAll('css', '.sapUiTableRow');
+            $selectedRow = $rows[$rowNumber];
+            Assert::assertNotNull($selectedRow, "Element Not Found");
+
+            //TODO: Wait for any pending operations to complete add here centralized wait
+            $this->getSession()->wait(1000, false);
+
+            $selectedRow->click();
+            $this->logDebug($selectedRow->getAttribute('aria-selected'));
+            Assert::assertTrue($selectedRow->getAttribute('aria-selected') === 'true', "{$rowIndex}. row could not be selected");
+        }
+
     }
 
 
@@ -1062,41 +1027,36 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iclickButtonOnTable($caption, $tableIndex)
     {
-        try {
-            $page = $this->getBrowser()->getPage();
 
-            // Convert index to integer and remove any non-numeric characters (e.g., ".")
-            $tableNumber = (int) filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT);
-            echo $caption;
-            echo $tableNumber;
+        $page = $this->getBrowser()->getPage();
 
-            $this->getSession()->wait(1000, false);
-            $splitBar = $page->findAll('css', '.sapUiLoSplitterBar');
-            $this->getSession()->wait(1000, false);
+        // Convert index to integer and remove any non-numeric characters (e.g., ".")
+        $tableNumber = (int) filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT);
+        $this->logDebug($caption . "\n");
+        $this->logDebug($tableNumber . "\n");
 
-            echo "\n **** Splitbar count: " . count($splitBar) . " ****** \n";
+        $this->getSession()->wait(1000, false);
+        $splitBar = $page->findAll('css', '.sapUiLoSplitterBar');
+        $this->getSession()->wait(1000, false);
 
-            // Check if there is more than one table 
-            if (count($splitBar) > 0) {
 
-                //$parent = $page->findAll('css', '.sapUiLoSplitterContent:nth-of-type('.$tableNumber.')');
-                $parents = $page->findAll('css', '.exfw-DataTable');
-                $btn = $this->getBrowser()->findButtonByCaption($caption, $parents[$tableNumber - 1]);
-                Assert::assertNotNull($btn, 'Cannot find button "' . $caption . '"');
+        $this->logDebug("\n **** Splitbar count: " . count($splitBar) . " ****** \n");
+        // Check if there is more than one table 
+        if (count($splitBar) > 0) {
 
-                $btn->click();
+            //$parent = $page->findAll('css', '.sapUiLoSplitterContent:nth-of-type('.$tableNumber.')');
+            $parents = $page->findAll('css', '.exfw-DataTable');
+            $btn = $this->getBrowser()->findButtonByCaption($caption, $parents[$tableNumber - 1]);
+            Assert::assertNotNull($btn, 'Cannot find button "' . $caption . '"');
 
-            } else {
-                echo "***One Panel Found***";
+            $btn->click();
 
-                $btn = $this->getBrowser()->findButtonByCaption($caption);
-                Assert::assertNotNull($btn, 'Cannot find button "' . $caption . '"');
+        } else {
+            $this->logDebug("***One Panel Found***" . "\n");
+            $btn = $this->getBrowser()->findButtonByCaption($caption);
+            Assert::assertNotNull($btn, 'Cannot find button "' . $caption . '"');
 
-                $btn->click();
-            }
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'iclickButtonOnTable');
-            throw $e;
+            $btn->click();
         }
 
     }
@@ -1113,25 +1073,22 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function clickTableOverflowButton($tableIndex = null): void
     {
-        try {
-            // If a table index is provided, convert it to an integer
-            $tableNumber = null;
-            if ($tableIndex !== null) {
-                $tableNumber = (int) filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT);
-            }
 
-            // If no table index is provided and a last selected table exists, use the last selected table
-            if ($tableNumber === null && isset($this->lastSelectedTable)) {
-                $tableNumber = $this->lastSelectedTable;
-            }
-
-            // Click the overflow button
-            $this->clickOverflowButton($tableNumber);
-
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'clickTableOverflowButton');
-            throw $e;
+        // If a table index is provided, convert it to an integer
+        $tableNumber = null;
+        if ($tableIndex !== null) {
+            $tableNumber = (int) filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT);
         }
+
+        // If no table index is provided and a last selected table exists, use the last selected table
+        if ($tableNumber === null && isset($this->lastSelectedTable)) {
+            $tableNumber = $this->lastSelectedTable;
+        }
+
+        // Click the overflow button
+        $this->clickOverflowButton($tableNumber);
+
+
     }
 
     /**
@@ -1142,61 +1099,61 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function clickOverflowButton(int $tableIndex = null): void
     {
-        try {
-            // Check if the browser object is initialized
-            if (!$this->browser) {
-                throw new \RuntimeException("Browser is not initialized. You need to visit a page first.");
+
+        // Check if the browser object is initialized
+        if (!$this->browser) {
+            throw new \RuntimeException("Browser is not initialized. You need to visit a page first.");
+        }
+
+        $page = $this->getBrowser()->getPage();
+
+        // If a table index is provided, find the overflow button of that table
+        if ($tableIndex !== null) {
+            // Find all tables
+            $tables = $page->findAll('css', '.exfw-DataTable, .sapUiTable, .sapMTable');
+
+            if (count($tables) < $tableIndex) {
+                throw new \RuntimeException("Table not found at the specified index: " . $tableIndex);
             }
 
-            $page = $this->getBrowser()->getPage();
+            // Get the table at the specified index (convert to 0-based index)
+            $targetTable = $tables[$tableIndex - 1];
 
-            // If a table index is provided, find the overflow button of that table
-            if ($tableIndex !== null) {
-                // Find all tables
-                $tables = $page->findAll('css', '.exfw-DataTable, .sapUiTable, .sapMTable');
+            // Find the overflow button in this table
+            $overflowButton = $targetTable->find('css', 'button[id*="overflowButton"], button[id*="tableMenuButton"]');
 
-                if (count($tables) < $tableIndex) {
-                    throw new \RuntimeException("Table not found at the specified index: " . $tableIndex);
-                }
-
-                // Get the table at the specified index (convert to 0-based index)
-                $targetTable = $tables[$tableIndex - 1];
-
-                // Find the overflow button in this table
-                $overflowButton = $targetTable->find('css', 'button[id*="overflowButton"], button[id*="tableMenuButton"]');
-
-                if (!$overflowButton) {
-                    // Alternatively, search for the overflow button in the table's toolbar
-                    $toolbar = $targetTable->find('css', '.sapMTB, .sapUiTableTbr');
-                    if ($toolbar) {
-                        $overflowButton = $toolbar->find('css', 'button[id*="overflowButton"]');
-                    }
-                }
-            } else {
-                // If no table index is provided, find the first overflow button on the page
-                $overflowButton = $page->find('css', 'button[id*="overflowButton"]');
-            }
-
-            // If no overflow button was found, throw an error
             if (!$overflowButton) {
-                throw new \RuntimeException("Overflow butonu bulunamadı" .
-                    ($tableIndex ? " (Tablo indeksi: $tableIndex)" : ""));
+                // Alternatively, search for the overflow button in the table's toolbar
+                $toolbar = $targetTable->find('css', '.sapMTB, .sapUiTableTbr');
+                if ($toolbar) {
+                    $overflowButton = $toolbar->find('css', 'button[id*="overflowButton"]');
+                }
             }
+        } else {
+            // If no table index is provided, find the first overflow button on the page
+            $overflowButton = $page->find('css', 'button[id*="overflowButton"]');
+        }
 
-            // Click the button
-            $overflowButton->click();
+        // If no overflow button was found, throw an error
+        if (!$overflowButton) {
+            throw new \RuntimeException("Overflow butonu bulunamadı" .
+                ($tableIndex ? " (Tablo indeksi: $tableIndex)" : ""));
+        }
 
-            // Wait briefly
-            $this->getSession()->wait(1000);
+        // Click the button
+        $overflowButton->click();
 
-            // Verify the click was successful
-            // In UI5, a popup or popover element usually appears when a menu is opened
-            $menu = $page->find('css', '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu');
+        // Wait briefly
+        $this->getSession()->wait(1000);
 
-            if (!$menu) {
-                // Try clicking via JavaScript as an alternative method
-                $buttonId = $overflowButton->getAttribute('id');
-                $this->getSession()->executeScript("
+        // Verify the click was successful
+        // In UI5, a popup or popover element usually appears when a menu is opened
+        $menu = $page->find('css', '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu');
+
+        if (!$menu) {
+            // Try clicking via JavaScript as an alternative method
+            $buttonId = $overflowButton->getAttribute('id');
+            $this->getSession()->executeScript("
                 var element = document.getElementById('$buttonId');
                 if (element) {
                     element.click();
@@ -1205,17 +1162,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 return false;
             ");
 
-                // Wait again and check
-                $this->getSession()->wait(1000);
-                $menu = $page->find('css', '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu');
-            }
-
-            echo "✓ Overflow button clicked successfully\n";
-
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'clickOverflowButton');
-            throw $e;
+            // Wait again and check
+            $this->getSession()->wait(1000);
+            $menu = $page->find('css', '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu');
         }
+
+        $this->logDebug("✓ Overflow button clicked successfully\n");
+
     }
 
 
@@ -1225,53 +1178,50 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function anXlsxFileShouldBeDownloaded(): void
     {
-        try {
-            // First check for the toast message
-            $this->verifyToastMessage("Download ready");
 
-            // Wait for a few seconds to ensure the file has been fully downloaded
-            sleep(15);
+        // First check for the toast message
+        $this->verifyToastMessage("Download ready");
 
-            // Get the download directory from configuration
-            $config = $this->getWorkbench()->getApp('axenox.BDT')->getConfig();
-            $downloadDir = $config->getOption('TEST_DOWNLOADS.DIRECTORY_WINDOWS');
+        // Wait for a few seconds to ensure the file has been fully downloaded
+        sleep(15);
 
-            // Ensure the download directory exists
-            if (!file_exists($downloadDir) || !is_dir($downloadDir)) {
-                throw new \RuntimeException("Download directory does not exist: $downloadDir");
-            }
+        // Get the download directory from configuration
+        $config = $this->getWorkbench()->getApp('axenox.BDT')->getConfig();
+        $downloadDir = $config->getOption('TEST_DOWNLOADS.DIRECTORY_WINDOWS');
 
-            // Retrieve the latest XLSX file from the download directory
-            $latestFile = null;
-            $latestTime = 0;
-            $oneMinuteAgo = time() - 60;
+        // Ensure the download directory exists
+        if (!file_exists($downloadDir) || !is_dir($downloadDir)) {
+            throw new \RuntimeException("Download directory does not exist: $downloadDir");
+        }
 
-            $files = scandir($downloadDir);
-            foreach ($files as $file) {
-                $filePath = $downloadDir . DIRECTORY_SEPARATOR . $file;
+        // Retrieve the latest XLSX file from the download directory
+        $latestFile = null;
+        $latestTime = 0;
+        $oneMinuteAgo = time() - 60;
 
-                // Check if the item is a file and modified within the last minute
-                if (is_file($filePath) && filemtime($filePath) >= $oneMinuteAgo) {
-                    // Ensure the file has an XLSX extension
-                    if (strtolower(pathinfo($file, PATHINFO_EXTENSION)) === 'xlsx') {
-                        if (filemtime($filePath) > $latestTime) {
-                            $latestTime = filemtime($filePath);
-                            $latestFile = $file;
-                        }
+        $files = scandir($downloadDir);
+        foreach ($files as $file) {
+            $filePath = $downloadDir . DIRECTORY_SEPARATOR . $file;
+
+            // Check if the item is a file and modified within the last minute
+            if (is_file($filePath) && filemtime($filePath) >= $oneMinuteAgo) {
+                // Ensure the file has an XLSX extension
+                if (strtolower(pathinfo($file, PATHINFO_EXTENSION)) === 'xlsx') {
+                    if (filemtime($filePath) > $latestTime) {
+                        $latestTime = filemtime($filePath);
+                        $latestFile = $file;
                     }
                 }
             }
-
-            // Verify if a valid XLSX file was found
-            if ($latestFile) {
-                echo "✓ Latest downloaded file: $latestFile\n";
-            } else {
-                throw new \RuntimeException("No recently downloaded XLSX file found in: $downloadDir");
-            }
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'anXlsxFileShouldBeDownloaded');
-            throw new \RuntimeException('Download test failed: ' . $e->getMessage(), 0, $e);
         }
+
+        // Verify if a valid XLSX file was found
+        if ($latestFile) {
+            $this->logDebug("✓ Latest downloaded file: $latestFile\n");
+        } else {
+            throw new \RuntimeException("No recently downloaded XLSX file found in: $downloadDir");
+        }
+
     }
 
     /**
@@ -1284,47 +1234,46 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     private function verifyToastMessage(string $expectedText, int $timeout = 30): void
     {
-        try {
-            // Start timer
-            $start = time();
-            $toastFound = false;
 
-            // Try to find the toast message with retries
-            while ((time() - $start) < $timeout && !$toastFound) {
-                // Look for toast message elements
-                $toastElements = $this->getBrowser()->getPage()->findAll('css', '.sapMMessageToast');
+        // Start timer
+        $start = time();
+        $toastFound = false;
 
-                foreach ($toastElements as $toast) {
-                    $toastText = $toast->getText();
-                    echo "Found toast: $toastText\n";
+        // Try to find the toast message with retries
+        while ((time() - $start) < $timeout && !$toastFound) {
+            // Look for toast message elements
+            $toastElements = $this->getBrowser()->getPage()->findAll('css', '.sapMMessageToast');
 
-                    // Check if the toast contains the expected text
-                    if (strpos($toastText, $expectedText) !== false) {
-                        echo "✓ Found expected toast message: \"$toastText\"\n";
-                        $toastFound = true;
-                        break;
-                    }
-                }
+            foreach ($toastElements as $toast) {
+                $toastText = $toast->getText();
 
-                if (!$toastFound) {
-                    // Wait a short time before retrying
-                    usleep(500000); // 0.5 seconds
+                $this->logDebug("Found toast: $toastText\n");
+
+                // Check if the toast contains the expected text
+                if (strpos($toastText, $expectedText) !== false) {
+
+                    $this->logDebug("✓ Found expected toast message: \"$toastText\"\n");
+                    $toastFound = true;
+                    break;
                 }
             }
 
-            // Assert that the toast was found
             if (!$toastFound) {
-                throw new \RuntimeException(
-                    "Expected toast message containing \"$expectedText\" did not appear within $timeout seconds"
-                );
+                // Wait a short time before retrying
+                usleep(500000); // 0.5 seconds
             }
-
-            // Wait a moment to let the toast disappear (if needed)
-            sleep(1);
-        } catch (\Exception $e) {
-            $this->handleContextError($e, 'UI5', 'verifyToastMessage');
-            throw $e;
         }
+
+        // Assert that the toast was found
+        if (!$toastFound) {
+            throw new \RuntimeException(
+                "Expected toast message containing \"$expectedText\" did not appear within $timeout seconds"
+            );
+        }
+
+        // Wait a moment to let the toast disappear (if needed)
+        sleep(1);
+
     }
 
 
@@ -1335,7 +1284,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         if ($this->browser) {
             $this->browser->clearXHRLog();
-            echo "\nXHR logs cleared before scenario: " . $scope->getScenario()->getTitle() . "\n";
+            $this->logDebug("\nXHR logs cleared before scenario: " . $scope->getScenario()->getTitle() . "\n");
         }
     }
 

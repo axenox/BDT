@@ -128,14 +128,19 @@ class ErrorManager
      */
     public function formatErrorMessage(array $error): string
     {
-        $message = "ERROR DETAILS |\n";
-        $message .= "===============\n";
+        // If this is a Behat exception, use the specialized formatter
+        if (isset($error['type']) && $error['type'] === 'BehatException') {
+            return $this->formatBehatExceptionMessage($error);
+        }
+    
+        // Original formatting for other error types
+        $message = "ERROR DETAILS 1|\n";
+        $message .= "===============\n"; 
 
         if ($this->lastLogId) {
             $message .= "LogID: " . $this->lastLogId . "\n";
-            $message .= "===============\n";
+            $message .= "===================\n";
         }
-
         $message .= "Type: " . ($error['type'] ?? 'N/A') . "\n";
         $message .= "Status: " . ($error['status'] ?? 'N/A') . "\n";
         $message .= "Message: " . ($error['message'] ?? 'No message available') . "\n";
@@ -144,6 +149,31 @@ class ErrorManager
 
         if (!empty($error['response'])) {
             $message .= "Response: " . $error['response'] . "\n";
+        }
+
+        return $message;
+    }
+
+    /**
+     * Formats a Behat exception into a readable string representation
+     */
+    public function formatBehatExceptionMessage(array $error): string
+    {
+        $message = "BEHAT ERROR DETAILS 2|\n";
+        $message .= "===================\n";
+
+        if ($this->lastLogId) {
+            $message .= "LogID: " . $this->lastLogId . "\n";
+            $message .= "===================\n";
+        }
+
+        $message .= "Type: " . ($error['type'] ?? 'N/A') . "\n";
+        $message .= "Status: " . ($error['status'] ?? 'N/A') . "\n";
+        $message .= "Message: " . ($error['message'] ?? 'No message available') . "\n";
+        $message .= "Source: " . ($error['source'] ?? 'Unknown') . "\n";
+
+        if (!empty($error['stack'])) {
+            $message .= "\nStack Trace:\n" . $error['stack'] . "\n";
         }
 
         return $message;
