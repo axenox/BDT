@@ -38,6 +38,7 @@ global $suiteStartDate, $suiteEndDate, $featureStartDate, $featureEndDate, $scen
  */
 class BehatFormatter implements Formatter
 {
+    private $exceptionListener;
 
     //<editor-fold desc="Variables">
     /**
@@ -199,7 +200,7 @@ class BehatFormatter implements Formatter
      * @param $name
      * @param $base_path
      */
-    function __construct($name, $projectName, $projectImage, $projectDescription, $renderer, $filename, $print_args, $print_outp, $loop_break, $show_tags, $base_path)
+    public function __construct($name, $projectName, $projectImage, $projectDescription, $renderer, $filename, $print_args, $print_outp, $loop_break, $show_tags, $base_path)
     {
         $this->projectname = $projectName;
         $this->projectimage = $projectImage;
@@ -217,6 +218,9 @@ class BehatFormatter implements Formatter
         $this->timerFeature = new Timer();
         $this->memory = new Memory();
 
+        // Initialize the exception listener but don't try to register it directly
+        $exceptionPresenter = new \Behat\Testwork\Exception\ExceptionPresenter();
+        $this->exceptionListener = new \axenox\BDT\Behat\Listeners\GlobalExceptionListener($exceptionPresenter);
     }
 
     /**
@@ -755,7 +759,7 @@ class BehatFormatter implements Formatter
                     $errorMessage = "(";
                     $errorMessage .= "During the page operation, founded an issue:\n\n";
                     $message = $exception->getMessage();
-                    $errorMessage .= "------------------------\n";
+                    $errorMessage .= "------------aaa------------\n";
                     $errorMessage .= ")";
 
                     $step->addOutput($errorMessage);

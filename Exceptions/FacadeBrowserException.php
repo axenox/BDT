@@ -57,6 +57,7 @@ URL: {$this->getUrl()}
 CLI;
     }
 
+    //Creates a debug widget with the given DebugMessage and exception
     public function createDebugWidget(DebugMessage $debugMessage)
     {
         $tab = $debugMessage->createTab();
