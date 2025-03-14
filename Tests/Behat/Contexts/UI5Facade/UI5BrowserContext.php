@@ -1224,6 +1224,38 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     }
 
+      /**
+     * @Then I see tiles :tileNames 
+     */
+    public function iSeeTiles($tileNames): void
+    {
+        // Parse the comma-separated tile list
+        $tileNames = array_map('trim', explode(',', $tileNames));
+
+        // Find tiles on the page
+        $this->getSession()->wait(1000, false);
+        $tiles = $this->getBrowser()->findWidgets("tile");
+        Assert::assertNotEmpty($tiles);
+
+        // Store the tile names on the page
+        $tileNamesOnPage = [];
+        foreach($tiles as $tile){
+
+            // The first part of aria-labes is the name of tile without detailed explanation
+            $TileName = strstr($tile->getAttribute('aria-label'), "\n", true);
+            
+            if(!empty($TileName)){
+                $tileNamesOnPage[] = $TileName;
+            }
+        }
+
+        foreach($tileNames as $tileName){
+            Assert::assertTrue(in_array($tileName, $tileNamesOnPage), "Tile ".$tileName." not found!");
+        }
+
+    }
+ 
+
     /**
      * Verifies that a toast message appears with the expected text
      * 
