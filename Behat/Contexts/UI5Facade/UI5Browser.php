@@ -1040,7 +1040,10 @@ class UI5Browser
                     }
                 }
                 break;
-
+                                
+            case 'tile':    
+                $widgets = $searchContext->findAll('xpath', "//*[contains(@class, 'exf-tile')]");
+                break;
 
             default:
                 $widgets = $searchContext->findAll('css', ".exfw-{$widgetType}");
