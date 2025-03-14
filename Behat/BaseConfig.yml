@@ -35,6 +35,9 @@ default:
   # Chrome Extension for Behat - enables Chrome WebDriver integration
   DMore\ChromeExtension\Behat\ServiceContainer\ChromeExtension: ~
   
+  # Behat Exception Extension for error handling
+  axenox\BDT\Behat\Extension\BehatExceptionExtension: ~
+
   # MinkExtension provides browser automation capabilities
   Behat\MinkExtension:  
   
