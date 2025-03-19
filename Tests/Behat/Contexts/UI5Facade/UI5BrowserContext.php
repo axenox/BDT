@@ -2,9 +2,8 @@
 namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Behat\TwigFormatter\Context\BehatFormatterContext;
+use axenox\BDT\Exceptions\FacadeBrowserException;
 use Behat\Behat\Context\Context;
-use Behat\Mink\Element\NodeElement;
-use Behat\MinkExtension\Context\MinkContext;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use exface\Core\CommonLogic\Workbench;
 use exface\Core\DataTypes\StringDataType;
@@ -12,9 +11,6 @@ use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Interfaces\WorkbenchInterface;
 use PHPUnit\Framework\Assert;
 use Behat\Behat\Hook\Scope\BeforeScenarioScope;
-use Behat\Behat\Hook\Scope\AfterScenarioScope;
-use Behat\Testwork\Tester\Result\TestResult;
-use Behat\Behat\Tester\Exception\PendingException;
 use Behat\Step\Then;
 use Behat\Behat\Hook\Scope\AfterStepScope;
 use Behat\Behat\Hook\Scope\BeforeStepScope;
@@ -74,7 +70,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @AfterStep
      * @param AfterStepScope $scope The scope containing step execution result
      */
-    public function logFailedStep(AfterStepScope $scope)
+    public function onAfterStepFailed(AfterStepScope $scope)
     {
 
         $result = $scope->getTestResult();
@@ -85,34 +81,25 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $exception = null;
             if (method_exists($result, 'getException')) {
                 $exception = $result->getException();
+                    
+                // Convert to our exception type for consistent handling
+                $wrappedException = new FacadeBrowserException(
+                    $exception->getMessage(),
+                    null,
+                    $exception,
+                    $scope
+                );
             } elseif ($result instanceof UndefinedStepResult) {
-                $exception = new \RuntimeException('Step is not defined: ' . $scope->getStep()->getText());
+                $wrappedException = new FacadeBrowserException('Step is not defined: ' . $scope->getStep()->getText(), null, null, $scope);
             } else {
-                $exception = new \RuntimeException('Step failed without exception details');
+                $wrappedException = new FacadeBrowserException('Step failed without exception details', null, null, $scope);
             }
-
-            // Convert to our exception type for consistent handling
-            $wrappedException = new \exface\Core\Exceptions\RuntimeException(
-                $exception->getMessage(),
-                null,
-                $exception
-            );
 
             // Log with full details to the workbench log
             $this->getWorkbench()->getLogger()->logException($wrappedException);
 
-            // Set Error Id for reference
-            ErrorManager::getInstance()->setLastLogId($wrappedException->getId());
-
-           
-
             // Add to ErrorManager as a Behat exception
-            ErrorManager::getInstance()->addError([
-                'type' => 'BehatException',
-                'message' => $exception->getMessage(),
-                'status' => $exception->getCode(),
-                'stack' => $exception->getTraceAsString(),
-            ], 'AfterStep');
+            ErrorManager::getInstance()->addError($wrappedException);
 
             echo "LogID: " . $wrappedException->getId() . "\n";
             // Display LogID for debugging purposes 
@@ -130,7 +117,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * 
      * @BeforeStep
      */
-    public function prepareBeforeStep(BeforeStepScope $scope): void
+    public function onBeforeStep(BeforeStepScope $scope): void
     {
 
         // Skip if browser hasn't been initialized yet
@@ -169,12 +156,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * Ensures consistent state after each test step
      * - Waits for all pending UI5 operations
      * - Verifies no errors occurred
-     * - Takes screenshot on failure
+     * - Takes screeonCompleteAfterStep
      * 
      * @AfterStep
      * @param AfterStepScope $scope Current step scope
      */
-    public function completeAfterStep(AfterStepScope $scope): void
+    public function onAfterStepCheckJsErrors(AfterStepScope $scope): void
     {
         $errorManager = ErrorManager::getInstance();
 
@@ -209,7 +196,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * 
      * @param BeforeScenarioScope $scope Behat scenario scope
      */
-    public function beforeScenario(BeforeScenarioScope $scope)
+    public function onBeforeScenario(BeforeScenarioScope $scope)
     {
         $this->scenarioName = $scope->getScenario()->getTitle();
 
@@ -590,49 +577,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
 
     }
-
-
-    /**
-     * Handles input for ComboBox and MultiComboBox components
-     * Opens the dropdown and selects the matching option
-     * 
-     * @param NodeElement $comboBox The ComboBox element to interact with
-     * @param string $value The value to select
-     * @throws \RuntimeException if value cannot be selected
-     */
-    private function handleComboBoxInput(NodeElement $comboBox, string $value): void
-    {
-
-        // Find the dropdown arrow element
-        $arrow = $comboBox->find('css', '.sapMInputBaseIconContainer');
-        if (!$arrow) {
-            throw new \RuntimeException("Could not find ComboBox dropdown arrow");
-        }
-
-        // Click to open the dropdown
-        $arrow->click();
-
-        // Find and select the matching item from dropdown list
-        // Uses CSS selectors to find items containing the value text
-        $item = $this->getBrowser()->getPage()->find(
-            'css',
-            ".sapMSelectList li:contains('{$value}'), " .
-            ".sapMComboBoxItem:contains('{$value}'), " .
-            ".sapMMultiComboBoxItem:contains('{$value}')"
-        );
-
-        // Verify the item was found in the dropdown
-        if (!$item) {
-            throw new \RuntimeException("Could not find option '{$value}' in ComboBox list");
-        }
-
-        // Click on the matching item to select it
-        $item->click();
-
-    }
-
-
-
 
     /**
      * Verifies if specific text appears in a named column of a DataTable
@@ -1058,7 +1002,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string|null $tableIndex Table index (optional)
      * @return void
      */
-    public function clickTableOverflowButton($tableIndex = null): void
+    public function iClickTableOverflowButton($tableIndex = null): void
     {
 
         // If a table index is provided, convert it to an integer
@@ -1073,92 +1017,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
 
         // Click the overflow button
-        $this->clickOverflowButton($tableNumber);
-
-
-    }
-
-    /**
-     * Clicks the overflow button of the selected table
-     * 
-     * @param int|null $tableIndex The table index (1-based) of the overflow button to click
-     * @return void
-     */
-    public function clickOverflowButton(int $tableIndex = null): void
-    {
-
-        // Check if the browser object is initialized
-        if (!$this->browser) {
-            throw new \RuntimeException("Browser is not initialized. You need to visit a page first.");
-        }
-
-        $page = $this->getBrowser()->getPage();
-
-        // If a table index is provided, find the overflow button of that table
-        if ($tableIndex !== null) {
-            // Find all tables
-            $tables = $page->findAll('css', '.exfw-DataTable, .sapUiTable, .sapMTable');
-
-            if (count($tables) < $tableIndex) {
-                throw new \RuntimeException("Table not found at the specified index: " . $tableIndex);
-            }
-
-            // Get the table at the specified index (convert to 0-based index)
-            $targetTable = $tables[$tableIndex - 1];
-
-            // Find the overflow button in this table
-            $overflowButton = $targetTable->find('css', 'button[id*="overflowButton"], button[id*="tableMenuButton"]');
-
-            if (!$overflowButton) {
-                // Alternatively, search for the overflow button in the table's toolbar
-                $toolbar = $targetTable->find('css', '.sapMTB, .sapUiTableTbr');
-                if ($toolbar) {
-                    $overflowButton = $toolbar->find('css', 'button[id*="overflowButton"]');
-                }
-            }
-        } else {
-            // If no table index is provided, find the first overflow button on the page
-            $overflowButton = $page->find('css', 'button[id*="overflowButton"]');
-        }
-
-        // If no overflow button was found, throw an error
-        if (!$overflowButton) {
-            throw new \RuntimeException("Overflow butonu bulunamadı" .
-                ($tableIndex ? " (Tablo indeksi: $tableIndex)" : ""));
-        }
-
-        // Click the button
-        $overflowButton->click();
-
-        // Wait briefly
-        $this->getSession()->wait(1000);
-
-        // Verify the click was successful
-        // In UI5, a popup or popover element usually appears when a menu is opened
-        $menu = $page->find('css', '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu');
-
-        if (!$menu) {
-            // Try clicking via JavaScript as an alternative method
-            $buttonId = $overflowButton->getAttribute('id');
-            $this->getSession()->executeScript("
-                var element = document.getElementById('$buttonId');
-                if (element) {
-                    element.click();
-                    return true;
-                }
-                return false;
-            ");
-
-            // Wait again and check
-            $this->getSession()->wait(1000);
-            $menu = $page->find('css', '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu');
-        }
-
+        $this->getBrowser()->clickOverflowButton($tableNumber);
         $this->logDebug("✓ Overflow button clicked successfully\n");
-
     }
-
-
 
     /**
      * @Then an XLSX file should be downloaded
@@ -1301,7 +1162,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     /**
      * @BeforeScenario
      */
-    public function resetAjaxLog(BeforeScenarioScope $scope)
+    public function onBeforeScenarioResetAjaxLog(BeforeScenarioScope $scope)
     {
         if ($this->browser) {
             $this->browser->clearXHRLog();
@@ -1339,42 +1200,4 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $array = array_map('trim', $array);
         return $array;
     }
-
-
-    /**
-     * Central function for error handling in UI5 Browser context
-     * 
-     * This function captures, processes and logs exceptions that occur during browser operations.
-     * It standardizes the error handling process by formatting error data into a consistent structure
-     * and delegates the actual logging to the ErrorManager singleton. The function enriches basic
-     * exception information with contextual data such as the current URL and allows for additional
-     * custom data to be included.
-     * 
-     * @param \Exception $e The caught exception instance
-     * @param string $type Error type classification (e.g., 'validation', 'connection', 'timeout')
-     * @param string $source Source of the error (typically the method name where exception occurred)
-     * @param array $additionalData Additional contextual data to include with the error (optional)
-     * @return void
-     */
-    protected function handleContextError(\Exception $e, string $type, string $source, array $additionalData = []): void
-    {
-        $errorManager = ErrorManager::getInstance();
-
-        // Basic error data
-        $errorData = [
-            'type' => $type,         // Type of the error
-            'message' => $e->getMessage(), // Error message from exception
-            'source' => $source,     // Source method where error occurred
-            'url' => $this->browser === null ? null : $this->getBrowser()->getCurrentUrlWithHash(), // Current URL with hash
-        ];
-
-        // Add additional data if provided
-        if (!empty($additionalData)) {
-            $errorData = array_merge($errorData, $additionalData);
-        }
-
-        // Add the error to ErrorManager
-        $errorManager->addError($errorData, 'UI5BrowserContext');
-    }
-
 }

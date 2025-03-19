@@ -1,6 +1,8 @@
 <?php
 namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
+use axenox\BDT\Exceptions\FacadeBrowserException;
+
 /**
  * ErrorManager class for managing and tracking errors in UI5 tests
  * Implement to ensure a single error manager instance
@@ -41,37 +43,21 @@ class ErrorManager
      * Adds a new error to the error collection
      * Prevents duplicate errors within a 1-second timeframe
      */
-    public function addError(array $error, string $source): void
+    public function addError(FacadeBrowserException $e): void
     {
-        // Standardize the error object
-        $standardError = $this->standardizeError($error, $source);
-
         // Generate hash to prevent duplicate errors
-        $hash = $this->generateErrorHash($standardError);
+        $hash = $this->generateErrorHash([
+            'type' => $e::class,
+            'message' => $e->getMessage(),
+            'status' => $e->getCode()
+        ]);
 
         // Add the error if it's not a duplicate or if at least 1 second has passed since the last error
         $currentTime = microtime(true);
         if (!isset($this->errors[$hash]) || ($currentTime - $this->lastErrorTime) > 1) {
-            $this->errors[$hash] = $standardError;
+            $this->errors[$hash] = $e;
             $this->lastErrorTime = $currentTime;
         }
-    }
-
-    /**
-     * Standardizes error format by adding missing fields and metadata
-     */
-    private function standardizeError(array $error, string $source): array
-    {
-        return [
-            'type' => $error['type'] ?? 'Unknown',
-            'message' => $error['message'] ?? '',
-            'status' => $error['status'] ?? null,
-            'url' => $error['url'] ?? '',
-            'response' => $error['response'] ?? '',
-            'source' => $source,
-            'timestamp' => microtime(true),
-            'trace' => debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 3)
-        ];
     }
 
     /**
@@ -108,7 +94,7 @@ class ErrorManager
     /**
      * Returns the first error in the collection or null if empty
      */
-    public function getFirstError(): ?array
+    public function getFirstError(): ?FacadeBrowserException
     {
         return reset($this->errors) ?: null;
     }
@@ -121,62 +107,4 @@ class ErrorManager
         $this->processedErrors = [];
         $this->lastErrorTime = 0;
     }
-
-
-    /**
-     * Formats an error into a readable string representation
-     */
-    public function formatErrorMessage(array $error): string
-    {
-        // If this is a Behat exception, use the specialized formatter
-        if (isset($error['type']) && $error['type'] === 'BehatException') {
-            return $this->formatBehatExceptionMessage($error);
-        }
-    
-        // Original formatting for other error types
-        $message = "ERROR DETAILS 1|\n";
-        $message .= "===============\n"; 
-
-        if ($this->lastLogId) {
-            $message .= "LogID: " . $this->lastLogId . "\n";
-            $message .= "===================\n";
-        }
-        $message .= "Type: " . ($error['type'] ?? 'N/A') . "\n";
-        $message .= "Status: " . ($error['status'] ?? 'N/A') . "\n";
-        $message .= "Message: " . ($error['message'] ?? 'No message available') . "\n";
-        $message .= "URL: " . ($error['url'] ?? 'N/A') . "\n";
-        $message .= "Source: " . ($error['source'] ?? 'Unknown') . "\n";
-
-        if (!empty($error['response'])) {
-            $message .= "Response: " . $error['response'] . "\n";
-        }
-
-        return $message;
-    }
-
-    /**
-     * Formats a Behat exception into a readable string representation
-     */
-    public function formatBehatExceptionMessage(array $error): string
-    {
-        $message = "BEHAT ERROR DETAILS 2|\n";
-        $message .= "===================\n";
-
-        if ($this->lastLogId) {
-            $message .= "LogID: " . $this->lastLogId . "\n";
-            $message .= "===================\n";
-        }
-
-        $message .= "Type: " . ($error['type'] ?? 'N/A') . "\n";
-        $message .= "Status: " . ($error['status'] ?? 'N/A') . "\n";
-        $message .= "Message: " . ($error['message'] ?? 'No message available') . "\n";
-        $message .= "Source: " . ($error['source'] ?? 'Unknown') . "\n";
-
-        if (!empty($error['stack'])) {
-            $message .= "\nStack Trace:\n" . $error['stack'] . "\n";
-        }
-
-        return $message;
-    }
-
 }
