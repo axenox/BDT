@@ -86,6 +86,9 @@ class UI5WaitManager
                 $this->waitForAjaxRequests($timeouts['ajax']);
             }
 
+            // Wait for page to load
+            $this->waitForUI5Controls(); 
+
             // Check if any errors occurred during the wait operations
             $this->validateNoErrors();
         } catch (Exception $e) {

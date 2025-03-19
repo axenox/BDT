@@ -104,7 +104,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             // Set Error Id for reference
             ErrorManager::getInstance()->setLastLogId($wrappedException->getId());
 
-            echo "Wrapped Exception LogId 1:" . $wrappedException->getId() . "\n";
+           
 
             // Add to ErrorManager as a Behat exception
             ErrorManager::getInstance()->addError([
@@ -150,15 +150,18 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Perform basic UI5 readiness checks
         $this->getBrowser()->handleStepWaitOperations(false);
 
-        // Log step beginning for debugging purposes
-        $this->logDebug(sprintf(
-            "\nStarting step: %s %s",
-            $scope->getStep()->getKeyword(),
-            $scope->getStep()->getText()
-        ));
-
-
-
+         // Log the beginning of the step for debugging purposes
+         $stepKeyword = $scope->getStep()->getKeyword();
+         $stepText = $scope->getStep()->getText();
+ 
+         // Get the step's line number
+         $stepLine = $scope->getStep()->getLine();
+ 
+         // Show the step number in the message
+         $this->logDebug(sprintf("\n[%d] Starting step: %s %s", $stepLine, $stepKeyword, $stepText));
+ 
+         // Show the step name
+         $this->browser->showTestCaseName(sprintf("Step [%d]: %s - %s", $stepLine, $stepKeyword, $stepText));
     }
 
 
@@ -298,16 +301,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // try {
             if ($url && !StringDataType::endsWith($url, '.html')) {
                 $url .= '.html';
-            }
-            echo "Debug - 1"; 
+            } 
             // Navigate to the page using Mink's path navigation
-            $this->visitPath('/' . $url);
-            echo "Debug - 2"; 
-            $this->logDebug("Debug - New page is loading...\n");
-            echo "Debug - 3"; 
+            $this->visitPath('/' . $url); 
+            $this->logDebug("Debug - New page is loading...\n"); 
             // Initialize the UI5Browser with the current session and URL
-            $this->browser = new UI5Browser($this->getWorkbench(), $this->getSession(), $url);
-            echo "Debug - 4"; 
+            $this->browser = new UI5Browser($this->getWorkbench(), $this->getSession(), $url); 
             return;
         // } catch (FacadeBrowserException $e) {
         //     echo "Debug - 5"; 
@@ -753,27 +752,15 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iShouldSeeButton(string $buttonText, string $tableName = null)
     {
-        try {
-            // Attempt to find the button using the findButton method
-            $button = $this->getBrowser()->findButton($buttonText, $tableName);
+        // Attempt to find the button using the UI5Browser instance
+        $button = $this->getBrowser()->findButtonByCaption($buttonText);
 
-            // Assert that the button is found
-            Assert::assertNotNull(
-                $button,
-                sprintf(
-                    "Button with text '%s' %s not found",
-                    $buttonText,
-                    $tableName ? "in table/section '$tableName'" : ""
-                )
-            );
+        // Assert that the button was found
+        Assert::assertNotNull($button, "Button with text '{$buttonText}' not found.");
 
-            // Optional: Highlight the found button for visual confirmation
-            $this->getBrowser()->highlightWidget($button, 'Button');
+        // Highlight the button for debugging purposes
+        $this->getBrowser()->highlightWidget($button, 'Button', 0);
 
-        } catch (\Exception $e) {
-            // Fail the test if an unexpected error occurs
-            Assert::fail($e->getMessage());
-        }
     }
 
     /**
@@ -1229,12 +1216,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeTiles($tileNames): void
     {
+        
         // Parse the comma-separated tile list
         $tileNames = array_map('trim', explode(',', $tileNames));
 
         // Find tiles on the page
         $this->getSession()->wait(1000, false);
         $tiles = $this->getBrowser()->findWidgets("tile");
+   
         Assert::assertNotEmpty($tiles);
 
         // Store the tile names on the page

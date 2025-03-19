@@ -281,6 +281,49 @@ class UI5Browser
     }
 
     /**
+     * Displays the name of the current test case on the UI.
+     * 
+     * This function creates a fixed position message div on the page 
+     * that shows the name of the test case being executed. The div 
+     * is styled to be visually distinct, with a selected colour background 
+     * and white text, making it easy to identify during test execution.
+     * 
+     * The message div is created if it does not already exist, ensuring 
+     * that it does not duplicate if the function is called multiple times.
+     * 
+     * @param string $testCaseName The name of the test case to display.
+     * @return void
+     */
+    public function showTestCaseName(string $testCaseName): void
+    {
+        $this->session->executeScript(<<<JS
+    (function() {
+        // Check if the message div already exists
+        let messageDiv = document.getElementById('testCaseNameDiv');
+        
+        // If it doesn't exist, create it
+        if (!messageDiv) {
+            messageDiv = document.createElement('div');
+            messageDiv.id = 'testCaseNameDiv'; // Set an ID for future reference
+            messageDiv.style.position = 'fixed';
+            messageDiv.style.top = '10px';
+            messageDiv.style.right = '10px';
+            messageDiv.style.backgroundColor = '#4CAF50'; // Green
+            messageDiv.style.color = 'white';
+            messageDiv.style.padding = '10px';
+            messageDiv.style.borderRadius = '5px';
+            messageDiv.style.zIndex = '9999';
+            document.body.appendChild(messageDiv); 
+        }
+        
+        // Update the text of the message div
+        messageDiv.innerText = '' + '{$testCaseName}';
+    })();
+JS
+        );
+    }
+
+    /**
      * Initializes the highlighting functionality in browser
      * Creates JavaScript functions for adding and removing highlights
      * 
@@ -1040,8 +1083,8 @@ class UI5Browser
                     }
                 }
                 break;
-                                
-            case 'tile':    
+
+            case 'tile':
                 $widgets = $searchContext->findAll('xpath', "//*[contains(@class, 'exf-tile')]");
                 break;
 
