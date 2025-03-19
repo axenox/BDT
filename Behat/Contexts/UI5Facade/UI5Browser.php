@@ -1410,4 +1410,77 @@ JS
     ');
     }
 
+    /**
+     * Clicks the overflow button of the selected table
+     * 
+     * @param int|null $tableIndex The table index (1-based) of the overflow button to click
+     * @return void
+     */
+    public function clickOverflowButton(int $tableIndex = null): void
+    {
+        $page = $this->getPage();
+
+        // If a table index is provided, find the overflow button of that table
+        if ($tableIndex !== null) {
+            // Find all tables
+            $tables = $page->findAll('css', '.exfw-DataTable, .sapUiTable, .sapMTable');
+
+            if (count($tables) < $tableIndex) {
+                throw new \RuntimeException("Table not found at the specified index: " . $tableIndex);
+            }
+
+            // Get the table at the specified index (convert to 0-based index)
+            $targetTable = $tables[$tableIndex - 1];
+
+            // Find the overflow button in this table
+            $overflowButton = $targetTable->find('css', 'button[id*="overflowButton"], button[id*="tableMenuButton"]');
+
+            if (!$overflowButton) {
+                // Alternatively, search for the overflow button in the table's toolbar
+                $toolbar = $targetTable->find('css', '.sapMTB, .sapUiTableTbr');
+                if ($toolbar) {
+                    $overflowButton = $toolbar->find('css', 'button[id*="overflowButton"]');
+                }
+            }
+        } else {
+            // If no table index is provided, find the first overflow button on the page
+            $overflowButton = $page->find('css', 'button[id*="overflowButton"]');
+        }
+
+        // If no overflow button was found, throw an error
+        if (!$overflowButton) {
+            throw new \RuntimeException("Overflow butonu bulunamadı" .
+                ($tableIndex ? " (Tablo indeksi: $tableIndex)" : ""));
+        }
+
+        // Click the button
+        $overflowButton->click();
+
+        // Wait briefly
+        $this->getSession()->wait(1000);
+
+        // Verify the click was successful
+        // In UI5, a popup or popover element usually appears when a menu is opened
+        $menu = $page->find('css', '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu');
+
+        if (!$menu) {
+            // Try clicking via JavaScript as an alternative method
+            $buttonId = $overflowButton->getAttribute('id');
+            $this->getSession()->executeScript("
+                var element = document.getElementById('$buttonId');
+                if (element) {
+                    element.click();
+                    return true;
+                }
+                return false;
+            ");
+
+            // Wait again and check
+            $this->getSession()->wait(1000);
+            $menu = $page->find('css', '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu');
+        }
+
+
+    }
+
 }

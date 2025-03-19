@@ -37,11 +37,24 @@ class FacadeBrowserException extends RuntimeException
 
     public function toCliOutput() : string
     {
+        // Original formatting for other error types
+        $message = "ERROR DETAILS 1|\n";
+        $message .= "===============\n"; 
+
+        $message .= "LogID: " . $this->getId() . "\n";
+        $message .= "===================\n";
+        $message .= "Type: " . PhpClassDataType::findClassNameWithoutNamespace($this::class) . "\n";
+        $message .= "Status: " . ($this->getCode() ?? 'N/A') . "\n";
+        $message .= "Message: " . $this->getMessage() . "\n";
+        $message .= "Source line: " . $this->scope->getStep()->getLine() . "\n";
+        
+        return $message;
+        /*
         return <<<CLI
 
 Type: {$this->getType()}
 URL: {$this->getUrl()}
-CLI;
+CLI;*/
     }
 
     public function toMarkdown() : string

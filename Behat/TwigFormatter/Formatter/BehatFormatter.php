@@ -2,6 +2,7 @@
 
 namespace axenox\BDT\Behat\TwigFormatter\Formatter;
 
+use axenox\BDT\Exceptions\FacadeBrowserException;
 use Behat\Behat\EventDispatcher\Event\AfterFeatureTested;
 use Behat\Behat\EventDispatcher\Event\AfterOutlineTested;
 use Behat\Behat\EventDispatcher\Event\AfterScenarioTested;
@@ -751,23 +752,22 @@ class BehatFormatter implements Formatter
         // If step failed, collect error information for reporting
         if (!$result->isPassed()) {
             $exception = $result instanceof ExecutedStepResult ? $result->getException() : null;
-            if ($exception) {
-                $errorManager = ErrorManager::getInstance();
-
-                // If there are no errors already in the ErrorManager, create a new error message
-                if (!$errorManager->hasErrors()) {
+            switch (true) {
+                case $exception instanceof FacadeBrowserException:
+                    $step->addOutput($exception->toCliOutput());
+                    break;
+                case ErrorManager::getInstance()->hasErrors():
+                    $error = ErrorManager::getInstance()->getFirstError();
+                    $step->addOutput($error->toCliOutput());
+                case $exception === null:
+                    // TODO what if there is no exception?
+                    break;
+                default:
                     $errorMessage = "(";
                     $errorMessage .= "During the page operation, founded an issue:\n\n";
-                    $message = $exception->getMessage();
+                    $errorMessage .= $exception->getMessage();
                     $errorMessage .= "------------aaa------------\n";
                     $errorMessage .= ")";
-
-                    $step->addOutput($errorMessage);
-                } else {
-                    // Get the existing error from ErrorManager
-                    $error = $errorManager->getFirstError();
-                    $step->addOutput($errorManager->formatErrorMessage($error));
-                }
             }
         }
 
