@@ -1235,12 +1235,85 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             
             if(!empty($TileName)){
                 $tileNamesOnPage[] = $TileName;
+                $this->getBrowser()->highlightWidget($tile, "tile", 0);
             }
         }
 
         foreach($tileNames as $tileName){
             Assert::assertTrue(in_array($tileName, $tileNamesOnPage), "Tile ".$tileName." not found!");
         }
+
+    }
+
+    
+    /**
+     * @Then I should not see the buttons :unexpectedButtons
+     * @Then I should not see the buttons :unexpectedButtons on the :tableIndex table
+     * 
+     */
+    public function iShouldNotSeeTheFollowingButtons($unexpectedButtons, $tableIndex=null)
+    {
+        $page = $this->getBrowser()->getPage();
+
+        // Parse the comma-separated tile list
+        $unexpectedButtons = array_map('trim', explode(',', $unexpectedButtons));
+        
+        foreach ($unexpectedButtons as $btn) {
+            if(empty($tableIndex)){
+                $foundButton = $this->getBrowser()->findButtonByCaption($btn);
+            }else{
+                //find the parent data table 
+                // Convert index to integer and remove any non-numeric characters (e.g., ".")
+                $tableNumber = (int) filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT);
+                $parents = $page->findAll('css', '.exfw-DataTable');
+
+                //find button with parent
+                $foundButton = $this->getBrowser()->findButtonByCaption($btn, $parents[$tableNumber - 1]);
+                
+            }
+            $this->getBrowser()->clearWidgetHighlights();
+            if(!empty($foundButton)){
+                $this->getBrowser()->highlightWidget($foundButton, 'Button', 0);
+            }       
+            Assert::assertEmpty($foundButton, "Unexpected buttons found: ".$btn);
+        }
+        
+    }
+
+
+    /**
+     * @Then I only see tiles :tileNames 
+     */
+    public function iOnlySeeTiles($tileNames): void
+    {
+        // Parse the comma-separated tile list
+        $tileNames = array_map('trim', explode(',', $tileNames));
+
+        // Find tiles on the page
+        $this->getSession()->wait(1000, false);
+        $tiles = $this->getBrowser()->findWidgets("tile");
+        Assert::assertNotEmpty($tiles);
+
+        // Store the tile names on the page
+        $tileNamesOnPage = [];
+        foreach($tiles as $tile){
+
+            // The first part of aria-labes is the name of tile without detailed explanation
+            $TileName = strstr($tile->getAttribute('aria-label'), "\n", true);
+            
+            if(!empty($TileName)){
+                $tileNamesOnPage[] = $TileName;
+                $this->getBrowser()->highlightWidget($tile, "tile", 0);
+            }
+        }
+
+         // Check if all expected tiles are found
+         $expectedTiles = array_diff($tileNames, $tileNamesOnPage);
+         Assert::assertEmpty(array_diff($tileNames, $tileNamesOnPage), "Some expected tiles are missing: " . implode(", ", $expectedTiles));
+         
+         // Check if there are unexpected tiles
+         $unexpectedTiles = array_diff($tileNamesOnPage, $tileNames);
+         Assert::assertEmpty($unexpectedTiles, "Unexpected tiles found: " . implode(", ", $unexpectedTiles));
 
     }
  
