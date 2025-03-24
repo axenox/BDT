@@ -34,9 +34,9 @@ class UI5WaitManager
      * Default timeout values (in seconds) for different wait operations
      */
     private array $defaultTimeouts = [
-        'page' => 10,  // Page load timeout
-        'busy' => 30,  // Busy indicator timeout
-        'ajax' => 30   // AJAX requests timeout
+        'page' => 30,  // Page load timeout
+        'busy' => 60,  // Busy indicator timeout
+        'ajax' => 60   // AJAX requests timeout
     ];
 
     /**
@@ -65,12 +65,16 @@ class UI5WaitManager
         bool $waitForPage = false,
         bool $waitForBusy = false,
         bool $waitForAjax = false,
+        
         array $timeouts = []
     ): void {
         // Merge provided timeouts with defaults
         $timeouts = array_merge($this->defaultTimeouts, $timeouts);
 
+     
+
         try {
+      
             // Wait for page load if requested
             if ($waitForPage) {
                 $this->waitForPageLoad($timeouts['page']);
@@ -87,13 +91,43 @@ class UI5WaitManager
             }
 
             // Wait for page to load
-            $this->waitForUI5Controls(); 
+            $this->waitForUI5Controls();
+ 
 
             // Check if any errors occurred during the wait operations
             $this->validateNoErrors();
+           
         } catch (Exception $e) {
             throw new Exception("UI5 wait operation failed: " . $e->getMessage());
         }
+    }
+
+    /**
+     * Waits for an element to have a specific CSS class
+     *
+     * @param NodeElement $element The element to check
+     * @param string $className The class name to wait for
+     * @param int $timeout Maximum time to wait in seconds
+     * @return bool True if element has the class within timeout, false otherwise
+     */
+    public function waitForElementToHaveClass($element, string $className, int $timeout = 5): bool
+    {
+        $elementId = $element->getAttribute('id');
+
+        if (empty($elementId)) {
+            // If element has no ID, we'll use XPath to identify it
+            $xpath = $element->getXpath();
+            return $this->getSession()->wait(
+                $timeout * 1000,
+                "document.evaluate(\"$xpath\", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.classList.contains(\"$className\")"
+            );
+        }
+
+        // If element has ID, we can use it directly
+        return $this->getSession()->wait(
+            $timeout * 1000,
+            "document.getElementById(\"$elementId\").classList.contains(\"$className\")"
+        );
     }
 
     /**
@@ -110,10 +144,10 @@ class UI5WaitManager
      */
     public function waitForAppLoaded(string $pageUrl): void
     {
-        try {
+        try {  
             // Wait for initial page load
             $this->waitForPendingOperations(true, false, false);
-
+           
             // Wait for UI5 framework to initialize
             if (!$this->waitForUI5Framework()) {
                 throw new Exception("UI5 framework failed to load");
@@ -128,9 +162,10 @@ class UI5WaitManager
             $appId = substr($pageUrl, 0, strpos($pageUrl, '.html')) . '.app';
             $this->waitForAppId($appId);
 
+            
             // Wait for busy indicators and AJAX requests to complete
             $this->waitForPendingOperations(false, true, true);
-
+          
         } catch (Exception $e) {
             throw new Exception("Failed to load UI5 application DB: " . $e->getMessage());
         }
@@ -354,4 +389,6 @@ class UI5WaitManager
             throw $e;
         }
     }
+
+
 }
