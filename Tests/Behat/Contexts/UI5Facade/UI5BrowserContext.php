@@ -1215,9 +1215,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $captions = $this->explodeList($tileNames);
         
         foreach ($this->getBrowser()->findTiles() as $tile) {
-            $tileFound = in_array($tile->getCaption(), $captions);
-            Assert::assertTrue($tileFound, "Tile " . $tileName . " not found!");
+            $tileName = $tile->getCaption();
+            if (in_array($tileName, $captions)) {
+                unset($captions[$tileName]);
+            }
         }
+        Assert::assertEmpty($captions, 'Tiles not found: ' . implode(', ', $captions));
     }
 
     /**
@@ -1227,15 +1230,18 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         $captions = $this->explodeList($tileNames);
         
+        $otherCaptions = [];
         foreach ($this->getBrowser()->findTiles() as $tile) {
             $tileName = $tile->getCaption();
-            $tileFound = in_array($tileName, $captions);
-            Assert::assertTrue($tileFound, "Tile " . $tileName . " not found!");
-            if ($tileFound) {
-                unset($captions[$tileName]);
+            $tileIdx = array_search($tileName, $captions);
+            if ($tileIdx !== false) {
+                unset($captions[$tileIdx]);
+            } else {
+                $otherCaptions[] = $tileName;
             }
         }
-        Assert::assertEmpty($captions, 'Found more tiles than expected: ' . implode(', ', $captions));
+        Assert::assertEmpty($captions, 'Tiles not found: ' . implode(', ', $captions));
+        Assert::assertEmpty($otherCaptions, 'Found more tiles than expected: ' . implode(', ', $otherCaptions));
     }
     
     /**

@@ -1040,19 +1040,15 @@ JS
     public function findTiles() : array
     {
         // Find tiles on the page
-        $tiles = $this->findWidgets("Tile");
+        $nodes = $this->findWidgets("Tile");
 
         // Store the tile names on the page
         $tiles = [];
-        foreach ($tiles ?? [] as $tile) {
-
-            // The first part of aria-labes is the name of tile without detailed explanation
-            $tileName = strstr($tile->getAttribute('aria-label'), "\n", true);
-
-            if (! empty($tileName)) {
-                $tiles[] = new UI5TileNode($tile);
-            }
+        foreach ($nodes ?? [] as $node) {
+            $tile = new UI5TileNode($node);
+            $tiles[] = $tile;
         }
+        Assert::assertNotEmpty($tiles, 'No tiles found');
         return $tiles;
     }
 
