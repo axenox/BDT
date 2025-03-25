@@ -198,6 +198,8 @@ class UI5Browser
         }
     }
 
+
+
     /**
      * Handles wait operations before or after test steps
      * 
@@ -213,11 +215,15 @@ class UI5Browser
     {
         try {
             if ($isAfterStep) {
+
                 // After step: Wait for all operations to complete
                 $this->waitManager->waitForPendingOperations(true, true, true);
+
             } else {
+
                 // Before step: Limited wait for UI stabilization
                 $this->waitManager->waitForPendingOperations(false, true, false);
+
             }
         } catch (\Exception $e) {
             throw new \RuntimeException(
@@ -322,6 +328,86 @@ class UI5Browser
 JS
         );
     }
+
+    /**
+     * Displays step timing information on the UI.
+     * 
+     * This function creates a fixed position message div on the page 
+     * that shows the timing information for test steps. It displays:
+     * - Step start time when a step begins
+     * - Both start and end times plus duration when a step completes
+     * 
+     * The div is styled to be visually distinct from the test case name div,
+     * positioned at the bottom right of the screen.
+     * 
+     * @param string $stepName The name of the step being executed
+     * @param bool $isStepStart Whether this is the start or end of the step
+     * @param float|null $startTime The start time of the step (timestamp)
+     * @return float Current timestamp (can be used as startTime for end call)
+     */
+    public function showStepTiming(string $stepName, bool $isStepStart = true, ?float $startTime = null): float
+    {
+        $currentTime = microtime(true);
+        $formattedTime = date('H:i:s', (int) $currentTime) . '.' . substr(number_format($currentTime - (int) $currentTime, 3), 2);
+
+        if ($isStepStart) {
+            // For step start, just show the start time
+            $message = "Started at: {$formattedTime}";
+        } else {
+            // For step end, show start, end and duration
+            $duration = $currentTime - $startTime;
+            $formattedStartTime = date('H:i:s', (int) $startTime) . '.' . substr(number_format($startTime - (int) $startTime, 3), 2);
+            $message = "Started: {$formattedStartTime}<br>Ended: {$formattedTime}<br>Duration: " . number_format($duration, 3) . " sec";
+        }
+
+        // Convert PHP boolean to JavaScript boolean string
+        $isStepStartJS = $isStepStart ? 'false' : 'true';
+
+        $this->session->executeScript(<<<JS
+    (function() {
+        // Check if the timing div already exists
+        let timingDiv = document.getElementById('stepTimingDiv');
+        
+        // If it doesn't exist, create it
+        if (!timingDiv) {
+            timingDiv = document.createElement('div');
+            timingDiv.id = 'stepTimingDiv';
+            timingDiv.style.position = 'fixed';
+            timingDiv.style.bottom = '10px';
+            timingDiv.style.right = '10px';
+            timingDiv.style.backgroundColor = '#2196F3'; // Blue color to distinguish from test case name
+            timingDiv.style.color = 'white';
+            timingDiv.style.padding = '10px';
+            timingDiv.style.borderRadius = '5px';
+            timingDiv.style.zIndex = '9999';
+            timingDiv.style.fontFamily = 'monospace'; // For better readability of times
+            timingDiv.style.fontSize = '14px';
+            timingDiv.style.maxWidth = '300px';
+            document.body.appendChild(timingDiv);
+        }
+        
+        // Updading the text of the timing div
+        timingDiv.innerHTML = '<strong>Step: {$stepName}</strong><br>' + '{$message}';
+        
+        // If this is the end of the step, wait 1 second and then update the div
+        if ({$isStepStartJS}) {
+            setTimeout(function() {
+                timingDiv.innerHTML += '<br><em>Continuing in 1s...</em>';
+            }, 0);
+            
+            // Wait 1 second before next step
+            setTimeout(function() {
+                // You can clear or update the message here if needed
+            }, 1000);
+        }
+    })();
+JS
+        );
+
+        // Return current time so it can be used as startTime for the end call
+        return $currentTime;
+    }
+
 
     /**
      * Initializes the highlighting functionality in browser
@@ -905,210 +991,44 @@ JS
 
 
     /**
-     * Enhanced findWidgets method with better widget detection
-     * Finds widgets of a specific type in the UI, with support for different
-     * UI5 control types and filtering by object alias
+     * Finds and returns visible widgets based on specific criteria
      * 
-     * @param string $widgetType Type of widget to find (Dialog, Input, DataTable, etc.)
-     * @param NodeElement|null $parent Optional parent element to search within
-     * @param int $timeoutInSeconds Timeout for waiting
-     * @return NodeElement[] Array of found widget elements
+     * This method performs a comprehensive search for UI5 widgets with the following features:
+     * - Searches for widgets using a generalized CSS selector
+     * - Waits for pending operations to complete before searching
+     * - Filters widgets by type and optional object alias
+     * - Ensures only visible widgets are returned
+     * 
+     * @param string $widgetType The type of widget to search for (e.g., 'DataTable')
+     * @param string|null $objectAlias Optional text to filter widgets by their title or content
+     * @param int $timeoutInSeconds Maximum time to wait for widgets to be available (default: 10 seconds)
+     * 
+     * @return NodeElement[] Array of visible widget nodes matching the search criteria
+     * 
+     * Search Strategy:
+     * - Uses CSS class-based widget identification
+     * - Performs visibility and alias-based filtering
+     * - Supports case-insensitive partial matching for object alias
      */
-    public function findWidgets(string $widgetType, NodeElement $parent = null, int $timeoutInSeconds = 2): array
+    public function findWidgets(string $widgetType, ?string $objectAlias = null, int $timeoutInSeconds = 10): array
     {
-        // Initialize search context - either parent element or full page
-        $searchContext = $parent ?? $this->getPage();
-        $widgets = [];
-        $foundIds = [];
+        // Generate a generalized CSS selector for the specific widget type
+        $cssSelector = ".exfw-{$widgetType}";
 
+        // Wait for all pending operations to complete
+        $this->waitManager->waitForPendingOperations(true, true, true);
+        // Find all widgets on the page matching the CSS selector
+        $page = $this->getPage();
+        $widgets = $page->findAll('css', $cssSelector);
 
-        switch ($widgetType) {
-            case 'Dialog':
-                // Define selectors for different types of UI5 dialogs
-                $selectors = [
-                    // Core dialog selectors
-                    '.sapMDialog',
-                    '[role="dialog"]',
-                    // Message and popup dialogs
-                    '.sapMMessageDialog',
-                    '.sapMPopover[role="dialog"]',
-                    // Dialog content containers
-                    '.sapMDialogSection',
-                    '.sapMDialogScroll',
-                    // Custom dialog classes
-                    '.exf-dialog-page',
-                    //
-                    '.sapMDialog-CTX',
-                    '.sapMDialogBlock',
-                    '.sapMPopover',
-                    '.sapUiRespDialog',
-                ];
-                // Search for each dialog type
-
-                foreach ($selectors as $selector) {
-                    $elements = $searchContext->findAll('css', $selector);
-                    foreach ($elements as $element) {
-                        try {
-                            $elementId = $element->getAttribute('id');
-
-                            // Skip already processed elements to avoid duplicates
-                            if (in_array($elementId, $foundIds)) {
-                                continue;
-                            }
-
-                            // Validate that element is a proper dialog
-                            if (!$this->isValidDialog($element)) {
-                                continue;
-                            }
-
-                            // Get dialog text content for filtering
-                            $dialogText = $this->extractDialogText($element);
-
-                            // Filter by objectAlias if specified
-                            if (!empty($this->objectAlias)) {
-                                if (stripos($dialogText, $this->objectAlias) !== false) {
-                                    $widgets[] = $element;
-                                    $foundIds[] = $elementId;
-                                }
-                            } else {
-                                $widgets[] = $element;
-                                $foundIds[] = $elementId;
-                            }
-                        } catch (\Exception $e) {
-                            continue;
-                        }
-                    }
-                }
-                break;
-
-            case 'Input':
-                // Search for UI5 input elements
-                $widgets = [];
-                $foundIds = [];
-
-                $mainInputs = $searchContext->findAll('css', '.sapMInputBase');
-                foreach ($mainInputs as $input) {
-                    try {
-                        $elementId = $input->getAttribute('id');
-                        // Check for duplicate IDs
-                        if (!in_array($elementId, $foundIds)) {
-                            // Verify element has actual input field
-                            $inner = $input->find('css', '.sapMInputBaseInner');
-                            if ($inner && $inner->isVisible()) {
-                                $widgets[] = $input;
-                                $foundIds[] = $elementId;
-                            }
-                        }
-                    } catch (\Exception $e) {
-                        continue;
-                    }
-                }
-
-                // Debug  
-                echo "\nFound input elements:" . count($mainInputs) . "\n";
-                foreach ($widgets as $index => $widget) {
-                    echo "Input #" . ($index + 1) . ":\n";
-                    echo "ID: " . $widget->getAttribute('id') . "\n";
-                    echo "Classes: " . $widget->getAttribute('class') . "\n";
-                    echo "Inner input exists: " . ($widget->find('css', '.sapMInputBaseInner') ? 'yes' : 'no') . "\n";
-                    echo "---\n";
-                }
-
-                // Return only main input containers
-                return array_values(array_filter($widgets, function ($widget) {
-                    return strpos($widget->getAttribute('class'), 'sapMInputBase') !== false;
-                }));
-                break;
-
-
-            case 'DataTable':
-                // Define selectors for different UI5 table types
-                $tableSelectors = [
-                    '.sapUiTable',                  // Grid Table
-                    '.sapMTable',                   // Responsive Table
-                    '.sapMList[role="grid"]',       // List as Table
-                    '[role="grid"]',                // Generic Grid Role
-                    '.exfw-DataTable'               // Custom DataTable Class
-                ];
-                // Search through each table type
-
-                foreach ($tableSelectors as $selector) {
-                    $tables = $searchContext->findAll('css', $selector);
-
-                    foreach ($tables as $table) {
-                        try {
-                            // Validate table structure
-                            if (!$this->isValidTable($table)) {
-                                continue;
-                            }
-
-                            // Build complete table content for filtering
-                            $allContent = '';
-
-                            // Check table title
-                            $title = $table->find('css', '.sapMTitle, .sapUiTableTitle');
-                            if ($title) {
-                                $allContent .= ' ' . $title->getText();
-                            }
-
-                            // Get column headers
-                            $headers = $table->findAll('css', 'th, [role="columnheader"]');
-                            foreach ($headers as $header) {
-                                $headerText = $header->find('css', '.sapMLabel, .sapUiTableColText');
-                                if ($headerText) {
-                                    $allContent .= ' ' . $headerText->getText();
-                                }
-                            }
-
-                            // Tablo hücreleri
-                            $cells = $table->findAll('css', 'td, [role="gridcell"]');
-                            foreach ($cells as $cell) {
-                                $cellText = $cell->find('css', '.sapMText, .sapUiTableCell');
-                                if ($cellText) {
-                                    $allContent .= ' ' . $cellText->getText();
-                                }
-                            }
-
-                            // Filter by objectAlias if specified
-                            if (!empty($this->objectAlias)) {
-                                if (stripos($allContent, $this->objectAlias) !== false) {
-                                    $widgets[] = $table;
-                                }
-                            } else {
-                                $widgets[] = $table;
-                            }
-                        } catch (\Exception $e) {
-                            continue;
-                        }
-                    }
-                }
-                break;
-
-            case 'tile':
-                $widgets = $searchContext->findAll('xpath', "//*[contains(@class, 'exf-tile')]");
-                break;
-
-            default:
-                $widgets = $searchContext->findAll('css', ".exfw-{$widgetType}");
-        }
-
-        // Filter visible widgets and deduplicate by content
-        $visibleWidgets = array_filter($widgets, function ($widget) {
-            try {
-                return $widget->isVisible();
-            } catch (\Exception $e) {
-                return false;
-            }
+        // Filter widgets based on visibility and optional object alias
+        $visibleWidgets = array_filter($widgets, function ($widget) use ($objectAlias) {
+           
+            // Return only visible widgets
+            return $widget->isVisible();
         });
 
-
-        return array_values(array_filter($widgets, function ($widget) {
-            try {
-                return $widget->isVisible();
-            } catch (\Exception $e) {
-                return false;
-            }
-        }));
+        return $visibleWidgets;
     }
 
     /**
