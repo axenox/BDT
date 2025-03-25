@@ -87,7 +87,7 @@
         {
             "_EXPORT_SUMMARY": "Gherkin Step Annotation [axenox.BDT.GHERKIN_ANNOTATION]",
             "CREATED_ON": "2024-12-03 15:29:40",
-            "MODIFIED_ON": "2024-12-03 17:11:32",
+            "MODIFIED_ON": "2025-03-07 13:16:02",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11efb31a08107966b31ac84bd653ed63",
@@ -109,7 +109,7 @@
                 "widget_type": "Panel",
                 "widgets": [
                     {
-                        "attribute_alias": "PROPERTY",
+                        "attribute_alias": "STEP",
                         "widget_type": "TextHeading",
                         "heading_level": 1
                     },
@@ -118,12 +118,6 @@
                         "width": "max",
                         "hide_caption": true,
                         "widget_type": "Markdown"
-                    },
-                    {
-                        "attribute_alias": "TYPE"
-                    },
-                    {
-                        "attribute_alias": "DEFAULT"
                     },
                     {
                         "attribute_alias": "FILENAME",
