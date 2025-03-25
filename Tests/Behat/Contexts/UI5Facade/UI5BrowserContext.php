@@ -3,6 +3,7 @@ namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Behat\TwigFormatter\Context\BehatFormatterContext;
 use Behat\Behat\Context\Context;
+use Behat\Behat\Tester\Result\UndefinedStepResult;
 use Behat\Mink\Element\NodeElement;
 use Behat\MinkExtension\Context\MinkContext;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
@@ -86,18 +87,17 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $exception = null;
             if (method_exists($result, 'getException')) {
                 $exception = $result->getException();
+                // Convert to our exception type for consistent handling
+                $wrappedException = new RuntimeException(
+                    $exception->getMessage(),
+                    null,
+                    $exception
+                );
             } elseif ($result instanceof UndefinedStepResult) {
-                $exception = new \RuntimeException('Step is not defined: ' . $scope->getStep()->getText());
+                $wrappedException = new RuntimeException('Step is not defined: ' . $scope->getStep()->getText());
             } else {
-                $exception = new \RuntimeException('Step failed without exception details');
+                $wrappedException = new RuntimeException('Step failed without exception details');
             }
-
-            // Convert to our exception type for consistent handling
-            $wrappedException = new \exface\Core\Exceptions\RuntimeException(
-                $exception->getMessage(),
-                null,
-                $exception
-            );
 
             // Log with full details to the workbench log
             $this->getWorkbench()->getLogger()->logException($wrappedException);
@@ -1212,34 +1212,33 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeTiles($tileNames): void
     {
+        $captions = $this->explodeList($tileNames);
+        
+        foreach ($this->getBrowser()->findTiles() as $tile) {
+            $tileFound = in_array($tile->getCaption(), $captions);
+            Assert::assertTrue($tileFound, "Tile " . $tileName . " not found!");
+        }
+    }
 
-        // Parse the comma-separated tile list
-        $tileNames = array_map('trim', explode(',', $tileNames));
-
-        // Find tiles on the page
-        $this->getSession()->wait(1000, false);
-        $tiles = $this->getBrowser()->findWidgets("tile");
-
-        Assert::assertNotEmpty($tiles);
-
-        // Store the tile names on the page
-        $tileNamesOnPage = [];
-        foreach ($tiles as $tile) {
-
-            // The first part of aria-labes is the name of tile without detailed explanation
-            $TileName = strstr($tile->getAttribute('aria-label'), "\n", true);
-
-            if (!empty($TileName)) {
-                $tileNamesOnPage[] = $TileName;
-                $this->getBrowser()->highlightWidget($tile, "tile", 0);
+    /**
+     * @Then I only see tiles :tileNames 
+     */
+    public function iOnlySeeTiles($tileNames): void
+    {
+        $captions = $this->explodeList($tileNames);
+        
+        foreach ($this->getBrowser()->findTiles() as $tile) {
+            $tileName = $tile->getCaption();
+            $tileFound = in_array($tileName, $captions);
+            Assert::assertTrue($tileFound, "Tile " . $tileName . " not found!");
+            if ($tileFound) {
+                unset($captions[$tileName]);
             }
         }
-
-        foreach ($tileNames as $tileName) {
-            Assert::assertTrue(in_array($tileName, $tileNamesOnPage), "Tile " . $tileName . " not found!");
-        }
-
-    }/**
+        Assert::assertEmpty($captions, 'Found more tiles than expected: ' . implode(', ', $captions));
+    }
+    
+    /**
      * @Then I should not see the buttons :unexpectedButtons
      * @Then I should not see the buttons :unexpectedButtons on the :tableIndex table
      * 
@@ -1270,44 +1269,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             }       
             Assert::assertEmpty($foundButton, "Unexpected buttons found: ".$btn);
         }
-
-    }
-
-
-    /**
-     * @Then I only see tiles :tileNames 
-     */
-    public function iOnlySeeTiles($tileNames): void
-    {
-        // Parse the comma-separated tile list
-        $tileNames = array_map('trim', explode(',', $tileNames));
-
-        // Find tiles on the page
-        $this->getSession()->wait(1000, false);
-        $tiles = $this->getBrowser()->findWidgets("tile");
-        Assert::assertNotEmpty($tiles);
-
-        // Store the tile names on the page
-        $tileNamesOnPage = [];
-        foreach($tiles as $tile){
-
-            // The first part of aria-labes is the name of tile without detailed explanation
-            $TileName = strstr($tile->getAttribute('aria-label'), "\n", true);
-
-            if(!empty($TileName)){
-                $tileNamesOnPage[] = $TileName;
-                $this->getBrowser()->highlightWidget($tile, "tile", 0);
-            }
-        }
-
-         // Check if all expected tiles are found
-         $expectedTiles = array_diff($tileNames, $tileNamesOnPage);
-         Assert::assertEmpty(array_diff($tileNames, $tileNamesOnPage), "Some expected tiles are missing: " . implode(", ", $expectedTiles));
-
-         // Check if there are unexpected tiles
-         $unexpectedTiles = array_diff($tileNamesOnPage, $tileNames);
-         Assert::assertEmpty($unexpectedTiles, "Unexpected tiles found: " . implode(", ", $unexpectedTiles));
-
     }
 
 
@@ -1441,6 +1402,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         // Add the error to ErrorManager
         $errorManager->addError($errorData, 'UI5BrowserContext');
+    }
+
+    protected function explodeList(string $list) : array
+    {
+        return array_map('trim', explode(',', $list));
     }
 
 }

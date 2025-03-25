@@ -4,6 +4,7 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade;
 use Behat\Mink\Session;
 use Exception;
 use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
+use exface\Core\Exceptions\InvalidArgumentException;
 
 
 /**
@@ -58,20 +59,33 @@ class UI5WaitManager
      * @param bool $waitForPage Wait for page load
      * @param bool $waitForBusy Wait for busy indicator
      * @param bool $waitForAjax Wait for AJAX requests
-     * @param array $timeouts Optional custom timeouts
+     * @param int|int[] $timeouts Optional custom timeout or array of timeouts for every waiting flag
      * @throws Exception If any wait operation fails
      */
     public function waitForPendingOperations(
         bool $waitForPage = false,
         bool $waitForBusy = false,
         bool $waitForAjax = false,
-        
-        array $timeouts = []
+        $timeouts = null
     ): void {
+        switch (true) {
+            case is_array($timeouts):
+                $timeouts = array_merge($this->defaultTimeouts, $timeouts);
+                break;
+            case is_int($timeouts):
+                $timeout = $timeouts;
+                $timeouts = [];
+                foreach($this->defaultTimeouts as $i => $t) {
+                    $timeouts[$i] = $t;
+                }
+                break;
+            case $timeouts === null;
+                $timeouts = $this->defaultTimeouts;
+                break;
+            default:
+                throw new InvalidArgumentException('Invalid step timeout value "' . $timeout . '"');
+        }
         // Merge provided timeouts with defaults
-        $timeouts = array_merge($this->defaultTimeouts, $timeouts);
-
-     
 
         try {
       

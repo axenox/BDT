@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5TileNode;
 use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Session;
 use exface\Core\Actions\Login;
@@ -1029,6 +1030,30 @@ JS
         });
 
         return $visibleWidgets;
+    }
+
+    /**
+     * Summary of findTiles
+     * 
+     * @return \axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5TileNode[]
+     */
+    public function findTiles() : array
+    {
+        // Find tiles on the page
+        $tiles = $this->findWidgets("Tile");
+
+        // Store the tile names on the page
+        $tiles = [];
+        foreach ($tiles ?? [] as $tile) {
+
+            // The first part of aria-labes is the name of tile without detailed explanation
+            $tileName = strstr($tile->getAttribute('aria-label'), "\n", true);
+
+            if (! empty($tileName)) {
+                $tiles[] = new UI5TileNode($tile);
+            }
+        }
+        return $tiles;
     }
 
     /**
