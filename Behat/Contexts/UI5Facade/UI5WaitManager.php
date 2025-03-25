@@ -404,5 +404,30 @@ class UI5WaitManager
         }
     }
 
-
+    /**
+     * Waits till the specified number of DOM elements matching the given CSS selector are available
+     * 
+     * NOTE: this does not mean, they are visible! They are merely available in the DOM. So if you
+     * need to have 4 Tiles visible, so something like this:
+     * 
+     * ```
+     * $this->waitManager->waitForDOMElements('.exf-tile', 4);
+     * $cnt = 0;
+     * foreach ($this->findAll(...) as $node) {
+     *     if ($node->isVisible()) $cnt++;
+     * }
+     * ```
+     * 
+     * @param string $cssSelector
+     * @param int $number
+     * @param int $timeoutInSeconds
+     * @return bool
+     */
+    public function waitForDOMElements(string $cssSelector, int $number = 1, int $timeoutInSeconds = 10): bool
+    {
+        return $this->session->wait(
+            $timeoutInSeconds * 1000,
+            "$('{$cssSelector}').length >= {$number}"
+        );
+    }
 }

@@ -1018,6 +1018,9 @@ JS
 
         // Wait for all pending operations to complete
         $this->waitManager->waitForPendingOperations(true, true, true);
+        if ($timeoutInSeconds > 0) {
+            $this->waitManager->waitForDOMElements($cssSelector, $timeoutInSeconds);
+        }
         // Find all widgets on the page matching the CSS selector
         $page = $this->getPage();
         $widgets = $page->findAll('css', $cssSelector);
