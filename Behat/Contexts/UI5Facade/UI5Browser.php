@@ -216,15 +216,12 @@ class UI5Browser
     {
         try {
             if ($isAfterStep) {
-
                 // After step: Wait for all operations to complete
                 $this->waitManager->waitForPendingOperations(true, true, true);
 
             } else {
-
                 // Before step: Limited wait for UI stabilization
                 $this->waitManager->waitForPendingOperations(false, true, false);
-
             }
         } catch (\Exception $e) {
             throw new \RuntimeException(
@@ -570,6 +567,44 @@ JS
         }
         $top = end($this->focusStack);
         return $top;
+    }
+
+    /**
+     * Retrieves the type of the currently focused UI5 widget
+     * 
+     * @return string|null The type of the focused widget (e.g., 'DataTable', 'Dialog')
+     * @description Returns the widget type if a widget is currently in focus, otherwise null
+     */
+    public function getFocusedType(): ?string
+    {
+        if (empty($this->focusStack)) {
+            return null;
+        }
+
+        $current = end($this->focusStack);
+        return $current['type'];
+    }
+
+    /**
+     * Removes the current focus from the widget stack
+     * 
+     * @description Pops the top element from the focus stack, effectively unfocusing the current widget
+     */
+    public function unfocus(): void
+    {
+        if (!empty($this->focusStack)) {
+            array_pop($this->focusStack);
+        }
+    }
+
+    /**
+     * Completely clears the entire focus stack
+     * 
+     * @description Resets the focus stack to an empty state, removing all previously focused widgets
+     */
+    public function clearFocus(): void
+    {
+        $this->focusStack = [];
     }
 
     /**
@@ -1017,7 +1052,7 @@ JS
         $cssSelector = ".exfw-{$widgetType}";
 
         // Wait for all pending operations to complete
-        $this->waitManager->waitForPendingOperations(true, true, true);
+        $this->waitManager->waitForPendingOperations(true, true, true,15);
         if ($timeoutInSeconds > 0) {
             $this->waitManager->waitForDOMElements($cssSelector, $timeoutInSeconds);
         }
@@ -1027,7 +1062,7 @@ JS
 
         // Filter widgets based on visibility and optional object alias
         $visibleWidgets = array_filter($widgets, function ($widget) use ($objectAlias) {
-           
+
             // Return only visible widgets
             return $widget->isVisible();
         });
@@ -1040,7 +1075,7 @@ JS
      * 
      * @return \axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5TileNode[]
      */
-    public function findTiles() : array
+    public function findTiles(): array
     {
         // Find tiles on the page
         $nodes = $this->findWidgets("Tile");
@@ -1090,6 +1125,20 @@ JS
         return $button;
     }
 
+
+    /**
+     * Converts ordinal numbers like "1." to zero-based indices
+     * 
+     * @param string $ordinal The ordinal number (e.g., "1.", "2.")
+     * @return int Zero-based index
+     */
+    public function convertOrdinalToIndex($ordinal)
+    {
+        // Remove any trailing period and convert to integer
+        $number = (int) str_replace('.', '', $ordinal);
+        // Convert to zero-based index
+        return $number - 1;
+    }
 
     /**
      * Validates if a DOM element represents a proper UI5 table structure
