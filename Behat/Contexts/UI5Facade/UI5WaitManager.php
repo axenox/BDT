@@ -83,7 +83,7 @@ class UI5WaitManager
                 $timeouts = $this->defaultTimeouts;
                 break;
             default:
-                throw new InvalidArgumentException('Invalid step timeout value "' . $timeout . '"');
+                throw new InvalidArgumentException('Invalid step timeout value "' . $timeouts . '"');
         }
         // Merge provided timeouts with defaults
 

@@ -357,7 +357,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
 
         // Fetch widgets based on type and optional alias
-        $widgetNodes = $this->browser->findWidgets($widgetType, $objectAlias);
+        $widgetNodes = $this->browser->findWidgets($widgetType, $objectAlias, 15);
 
         // Count found widgets
         $found = count($widgetNodes);
@@ -914,77 +914,95 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
 
     }
+ 
 
     /**
-     * @When I select :rowIndex row on the :tableIndex table  
+     * Focuses on a specific table by index
+     * 
+     * @When I look at table :index
+     * 
+     * @param int $index The 1-based index of the table to focus on
+     * @throws \RuntimeException If the table cannot be found
      */
-    public function iSelectRow($rowIndex, $tableIndex)
+    public function iLookAtTable(int $index): void
     {
+        // Find all tables using the existing findWidget method
+        $tables = $this->getBrowser()->findWidgets('DataTable');
 
+        // Adjust to 0-based index for internal use
+        $tableIndex = $index - 1;
 
-        $this->logDebug("Row Selecting Started, Row: $rowIndex, Table: $tableIndex");
-
-
-        // Wait for all pending operations to complete
-        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
-
-
-        // Add a small additional wait specifically for table rendering
-        $this->getSession()->wait(15000);
-
-
-        $page = $this->getBrowser()->getPage();
-
-        // Convert index to integer and remove any non-numeric characters (e.g., ".")
-        $rowNumber = filter_var($rowIndex, FILTER_SANITIZE_NUMBER_INT);
-        $tableNumber = filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT);
-        $this->logDebug("Row Nr: " . $rowNumber . "\n");
-        $this->logDebug("Table Nr: " . $tableNumber . "\n");
-
-        if (!is_numeric($rowNumber) || $rowNumber < 1) {
-            throw new Exception("Invalid row index: '{$rowIndex}'. It should be a positive number.");
+        // Check if the requested table exists
+        if (!isset($tables[$tableIndex])) {
+            throw new \RuntimeException(sprintf(
+                'Table with index %d not found. Only %d tables available.',
+                $index,
+                count($tables)
+            ));
         }
 
-        // Save the last selected table number to use for like clickTableOverflowButton calls
-        $this->lastSelectedTable = $tableNumber;
+        // Focus on the selected table
+        $this->getBrowser()->focus($tables[$tableIndex], 'DataTable');
 
-        // Find all exfw-DataTable elements
-        $dataTables = $page->findAll('css', '.exfw-DataTable');
-        $this->logDebug("DataTable count: " . count($dataTables) . "\n");
+        // Highlight the table for debugging
+        // if ($this->debug) {
+        $this->getBrowser()->highlightWidget($tables[$tableIndex], 'DataTable', $index);
+        // }
 
-        // Check if there are multiple data tables
-        if (count($dataTables) > 1) {
-            $parents = $dataTables;
-            $rows = $parents[$tableNumber - 1]->findAll('css', '.sapUiTableRow');
-
-            $selectedRow = $rows[$rowNumber];
-
-            Assert::assertNotNull($selectedRow, "Element Not Found");
-
-            $this->getSession()->wait(1000, false);
-
-            $selectedRow->click();
-
-            // Check if the row really selected 
-            $this->logDebug($selectedRow->getAttribute('aria-selected'));
-            Assert::assertTrue($selectedRow->getAttribute('aria-selected') === 'true', "{$rowIndex}. row could not be selected");
-        } else {
-            $this->logDebug(message: "\n ***One Panel Found*** \n");
-            $rows = $page->findAll('css', '.sapUiTableRow');
-            $selectedRow = $rows[$rowNumber];
-            Assert::assertNotNull($selectedRow, "Element Not Found");
-
-            $this->getSession()->wait(1000, false);
-
-            $selectedRow->click();
-            $this->logDebug($selectedRow->getAttribute('aria-selected'));
-            Assert::assertTrue($selectedRow->getAttribute('aria-selected') === 'true', "{$rowIndex}. row could not be selected");
-        }
+        $this->logDebug(sprintf("Focused on table %d", $index));
     }
 
+    /**
+     * Selects a specific row in a table
+     *
+     * @When I select table row :rowNumber
+     */
+    public function iSelectTableRow($rowNumber)
+    {
+        // Convert ordinal numbers like "1." to integers
+        $rowIndex = $this->getBrowser()->convertOrdinalToIndex($rowNumber); 
 
+        // Find DataTable widgets
+        $tables = $this->getBrowser()->findWidgets('DataTable',15);
+        Assert::assertNotEmpty($tables, 'No DataTable found on page');
 
+        // If no specific table is focused, use the first table
+        $table = $this->getBrowser()->getFocusedNode() ?? $tables[0];
 
+        // Find the row
+        $rows = $table->findAll('css', '.sapUiTableTr, .sapMListTblRow');
+        Assert::assertNotEmpty($rows, "No rows found in table");
+
+        if (count($rows) < $rowIndex + 1) {
+            throw new \RuntimeException("Row {$rowNumber} not found. Only " . count($rows) . " rows available.");
+        }
+        $row = $rows[$rowIndex];
+
+        // Find the row selector or first cell to click
+        $rowSelector = $row->find('css', '.sapUiTableRowSelectionCell');
+        if ($rowSelector) {
+            // Click on the row selector if available
+            $rowSelector->click();
+        } else {
+            // Otherwise click on the first cell
+            $firstCell = $row->find('css', 'td.sapUiTableCell, .sapMListTblCell');
+            Assert::assertNotNull($firstCell, "Could not find a clickable cell in row {$rowNumber}");
+            $firstCell->click();
+        }
+
+        // Wait for selection to be processed
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+
+        // Verify the row is actually selected
+        $isSelected = $this->getSession()->evaluateScript(
+            "return jQuery('.sapUiTableTr, .sapMListTblRow').eq({$rowIndex}).hasClass('sapUiTableRowSel');"
+        );
+
+        Assert::assertTrue($isSelected, "Failed to select row {$rowNumber}"); 
+
+        // Add a small delay to ensure the UI has fully updated
+        $this->getSession()->wait(1000);
+    }
 
 
     /**
@@ -1213,7 +1231,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     public function iSeeTiles($tileNames): void
     {
         $captions = $this->explodeList($tileNames);
-        
+
         foreach ($this->getBrowser()->findTiles() as $tile) {
             $tileName = $tile->getCaption();
             if (in_array($tileName, $captions)) {
@@ -1229,7 +1247,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     public function iOnlySeeTiles($tileNames): void
     {
         $captions = $this->explodeList($tileNames);
-        
+
         $otherCaptions = [];
         foreach ($this->getBrowser()->findTiles() as $tile) {
             $tileName = $tile->getCaption();
@@ -1243,13 +1261,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         Assert::assertEmpty($captions, 'Tiles not found: ' . implode(', ', $captions));
         Assert::assertEmpty($otherCaptions, 'Found more tiles than expected: ' . implode(', ', $otherCaptions));
     }
-    
+
     /**
      * @Then I should not see the buttons :unexpectedButtons
      * @Then I should not see the buttons :unexpectedButtons on the :tableIndex table
      * 
      */
-    public function iShouldNotSeeTheFollowingButtons($unexpectedButtons, $tableIndex=null)
+    public function iShouldNotSeeTheFollowingButtons($unexpectedButtons, $tableIndex = null)
     {
         $page = $this->getBrowser()->getPage();
 
@@ -1257,9 +1275,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $unexpectedButtons = array_map('trim', explode(',', $unexpectedButtons));
 
         foreach ($unexpectedButtons as $btn) {
-            if(empty($tableIndex)){
+            if (empty($tableIndex)) {
                 $foundButton = $this->getBrowser()->findButtonByCaption($btn);
-            }else{
+            } else {
                 //find the parent data table 
                 // Convert index to integer and remove any non-numeric characters (e.g., ".")
                 $tableNumber = (int) filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT);
@@ -1270,10 +1288,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
             }
             $this->getBrowser()->clearWidgetHighlights();
-            if(!empty($foundButton)){
+            if (!empty($foundButton)) {
                 $this->getBrowser()->highlightWidget($foundButton, 'Button', 0);
-            }       
-            Assert::assertEmpty($foundButton, "Unexpected buttons found: ".$btn);
+            }
+            Assert::assertEmpty($foundButton, "Unexpected buttons found: " . $btn);
         }
     }
 
@@ -1410,9 +1428,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $errorManager->addError($errorData, 'UI5BrowserContext');
     }
 
-    protected function explodeList(string $list) : array
+    protected function explodeList(string $list): array
     {
         return array_map('trim', explode(',', $list));
     }
 
 }
+
+// v1 
