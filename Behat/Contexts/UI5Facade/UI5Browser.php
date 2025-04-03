@@ -958,14 +958,37 @@ JS
      */
     public function findTabByCaption(string $caption, NodeElement $parent = null): ?NodeElement
     {
+        $selectors = ['.sapMITBItem .sapMITHTextContent ', '.sapUxAPAnchorBarScrollContainer > div > button.sapMBtn > span > span > bdi'];
         // Find all tab heading elements
-        $tabHeadings = ($parent ?? $this->getPage())->findAll('css', '.sapMITBItem .sapMITHTextContent ');
+        $tabHeadings = ($parent ?? $this->getPage())->findAll('css', implode(',', $selectors));
 
         // Iterate through found tab headings to locate matching one
         foreach ($tabHeadings as $tabHeading) {
             if ($tabHeading->getText() === $caption && $tabHeading->isVisible()) {
                 // Return the parent tab element (navigate up to the actual tab container)
                 return $tabHeading->getParent()->getParent()->getParent();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Finds a column by its caption text
+     * 
+     * @param string $caption The column caption to search for
+     * @param NodeElement|null $parent Optional parent element to search within
+     * @return NodeElement|null The found column element or null if not found
+     */
+    public function findColumnByCaption(string $caption, NodeElement $parent = null): ?NodeElement
+    {
+        
+        $columnHeadings = ($parent ?? $this->getPage())->findAll('css', '.sapUiTableHeaderCell');
+
+        // Iterate through found column headings to locate matching one
+        foreach ($columnHeadings as $columnHeading) {
+            if ($columnHeading->getText() === $caption && $columnHeading->isVisible()) {
+                // Return the column element
+                return $columnHeading;
             }
         }
         return null;

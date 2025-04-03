@@ -711,6 +711,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * - Check button existence in a specific table/section
      * 
      * @Then I should see button :buttonText
+     * @Then I should see buttons :buttonText
      * @Then I should see a button with text :buttonText
      * @Then I should see button :buttonText at the :tableName
      * 
@@ -720,15 +721,18 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iShouldSeeButton(string $buttonText, string $tableName = null)
     {
-        // Attempt to find the button using the UI5Browser instance
-        $button = $this->getBrowser()->findButtonByCaption($buttonText);
+        $buttons = $this->explodeList($buttonText);
+        foreach ($buttons as $buttonText) {
+            // Attempt to find the button using the UI5Browser instance
+            $button = $this->getBrowser()->findButtonByCaption($buttonText);
 
-        // Assert that the button was found
-        Assert::assertNotNull($button, "Button with text '{$buttonText}' not found.");
+            // Assert that the button was found
+            Assert::assertNotNull($button, "Button with text '{$buttonText}' not found.");
 
-        // Highlight the button for debugging purposes
-        $this->getBrowser()->highlightWidget($button, 'Button', 0);
-
+            // Highlight the button for debugging purposes
+            $this->getBrowser()->highlightWidget($button, 'Button', 0);
+        }
+        
     }
 
     /**
@@ -736,6 +740,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * Typically used with DataTable widgets
      * 
      * @Then it has a column ":caption"
+     * @Then it has columns ":caption"
      * 
      * @param string $caption Column caption to look for
      * @return void
@@ -748,8 +753,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
          */
         $tableNode = $this->getBrowser()->getFocusedNode();
         Assert::assertNotNull($tableNode, 'No widget has focus right now - cannot use steps like "it has..."');
-        $colNode = $tableNode->find('css', 'td');
-        Assert::assertNotNull($colNode, 'Column "' . $caption, '" not found');
+        
+        $captions = $this->explodeList($caption);
+        foreach ($captions as $caption) {
+            $col = $this->getBrowser()->findColumnByCaption($caption, $tableNode);
+            Assert::assertNotNull($col, 'Column "' . $caption. '" not found');
+            $this->getBrowser()->highlightWidget($col, 'Column', 0);
+        }
 
     }
 
@@ -1293,6 +1303,22 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             }
             Assert::assertEmpty($foundButton, "Unexpected buttons found: " . $btn);
         }
+    }
+
+    /**
+     * @Then I should see tabs :tabs
+     * @Then I should see tab :tabs
+     */
+    public function iSeeTabs($tabs): void
+    {
+        $tabs = $this->explodeList($tabs);
+
+        foreach($tabs as $tab){
+            $foundedTab = $this->getBrowser()->findTabByCaption($tab);
+            Assert::assertNotNull($foundedTab,"The Tab ".$tab." is not found!");
+            $this->getBrowser()->highlightWidget($foundedTab,"Tab",0);
+        }
+        
     }
 
 
