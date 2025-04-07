@@ -216,6 +216,7 @@ class UI5Browser
     {
         try {
             if ($isAfterStep) {
+                //$this->clearWidgetHighlights();
                 // After step: Wait for all operations to complete
                 $this->waitManager->waitForPendingOperations(true, true, true);
 
@@ -380,7 +381,11 @@ JS
             timingDiv.style.zIndex = '9999';
             timingDiv.style.fontFamily = 'monospace'; // For better readability of times
             timingDiv.style.fontSize = '14px';
-            timingDiv.style.maxWidth = '300px';
+            timingDiv.style.maxWidth = '300px'; 
+            timingDiv.style.pointerEvents = 'none'; // Able to clicks
+            
+            
+
             document.body.appendChild(timingDiv);
         }
         
@@ -1022,7 +1027,34 @@ JS
     }
 
 
+    /**
+     * Finds the latest downloaded XLSX file
+     * 
+     * @return string|null Full path of the downloaded file
+     */
+    public function findLatestXlsxFile(): ?string
+    {
+        $config = $this->getWorkbench()->getApp('axenox.BDT')->getConfig();
+        $downloadDir = $config->getOption('TEST_DOWNLOADS.DIRECTORY_WINDOWS');
 
+        // Find XLSX files modified in the last 2 minutes 
+        $twoMinutesAgo = time() - 120;
+
+        $files = scandir($downloadDir, SCANDIR_SORT_DESCENDING);
+        foreach ($files as $file) {
+            $filePath = $downloadDir . DIRECTORY_SEPARATOR . $file;
+
+            if (
+                is_file($filePath) &&
+                strtolower(pathinfo($file, PATHINFO_EXTENSION)) === 'xlsx' &&
+                filemtime($filePath) >= $twoMinutesAgo
+            ) {
+                return $filePath;
+            }
+        }
+
+        return null;
+    }
 
 
 
@@ -1052,7 +1084,7 @@ JS
         $cssSelector = ".exfw-{$widgetType}";
 
         // Wait for all pending operations to complete
-        $this->waitManager->waitForPendingOperations(true, true, true,15);
+        $this->waitManager->waitForPendingOperations(true, true, true);
         if ($timeoutInSeconds > 0) {
             $this->waitManager->waitForDOMElements($cssSelector, $timeoutInSeconds);
         }
