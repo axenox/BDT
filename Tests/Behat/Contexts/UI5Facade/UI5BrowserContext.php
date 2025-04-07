@@ -353,33 +353,51 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeWidgets(int $number, string $widgetType, string $objectAlias = null): void
     {
-
+        // Wait for any pending operations to complete
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
 
         // Fetch widgets based on type and optional alias
-        $widgetNodes = $this->browser->findWidgets($widgetType, $objectAlias, 15);
+        $widgetNodes = $this->getBrowser()->findWidgets($widgetType, $objectAlias, 15);
 
-        // Count found widgets
-        $found = count($widgetNodes);
+      
 
-        // Assert expected number of widgets
-        Assert::assertEquals(
+        // if widget is a dialog or table, make it focused
+        if (!empty($widgetNodes)) {
+            $firstWidget = reset($widgetNodes);
+
+            // Special focus for table or dialog
+            if (
+                $widgetType === 'DataTable' ||
+                $widgetType === 'Dialog' ||
+                strpos(strtolower($widgetType), 'table') !== false ||
+                strpos(strtolower($widgetType), 'dialog') !== false
+            ) {
+                $this->getBrowser()->focus($firstWidget);
+            }
+        }
+ 
+
+        // Assert the number of widgets
+        Assert::assertCount(
             $number,
-            $found,
-            "Expected $number $widgetType widget(s)" .
-            ($objectAlias ? " with alias '$objectAlias'" : "") .
-            ", but found $found"
+            $widgetNodes,
+            sprintf(
+                "Expected %d widget(s) of type '%s' with alias '%s', but found %d",
+                $number,
+                $widgetType,
+                $objectAlias ?? 'N/A',
+                count($widgetNodes)
+            )
         );
 
         // If exactly one widget found, highlight it for debugging
-        if ($found === 1) {
-            // Use browser's highlightWidget method
+        if (count($widgetNodes) === 1) {
             $this->getBrowser()->highlightWidget(
                 $widgetNodes[0],  // First (and only) widget node
                 $widgetType,      // Widget type for color selection
                 0                 // First widget index
             );
-        } elseif ($found > 1) {
+        } elseif (count($widgetNodes) > 1) {
             // If multiple widgets found, highlight first few for overview
             foreach (array_slice($widgetNodes, 0, 3) as $index => $node) {
                 $this->getBrowser()->highlightWidget(
@@ -390,6 +408,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             }
         }
     }
+
 
 
     /**
@@ -475,36 +494,53 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function itHasFilters(string $filterList): void
     {
-
         // Parse the comma-separated filter list
-        $filters = array_map('trim', explode(',', $filterList));
+        $expectedFilters = array_map('trim', explode(',', $filterList));
 
-        // Find all filter containers in the page
-        $inputContainers = $this->getBrowser()->getPage()->findAll('css', '.sapUiVlt.exfw-Filter');
+        // Get the currently focused node
+        $focusedNode = $this->getBrowser()->getFocusedNode();
+        Assert::assertNotNull($focusedNode, 'No widget is currently focused. Call "I look at" first.');
+
+        // Find filter containers only within the focused node
+        $filterContainers = $focusedNode->findAll('css', '.sapUiVlt.exfw-Filter, .sapMVBox.exfw-Filter');
+
         $foundFilters = [];
 
-        // Extract filter labels from each container
-        foreach ($inputContainers as $container) {
+        foreach ($filterContainers as $index => $container) {
+            // Find the label for the filter
             $label = $container->find('css', '.sapMLabel bdi');
+
             if ($label) {
-                $foundFilters[] = trim($label->getText());
+                $filterText = trim($label->getText());
+
+                // Add to found filters and highlight if it's an expected filter
+                if (in_array($filterText, $expectedFilters)) {
+                    $foundFilters[] = $filterText;
+
+                    // Highlight the filter
+                    $this->getBrowser()->highlightWidget(
+                        $container,
+                        'Filter',
+                        $index  // Use the actual index from the filtered containers
+                    );
+                }
             }
         }
 
         // Verify each expected filter is present
-        foreach ($filters as $filter) {
+        foreach ($expectedFilters as $expectedFilter) {
             Assert::assertTrue(
-                in_array($filter, $foundFilters),
+                in_array($expectedFilter, $foundFilters),
                 sprintf(
                     'Filter "%s" not found. Available filters: %s',
-                    $filter,
+                    $expectedFilter,
                     implode(', ', $foundFilters)
                 )
             );
         }
-
     }
 
+    //v1 
 
     /**
      * Filter input handling for UI5 applications
@@ -518,45 +554,57 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iEnterInFilter(string $value, string $filterName): void
     {
+        // Define search areas to look for the filter
+        $searchAreas = [
+            $this->getBrowser()->getFocusedNode(), // First, search in the focused node
+            $this->getBrowser()->getPage()         // Then, search in the entire page
+        ];
 
-        // Find all filter containers in the page
-        $inputContainers = $this->getBrowser()->getPage()->findAll('css', '.sapUiVlt.exfw-Filter');
-        $targetInput = null;
+        // Iterate through each search area to find filter containers
+        foreach ($searchAreas as $searchArea) {
+            // Skip if the search area is null
+            if (!$searchArea)
+                continue;
 
-        // Iterate through containers to find matching filter
-        foreach ($inputContainers as $container) {
-            $label = $container->find('css', '.sapMLabel bdi');
-            if ($label && trim($label->getText()) === $filterName) {
-                // First check if this is a ComboBox/MultiComboBox component
-                $comboBox = $container->find('css', '.sapMComboBoxBase, .sapMMultiComboBox');
-                if ($comboBox) {
-                    // Handle ComboBox type input
-                    $this->getBrowser()->handleComboBoxInput($comboBox, $value);
-                    return;
+            // Find all filter containers in the current search area
+            $inputContainers = $searchArea->findAll('css', '.sapUiVlt.exfw-Filter');
+
+            // Iterate through each filter container
+            foreach ($inputContainers as $container) {
+                // Check the label of the filter container
+                $label = $container->find('css', '.sapMLabel bdi');
+
+                // If label matches the desired filter name
+                if ($label && trim($label->getText()) === $filterName) {
+                    // Check for ComboBox or MultiComboBox input
+                    $comboBox = $container->find('css', '.sapMComboBoxBase, .sapMMultiComboBox');
+                    if ($comboBox) {
+                        // Handle ComboBox input
+                        $this->handleComboBoxInput($comboBox, $value);
+                        return;
+                    }
+
+                    // Check for Select input
+                    $select = $container->find('css', '.sapMSelect');
+                    if ($select) {
+                        // Handle Select input
+                        $this->handleSelectInput($select, $value);
+                        return;
+                    }
+
+                    // Check for standard input field
+                    $targetInput = $container->find('css', 'input.sapMInputBaseInner');
+                    if ($targetInput) {
+                        // Set the value for standard input
+                        $targetInput->setValue($value);
+                        return;
+                    }
                 }
-
-                // Check for Select type input
-                $select = $container->find('css', '.sapMSelect');
-                if ($select) {
-                    // Handle Select type input
-                    $this->getBrowser()->handleSelectInput($select, $value);
-                    return;
-                }
-
-                // Standard handling for regular input fields
-                $targetInput = $container->find('css', 'input.sapMInputBaseInner');
-                break;
             }
         }
 
-        // If a standard input field was found, set its value
-        if ($targetInput) {
-            $targetInput->setValue($value);
-
-        } else {
-            throw new \RuntimeException("Could not find input element for filter: {$filterName}");
-        }
-
+        // Throw an exception if no suitable input element is found
+        throw new \RuntimeException("Could not find input element for filter: {$filterName}");
     }
 
 
@@ -612,13 +660,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeInColumn(string $text, string $columnName): void
     {
+        $focusedNode = $this->getBrowser()->getFocusedNode();
 
         // Find all DataTable widgets on the page
         $dataTables = $this->getBrowser()->findWidgets('DataTable');
         Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
 
         // Verify the first DataTable contains the expected text in the specified column
-        $this->getBrowser()->verifyTableContent($dataTables[0], [
+        $this->getBrowser()->verifyTableContent($focusedNode, [
             ['column' => $columnName, 'text' => $text]
         ]);
 
@@ -635,14 +684,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     public function iClickButton(string $caption): void
     {
 
-        // Find the button by its caption text
-        $btn = $this->getBrowser()->findButtonByCaption($caption);
-        if (!$btn) {
-            throw new \exface\Core\Exceptions\RuntimeException(
-                sprintf('Cannot find button "%s"', $caption)
-            );
-        }
-        $btn->click();
+        // Find button in the focused widget
+        $widget = $this->getBrowser()->getFocusedNode();
+        Assert::assertNotNull($widget, "No widget is currently focused. Call 'I look at' first.");
+
+        // Find Button
+        $button = $widget->find('named', ['button', $caption]);
+        Assert::assertNotNull($button, "Button '{$caption}' not found in focused widget.");
+
+        // Click Event
+        $button->click();
+
+        // WAit for UI to rsponse
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
 
     }
 
@@ -924,9 +978,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
 
     }
- 
 
-    /**
+
+    /** 
      * Focuses on a specific table by index
      * 
      * @When I look at table :index
@@ -936,31 +990,20 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iLookAtTable(int $index): void
     {
-        // Find all tables using the existing findWidget method
-        $tables = $this->getBrowser()->findWidgets('DataTable');
 
         // Adjust to 0-based index for internal use
         $tableIndex = $index - 1;
+        $tables = $this->getBrowser()->findWidgets('DataTable', 15);
+        Assert::assertNotEmpty($tables, 'No DataTable found on page');
 
-        // Check if the requested table exists
-        if (!isset($tables[$tableIndex])) {
-            throw new \RuntimeException(sprintf(
-                'Table with index %d not found. Only %d tables available.',
-                $index,
-                count($tables)
-            ));
+        if (!isset($tables[$index - 1])) {
+            throw new \RuntimeException("Table {$index} not found. Only " . count($tables) . " tables available.");
         }
-
-        // Focus on the selected table
-        $this->getBrowser()->focus($tables[$tableIndex], 'DataTable');
-
-        // Highlight the table for debugging
-        // if ($this->debug) {
         $this->getBrowser()->highlightWidget($tables[$tableIndex], 'DataTable', $index);
-        // }
-
-        $this->logDebug(sprintf("Focused on table %d", $index));
+        // Focus the selected table
+        $this->getBrowser()->focus($tables[$tableIndex]);
     }
+
 
     /**
      * Selects a specific row in a table
@@ -969,49 +1012,42 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSelectTableRow($rowNumber)
     {
-        // Convert ordinal numbers like "1." to integers
-        $rowIndex = $this->getBrowser()->convertOrdinalToIndex($rowNumber); 
+        $rowIndex = $this->getBrowser()->convertOrdinalToIndex($rowNumber);
 
-        // Find DataTable widgets
-        $tables = $this->getBrowser()->findWidgets('DataTable',15);
-        Assert::assertNotEmpty($tables, 'No DataTable found on page');
+        // Use the focused table (if there is no error, throw an error)
+        $table = $this->getBrowser()->getFocusedNode();
+        Assert::assertNotNull($table, "No table is currently focused. Call 'I look at table' first.");
 
-        // If no specific table is focused, use the first table
-        $table = $this->getBrowser()->getFocusedNode() ?? $tables[0];
-
-        // Find the row
+        // Find the rows
         $rows = $table->findAll('css', '.sapUiTableTr, .sapMListTblRow');
         Assert::assertNotEmpty($rows, "No rows found in table");
 
         if (count($rows) < $rowIndex + 1) {
             throw new \RuntimeException("Row {$rowNumber} not found. Only " . count($rows) . " rows available.");
         }
+
         $row = $rows[$rowIndex];
 
-        // Find the row selector or first cell to click
+        // Selecting process
         $rowSelector = $row->find('css', '.sapUiTableRowSelectionCell');
         if ($rowSelector) {
-            // Click on the row selector if available
             $rowSelector->click();
         } else {
-            // Otherwise click on the first cell
             $firstCell = $row->find('css', 'td.sapUiTableCell, .sapMListTblCell');
             Assert::assertNotNull($firstCell, "Could not find a clickable cell in row {$rowNumber}");
             $firstCell->click();
         }
 
-        // Wait for selection to be processed
+        // Wait for UI 
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
 
-        // Verify the row is actually selected
+        // Verification
+        $tableId = $table->getAttribute('id');
         $isSelected = $this->getSession()->evaluateScript(
-            "return jQuery('.sapUiTableTr, .sapMListTblRow').eq({$rowIndex}).hasClass('sapUiTableRowSel');"
+            "return jQuery('#{$tableId} .sapUiTableTr, #{$tableId} .sapMListTblRow').eq({$rowIndex}).hasClass('sapUiTableRowSel');"
         );
 
-        Assert::assertTrue($isSelected, "Failed to select row {$rowNumber}"); 
-
-        // Add a small delay to ensure the UI has fully updated
-        $this->getSession()->wait(1000);
+        Assert::assertTrue($isSelected, "Failed to select row {$rowNumber}");
     }
 
 
@@ -1189,66 +1225,85 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function anXlsxFileShouldBeDownloaded(): void
     {
+        // Flexible waiting time
+        $maxWaitTime = 30; // Maximum wait 30 seconds
+        $startTime = time();
 
-        // First check for the toast message
-        $this->verifyToastMessage("Download ready");
+        while (time() - $startTime < $maxWaitTime) {
+            // Check downloaded files
+            $downloadedFile = $this->getBrowser()->findLatestXlsxFile();
 
-        // Wait for a few seconds to ensure the file has been fully downloaded
-        sleep(15);
+            if ($downloadedFile) {
+                // Short wait to ensure file is completely downloaded
+                sleep(2);
 
-        // Get the download directory from configuration
-        $config = $this->getWorkbench()->getApp('axenox.BDT')->getConfig();
-        $downloadDir = $config->getOption('TEST_DOWNLOADS.DIRECTORY_WINDOWS');
-
-        // Ensure the download directory exists
-        if (!file_exists($downloadDir) || !is_dir($downloadDir)) {
-            throw new \RuntimeException("Download directory does not exist: $downloadDir");
-        }
-
-        // Retrieve the latest XLSX file from the download directory
-        $latestFile = null;
-        $latestTime = 0;
-        $oneMinuteAgo = time() - 60;
-
-        $files = scandir($downloadDir);
-        foreach ($files as $file) {
-            $filePath = $downloadDir . DIRECTORY_SEPARATOR . $file;
-
-            // Check if the item is a file and modified within the last minute
-            if (is_file($filePath) && filemtime($filePath) >= $oneMinuteAgo) {
-                // Ensure the file has an XLSX extension
-                if (strtolower(pathinfo($file, PATHINFO_EXTENSION)) === 'xlsx') {
-                    if (filemtime($filePath) > $latestTime) {
-                        $latestTime = filemtime($filePath);
-                        $latestFile = $file;
-                    }
+                // Check file size
+                $fileSize = filesize($downloadedFile);
+                if ($fileSize > 0) {
+                    $this->logDebug("✓ Downloaded file: " . basename($downloadedFile) . " (Size: {$fileSize} bytes)");
+                    return;
                 }
             }
+
+            // Wait a short time
+            sleep(2);
         }
 
-        // Verify if a valid XLSX file was found
-        if ($latestFile) {
-            $this->logDebug("✓ Latest downloaded file: $latestFile\n");
-        } else {
-            throw new \RuntimeException("No recently downloaded XLSX file found in: $downloadDir");
-        }
-
+        throw new \RuntimeException("XLSX file could not be downloaded or is empty.");
     }
 
+
+
+
+
+
     /**
+     * Verify the presence of specific tiles on the page
+     * This method checks if all expected tiles are present in the UI
+     * 
      * @Then I see tiles :tileNames 
      */
     public function iSeeTiles($tileNames): void
     {
+        // Convert the comma-separated tile names into an array
+        // Trims whitespace and handles multiple tile names
         $captions = $this->explodeList($tileNames);
 
+        // Array to track which tiles have been found
+        // Helps in providing detailed reporting
+        $foundTiles = [];
+
+        // Iterate through all tiles found on the page
+        // Uses the browser's tile finding method to locate tile elements
         foreach ($this->getBrowser()->findTiles() as $tile) {
+            // Extract the caption (name/text) of the current tile
             $tileName = $tile->getCaption();
-            if (in_array($tileName, $captions)) {
-                unset($captions[$tileName]);
+
+            // Check if the current tile's name matches any of the expected tile names
+            // array_search allows for exact matching and provides the index
+            $matchIndex = array_search($tileName, $captions);
+
+            // If a match is found
+            if ($matchIndex !== false) {
+                // Add the found tile to the list of discovered tiles
+                $foundTiles[] = $tileName;
+
+                // Remove the found tile from the list of expected tiles
+                // This helps track which tiles are still missing
+                unset($captions[$matchIndex]);
             }
         }
-        Assert::assertEmpty($captions, 'Tiles not found: ' . implode(', ', $captions));
+
+        // Final assertion to ensure all expected tiles are found
+        // If any tiles remain in $captions, it means they were not discovered
+        Assert::assertEmpty(
+            $captions,
+            // Detailed error message showing:
+            // 1. Which tiles were not found
+            // 2. Which tiles were successfully located
+            'Tiles not found: ' . implode(', ', $captions) .
+            '. Found tiles: ' . implode(', ', $foundTiles)
+        );
     }
 
     /**
@@ -1460,5 +1515,3 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
 }
-
-// v1 
