@@ -357,21 +357,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
 
         // Fetch widgets based on type and optional alias
-        $widgetNodes = $this->getBrowser()->findWidgets($widgetType, $objectAlias, 15);
-
-      
+        $widgetNodes = $this->getBrowser()->findWidgetNodes($widgetType, 15);
 
         // if widget is a dialog or table, make it focused
-        if (!empty($widgetNodes)) {
-            $firstWidget = reset($widgetNodes);
-
-            // Special focus for table or dialog
-            if (
-                $widgetType === 'DataTable' ||
-                $widgetType === 'Dialog' ||
-                strpos(strtolower($widgetType), 'table') !== false ||
-                strpos(strtolower($widgetType), 'dialog') !== false
-            ) {
+        if (count($widgetNodes) === 1) {
+            $firstNode = reset($widgetNodes);
+            if ($firstNode->capturesFocus() === true) {
                 $this->getBrowser()->focus($firstWidget);
             }
         }
@@ -554,57 +545,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iEnterInFilter(string $value, string $filterName): void
     {
-        // Define search areas to look for the filter
-        $searchAreas = [
-            $this->getBrowser()->getFocusedNode(), // First, search in the focused node
-            $this->getBrowser()->getPage()         // Then, search in the entire page
-        ];
-
-        // Iterate through each search area to find filter containers
-        foreach ($searchAreas as $searchArea) {
-            // Skip if the search area is null
-            if (!$searchArea)
-                continue;
-
-            // Find all filter containers in the current search area
-            $inputContainers = $searchArea->findAll('css', '.sapUiVlt.exfw-Filter');
-
-            // Iterate through each filter container
-            foreach ($inputContainers as $container) {
-                // Check the label of the filter container
-                $label = $container->find('css', '.sapMLabel bdi');
-
-                // If label matches the desired filter name
-                if ($label && trim($label->getText()) === $filterName) {
-                    // Check for ComboBox or MultiComboBox input
-                    $comboBox = $container->find('css', '.sapMComboBoxBase, .sapMMultiComboBox');
-                    if ($comboBox) {
-                        // Handle ComboBox input
-                        $this->handleComboBoxInput($comboBox, $value);
-                        return;
-                    }
-
-                    // Check for Select input
-                    $select = $container->find('css', '.sapMSelect');
-                    if ($select) {
-                        // Handle Select input
-                        $this->handleSelectInput($select, $value);
-                        return;
-                    }
-
-                    // Check for standard input field
-                    $targetInput = $container->find('css', 'input.sapMInputBaseInner');
-                    if ($targetInput) {
-                        // Set the value for standard input
-                        $targetInput->setValue($value);
-                        return;
-                    }
-                }
+        foreach ($this->getBrowser()->getFilters() as $filter) {
+            if ($filter->getCaption() === $filterName) {
+                $filter->setValue($value);
             }
         }
-
-        // Throw an exception if no suitable input element is found
-        throw new \RuntimeException("Could not find input element for filter: {$filterName}");
     }
 
 
@@ -993,7 +938,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         // Adjust to 0-based index for internal use
         $tableIndex = $index - 1;
-        $tables = $this->getBrowser()->findWidgets('DataTable', 15);
+        $tables = $this->getBrowser()->findWidgets('DataTable', null, 15);
         Assert::assertNotEmpty($tables, 'No DataTable found on page');
 
         if (!isset($tables[$index - 1])) {

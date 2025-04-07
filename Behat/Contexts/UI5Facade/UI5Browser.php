@@ -1,14 +1,21 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5PageNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5TileNode;
+use axenox\BDT\Interfaces\FacadeNodeInterface;
+use Behat\Mink\Element\DocumentElement;
 use Behat\Mink\Element\NodeElement;
+use Behat\Mink\Element\TraversableElement;
 use Behat\Mink\Session;
 use exface\Core\Actions\Login;
 use exface\Core\CommonLogic\Security\Authenticators\MetamodelAuthenticator;
 use exface\Core\CommonLogic\Workbench;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\StringDataType;
+use exface\Core\Exceptions\InvalidArgumentException;
+use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Facades\AbstractAjaxFacade\AbstractAjaxFacade;
 use exface\Core\Factories\ActionFactory;
 use exface\Core\Factories\DataSheetFactory;
@@ -487,72 +494,25 @@ JS
         return "in page";
     }
 
-
-    /**
-     * Handles input into a ComboBox control
-     * Clicks the dropdown arrow and selects the option with matching text
-     * 
-     * @param NodeElement $comboBox The ComboBox control
-     * @param string $value The value to select from dropdown
-     * @return void
-     * @throws \RuntimeException If ComboBox arrow or option can't be found
-     */
-    public function handleComboBoxInput(NodeElement $comboBox, string $value): void
-    {
-        // Find the dropdown arrow button
-        $arrow = $comboBox->find('css', '.sapMInputBaseIconContainer');
-        if (!$arrow) {
-            throw new \RuntimeException("Could not find ComboBox dropdown arrow");
-        }
-
-        // Click to open the dropdown
-        $arrow->click();
-
-        // Find the option with matching text
-        $item = $this->getPage()->find(
-            'css',
-            ".sapMSelectList li:contains('{$value}'), " .
-            ".sapMComboBoxItem:contains('{$value}'), " .
-            ".sapMMultiComboBoxItem:contains('{$value}')"
-        );
-
-        if (!$item) {
-            throw new \RuntimeException("Could not find option '{$value}' in ComboBox list");
-        }
-
-        $item->click();
-    }
-
-    /**
-     * Handles input into a Select control
-     * Selects the option with matching text from dropdown
-     * 
-     * @param NodeElement $select The Select control
-     * @param string $value The value to select
-     * @return void
-     * @throws \RuntimeException If option can't be found
-     */
-    public function handleSelectInput(NodeElement $select, string $value): void
-    {
-        // Find the option with matching text
-        $item = $this->getPage()->find('css', ".sapMSelectList li:contains('{$value}')");
-
-        if (!$item) {
-            throw new \RuntimeException("Could not find option '{$value}' in Select list");
-        }
-
-        $item->click();
-    }
-
     /**
      * Sets focus on a node and maintains a focus stack
      * Used to track which elements have focus during test execution
      * 
-     * @param NodeElement $node The element to focus
+     * @param NodeElement|FacadeNodeInterface $node The element to focus
      * @return void
      */
-    public function focus(NodeElement $node): void
+    public function focus($node): void
     {
+        switch (true) {
+            case $node instanceof FacadeNodeInterface:
+                // everything is finde
+                break;
+            case $node instanceof NodeElement:
+                $node = new GenericHtmlNode($node);
+                break;
+            default:
+                throw new InvalidArgumentException('Cannot focus on "' . gettype($node) . '": expecting Mink NodeElement or FacadeNodeInterface');
+        }
         $top = end($this->focusStack);
         if ($top !== $node) {
             $this->focusStack[] = $node;
@@ -563,31 +523,15 @@ JS
      * Gets the currently focused node
      * Returns the top element of the focus stack
      * 
-     * @return NodeElement|null The focused element or null if none focused
+     * @return FacadeNodeInterface The focused element or null if none focused
      */
-    public function getFocusedNode(): ?NodeElement
+    public function getFocusedNode() : FacadeNodeInterface
     {
         if (empty($this->focusStack)) {
-            return null;
+            return new UI5PageNode($this->getPage()->find('css', 'body'));
         }
         $top = end($this->focusStack);
         return $top;
-    }
-
-    /**
-     * Retrieves the type of the currently focused UI5 widget
-     * 
-     * @return string|null The type of the focused widget (e.g., 'DataTable', 'Dialog')
-     * @description Returns the widget type if a widget is currently in focus, otherwise null
-     */
-    public function getFocusedType(): ?string
-    {
-        if (empty($this->focusStack)) {
-            return null;
-        }
-
-        $current = end($this->focusStack);
-        return $current['type'];
     }
 
     /**
@@ -1126,6 +1070,43 @@ JS
     }
 
     /**
+     * Summary of findWidgetNodes
+     * @param string $widgetType
+     * @param int $timeoutInSeconds
+     * @return FacadeNodeInterface[]
+     */
+    public function findWidgetNodes(string $widgetType, int $timeoutInSeconds = 10) : array
+    {
+        // Generate a generalized CSS selector for the specific widget type
+        $cssSelector = ".exfw-{$widgetType}";
+
+        // Wait for all pending operations to complete
+        $this->waitManager->waitForPendingOperations(true, true, true);
+        if ($timeoutInSeconds > 0) {
+            $this->waitManager->waitForDOMElements($cssSelector, $timeoutInSeconds);
+        }
+        // Find all widgets on the page matching the CSS selector
+        $widgets = $this->getFocusedNode()->getNodeElement()->findAll('css', $cssSelector);
+
+        // Filter widgets based on visibility and optional object alias
+        $visibleWidgets = array_filter($widgets, function ($widget) {
+            // Return only visible widgets
+            return $widget->isVisible();
+        });
+
+        $nodes = [];
+        foreach ($widgets as $nodeEl) {
+            if (! $nodeEl->isVisible()) {
+                continue;
+            }
+            $nodes[] = UI5FacadeNodeFactory::getNodeForWidgetType($widgetType);
+        }
+
+        return $visibleWidgets;
+    }
+
+
+    /**
      * Summary of findTiles
      * 
      * @return \axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5TileNode[]
@@ -1456,6 +1437,39 @@ JS
             };
         })()
     ');
+    }
+
+    /**
+     * Summary of getFilters
+     * @param int $min
+     * @param int $max
+     * @param FacadeNodeInterface $withinNode
+     * @throws \RuntimeException
+     * @return FacadeNodeInterface[]
+     */
+    public function getFilters(int $min = 1, int $max = 1) : array
+    {
+        $nodes = [];
+        // Find all filter containers in the current search area
+        $filterNodes = $this->findWidgetNodes('Filter', 15);
+
+        // Iterate through each filter container
+        foreach ($filterNodes as $filterNode) {
+            // Check the label of the filter container
+            $label = $filterNode->getCaption();
+
+            // If label matches the desired filter name
+            if ($label === $filterName) {
+                $nodes[] = $filterNode;
+            }
+        }
+        switch (true) {
+            case count($nodes) < $min:
+                throw new RuntimeException("Too few filters found for {$filterName}");
+            case $max !== null && count($nodes) > $max:
+                throw new RuntimeException("Too many filters found for {$filterName}");
+        }
+        return $nodes;
     }
 
 }
