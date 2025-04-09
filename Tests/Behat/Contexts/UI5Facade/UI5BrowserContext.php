@@ -493,7 +493,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         Assert::assertNotNull($focusedNode, 'No widget is currently focused. Call "I look at" first.');
 
         // Find filter containers only within the focused node
-        $filterContainers = $focusedNode->findAll('css', '.sapUiVlt.exfw-Filter, .sapMVBox.exfw-Filter');
+        $filterContainers = $focusedNode->getNodeElement()->findAll('css', '.sapUiVlt.exfw-Filter, .sapMVBox.exfw-Filter');
 
         $foundFilters = [];
 
@@ -545,11 +545,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iEnterInFilter(string $value, string $filterName): void
     {
-        foreach ($this->getBrowser()->getFilters() as $filter) {
-            if ($filter->getCaption() === $filterName) {
-                $filter->setValue($value);
-            }
-        }
+        $this->getBrowser()->getFilterByCaption($filterName)->setValue($value);
     }
 
 
@@ -612,7 +608,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
 
         // Verify the first DataTable contains the expected text in the specified column
-        $this->getBrowser()->verifyTableContent($focusedNode, [
+        $this->getBrowser()->verifyTableContent($focusedNode->getNodeElement(), [
             ['column' => $columnName, 'text' => $text]
         ]);
 
@@ -630,7 +626,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
 
         // Find button in the focused widget
-        $widget = $this->getBrowser()->getFocusedNode();
+        $widget = $this->getBrowser()->getFocusedNode()->getNodeElement();
         Assert::assertNotNull($widget, "No widget is currently focused. Call 'I look at' first.");
 
         // Find Button
@@ -938,15 +934,16 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         // Adjust to 0-based index for internal use
         $tableIndex = $index - 1;
-        $tables = $this->getBrowser()->findWidgets('DataTable', null, 15);
+        $tables = $this->getBrowser()->findWidgetNodes('DataTable');
         Assert::assertNotEmpty($tables, 'No DataTable found on page');
 
         if (!isset($tables[$index - 1])) {
             throw new \RuntimeException("Table {$index} not found. Only " . count($tables) . " tables available.");
         }
-        $this->getBrowser()->highlightWidget($tables[$tableIndex], 'DataTable', $index);
+        $table = $tables[$tableIndex];
+        $this->getBrowser()->highlightWidget($table->getNodeElement(), 'DataTable', $index);
         // Focus the selected table
-        $this->getBrowser()->focus($tables[$tableIndex]);
+        $this->getBrowser()->focus($table);
     }
 
 
@@ -955,44 +952,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * @When I select table row :rowNumber
      */
-    public function iSelectTableRow($rowNumber)
+    public function iSelectTableRow(int $rowNumber)
     {
-        $rowIndex = $this->getBrowser()->convertOrdinalToIndex($rowNumber);
-
         // Use the focused table (if there is no error, throw an error)
+        /** @var \axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataTableNode $table */
         $table = $this->getBrowser()->getFocusedNode();
         Assert::assertNotNull($table, "No table is currently focused. Call 'I look at table' first.");
 
-        // Find the rows
-        $rows = $table->findAll('css', '.sapUiTableTr, .sapMListTblRow');
-        Assert::assertNotEmpty($rows, "No rows found in table");
-
-        if (count($rows) < $rowIndex + 1) {
-            throw new \RuntimeException("Row {$rowNumber} not found. Only " . count($rows) . " rows available.");
-        }
-
-        $row = $rows[$rowIndex];
-
-        // Selecting process
-        $rowSelector = $row->find('css', '.sapUiTableRowSelectionCell');
-        if ($rowSelector) {
-            $rowSelector->click();
-        } else {
-            $firstCell = $row->find('css', 'td.sapUiTableCell, .sapMListTblCell');
-            Assert::assertNotNull($firstCell, "Could not find a clickable cell in row {$rowNumber}");
-            $firstCell->click();
-        }
+        $table->selectRow($rowNumber);
 
         // Wait for UI 
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
 
-        // Verification
-        $tableId = $table->getAttribute('id');
-        $isSelected = $this->getSession()->evaluateScript(
-            "return jQuery('#{$tableId} .sapUiTableTr, #{$tableId} .sapMListTblRow').eq({$rowIndex}).hasClass('sapUiTableRowSel');"
-        );
-
-        Assert::assertTrue($isSelected, "Failed to select row {$rowNumber}");
+        Assert::assertTrue($table->isRowSelected($rowNumber), "Failed to select row {$rowNumber}");
     }
 
 

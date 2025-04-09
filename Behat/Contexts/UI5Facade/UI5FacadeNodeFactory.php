@@ -2,16 +2,26 @@
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
+use axenox\BDT\Interfaces\FacadeNodeInterface;
+use Behat\Mink\Element\NodeElement;
+use exface\Core\Factories\WidgetFactory;
 use exface\Core\Widgets\AbstractWidget;
+use Behat\Mink\Session;
 
 class UI5FacadeNodeFactory
 {
     private static $classesByWidgetType = [];
 
-    public static function getNodeForWidgetType(string $widgetClass) : string
+    public static function createFromNodeElement(string $widgetType, NodeElement $nodeElement, Session $session) : FacadeNodeInterface
     {
+        $class = self::getNodeClassForWidgetType($widgetType);
+        return new $class($nodeElement, $session);
+    }
+
+    protected static function getNodeClassForWidgetType(string $widgetType) : string
+    {
+        $widgetClass = WidgetFactory::getWidgetClassFromType($widgetType);
         // $class like `exface\Core\Widgets\DataTable`
-        $widgetType = AbstractWidget::getWidgetTypeFromClass($widgetClass);
         $nodeClass = static::$classesByWidgetType[$widgetType] ?? null;
         if (is_null($nodeClass)) {
             $nodeClass = static::getNodeClass($widgetType);

@@ -2,6 +2,7 @@
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5FilterNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5PageNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5TileNode;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
@@ -528,7 +529,7 @@ JS
     public function getFocusedNode() : FacadeNodeInterface
     {
         if (empty($this->focusStack)) {
-            return new UI5PageNode($this->getPage()->find('css', 'body'));
+            return new UI5PageNode($this->getPage()->find('css', 'body'), $this->getSession());
         }
         $top = end($this->focusStack);
         return $top;
@@ -1083,26 +1084,21 @@ JS
         // Wait for all pending operations to complete
         $this->waitManager->waitForPendingOperations(true, true, true);
         if ($timeoutInSeconds > 0) {
-            $this->waitManager->waitForDOMElements($cssSelector, $timeoutInSeconds);
+            $this->waitManager->waitForDOMElements($cssSelector, 1, $timeoutInSeconds);
         }
         // Find all widgets on the page matching the CSS selector
         $widgets = $this->getFocusedNode()->getNodeElement()->findAll('css', $cssSelector);
-
-        // Filter widgets based on visibility and optional object alias
-        $visibleWidgets = array_filter($widgets, function ($widget) {
-            // Return only visible widgets
-            return $widget->isVisible();
-        });
 
         $nodes = [];
         foreach ($widgets as $nodeEl) {
             if (! $nodeEl->isVisible()) {
                 continue;
             }
-            $nodes[] = UI5FacadeNodeFactory::getNodeForWidgetType($widgetType);
+            $nodes[] = UI5FacadeNodeFactory::createFromNodeElement($widgetType, $nodeEl, $this->getSession());
+
         }
 
-        return $visibleWidgets;
+        return $nodes;
     }
 
 
@@ -1119,7 +1115,7 @@ JS
         // Store the tile names on the page
         $tiles = [];
         foreach ($nodes ?? [] as $node) {
-            $tile = new UI5TileNode($node);
+            $tile = new UI5TileNode($node, $this->getSession());
             $tiles[] = $tile;
         }
         Assert::assertNotEmpty($tiles, 'No tiles found');
@@ -1159,21 +1155,6 @@ JS
         $button = $this->getSession()->find('xpath', $xpath);
 
         return $button;
-    }
-
-
-    /**
-     * Converts ordinal numbers like "1." to zero-based indices
-     * 
-     * @param string $ordinal The ordinal number (e.g., "1.", "2.")
-     * @return int Zero-based index
-     */
-    public function convertOrdinalToIndex($ordinal)
-    {
-        // Remove any trailing period and convert to integer
-        $number = (int) str_replace('.', '', $ordinal);
-        // Convert to zero-based index
-        return $number - 1;
     }
 
     /**
@@ -1445,13 +1426,24 @@ JS
      * @param int $max
      * @param FacadeNodeInterface $withinNode
      * @throws \RuntimeException
-     * @return FacadeNodeInterface[]
+     * @return UI5FilterNode[]
      */
-    public function getFilters(int $min = 1, int $max = 1) : array
+    public function getFilters(int $min = 1, int $max = null) : array
     {
-        $nodes = [];
-        // Find all filter containers in the current search area
-        $filterNodes = $this->findWidgetNodes('Filter', 15);
+        $nodes = $this->findWidgetNodes('Filter', 15);
+
+        switch (true) {
+            case count($nodes) < $min:
+                throw new RuntimeException("Too few filters found: expecting {$min} but found " . count($nodes));
+            case $max !== null && count($nodes) > $max:
+                throw new RuntimeException("Too many filters found: expecting {$max} but found " . count($nodes));
+        }
+        return $nodes;
+    }
+
+    public function getFilterByCaption(string $filterName) : UI5FilterNode
+    {
+        $filterNodes = $this->getFilters();
 
         // Iterate through each filter container
         foreach ($filterNodes as $filterNode) {
@@ -1460,16 +1452,10 @@ JS
 
             // If label matches the desired filter name
             if ($label === $filterName) {
-                $nodes[] = $filterNode;
+                return $filterNode;
             }
         }
-        switch (true) {
-            case count($nodes) < $min:
-                throw new RuntimeException("Too few filters found for {$filterName}");
-            case $max !== null && count($nodes) > $max:
-                throw new RuntimeException("Too many filters found for {$filterName}");
-        }
-        return $nodes;
+        throw new RuntimeException("Filter {$filterName} not found");
     }
 
 }
