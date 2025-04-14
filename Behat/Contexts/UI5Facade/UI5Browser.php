@@ -243,6 +243,24 @@ class UI5Browser
         }
     }
 
+    public function getFocusStackForDebugging(): array
+    {
+        return $this->focusStack;
+    }
+
+    public function clearFocusStack(): void
+    {
+        $this->focusStack = []; // Focus stackini sıfırla
+
+        // Opsiyonel: JavaScript ile de UI tarafında temizlik yapılabilir
+        $this->session->executeScript('
+        // if exist UI5 side focus clearing
+        if (window.clearFocus) {
+            window.clearFocus();
+        }
+    ');
+    }
+
     /**
      * Highlights a widget with visual indicator for debugging purposes
      * 
@@ -509,7 +527,7 @@ JS
                 // everything is finde
                 break;
             case $node instanceof NodeElement:
-                $node = new GenericHtmlNode($node);
+                $node = new GenericHtmlNode($node, $this->getSession());
                 break;
             default:
                 throw new InvalidArgumentException('Cannot focus on "' . gettype($node) . '": expecting Mink NodeElement or FacadeNodeInterface');
@@ -526,7 +544,7 @@ JS
      * 
      * @return FacadeNodeInterface The focused element or null if none focused
      */
-    public function getFocusedNode() : FacadeNodeInterface
+    public function getFocusedNode(): FacadeNodeInterface
     {
         if (empty($this->focusStack)) {
             return new UI5PageNode($this->getPage()->find('css', 'body'), $this->getSession());
@@ -931,7 +949,7 @@ JS
      */
     public function findColumnByCaption(string $caption, NodeElement $parent = null): ?NodeElement
     {
-        
+
         $columnHeadings = ($parent ?? $this->getPage())->findAll('css', '.sapUiTableHeaderCell');
 
         // Iterate through found column headings to locate matching one
@@ -1076,7 +1094,7 @@ JS
      * @param int $timeoutInSeconds
      * @return FacadeNodeInterface[]
      */
-    public function findWidgetNodes(string $widgetType, int $timeoutInSeconds = 10) : array
+    public function findWidgetNodes(string $widgetType, int $timeoutInSeconds = 10): array
     {
         // Generate a generalized CSS selector for the specific widget type
         $cssSelector = ".exfw-{$widgetType}";
@@ -1086,16 +1104,22 @@ JS
         if ($timeoutInSeconds > 0) {
             $this->waitManager->waitForDOMElements($cssSelector, 1, $timeoutInSeconds);
         }
-        // Find all widgets on the page matching the CSS selector
+
+        // Find all widgets on the page matching the CSS selector 
         $widgets = $this->getFocusedNode()->getNodeElement()->findAll('css', $cssSelector);
+
+        // If no widgets found, fallback to page-wide search
+        if (empty($widgets)) {
+            $page = $this->getPage();
+            $widgets = $page->findAll('css', $cssSelector);
+        }
 
         $nodes = [];
         foreach ($widgets as $nodeEl) {
-            if (! $nodeEl->isVisible()) {
+            if (!$nodeEl->isVisible()) {
                 continue;
             }
             $nodes[] = UI5FacadeNodeFactory::createFromNodeElement($widgetType, $nodeEl, $this->getSession());
-
         }
 
         return $nodes;
@@ -1428,7 +1452,7 @@ JS
      * @throws \RuntimeException
      * @return UI5FilterNode[]
      */
-    public function getFilters(int $min = 1, int $max = null) : array
+    public function getFilters(int $min = 1, int $max = null): array
     {
         $nodes = $this->findWidgetNodes('Filter', 15);
 
@@ -1441,7 +1465,7 @@ JS
         return $nodes;
     }
 
-    public function getFilterByCaption(string $filterName) : UI5FilterNode
+    public function getFilterByCaption(string $filterName): UI5FilterNode
     {
         $filterNodes = $this->getFilters();
 
