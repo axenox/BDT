@@ -353,6 +353,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeWidgets(int $number, string $widgetType, string $objectAlias = null): void
     {
+        // Tüm focus stackini temizle
+        $this->getBrowser()->clearFocusStack();
+
         // Wait for any pending operations to complete
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
 
@@ -361,12 +364,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         // if widget is a dialog or table, make it focused
         if (count($widgetNodes) === 1) {
+
             $firstNode = reset($widgetNodes);
-            if ($firstNode->capturesFocus() === true) {
-                $this->getBrowser()->focus($firstWidget);
-            }
+
+            //if ($firstNode->capturesFocus() === true) {
+            $this->getBrowser()->focus($firstNode);
+            //}
+
         }
- 
 
         // Assert the number of widgets
         Assert::assertCount(
@@ -381,22 +386,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             )
         );
 
-        // If exactly one widget found, highlight it for debugging
-        if (count($widgetNodes) === 1) {
-            $this->getBrowser()->highlightWidget(
-                $widgetNodes[0],  // First (and only) widget node
-                $widgetType,      // Widget type for color selection
-                0                 // First widget index
-            );
-        } elseif (count($widgetNodes) > 1) {
-            // If multiple widgets found, highlight first few for overview
-            foreach (array_slice($widgetNodes, 0, 3) as $index => $node) {
-                $this->getBrowser()->highlightWidget(
-                    $node,
-                    $widgetType,
-                    $index
-                );
-            }
+        // Optionally highlight the first widget for debugging
+        if (!empty($widgets)) {
+            $this->browser->highlightWidget($widgets[0], $widgetType, 0);
         }
     }
 
@@ -624,6 +616,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iClickButton(string $caption): void
     {
+        // // Print the focus stack
+        // echo "Current Focus Stack:\n";
+        // foreach ($this->getBrowser()->getFocusStackForDebugging() as $index => $node) {
+        //     echo "[$index] " . get_class($node) . "\n";
+        // }
 
         // Find button in the focused widget
         $widget = $this->getBrowser()->getFocusedNode()->getNodeElement();
@@ -636,7 +633,17 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Click Event
         $button->click();
 
-        // WAit for UI to rsponse
+        if (in_array(strtolower($caption), ['close', 'cancel', 'ok', 'save', 'done'])) {
+            // echo "In Array Close:\n"; 
+            // echo "Dialog closed by " . $caption . " button, unfocusing dialog\n";
+            $this->getBrowser()->unfocus();
+            // foreach ($this->getBrowser()->getFocusStackForDebugging() as $index => $node) {
+            //     echo "Dialog closed, remaining Nodes : \n";
+            //     echo "[$index] " . get_class($node) . "\n";
+            // }
+        }
+
+        // // WAit for UI to rsponse
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
 
     }
@@ -727,7 +734,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             // Highlight the button for debugging purposes
             $this->getBrowser()->highlightWidget($button, 'Button', 0);
         }
-        
+
     }
 
     /**
@@ -748,11 +755,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
          */
         $tableNode = $this->getBrowser()->getFocusedNode();
         Assert::assertNotNull($tableNode, 'No widget has focus right now - cannot use steps like "it has..."');
-        
+
         $captions = $this->explodeList($caption);
         foreach ($captions as $caption) {
             $col = $this->getBrowser()->findColumnByCaption($caption, $tableNode);
-            Assert::assertNotNull($col, 'Column "' . $caption. '" not found');
+            Assert::assertNotNull($col, 'Column "' . $caption . '" not found');
             $this->getBrowser()->highlightWidget($col, 'Column', 0);
         }
 
@@ -1285,12 +1292,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         $tabs = $this->explodeList($tabs);
 
-        foreach($tabs as $tab){
+        foreach ($tabs as $tab) {
             $foundedTab = $this->getBrowser()->findTabByCaption($tab);
-            Assert::assertNotNull($foundedTab,"The Tab ".$tab." is not found!");
-            $this->getBrowser()->highlightWidget($foundedTab,"Tab",0);
+            Assert::assertNotNull($foundedTab, "The Tab " . $tab . " is not found!");
+            $this->getBrowser()->highlightWidget($foundedTab, "Tab", 0);
         }
-        
+
     }
 
 
