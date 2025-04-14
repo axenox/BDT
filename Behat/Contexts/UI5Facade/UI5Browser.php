@@ -1105,7 +1105,7 @@ JS
             $this->waitManager->waitForDOMElements($cssSelector, 1, $timeoutInSeconds);
         }
 
-        // Find all widgets on the page matching the CSS selector
+        // Find all widgets on the page matching the CSS selector 
         $widgets = $this->getFocusedNode()->getNodeElement()->findAll('css', $cssSelector);
 
         // If no widgets found, fallback to page-wide search

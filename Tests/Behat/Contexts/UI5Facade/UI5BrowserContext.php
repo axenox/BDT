@@ -634,7 +634,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $button->click();
 
         if (in_array(strtolower($caption), ['close', 'cancel', 'ok', 'save', 'done'])) {
-            // echo "In Array Close:\n";
+            // echo "In Array Close:\n"; 
             // echo "Dialog closed by " . $caption . " button, unfocusing dialog\n";
             $this->getBrowser()->unfocus();
             // foreach ($this->getBrowser()->getFocusStackForDebugging() as $index => $node) {
