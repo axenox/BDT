@@ -21,6 +21,10 @@ use Behat\Behat\Hook\Scope\AfterStepScope;
 use Behat\Behat\Hook\Scope\BeforeStepScope;
 use Behat\Gherkin\Node\TableNode;
 use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
+use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ButtonNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataTableNode;
+
 
 /**
  * Test steps available for the OpenUI5 facade
@@ -145,14 +149,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Clear XHR logs to monitor only current step's network activity
         $this->browser->clearXHRLog();
 
-        // Remove any widget highlights from previous steps
-        $this->getBrowser()->clearWidgetHighlights();
-
-        // // Perform basic UI5 readiness checks
-        // $this->getBrowser()->handleStepWaitOperations(false);
-
         // Add a small additional wait to ensure complete stability
         $this->getSession()->wait(1000);
+
+        // Remove any widget highlights from previous steps
+        $this->getBrowser()->clearWidgetHighlights();
 
         // Log the beginning of the step for debugging purposes
         $stepKeyword = $scope->getStep()->getKeyword();
@@ -353,29 +354,25 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeWidgets(int $number, string $widgetType, string $objectAlias = null): void
     {
+        // Clear all focus stack
+        $this->getBrowser()->clearFocusStack();
+
         // Wait for any pending operations to complete
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
 
         // Fetch widgets based on type and optional alias
-        $widgetNodes = $this->getBrowser()->findWidgets($widgetType, $objectAlias, 15);
-
-      
+        $widgetNodes = $this->getBrowser()->findWidgetNodes($widgetType, 15);
 
         // if widget is a dialog or table, make it focused
-        if (!empty($widgetNodes)) {
-            $firstWidget = reset($widgetNodes);
+        if (count($widgetNodes) === 1) {
 
-            // Special focus for table or dialog
-            if (
-                $widgetType === 'DataTable' ||
-                $widgetType === 'Dialog' ||
-                strpos(strtolower($widgetType), 'table') !== false ||
-                strpos(strtolower($widgetType), 'dialog') !== false
-            ) {
-                $this->getBrowser()->focus($firstWidget);
+            $firstNode = reset($widgetNodes);
+
+            if ($firstNode->capturesFocus() === true) {
+                $this->getBrowser()->focus($firstNode);
             }
+
         }
- 
 
         // Assert the number of widgets
         Assert::assertCount(
@@ -390,21 +387,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             )
         );
 
-        // If exactly one widget found, highlight it for debugging
-        if (count($widgetNodes) === 1) {
-            $this->getBrowser()->highlightWidget(
-                $widgetNodes[0],  // First (and only) widget node
-                $widgetType,      // Widget type for color selection
-                0                 // First widget index
-            );
-        } elseif (count($widgetNodes) > 1) {
-            // If multiple widgets found, highlight first few for overview
-            foreach (array_slice($widgetNodes, 0, 3) as $index => $node) {
-                $this->getBrowser()->highlightWidget(
-                    $node,
-                    $widgetType,
-                    $index
-                );
+        // // Optionally highlight the first widget for debugging
+        // if (!empty($widgets)) {
+        //     echo "Test Girdi\n";
+        //     $this->browser->highlightWidget($widgets[0], $widgetType, 0);
+        // }
+
+        // Optionally highlight widgets for debugging
+        if (!empty($widgetNodes)) {
+            $maxHighlight = min(count($widgetNodes), 3);
+            for ($i = 0; $i < $maxHighlight; $i++) {
+                // change to NodeElement with getNodeElement() 
+                $nodeElement = $widgetNodes[$i]->getNodeElement();
+                $this->browser->highlightWidget($nodeElement, $widgetType, $i);
             }
         }
     }
@@ -502,7 +497,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         Assert::assertNotNull($focusedNode, 'No widget is currently focused. Call "I look at" first.');
 
         // Find filter containers only within the focused node
-        $filterContainers = $focusedNode->findAll('css', '.sapUiVlt.exfw-Filter, .sapMVBox.exfw-Filter');
+        $filterContainers = $focusedNode->getNodeElement()->findAll('css', '.sapUiVlt.exfw-Filter, .sapMVBox.exfw-Filter');
 
         $foundFilters = [];
 
@@ -554,57 +549,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iEnterInFilter(string $value, string $filterName): void
     {
-        // Define search areas to look for the filter
-        $searchAreas = [
-            $this->getBrowser()->getFocusedNode(), // First, search in the focused node
-            $this->getBrowser()->getPage()         // Then, search in the entire page
-        ];
-
-        // Iterate through each search area to find filter containers
-        foreach ($searchAreas as $searchArea) {
-            // Skip if the search area is null
-            if (!$searchArea)
-                continue;
-
-            // Find all filter containers in the current search area
-            $inputContainers = $searchArea->findAll('css', '.sapUiVlt.exfw-Filter');
-
-            // Iterate through each filter container
-            foreach ($inputContainers as $container) {
-                // Check the label of the filter container
-                $label = $container->find('css', '.sapMLabel bdi');
-
-                // If label matches the desired filter name
-                if ($label && trim($label->getText()) === $filterName) {
-                    // Check for ComboBox or MultiComboBox input
-                    $comboBox = $container->find('css', '.sapMComboBoxBase, .sapMMultiComboBox');
-                    if ($comboBox) {
-                        // Handle ComboBox input
-                        $this->handleComboBoxInput($comboBox, $value);
-                        return;
-                    }
-
-                    // Check for Select input
-                    $select = $container->find('css', '.sapMSelect');
-                    if ($select) {
-                        // Handle Select input
-                        $this->handleSelectInput($select, $value);
-                        return;
-                    }
-
-                    // Check for standard input field
-                    $targetInput = $container->find('css', 'input.sapMInputBaseInner');
-                    if ($targetInput) {
-                        // Set the value for standard input
-                        $targetInput->setValue($value);
-                        return;
-                    }
-                }
-            }
-        }
-
-        // Throw an exception if no suitable input element is found
-        throw new \RuntimeException("Could not find input element for filter: {$filterName}");
+        $this->getBrowser()->getFilterByCaption($filterName)->setValue($value);
     }
 
 
@@ -667,7 +612,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
 
         // Verify the first DataTable contains the expected text in the specified column
-        $this->getBrowser()->verifyTableContent($focusedNode, [
+        $this->getBrowser()->verifyTableContent($focusedNode->getNodeElement(), [
             ['column' => $columnName, 'text' => $text]
         ]);
 
@@ -676,28 +621,164 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     /**
      * Clicks a button with the specified caption
+     * Searches for a button within the currently focused widget or page
+     * Uses multiple search strategies to find the button
      * 
      * @When I click button ":caption"
      * 
      * @param string $caption Text caption of the button to click
+     * @throws RuntimeException If button cannot be found or clicked
      */
     public function iClickButton(string $caption): void
     {
+        // Get the currently focused widget's node element
+        $widget = $this->getBrowser()->getFocusedNode()->getNodeElement();
 
-        // Find button in the focused widget
-        $widget = $this->getBrowser()->getFocusedNode();
-        Assert::assertNotNull($widget, "No widget is currently focused. Call 'I look at' first.");
+        if (!$widget) {
+            throw new RuntimeException("No focused widget found");
+        }
 
-        // Find Button
+        // First, try standard Mink named button search within the widget
         $button = $widget->find('named', ['button', $caption]);
-        Assert::assertNotNull($button, "Button '{$caption}' not found in focused widget.");
 
-        // Click Event
-        $button->click();
+        // If standard search fails, use alternative search strategies
+        if (!$button) {
+            // Find all buttons within the widget
+            $buttons = $widget->findAll('css', 'button');
 
-        // WAit for UI to rsponse
-        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+            foreach ($buttons as $btn) {
+                // Check the matches
+                if (stripos($btn->getText(), $caption) !== false) {
+                    $button = $btn;
+                    break;
+                }
 
+                // Title attribute control
+                if (
+                    $btn->getAttribute('title') &&
+                    stripos($btn->getAttribute('title'), $caption) !== false
+                ) {
+                    $button = $btn;
+                    break;
+                }
+            }
+        }
+
+        // If still doesnt find, check it in entire page
+        if (!$button) {
+            $page = $this->getSession()->getPage();
+            $buttons = $page->findAll('css', 'button');
+
+            foreach ($buttons as $btn) {
+                // Check button text for caption match
+                if (stripos($btn->getText(), $caption) !== false) {
+                    $button = $btn;
+                    break;
+                }
+            }
+        }
+
+        // If button is still not found, provide detailed debug information
+        if (!$button) {
+            // Log detailed search context for debugging
+            //$this->debugButtonSearchContext($caption, $widget);
+
+            throw new RuntimeException("Button '$caption' not found in the current widget or page");
+        }
+
+        if ($button) {
+            // Butonu highlightWidget ile vurgulayın
+            $this->getBrowser()->highlightWidget(
+                $button,
+                'Button',  // Widget tipi
+                0           // Index (ilk buton olduğu için 0)
+            );
+
+            // Butonu tıklama işlemi
+            try {
+                $button->click();
+            } catch (\Exception $e) {
+                //$this->debugButtonClickContext($button, $caption);
+                throw $e;
+            }
+        }
+
+        // Attempt to click the button
+        try {
+            $button->click();
+        } catch (\Exception $e) {
+            // If error accures while clicking
+            //$this->debugButtonClickContext($button, $caption);
+            throw $e;
+        }
+
+    }
+
+    /**
+     * Provides detailed debugging information when button search fails
+     * 
+     * Logs:
+     * - Widget HTML content
+     * - All buttons within the widget
+     * - All buttons on the page
+     * 
+     * @param string $caption The button caption being searched
+     * @param NodeElement $widget The widget being searched
+     */
+    private function debugButtonSearchContext(string $caption, $widget)
+    {
+        // Log the HTML content of the current widget
+        echo "Widget HTML Content:\n";
+        echo $widget->getHtml() . "\n\n";
+
+        // List all buttons within the widget
+        echo "All Buttons in Widget:\n";
+        $buttons = $widget->findAll('css', 'button');
+        foreach ($buttons as $btn) {
+            echo "Button Text: " . $btn->getText() . "\n";
+            echo "Button Title: " . $btn->getAttribute('title') . "\n";
+            echo "Button Classes: " . $btn->getAttribute('class') . "\n\n";
+        }
+
+        // List all buttons on the page
+        echo "All Buttons on Page:\n";
+        $pageButtons = $this->getSession()->getPage()->findAll('css', 'button');
+        foreach ($pageButtons as $btn) {
+            echo "Button Text: " . $btn->getText() . "\n";
+            echo "Button Title: " . $btn->getAttribute('title') . "\n";
+            echo "Button Classes: " . $btn->getAttribute('class') . "\n\n";
+        }
+    }
+
+    /**
+     * Provides detailed debugging information when button click fails
+     * 
+     * Logs:
+     * - Button text
+     * - Button visibility status
+     * - Button enabled/disabled state
+     * - Executes JavaScript to further investigate button properties
+     * 
+     * @param NodeElement $button The button that failed to click
+     * @param string $caption The button's caption
+     */
+    private function debugButtonClickContext($button, string $caption)
+    {
+        // Log basic button properties
+
+        echo "Button Click Debug:\n";
+        echo "Button Text: " . $button->getText() . "\n";
+        echo "Button Visibility: " . ($button->isVisible() ? 'Visible' : 'Hidden') . "\n";
+        echo "Button Enabled: " . ($button->hasAttribute('disabled') ? 'Disabled' : 'Enabled') . "\n";
+
+        // Use JavaScript to perform additional button property checks
+        $this->getSession()->executeScript("
+        var button = arguments[0];
+        console.log('Button found:', button);
+        console.log('Button text:', button.textContent);
+        console.log('Button visibility:', button.offsetParent !== null);
+        console.log('Button disabled:', button.disabled);
+    ", [$button->getXpath()]);
     }
 
     /**
@@ -786,7 +867,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             // Highlight the button for debugging purposes
             $this->getBrowser()->highlightWidget($button, 'Button', 0);
         }
-        
+
     }
 
     /**
@@ -807,11 +888,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
          */
         $tableNode = $this->getBrowser()->getFocusedNode();
         Assert::assertNotNull($tableNode, 'No widget has focus right now - cannot use steps like "it has..."');
-        
+
         $captions = $this->explodeList($caption);
         foreach ($captions as $caption) {
             $col = $this->getBrowser()->findColumnByCaption($caption, $tableNode);
-            Assert::assertNotNull($col, 'Column "' . $caption. '" not found');
+            Assert::assertNotNull($col, 'Column "' . $caption . '" not found');
             $this->getBrowser()->highlightWidget($col, 'Column', 0);
         }
 
@@ -860,12 +941,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     public function iSeeFilteredResultsInDataTable(): void
     {
 
-        // Find DataTable widgets
-        $dataTables = $this->getBrowser()->findWidgets('DataTable');
-        Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
 
-        // Get the first DataTable
-        $dataTable = $dataTables[0];
+        $dataTable = $this->getBrowser()->getFocusedNode();
+        Assert::assertNotNull($dataTable, 'No focused node found');
+        Assert::assertInstanceOf(UI5DataTableNode::class, $dataTable, 'Focused node is not a data table');
 
         // Look for different types of UI5 table classes
         $ui5TableSelectors = [
@@ -993,15 +1072,16 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         // Adjust to 0-based index for internal use
         $tableIndex = $index - 1;
-        $tables = $this->getBrowser()->findWidgets('DataTable', 15);
+        $tables = $this->getBrowser()->findWidgetNodes('DataTable');
         Assert::assertNotEmpty($tables, 'No DataTable found on page');
 
         if (!isset($tables[$index - 1])) {
             throw new \RuntimeException("Table {$index} not found. Only " . count($tables) . " tables available.");
         }
-        $this->getBrowser()->highlightWidget($tables[$tableIndex], 'DataTable', $index);
+        $table = $tables[$tableIndex];
+        $this->getBrowser()->highlightWidget($table->getNodeElement(), 'DataTable', $index);
         // Focus the selected table
-        $this->getBrowser()->focus($tables[$tableIndex]);
+        $this->getBrowser()->focus($table);
     }
 
 
@@ -1010,44 +1090,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * @When I select table row :rowNumber
      */
-    public function iSelectTableRow($rowNumber)
+    public function iSelectTableRow(int $rowNumber)
     {
-        $rowIndex = $this->getBrowser()->convertOrdinalToIndex($rowNumber);
-
         // Use the focused table (if there is no error, throw an error)
+        /** @var \axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataTableNode $table */
         $table = $this->getBrowser()->getFocusedNode();
         Assert::assertNotNull($table, "No table is currently focused. Call 'I look at table' first.");
 
-        // Find the rows
-        $rows = $table->findAll('css', '.sapUiTableTr, .sapMListTblRow');
-        Assert::assertNotEmpty($rows, "No rows found in table");
-
-        if (count($rows) < $rowIndex + 1) {
-            throw new \RuntimeException("Row {$rowNumber} not found. Only " . count($rows) . " rows available.");
-        }
-
-        $row = $rows[$rowIndex];
-
-        // Selecting process
-        $rowSelector = $row->find('css', '.sapUiTableRowSelectionCell');
-        if ($rowSelector) {
-            $rowSelector->click();
-        } else {
-            $firstCell = $row->find('css', 'td.sapUiTableCell, .sapMListTblCell');
-            Assert::assertNotNull($firstCell, "Could not find a clickable cell in row {$rowNumber}");
-            $firstCell->click();
-        }
+        $table->selectRow($rowNumber);
 
         // Wait for UI 
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
 
-        // Verification
-        $tableId = $table->getAttribute('id');
-        $isSelected = $this->getSession()->evaluateScript(
-            "return jQuery('#{$tableId} .sapUiTableTr, #{$tableId} .sapMListTblRow').eq({$rowIndex}).hasClass('sapUiTableRowSel');"
-        );
-
-        Assert::assertTrue($isSelected, "Failed to select row {$rowNumber}");
+        Assert::assertTrue($table->isRowSelected($rowNumber), "Failed to select row {$rowNumber}");
     }
 
 
@@ -1109,6 +1164,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
 
 
+
     /**
      * Clicks the overflow button on the specified table
      * 
@@ -1120,71 +1176,69 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function clickTableOverflowButton($tableIndex = null): void
     {
-
         // If a table index is provided, convert it to an integer
         $tableNumber = null;
         if ($tableIndex !== null) {
             $tableNumber = (int) filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT);
         }
 
-        // If no table index is provided and a last selected table exists, use the last selected table
-        if ($tableNumber === null && isset($this->lastSelectedTable)) {
-            $tableNumber = $this->lastSelectedTable;
-        }
 
         // Click the overflow button
         $this->clickOverflowButton($tableNumber);
-
-
     }
 
     /**
-     * Clicks the overflow button of the selected table
+     * Clicks the overflow button of the selected table or in the focused context
      * 
      * @param int|null $tableIndex The table index (1-based) of the overflow button to click
      * @return void
      */
-    public function clickOverflowButton(int $tableIndex = null): void
+    public function clickOverflowButton($tableIndex = null)
     {
-
         // Check if the browser object is initialized
         if (!$this->browser) {
             throw new \RuntimeException("Browser is not initialized. You need to visit a page first.");
         }
 
-        $page = $this->getBrowser()->getPage();
+        $overflowButton = null;
 
-        // If a table index is provided, find the overflow button of that table
-        if ($tableIndex !== null) {
-            // Find all tables
+        // First, try to find in the focused node
+        $focusedNode = $this->getBrowser()->getFocusedNode();
+        if ($focusedNode) {
+            $overflowButton = $this->getBrowser()->getFocusedNode()->getNodeElement()->find('css', 'button[id$="-overflowButton"]');
+        }
+
+        if ($overflowButton) {
+            // Highlight Button 
+            $this->getBrowser()->highlightWidget($overflowButton, 'Button', 0);
+        } else {
+            // If button cant found, throw ex
+            throw new \RuntimeException("Overflow button not found");
+        }
+
+        // If not found in focused node and a table index is provided
+        if (!$overflowButton && $tableIndex !== null) {
+            $page = $this->getBrowser()->getPage();
             $tables = $page->findAll('css', '.exfw-DataTable, .sapUiTable, .sapMTable');
 
             if (count($tables) < $tableIndex) {
                 throw new \RuntimeException("Table not found at the specified index: " . $tableIndex);
             }
 
-            // Get the table at the specified index (convert to 0-based index)
             $targetTable = $tables[$tableIndex - 1];
-
-            // Find the overflow button in this table
             $overflowButton = $targetTable->find('css', 'button[id*="overflowButton"], button[id*="tableMenuButton"]');
+        }
 
-            if (!$overflowButton) {
-                // Alternatively, search for the overflow button in the table's toolbar
-                $toolbar = $targetTable->find('css', '.sapMTB, .sapUiTableTbr');
-                if ($toolbar) {
-                    $overflowButton = $toolbar->find('css', 'button[id*="overflowButton"]');
-                }
-            }
-        } else {
-            // If no table index is provided, find the first overflow button on the page
+        // If still not found, try in the page
+        if (!$overflowButton) {
+            $page = $this->getBrowser()->getPage();
             $overflowButton = $page->find('css', 'button[id*="overflowButton"]');
         }
 
         // If no overflow button was found, throw an error
         if (!$overflowButton) {
-            throw new \RuntimeException("Overflow button couldnt found" .
-                ($tableIndex ? " (Tablo indeksi: $tableIndex)" : ""));
+            throw new \RuntimeException("Overflow button couldn't be found" .
+                ($tableIndex ? " (Table index: $tableIndex)" : ""));
         }
 
         // Click the button
@@ -1194,28 +1248,26 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->getSession()->wait(1000);
 
         // Verify the click was successful
-        // In UI5, a popup or popover element usually appears when a menu is opened
-        $menu = $page->find('css', '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu');
+        $menu = $this->getBrowser()->getPage()->find('css', '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu');
 
         if (!$menu) {
             // Try clicking via JavaScript as an alternative method
             $buttonId = $overflowButton->getAttribute('id');
             $this->getSession()->executeScript("
-                var element = document.getElementById('$buttonId');
-                if (element) {
-                    element.click();
-                    return true;
-                }
-                return false;
-            ");
+            var element = document.getElementById('$buttonId');
+            if (element) {
+                element.click();
+                return true;
+            }
+            return false;
+        ");
 
             // Wait again and check
             $this->getSession()->wait(1000);
-            $menu = $page->find('css', '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu');
+            $menu = $this->getBrowser()->getPage()->find('css', '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu');
         }
 
         $this->logDebug("✓ Overflow button clicked successfully\n");
-
     }
 
 
@@ -1352,7 +1404,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 $foundButton = $this->getBrowser()->findButtonByCaption($btn, $parents[$tableNumber - 1]);
 
             }
-            $this->getBrowser()->clearWidgetHighlights();
+
             if (!empty($foundButton)) {
                 $this->getBrowser()->highlightWidget($foundButton, 'Button', 0);
             }
@@ -1368,12 +1420,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         $tabs = $this->explodeList($tabs);
 
-        foreach($tabs as $tab){
+        foreach ($tabs as $tab) {
             $foundedTab = $this->getBrowser()->findTabByCaption($tab);
-            Assert::assertNotNull($foundedTab,"The Tab ".$tab." is not found!");
-            $this->getBrowser()->highlightWidget($foundedTab,"Tab",0);
+            Assert::assertNotNull($foundedTab, "The Tab " . $tab . " is not found!");
+            $this->getBrowser()->highlightWidget($foundedTab, "Tab", 0);
         }
-        
+
     }
 
 

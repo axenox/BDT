@@ -427,7 +427,7 @@ class UI5WaitManager
     {
         return $this->session->wait(
             $timeoutInSeconds * 1000,
-            "$('{$cssSelector}').length >= {$number}"
+            "($('{$cssSelector}').length >= {$number})"
         );
     }
 }

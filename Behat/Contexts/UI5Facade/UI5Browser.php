@@ -1,14 +1,22 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5FilterNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5PageNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5TileNode;
+use axenox\BDT\Interfaces\FacadeNodeInterface;
+use Behat\Mink\Element\DocumentElement;
 use Behat\Mink\Element\NodeElement;
+use Behat\Mink\Element\TraversableElement;
 use Behat\Mink\Session;
 use exface\Core\Actions\Login;
 use exface\Core\CommonLogic\Security\Authenticators\MetamodelAuthenticator;
 use exface\Core\CommonLogic\Workbench;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\StringDataType;
+use exface\Core\Exceptions\InvalidArgumentException;
+use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Facades\AbstractAjaxFacade\AbstractAjaxFacade;
 use exface\Core\Factories\ActionFactory;
 use exface\Core\Factories\DataSheetFactory;
@@ -177,25 +185,46 @@ class UI5Browser
     }
 
     /**
-     * Clears all widget highlights added for debugging purposes
-     * Removes visual indicators and tooltips from previously highlighted elements
+     * Clears all widget highlights and debug labels from the UI
      * 
-     * @return void
+     * This method removes:
+     * - Outline and border styles from previously highlighted elements
+     * - Global highlight indicators 
+     * 
+     * @throws \RuntimeException If script execution fails
      */
     public function clearWidgetHighlights(): void
     {
+
         try {
-            $this->session->executeScript('
-                if (window.clearHighlight) {
-                    document.querySelectorAll("[style*=\'outline\']").forEach(el => {
-                        if (el._debugLabel) {
-                            window.clearHighlight(el);
-                        }
-                    });
-                }
-            ');
+            $debugScript = <<<JS
+            // Remove outline and border styles from highlighted elements    
+            document.querySelectorAll('[style*="outline"]').forEach(el => { 
+                el.style.outline = '';
+                el.style.border = '';
+            });
+    
+            // Call global highlight clearing function if it exists
+            if (window.clearHighlight && typeof window.clearHighlight === 'function') {
+         
+                window.clearHighlight();
+            }
+    
+            // Remove all debug labels
+            document.querySelectorAll('.debug-highlight-label').forEach(label => {
+                label.remove();
+            });
+     
+            JS;
+
+            $this->session->executeScript($debugScript);
         } catch (\Exception $e) {
-            return;
+            // Throw a more specific RuntimeException with the original exception as the previous exception
+            throw new \RuntimeException(
+                "Failed to clear widget highlights: " . $e->getMessage(),
+                0,
+                $e
+            );
         }
     }
 
@@ -235,6 +264,24 @@ class UI5Browser
         }
     }
 
+    public function getFocusStackForDebugging(): array
+    {
+        return $this->focusStack;
+    }
+
+    public function clearFocusStack(): void
+    {
+        $this->focusStack = []; // Focus stackini sıfırla
+
+        // Opsiyonel: JavaScript ile de UI tarafında temizlik yapılabilir
+        $this->session->executeScript('
+        // if exist UI5 side focus clearing
+        if (window.clearFocus) {
+            window.clearFocus();
+        }
+    ');
+    }
+
     /**
      * Highlights a widget with visual indicator for debugging purposes
      * 
@@ -244,45 +291,92 @@ class UI5Browser
      * @param NodeElement $node Widget element to highlight
      * @param string $widgetType Type of the widget (used in label)
      * @param int $index Index number of the widget
+     * @throws \RuntimeException If highlighting script execution fails
      * @return void
      */
     public function highlightWidget(NodeElement $node, string $widgetType, int $index): void
     {
-        // Define colors for different widget types for visual distinction
+        // Define color palette for different widget types
         $colors = [
-            'DataTable' => '#4CAF50',
-            'Dialog' => '#2196F3',
-            'Input' => '#FF9800',
-            'default' => '#9C27B0'
+            'DataTable' => '#4CAF50',  // Green
+            'Dialog' => '#2196F3',     // Blue
+            'Input' => '#FF9800',      // Orange
+            'default' => '#9C27B0'     // Purple
         ];
 
-        // Get color for widget type (fallback to default)
+        // Select color based on widget type, fallback to default
         $color = $colors[$widgetType] ?? $colors['default'];
 
-        // Initialize highlighting function if not already done
-        $this->initializeHighlighting();
+        try {
+            $highlightScript = sprintf(<<<JS
+        (function() {
+            const el = document.querySelector("#%s");
+            if (el) {
 
-        // Determine the widget's location context (dialog name, page, etc.)
-        $location = "in page"; // Default location
-        $parent = $node->find('xpath', './ancestor::*[contains(@class, "sapMPage") or contains(@class, "sapMPopup")][1]');
-        if ($parent) {
-            $title = $parent->find('css', '.sapMTitle');
-            if ($title) {
-                $location = "in " . trim($title->getText());
+                // Clear previous highlights
+                el.style.outline = 'none';
+                
+                // Add new highlight
+                el.style.outline = '5px solid %s';
+                el.style.outlineOffset = '4px';
+    
+                // Remove existing debug label if present
+                const existingLabel = el.querySelector('.debug-highlight-label');
+                if (existingLabel) {
+                    existingLabel.remove();
+                }
+
+                // Create new debug label
+                const label = document.createElement('div');
+                label.className = 'debug-highlight-label';
+                label.style.cssText = `
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    background: %s;
+                    color: white;
+                    padding: 2px;
+                    font-size: 10px;
+                    z-index: 9999;
+                `;
+                label.textContent = '%s #%d';
+                
+                el.appendChild(label);
+    
+                // Call global highlight function if it exists
+                if (window.highlightElement && typeof window.highlightElement === 'function') {
+                    window.highlightElement(el, '%s', '%s #%d');
+                }
             }
-        }
-
-        // Apply the highlight to the element
-        $this->session->executeScript(
-            sprintf(
-                'window.highlightElement(document.querySelector("#%s"), "%s", "%s #%d %s");',
+        })();
+        JS,
                 $node->getAttribute('id'),
+                $color,
                 $color,
                 $widgetType,
                 $index + 1,
-                $location
-            )
-        );
+                $color,
+                $widgetType,
+                $index + 1,
+                $node->getAttribute('id')  // Add ID to warning message
+            );
+
+            // Execute the highlighting script
+            $this->session->executeScript($highlightScript);
+
+        } catch (\Exception $e) {
+            // Throw a more specific RuntimeException with context
+            throw new \RuntimeException(
+                sprintf(
+                    "Failed to highlight widget (Type: %s, Index: %d): %s",
+                    $widgetType,
+                    $index,
+                    $e->getMessage()
+                ),
+                0,
+                $e
+            );
+        }
     }
 
     /**
@@ -412,61 +506,6 @@ JS
     }
 
 
-    /**
-     * Initializes the highlighting functionality in browser
-     * Creates JavaScript functions for adding and removing highlights
-     * 
-     * @return void
-     */
-    private function initializeHighlighting(): void
-    {
-        $this->session->executeScript(<<<'JS'
-    if (typeof window.highlightElement === 'undefined') {
-        window.highlightElement = function(element, color, label) {
-            const rect = element.getBoundingClientRect();
-            
-            // Create label with location context
-            const debugLabel = document.createElement('div');
-            debugLabel.style.cssText = 'position: absolute;' +
-                'background: ' + color + ';' +
-                'color: white;' +
-                'padding: 4px 8px;' +
-                'border-radius: 4px;' +
-                'font-size: 12px;' +
-                'z-index: 9999;' +
-                'pointer-events: none;';
-            debugLabel.textContent = label;
-            
-            // Position above element
-            debugLabel.style.top = (rect.top + window.scrollY - 25) + 'px';
-            debugLabel.style.left = rect.left + 'px';
-            
-            // Add highlight to element
-            element.style.outline = '2px solid ' + color;
-            element.style.backgroundColor = color + '33';
-            
-            // Store info for cleanup
-            element._debugLabel = debugLabel;
-            element._originalStyles = {
-                outline: element.style.outline,
-                background: element.style.backgroundColor
-            };
-            
-            document.body.appendChild(debugLabel);
-        };
-
-        window.clearHighlight = function(element) {
-            if (element._debugLabel) {
-                element._debugLabel.remove();
-                element.style.outline = element._originalStyles.outline;
-                element.style.backgroundColor = element._originalStyles.background;
-                delete element._debugLabel;
-                delete element._originalStyles;
-            }
-        };
-    }
-    JS);
-    }
 
     /**
      * Helper function to get widget location description
@@ -487,72 +526,25 @@ JS
         return "in page";
     }
 
-
-    /**
-     * Handles input into a ComboBox control
-     * Clicks the dropdown arrow and selects the option with matching text
-     * 
-     * @param NodeElement $comboBox The ComboBox control
-     * @param string $value The value to select from dropdown
-     * @return void
-     * @throws \RuntimeException If ComboBox arrow or option can't be found
-     */
-    public function handleComboBoxInput(NodeElement $comboBox, string $value): void
-    {
-        // Find the dropdown arrow button
-        $arrow = $comboBox->find('css', '.sapMInputBaseIconContainer');
-        if (!$arrow) {
-            throw new \RuntimeException("Could not find ComboBox dropdown arrow");
-        }
-
-        // Click to open the dropdown
-        $arrow->click();
-
-        // Find the option with matching text
-        $item = $this->getPage()->find(
-            'css',
-            ".sapMSelectList li:contains('{$value}'), " .
-            ".sapMComboBoxItem:contains('{$value}'), " .
-            ".sapMMultiComboBoxItem:contains('{$value}')"
-        );
-
-        if (!$item) {
-            throw new \RuntimeException("Could not find option '{$value}' in ComboBox list");
-        }
-
-        $item->click();
-    }
-
-    /**
-     * Handles input into a Select control
-     * Selects the option with matching text from dropdown
-     * 
-     * @param NodeElement $select The Select control
-     * @param string $value The value to select
-     * @return void
-     * @throws \RuntimeException If option can't be found
-     */
-    public function handleSelectInput(NodeElement $select, string $value): void
-    {
-        // Find the option with matching text
-        $item = $this->getPage()->find('css', ".sapMSelectList li:contains('{$value}')");
-
-        if (!$item) {
-            throw new \RuntimeException("Could not find option '{$value}' in Select list");
-        }
-
-        $item->click();
-    }
-
     /**
      * Sets focus on a node and maintains a focus stack
      * Used to track which elements have focus during test execution
      * 
-     * @param NodeElement $node The element to focus
+     * @param NodeElement|FacadeNodeInterface $node The element to focus
      * @return void
      */
-    public function focus(NodeElement $node): void
+    public function focus($node): void
     {
+        switch (true) {
+            case $node instanceof FacadeNodeInterface:
+                // everything is finde
+                break;
+            case $node instanceof NodeElement:
+                $node = new GenericHtmlNode($node, $this->getSession());
+                break;
+            default:
+                throw new InvalidArgumentException('Cannot focus on "' . gettype($node) . '": expecting Mink NodeElement or FacadeNodeInterface');
+        }
         $top = end($this->focusStack);
         if ($top !== $node) {
             $this->focusStack[] = $node;
@@ -563,31 +555,15 @@ JS
      * Gets the currently focused node
      * Returns the top element of the focus stack
      * 
-     * @return NodeElement|null The focused element or null if none focused
+     * @return FacadeNodeInterface The focused element or null if none focused
      */
-    public function getFocusedNode(): ?NodeElement
+    public function getFocusedNode(): FacadeNodeInterface
     {
         if (empty($this->focusStack)) {
-            return null;
+            return new UI5PageNode($this->getPage()->find('css', 'body'), $this->getSession());
         }
         $top = end($this->focusStack);
         return $top;
-    }
-
-    /**
-     * Retrieves the type of the currently focused UI5 widget
-     * 
-     * @return string|null The type of the focused widget (e.g., 'DataTable', 'Dialog')
-     * @description Returns the widget type if a widget is currently in focus, otherwise null
-     */
-    public function getFocusedType(): ?string
-    {
-        if (empty($this->focusStack)) {
-            return null;
-        }
-
-        $current = end($this->focusStack);
-        return $current['type'];
     }
 
     /**
@@ -981,12 +957,17 @@ JS
      * Finds a column by its caption text
      * 
      * @param string $caption The column caption to search for
-     * @param NodeElement|null $parent Optional parent element to search within
+     * @param NodeElement|FacadeNodeInterface|null $parent Optional parent element to search within
      * @return NodeElement|null The found column element or null if not found
      */
-    public function findColumnByCaption(string $caption, NodeElement $parent = null): ?NodeElement
+    public function findColumnByCaption(string $caption, $parent = null): ?NodeElement
     {
-        
+        // FacadeNodeInterface ise NodeElement'e dönüştür
+        if ($parent instanceof FacadeNodeInterface) {
+            // UI5AbstractNode sınıfı getNodeElement() metodunu kullanıyor
+            $parent = $parent->getNodeElement();
+        }
+
         $columnHeadings = ($parent ?? $this->getPage())->findAll('css', '.sapUiTableHeaderCell');
 
         // Iterate through found column headings to locate matching one
@@ -1126,6 +1107,44 @@ JS
     }
 
     /**
+     * Summary of findWidgetNodes
+     * @param string $widgetType
+     * @param int $timeoutInSeconds
+     * @return FacadeNodeInterface[]
+     */
+    public function findWidgetNodes(string $widgetType, int $timeoutInSeconds = 10): array
+    {
+        // Generate a generalized CSS selector for the specific widget type
+        $cssSelector = ".exfw-{$widgetType}";
+
+        // Wait for all pending operations to complete
+        $this->waitManager->waitForPendingOperations(true, true, true);
+        if ($timeoutInSeconds > 0) {
+            $this->waitManager->waitForDOMElements($cssSelector, 1, $timeoutInSeconds);
+        }
+
+        // Find all widgets on the page matching the CSS selector 
+        $widgets = $this->getFocusedNode()->getNodeElement()->findAll('css', $cssSelector);
+
+        // If no widgets found, fallback to page-wide search
+        if (empty($widgets)) {
+            $page = $this->getPage();
+            $widgets = $page->findAll('css', $cssSelector);
+        }
+
+        $nodes = [];
+        foreach ($widgets as $nodeEl) {
+            if (!$nodeEl->isVisible()) {
+                continue;
+            }
+            $nodes[] = UI5FacadeNodeFactory::createFromNodeElement($widgetType, $nodeEl, $this->getSession());
+        }
+
+        return $nodes;
+    }
+
+
+    /**
      * Summary of findTiles
      * 
      * @return \axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5TileNode[]
@@ -1138,7 +1157,7 @@ JS
         // Store the tile names on the page
         $tiles = [];
         foreach ($nodes ?? [] as $node) {
-            $tile = new UI5TileNode($node);
+            $tile = new UI5TileNode($node, $this->getSession());
             $tiles[] = $tile;
         }
         Assert::assertNotEmpty($tiles, 'No tiles found');
@@ -1178,21 +1197,6 @@ JS
         $button = $this->getSession()->find('xpath', $xpath);
 
         return $button;
-    }
-
-
-    /**
-     * Converts ordinal numbers like "1." to zero-based indices
-     * 
-     * @param string $ordinal The ordinal number (e.g., "1.", "2.")
-     * @return int Zero-based index
-     */
-    public function convertOrdinalToIndex($ordinal)
-    {
-        // Remove any trailing period and convert to integer
-        $number = (int) str_replace('.', '', $ordinal);
-        // Convert to zero-based index
-        return $number - 1;
     }
 
     /**
@@ -1456,6 +1460,44 @@ JS
             };
         })()
     ');
+    }
+
+    /**
+     * Summary of getFilters
+     * @param int $min
+     * @param int $max
+     * @param FacadeNodeInterface $withinNode
+     * @throws \RuntimeException
+     * @return UI5FilterNode[]
+     */
+    public function getFilters(int $min = 1, int $max = null): array
+    {
+        $nodes = $this->findWidgetNodes('Filter', 15);
+
+        switch (true) {
+            case count($nodes) < $min:
+                throw new RuntimeException("Too few filters found: expecting {$min} but found " . count($nodes));
+            case $max !== null && count($nodes) > $max:
+                throw new RuntimeException("Too many filters found: expecting {$max} but found " . count($nodes));
+        }
+        return $nodes;
+    }
+
+    public function getFilterByCaption(string $filterName): UI5FilterNode
+    {
+        $filterNodes = $this->getFilters();
+
+        // Iterate through each filter container
+        foreach ($filterNodes as $filterNode) {
+            // Check the label of the filter container
+            $label = $filterNode->getCaption();
+
+            // If label matches the desired filter name
+            if ($label === $filterName) {
+                return $filterNode;
+            }
+        }
+        throw new RuntimeException("Filter {$filterName} not found");
     }
 
 }
