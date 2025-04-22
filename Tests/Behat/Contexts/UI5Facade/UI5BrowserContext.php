@@ -397,7 +397,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         if (!empty($widgetNodes)) {
             $maxHighlight = min(count($widgetNodes), 3);
             for ($i = 0; $i < $maxHighlight; $i++) {
-                // change to NodeElement with getNodeElement()
+                // change to NodeElement with getNodeElement() 
                 $nodeElement = $widgetNodes[$i]->getNodeElement();
                 $this->browser->highlightWidget($nodeElement, $widgetType, $i);
             }
