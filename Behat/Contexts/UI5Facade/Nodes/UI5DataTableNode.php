@@ -5,17 +5,18 @@ use PHPUnit\Framework\Assert;
 
 class UI5DataTableNode extends UI5AbstractNode
 {
-    public function getCaption() : string
+    public function getCaption(): string
     {
-        return strstr($this->getNodeElement()->getAttribute('aria-label'), "\n", true);;
+        return strstr($this->getNodeElement()->getAttribute('aria-label'), "\n", true);
+        ;
     }
 
-    public function capturesFocus() : bool
+    public function capturesFocus(): bool
     {
         return false;
     }
 
-    public function getRowNodes() : array
+    public function getRowNodes(): array
     {
         $columns = [];
         foreach ($this->getNodeElement()->findAll('css', '.sapUiTableTr, .sapMListTblRow') as $column) {
@@ -24,7 +25,7 @@ class UI5DataTableNode extends UI5AbstractNode
         return $columns;
     }
 
-    public function selectRow(int $rowNumber) 
+    public function selectRow(int $rowNumber)
     {
         $rowIndex = $this->convertOrdinalToIndex($rowNumber);
 
@@ -49,7 +50,7 @@ class UI5DataTableNode extends UI5AbstractNode
         }
     }
 
-    public function isRowSelected(int $rowNumber) : bool
+    public function isRowSelected(int $rowNumber): bool
     {
         $rowIndex = $this->convertOrdinalToIndex($rowNumber);
         $tableId = $this->getNodeElement()->getAttribute('id');
@@ -72,5 +73,16 @@ class UI5DataTableNode extends UI5AbstractNode
         $number = (int) str_replace('.', '', $ordinal);
         // Convert to zero-based index
         return $number - 1;
+    }
+
+    public function find($selector, $locator)
+    {
+        // Delegate the find method to the underlying node element
+        $nodeElement = $this->getNodeElement();
+        if ($nodeElement) {
+            return $nodeElement->find($selector, $locator);
+        }
+
+        return null;
     }
 }

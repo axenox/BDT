@@ -185,25 +185,46 @@ class UI5Browser
     }
 
     /**
-     * Clears all widget highlights added for debugging purposes
-     * Removes visual indicators and tooltips from previously highlighted elements
+     * Clears all widget highlights and debug labels from the UI
      * 
-     * @return void
+     * This method removes:
+     * - Outline and border styles from previously highlighted elements
+     * - Global highlight indicators 
+     * 
+     * @throws \RuntimeException If script execution fails
      */
     public function clearWidgetHighlights(): void
     {
+
         try {
-            $this->session->executeScript('
-                if (window.clearHighlight) {
-                    document.querySelectorAll("[style*=\'outline\']").forEach(el => {
-                        if (el._debugLabel) {
-                            window.clearHighlight(el);
-                        }
-                    });
-                }
-            ');
+            $debugScript = <<<JS
+            // Remove outline and border styles from highlighted elements    
+            document.querySelectorAll('[style*="outline"]').forEach(el => { 
+                el.style.outline = '';
+                el.style.border = '';
+            });
+    
+            // Call global highlight clearing function if it exists
+            if (window.clearHighlight && typeof window.clearHighlight === 'function') {
+         
+                window.clearHighlight();
+            }
+    
+            // Remove all debug labels
+            document.querySelectorAll('.debug-highlight-label').forEach(label => {
+                label.remove();
+            });
+     
+            JS;
+
+            $this->session->executeScript($debugScript);
         } catch (\Exception $e) {
-            return;
+            // Throw a more specific RuntimeException with the original exception as the previous exception
+            throw new \RuntimeException(
+                "Failed to clear widget highlights: " . $e->getMessage(),
+                0,
+                $e
+            );
         }
     }
 
@@ -270,45 +291,92 @@ class UI5Browser
      * @param NodeElement $node Widget element to highlight
      * @param string $widgetType Type of the widget (used in label)
      * @param int $index Index number of the widget
+     * @throws \RuntimeException If highlighting script execution fails
      * @return void
      */
     public function highlightWidget(NodeElement $node, string $widgetType, int $index): void
     {
-        // Define colors for different widget types for visual distinction
+        // Define color palette for different widget types
         $colors = [
-            'DataTable' => '#4CAF50',
-            'Dialog' => '#2196F3',
-            'Input' => '#FF9800',
-            'default' => '#9C27B0'
+            'DataTable' => '#4CAF50',  // Green
+            'Dialog' => '#2196F3',     // Blue
+            'Input' => '#FF9800',      // Orange
+            'default' => '#9C27B0'     // Purple
         ];
 
-        // Get color for widget type (fallback to default)
+        // Select color based on widget type, fallback to default
         $color = $colors[$widgetType] ?? $colors['default'];
 
-        // Initialize highlighting function if not already done
-        $this->initializeHighlighting();
+        try {
+            $highlightScript = sprintf(<<<JS
+        (function() {
+            const el = document.querySelector("#%s");
+            if (el) {
 
-        // Determine the widget's location context (dialog name, page, etc.)
-        $location = "in page"; // Default location
-        $parent = $node->find('xpath', './ancestor::*[contains(@class, "sapMPage") or contains(@class, "sapMPopup")][1]');
-        if ($parent) {
-            $title = $parent->find('css', '.sapMTitle');
-            if ($title) {
-                $location = "in " . trim($title->getText());
+                // Clear previous highlights
+                el.style.outline = 'none';
+                
+                // Add new highlight
+                el.style.outline = '5px solid %s';
+                el.style.outlineOffset = '4px';
+    
+                // Remove existing debug label if present
+                const existingLabel = el.querySelector('.debug-highlight-label');
+                if (existingLabel) {
+                    existingLabel.remove();
+                }
+
+                // Create new debug label
+                const label = document.createElement('div');
+                label.className = 'debug-highlight-label';
+                label.style.cssText = `
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    background: %s;
+                    color: white;
+                    padding: 2px;
+                    font-size: 10px;
+                    z-index: 9999;
+                `;
+                label.textContent = '%s #%d';
+                
+                el.appendChild(label);
+    
+                // Call global highlight function if it exists
+                if (window.highlightElement && typeof window.highlightElement === 'function') {
+                    window.highlightElement(el, '%s', '%s #%d');
+                }
             }
-        }
-
-        // Apply the highlight to the element
-        $this->session->executeScript(
-            sprintf(
-                'window.highlightElement(document.querySelector("#%s"), "%s", "%s #%d %s");',
+        })();
+        JS,
                 $node->getAttribute('id'),
+                $color,
                 $color,
                 $widgetType,
                 $index + 1,
-                $location
-            )
-        );
+                $color,
+                $widgetType,
+                $index + 1,
+                $node->getAttribute('id')  // Add ID to warning message
+            );
+
+            // Execute the highlighting script
+            $this->session->executeScript($highlightScript);
+
+        } catch (\Exception $e) {
+            // Throw a more specific RuntimeException with context
+            throw new \RuntimeException(
+                sprintf(
+                    "Failed to highlight widget (Type: %s, Index: %d): %s",
+                    $widgetType,
+                    $index,
+                    $e->getMessage()
+                ),
+                0,
+                $e
+            );
+        }
     }
 
     /**
@@ -438,61 +506,6 @@ JS
     }
 
 
-    /**
-     * Initializes the highlighting functionality in browser
-     * Creates JavaScript functions for adding and removing highlights
-     * 
-     * @return void
-     */
-    private function initializeHighlighting(): void
-    {
-        $this->session->executeScript(<<<'JS'
-    if (typeof window.highlightElement === 'undefined') {
-        window.highlightElement = function(element, color, label) {
-            const rect = element.getBoundingClientRect();
-            
-            // Create label with location context
-            const debugLabel = document.createElement('div');
-            debugLabel.style.cssText = 'position: absolute;' +
-                'background: ' + color + ';' +
-                'color: white;' +
-                'padding: 4px 8px;' +
-                'border-radius: 4px;' +
-                'font-size: 12px;' +
-                'z-index: 9999;' +
-                'pointer-events: none;';
-            debugLabel.textContent = label;
-            
-            // Position above element
-            debugLabel.style.top = (rect.top + window.scrollY - 25) + 'px';
-            debugLabel.style.left = rect.left + 'px';
-            
-            // Add highlight to element
-            element.style.outline = '2px solid ' + color;
-            element.style.backgroundColor = color + '33';
-            
-            // Store info for cleanup
-            element._debugLabel = debugLabel;
-            element._originalStyles = {
-                outline: element.style.outline,
-                background: element.style.backgroundColor
-            };
-            
-            document.body.appendChild(debugLabel);
-        };
-
-        window.clearHighlight = function(element) {
-            if (element._debugLabel) {
-                element._debugLabel.remove();
-                element.style.outline = element._originalStyles.outline;
-                element.style.backgroundColor = element._originalStyles.background;
-                delete element._debugLabel;
-                delete element._originalStyles;
-            }
-        };
-    }
-    JS);
-    }
 
     /**
      * Helper function to get widget location description
@@ -944,11 +957,16 @@ JS
      * Finds a column by its caption text
      * 
      * @param string $caption The column caption to search for
-     * @param NodeElement|null $parent Optional parent element to search within
+     * @param NodeElement|FacadeNodeInterface|null $parent Optional parent element to search within
      * @return NodeElement|null The found column element or null if not found
      */
-    public function findColumnByCaption(string $caption, NodeElement $parent = null): ?NodeElement
+    public function findColumnByCaption(string $caption, $parent = null): ?NodeElement
     {
+        // FacadeNodeInterface ise NodeElement'e dönüştür
+        if ($parent instanceof FacadeNodeInterface) {
+            // UI5AbstractNode sınıfı getNodeElement() metodunu kullanıyor
+            $parent = $parent->getNodeElement();
+        }
 
         $columnHeadings = ($parent ?? $this->getPage())->findAll('css', '.sapUiTableHeaderCell');
 

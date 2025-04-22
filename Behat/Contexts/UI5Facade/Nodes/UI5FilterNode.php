@@ -4,15 +4,46 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Mink\Element\NodeElement;
 
+/**
+ * Represents a UI5 Filter Node for handling various types of filter inputs
+ * 
+ * This class provides methods to interact with different types of UI5 filter controls like:
+ * - ComboBox
+ * - MultiComboBox
+ * - Select
+ * - Standard Input
+ * 
+ * It supports finding and setting values for different filter input types 
+ * commonly found in SAP UI5 applications.
+ */
 class UI5FilterNode extends UI5AbstractNode
 {
-    public function getCaption() : string
+    /**
+     * Retrieves the caption (label) of the filter node
+     * 
+     * Attempts to find the label text within a UI5 filter control
+     * using a specific CSS selector for label elements.
+     * 
+     * @return string Trimmed label text, or empty string if not found
+     */
+    public function getCaption(): string
     {
         $label = $this->getNodeElement()->find('css', '.sapMLabel bdi');
         return trim($label->getText() ?? '');
     }
 
-    public function setValue(string $value) : FacadeNodeInterface
+    /**
+     * Sets the value for a filter input based on its control type
+     * 
+     * Dynamically detects and handles different UI5 input control types:
+     * - ComboBox/MultiComboBox
+     * - Select
+     * - Standard Input
+     * 
+     * @param string $value The value to set in the filter
+     * @return FacadeNodeInterface The current filter node instance 
+     */
+    public function setValue(string $value): FacadeNodeInterface
     {
         $filterNode = $this->getNodeElement();
         // Check for ComboBox or MultiComboBox input
@@ -95,5 +126,16 @@ class UI5FilterNode extends UI5AbstractNode
         }
 
         $item->click();
+    }
+
+    /**
+     * Gets the current page from the session
+     * 
+     * @return NodeElement The current page element
+     */
+    public function getPage()
+    {
+        // Directly get the page with session
+        return $this->getSession()->getPage();
     }
 }
