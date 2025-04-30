@@ -72,7 +72,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         return $this->getWorkbench()->getInstallationPath();
     }
-
+   
     /**
      * Logs failed steps to the workbench log
      * Captures exceptions and ensures they are properly recorded
@@ -82,7 +82,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function logFailedStep(AfterStepScope $scope)
     {
-
         $result = $scope->getTestResult();
 
         // Handle different result types
@@ -91,39 +90,99 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $exception = null;
             if (method_exists($result, 'getException')) {
                 $exception = $result->getException();
-                // Convert to our exception type for consistent handling
-                $wrappedException = new RuntimeException(
+
+                // Create info array with structured error information
+                $errorInfo = [
+                    'url' => $this->getSession()->getCurrentUrl(),
+                    'component' => 'UI5',
+                    'errorType' => 'framework_load_failure'
+                ];
+
+                // Create a FacadeBrowserException with proper parameters
+                $facadeException = new \axenox\BDT\Exceptions\FacadeBrowserException(
                     $exception->getMessage(),
                     null,
-                    $exception
+                    $exception, // Pass original exception as previous
+                    $scope,     // Pass the AfterStepScope object
+                    $errorInfo  // Pass structured error info array
                 );
+
+                // Log the FacadeBrowserException directly to the workbench log
+                $this->getWorkbench()->getLogger()->logException($facadeException);
+
+                // Set Error Id for reference
+                ErrorManager::getInstance()->setLastLogId($facadeException->getId());
+
+                // Add to ErrorManager as a Behat exception
+                ErrorManager::getInstance()->addError([
+                    'type' => 'BehatException',
+                    'message' => $exception->getMessage(),
+                    'status' => $exception->getCode(),
+                    'stack' => $exception->getTraceAsString(),
+                    'logId' => $facadeException->getId() // Include log ID for reference
+                ], 'AfterStep');
+
+                echo "LogID: " . $facadeException->getId() . "\n";
+                // Display LogID for debugging purposes 
+                $this->logDebug("LogID: " . $facadeException->getId() . "\n");
             } elseif ($result instanceof UndefinedStepResult) {
-                $wrappedException = new RuntimeException('Step is not defined: ' . $scope->getStep()->getText());
+                // For undefined steps, create a FacadeBrowserException
+                $errorInfo = [
+                    'url' => $this->getSession()->getCurrentUrl(),
+                    'component' => 'UI5',
+                    'errorType' => 'undefined_step'
+                ];
+
+                $facadeException = new \axenox\BDT\Exceptions\FacadeBrowserException(
+                    'Step is not defined: ' . $scope->getStep()->getText(),
+                    null,
+                    null,
+                    $scope,
+                    $errorInfo
+                );
+
+                $this->getWorkbench()->getLogger()->logException($facadeException);
+                ErrorManager::getInstance()->setLastLogId($facadeException->getId());
+
+                ErrorManager::getInstance()->addError([
+                    'type' => 'BehatException',
+                    'message' => 'Step is not defined: ' . $scope->getStep()->getText(),
+                    'status' => 0,
+                    'logId' => $facadeException->getId()
+                ], 'AfterStep');
+
+                echo "LogID: " . $facadeException->getId() . "\n";
+                $this->logDebug("LogID: " . $facadeException->getId() . "\n");
             } else {
-                $wrappedException = new RuntimeException('Step failed without exception details');
+                // For other failures without exception details
+                $errorInfo = [
+                    'url' => $this->getSession()->getCurrentUrl(),
+                    'component' => 'UI5',
+                    'errorType' => 'unknown_failure'
+                ];
+
+                $facadeException = new \axenox\BDT\Exceptions\FacadeBrowserException(
+                    'Step failed without exception details',
+                    null,
+                    null,
+                    $scope,
+                    $errorInfo
+                );
+
+                $this->getWorkbench()->getLogger()->logException($facadeException);
+                ErrorManager::getInstance()->setLastLogId($facadeException->getId());
+
+                ErrorManager::getInstance()->addError([
+                    'type' => 'BehatException',
+                    'message' => 'Step failed without exception details',
+                    'status' => 0,
+                    'logId' => $facadeException->getId()
+                ], 'AfterStep');
+
+                echo "LogID: " . $facadeException->getId() . "\n";
+                $this->logDebug("LogID: " . $facadeException->getId() . "\n");
             }
-
-            // Log with full details to the workbench log
-            $this->getWorkbench()->getLogger()->logException($wrappedException);
-
-            // Set Error Id for reference
-            ErrorManager::getInstance()->setLastLogId($wrappedException->getId());
-
-
-
-            // Add to ErrorManager as a Behat exception
-            ErrorManager::getInstance()->addError([
-                'type' => 'BehatException',
-                'message' => $exception->getMessage(),
-                'status' => $exception->getCode(),
-                'stack' => $exception->getTraceAsString(),
-            ], 'AfterStep');
-
-            echo "LogID: " . $wrappedException->getId() . "\n";
-            // Display LogID for debugging purposes 
-            $this->logDebug("LogID: " . $wrappedException->getId() . "\n");
         }
-
     }
 
 
