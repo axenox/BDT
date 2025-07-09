@@ -6,9 +6,8 @@ use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5FilterNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5PageNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5TileNode;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
-use Behat\Mink\Element\DocumentElement;
+use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 use Behat\Mink\Element\NodeElement;
-use Behat\Mink\Element\TraversableElement;
 use Behat\Mink\Session;
 use exface\Core\Actions\Login;
 use exface\Core\CommonLogic\Security\Authenticators\MetamodelAuthenticator;
@@ -17,14 +16,11 @@ use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\InvalidArgumentException;
 use exface\Core\Exceptions\RuntimeException;
-use exface\Core\Facades\AbstractAjaxFacade\AbstractAjaxFacade;
 use exface\Core\Factories\ActionFactory;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\FacadeFactory;
 use exface\Core\Factories\MetaObjectFactory;
 use exface\Core\Factories\UiPageFactory;
-use exface\Core\Factories\WidgetFactory;
-use exface\Core\Interfaces\UserInterface;
 use exface\Core\Interfaces\WorkbenchInterface;
 use exface\UI5Facade\Facades\UI5Facade;
 use PHPUnit\Framework\Assert;
@@ -65,6 +61,8 @@ class UI5Browser
 
         // Initialize XHR monitoring to track AJAX requests
         $this->initializeXHRMonitoring();
+        // Clear error log
+        ErrorManager::getInstance()->clearErrors();
         // Initial app load using waitManager to ensure it's fully loaded
         $this->waitManager->waitForAppLoaded($ui5AppUrl);
     }
@@ -492,10 +490,10 @@ JS
                 timingDiv.innerHTML += '<br><em>Continuing in 1s...</em>';
             }, 0);
             
-            // Wait 1 second before next step
+            // Wait 0,5 seconds before next step
             setTimeout(function() {
                 // You can clear or update the message here if needed
-            }, 1000);
+            }, 500);
         }
     })();
 JS
