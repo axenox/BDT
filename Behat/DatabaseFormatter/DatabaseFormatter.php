@@ -2,6 +2,8 @@
 namespace axenox\BDT\Behat\DatabaseFormatter;
 
 use axenox\BDT\DataTypes\StepStatusDataType;
+use Behat\Behat\EventDispatcher\Event\AfterOutlineTested;
+use Behat\Behat\EventDispatcher\Event\BeforeOutlineTested;
 use Behat\Testwork\Output\Formatter;
 use Behat\Testwork\EventDispatcher\Event\BeforeExerciseCompleted;
 use Behat\Behat\EventDispatcher\Event\BeforeFeatureTested;
@@ -15,6 +17,7 @@ use exface\Core\DataTypes\DateTimeDataType;
 use exface\Core\DataTypes\FilePathDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Factories\DataSheetFactory;
+use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\DataSheets\DataSheetInterface;
 use exface\Core\Interfaces\Exceptions\ExceptionInterface;
 use exface\Core\Interfaces\WorkbenchInterface;
@@ -32,6 +35,7 @@ class DatabaseFormatter implements Formatter
     
     private ?DataSheetInterface $scenarioDataSheet = null;
     private float               $scenarioStart;
+    private static array        $scenarioPages = [];
 
     private ?DataSheetInterface $stepDataSheet = null;
     private float               $stepStart;
@@ -51,6 +55,8 @@ class DatabaseFormatter implements Formatter
             AfterFeatureTested::AFTER => 'onAfterFeature',
             BeforeScenarioTested::BEFORE => 'onBeforeScenario',
             AfterScenarioTested::AFTER => 'onAfterScenario',
+            BeforeOutlineTested::BEFORE => 'onBeforeOutline',
+            AfterOutlineTested::AFTER => 'onAfterScenario',
             BeforeStepTested::BEFORE => 'onBeforeStep',
             AfterStepTested::AFTER => 'onAfterStep',
         ];
@@ -85,9 +91,18 @@ class DatabaseFormatter implements Formatter
     public function onBeforeExercise() {
         $this->runStart = $this->microtime();
 
+        $cliArgs = $_SERVER['argv'] ?? [];
+        $command = null;
+        if (! empty($cliArgs)) {
+            // First item is the file called - remove that
+            $filepath = array_shift($cliArgs);
+            $command = implode(' ', $cliArgs);
+        }
+
         $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run');
         $ds->addRow([
-            'started_on' => DateTimeDataType::now()
+            'started_on' => DateTimeDataType::now(),
+            'behat_command' => $command
         ]);
         $ds->dataCreate(false);
         $this->runDataSheet = $ds;
@@ -102,6 +117,7 @@ class DatabaseFormatter implements Formatter
 
     public function onBeforeFeature(BeforeFeatureTested $event) {
         $feature = $event->getFeature();
+        $suite = $event->getSuite();
         $this->featureIdx++;
         $this->featureStart = $this->microtime();
         $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_feature');
@@ -110,11 +126,12 @@ class DatabaseFormatter implements Formatter
         $filename = FilePathDataType::normalize($filename, '/');
         $ds->addRow([
             'run' => $this->runDataSheet->getUidColumn()->getValue(0),
+            'run_sequence_idx' => $this->featureIdx,
+            'app_alias' => $suite->getName(),
             'name' => $feature->getTitle(),
             'description' => $feature->getDescription(),
             'filename' => $filename,
             'started_on' => DateTimeDataType::now(),
-            'run_sequence_idx' => $this->featureIdx,
             'content' => '' // TODO how to get the contents of the entire feature file?
         ]);
         $ds->dataCreate(false);
@@ -129,6 +146,7 @@ class DatabaseFormatter implements Formatter
     }
 
     public function onBeforeScenario(BeforeScenarioTested $event) {
+        static::$scenarioPages = [];
         $scenario = $event->getScenario();
         $this->scenarioStart = $this->microtime();
         $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_scenario');
@@ -142,11 +160,43 @@ class DatabaseFormatter implements Formatter
         $this->scenarioDataSheet = $ds;
     }
 
-    public function onAfterScenario(AfterScenarioTested $event) {
+    public function onBeforeOutline(BeforeOutlineTested $event) {
+        static::$scenarioPages = [];
+        $outline = $event->getOutline();
+        $this->scenarioStart = $this->microtime();
+        $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_scenario');
+        $ds->addRow([
+            'run_feature' => $this->featureDataSheet->getUidColumn()->getValue(0),
+            'name' => $outline->getTitle() . ' - with ' . count($outline->getExamples()) . ' examples',
+            'line' => $outline->getLine(),
+            'started_on' => DateTimeDataType::now()
+        ]);
+        $ds->dataCreate(false);
+        $this->scenarioDataSheet = $ds;
+    }
+
+    public function onAfterScenario(AfterScenarioTested|AfterOutlineTested $event) {
         $ds = $this->scenarioDataSheet->extractSystemColumns();
         $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
         $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->runStart);
         $ds->dataUpdate();
+        $cenarioUid = $ds->getUidColumn()->getValue(0);
+
+        $dsActions = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_scenario_action');
+        foreach (static::$scenarioPages as $pageAlias) {
+            try {
+                $page = UiPageFactory::createFromModel($this->workbench, $pageAlias);
+                $pageUid = $page->getUid();
+            } catch (\Throwable $e) {
+                $pageUid = null;
+            }
+            $dsActions->addRow([
+                'run_scenario' => $cenarioUid,
+                'page_alias' => $pageAlias,
+                'page' => $pageUid
+            ]);
+        }
+        $dsActions->dataCreate();
     }
 
     public function onBeforeStep(BeforeStepTested $event) {
@@ -184,4 +234,10 @@ class DatabaseFormatter implements Formatter
         }
         $ds->dataUpdate();
     }
+    
+    public static function addTestedPage(string $alias)
+    {
+        static::$scenarioPages[] = $alias;
+    }
+    
 }

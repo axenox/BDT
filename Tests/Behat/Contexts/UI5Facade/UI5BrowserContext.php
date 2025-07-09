@@ -1,28 +1,23 @@
 <?php
 namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
+use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use axenox\BDT\Behat\TwigFormatter\Context\BehatFormatterContext;
 use Behat\Behat\Context\Context;
 use Behat\Behat\Tester\Result\UndefinedStepResult;
 use Behat\Mink\Element\NodeElement;
-use Behat\MinkExtension\Context\MinkContext;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use exface\Core\CommonLogic\Workbench;
 use exface\Core\DataTypes\StringDataType;
+use exface\Core\DataTypes\UrlDataType;
 use exface\Core\Exceptions\RuntimeException;
+use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\WorkbenchInterface;
 use PHPUnit\Framework\Assert;
 use Behat\Behat\Hook\Scope\BeforeScenarioScope;
-use Behat\Behat\Hook\Scope\AfterScenarioScope;
-use Behat\Testwork\Tester\Result\TestResult;
-use Behat\Behat\Tester\Exception\PendingException;
-use Behat\Step\Then;
 use Behat\Behat\Hook\Scope\AfterStepScope;
 use Behat\Behat\Hook\Scope\BeforeStepScope;
 use Behat\Gherkin\Node\TableNode;
-use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
-use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
-use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ButtonNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataTableNode;
 
 
@@ -321,6 +316,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         if ($url && !StringDataType::endsWith($url, '.html')) {
             $url .= '.html';
         }
+        
+        // Page alias like `axenox.bdt.home`
+        $pageAlias = StringDataType::substringAfter($url, '/', false, true);
+        $pageAlias = StringDataType::substringBefore($url, '.html', $url, false, true);
+        DatabaseFormatter::addTestedPage($pageAlias);
+        
         // Navigate to the page using Mink's path navigation
         $this->visitPath('/' . $url);
         $this->logDebug("Debug - New page is loading...\n");

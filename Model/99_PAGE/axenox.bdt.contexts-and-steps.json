@@ -2,7 +2,7 @@
     "uid": "0x11ef9e19d90bd3ce9e19c84bd653ed63",
     "alias_with_namespace": "axenox.bdt.contexts-and-steps",
     "menu_parent_page_selector": "0x11ef9cade73751fa9cad025041000001",
-    "menu_index": 1,
+    "menu_index": 3,
     "menu_visible": true,
     "name": "Contexts & Steps",
     "description": "Browse available testing contexts",
@@ -11,7 +11,7 @@
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2024-12-03 17:01:22",
     "modified_by_user_selector": "0x31000000000000000000000000000000",
-    "modified_on": "2024-12-04 12:12:08",
+    "modified_on": "2025-07-09 11:08:56",
     "contents": {
         "object_alias": "axenox.BDT.GHERKIN_CONTEXT",
         "widget_type": "DataTable",

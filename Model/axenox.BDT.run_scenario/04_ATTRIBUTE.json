@@ -316,7 +316,7 @@
         {
             "_EXPORT_SUMMARY": "Duration [ms] [duration_ms]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2025-06-25 13:49:49",
+            "MODIFIED_ON": "2025-07-09 12:21:49",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11f09ff4224119a69ff4025041000001",
@@ -338,7 +338,7 @@
             "TYPE": "D",
             "COPYABLEFLAG": 1,
             "ALIAS": "duration_ms",
-            "DATATYPE": "0x11e7b0277435425e98350205857feb80",
+            "DATATYPE": "0x31000000000000000000000000000000",
             "DATA_ADDRESS": "duration_ms",
             "OBJECT": "0x11f08f0e222d25a48f0e025041000001",
             "FORMATTER": null,

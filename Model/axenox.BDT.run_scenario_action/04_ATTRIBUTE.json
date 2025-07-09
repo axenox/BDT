@@ -318,9 +318,9 @@
             }
         },
         {
-            "_EXPORT_SUMMARY": "Page [page_oid]",
+            "_EXPORT_SUMMARY": "Page [page]",
             "CREATED_ON": "2025-06-24 15:57:15",
-            "MODIFIED_ON": "2025-06-25 13:58:54",
+            "MODIFIED_ON": "2025-07-09 10:53:20",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11f0b3ea22459792b3ea025041000001",
@@ -341,7 +341,7 @@
             "RELATION_CARDINALITY": "",
             "TYPE": "D",
             "COPYABLEFLAG": 1,
-            "ALIAS": "page_oid",
+            "ALIAS": "page",
             "DATATYPE": "0x11e8091315d97da6b5b5e4b318306b9a",
             "DATA_ADDRESS": "page_oid",
             "OBJECT": "0x11f0a790222d3b34a790025041000001",
