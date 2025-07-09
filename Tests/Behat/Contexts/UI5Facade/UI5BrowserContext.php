@@ -302,7 +302,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $loginButton = $this->getBrowser()->findButtonByCaption($btnCaption);
         Assert::assertNotNull($loginButton, 'Cannot find login button "' . $btnCaption . '"');
         $loginButton->click();
-
+        
+        $this->getBrowser()->getWaitManager()->waitForAppLoaded($url);
     }
 
     /**

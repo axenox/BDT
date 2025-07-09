@@ -75,6 +75,22 @@
             "BASE_OBJECT": null,
             "LABEL": "Gherkin Context Annotations",
             "ALIAS": "gherkin_context_annotations"
+        },
+        {
+            "_EXPORT_SUMMARY": "BDT Database",
+            "CREATED_ON": "2025-06-24 15:53:01",
+            "MODIFIED_ON": "2025-06-24 15:54:05",
+            "CREATED_BY_USER": "0x31000000000000000000000000000000",
+            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
+            "UID": "0x11f0aee48b2814e8aee4025041000001",
+            "APP": "0x11efa2214f96c8b8a221025041000001",
+            "DEFAULT_CONNECTION": "0x11ea72c00f0fadeca3480205857feb80",
+            "DEFAULT_QUERY_BUILDER": "exface/Core/QueryBuilders/ModelLoaderQueryBuilder.php",
+            "READABLE_FLAG": 1,
+            "WRITABLE_FLAG": 1,
+            "BASE_OBJECT": "0x32370000000000000000000000000000",
+            "LABEL": "BDT Database",
+            "ALIAS": "bdt_database"
         }
     ],
     "totals_rows": [],

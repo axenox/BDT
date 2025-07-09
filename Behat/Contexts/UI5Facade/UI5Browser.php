@@ -1392,6 +1392,7 @@ JS
                 ->addConditionFromValueArray('ALIAS_WITH_NS', $roles)
                 ->addConditionFromValueArray('NAME', $roles);
             $roleSheet->dataRead();
+            Assert::assertEquals(count($roles), $roleSheet->countRows(), 'Not all rows found!');
 
             $userRoleSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER_ROLE_USERS');
             $userRoleSheet->getFilters()->addConditionFromString('USER', $userId);
