@@ -50,7 +50,8 @@ class DatabaseFormatter implements Formatter
     {
         return [
             BeforeExerciseCompleted::BEFORE => 'onBeforeExercise',
-            AfterExerciseCompleted::AFTER => 'onAfterExercise',
+            // Use __destruct() to finish the log on inner errors too
+            // AfterExerciseCompleted::AFTER => 'onAfterExercise',
             BeforeFeatureTested::BEFORE => 'onBeforeFeature',
             AfterFeatureTested::AFTER => 'onAfterFeature',
             BeforeScenarioTested::BEFORE => 'onBeforeScenario',
@@ -60,6 +61,11 @@ class DatabaseFormatter implements Formatter
             BeforeStepTested::BEFORE => 'onBeforeStep',
             AfterStepTested::AFTER => 'onAfterStep',
         ];
+    }
+    
+    public function __destruct()
+    {
+        $this->onAfterExercise();
     }
 
     public function getName(): string
@@ -121,9 +127,9 @@ class DatabaseFormatter implements Formatter
         $this->featureIdx++;
         $this->featureStart = $this->microtime();
         $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_feature');
-        $filename = $event->getFeature()->getFile();
-        $filename = StringDataType::substringAfter($filename, $this->workbench->getInstallationPath(), $filename);
-        $filename = FilePathDataType::normalize($filename, '/');
+        $filename = FilePathDataType::normalize($event->getFeature()->getFile(), '/');
+        $vendorPath = FilePathDataType::normalize($this->workbench->filemanager()->getPathToVendorFolder(), '/') . '/';
+        $filename = StringDataType::substringAfter($filename, $vendorPath, $filename);
         $ds->addRow([
             'run' => $this->runDataSheet->getUidColumn()->getValue(0),
             'run_sequence_idx' => $this->featureIdx,

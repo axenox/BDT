@@ -11,7 +11,7 @@
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2025-07-08 18:20:52",
     "modified_by_user_selector": "0x31000000000000000000000000000000",
-    "modified_on": "2025-07-09 11:08:56",
+    "modified_on": "2025-07-10 11:24:35",
     "contents": {
         "object_alias": "axenox.BDT.run",
         "widget_type": "SplitHorizontal",
@@ -36,6 +36,9 @@
                             {
                                 "attribute_alias": "run_feature__UID:COUNT",
                                 "caption": "Features"
+                            },
+                            {
+                                "attribute_alias": "behat_command"
                             }
                         ],
                         "sorters": [
@@ -54,54 +57,117 @@
                 ]
             },
             {
-                "caption": "Features",
                 "widgets": [
                     {
-                        "widget_type": "DataTable",
-                        "object_alias": "axenox.BDT.run_feature",
-                        "id": "table_features",
-                        "filters": [
+                        "widget_type": "SplitVertical",
+                        "panels": [
                             {
-                                "attribute_alias": "name"
+                                "height": "65%",
+                                "widgets": [
+                                    {
+                                        "caption": "Features",
+                                        "widget_type": "DataTable",
+                                        "object_alias": "axenox.BDT.run_feature",
+                                        "id": "table_features",
+                                        "filters": [
+                                            {
+                                                "attribute_alias": "name"
+                                            },
+                                            {
+                                                "attribute_alias": "run",
+                                                "value": "=table_runs!UID",
+                                                "hidden": true,
+                                                "apply_on_change": true,
+                                                "required": true
+                                            }
+                                        ],
+                                        "columns": [
+                                            {
+                                                "attribute_alias": "run_sequence_idx"
+                                            },
+                                            {
+                                                "attribute_alias": "run_feature_stats__status"
+                                            },
+                                            {
+                                                "attribute_alias": "name"
+                                            },
+                                            {
+                                                "attribute_alias": "run_feature_stats__scenarios"
+                                            },
+                                            {
+                                                "attribute_alias": "run_feature_stats__steps"
+                                            }
+                                        ],
+                                        "sorters": [
+                                            {
+                                                "attribute_alias": "run_sequence_idx",
+                                                "direction": "asc"
+                                            }
+                                        ],
+                                        "buttons": [
+                                            {
+                                                "action_alias": "exface.Core.ShowObjectInfoDialog",
+                                                "bind_to_double_click": true
+                                            }
+                                        ]
+                                    }
+                                ]
                             },
                             {
-                                "attribute_alias": "run",
-                                "value": "=table_runs!UID",
-                                "hidden": true,
-                                "apply_on_change": true,
-                                "required": true
-                            }
-                        ],
-                        "columns": [
-                            {
-                                "attribute_alias": "run_sequence_idx"
-                            },
-                            {
-                                "attribute_alias": "run_feature_stats__status"
-                            },
-                            {
-                                "attribute_alias": "name"
-                            },
-                            {
-                                "attribute_alias": "run_feature_stats__scenarios"
-                            },
-                            {
-                                "attribute_alias": "run_feature_stats__steps"
-                            },
-                            {
-                                "attribute_alias": "filename"
-                            }
-                        ],
-                        "sorters": [
-                            {
-                                "attribute_alias": "run_sequence_idx",
-                                "direction": "asc"
-                            }
-                        ],
-                        "buttons": [
-                            {
-                                "action_alias": "exface.Core.ShowObjectInfoDialog",
-                                "bind_to_double_click": true
+                                "widgets": [
+                                    {
+                                        "caption": "Scenarios",
+                                        "widget_type": "DataTable",
+                                        "object_alias": "axenox.BDT.run_scenario",
+                                        "id": "table_scenarios",
+                                        "hide_header": true,
+                                        "paginate": false,
+                                        "filters": [
+                                            {
+                                                "attribute_alias": "run_feature__run",
+                                                "value": "=table_runs!UID",
+                                                "hidden": true,
+                                                "apply_on_change": true,
+                                                "required": true
+                                            },
+                                            {
+                                                "attribute_alias": "run_feature",
+                                                "value": "=table_features!UID",
+                                                "hidden": true,
+                                                "apply_on_change": true,
+                                                "required": true
+                                            }
+                                        ],
+                                        "columns": [
+                                            {
+                                                "attribute_alias": "line"
+                                            },
+                                            {
+                                                "attribute_alias": "run_step_stats__status:MAX",
+                                                "caption": "Status"
+                                            },
+                                            {
+                                                "attribute_alias": "name"
+                                            },
+                                            {
+                                                "attribute_alias": "run_scenario_action__page_alias:LIST_DISTINCT",
+                                                "caption": "Pages"
+                                            }
+                                        ],
+                                        "sorters": [
+                                            {
+                                                "attribute_alias": "line",
+                                                "direction": "asc"
+                                            }
+                                        ],
+                                        "buttons": [
+                                            {
+                                                "action_alias": "exface.Core.ShowObjectInfoDialog",
+                                                "bind_to_double_click": true
+                                            }
+                                        ]
+                                    }
+                                ]
                             }
                         ]
                     }
@@ -133,6 +199,12 @@
                                 "value": "=table_features!UID",
                                 "hidden": true,
                                 "apply_on_change": true
+                            },
+                            {
+                                "attribute_alias": "run_scenario",
+                                "value": "=table_scenarios!UID",
+                                "hidden": true,
+                                "apply_on_change": true
                             }
                         ],
                         "columns": [
@@ -140,7 +212,7 @@
                                 "attribute_alias": "run_sequence_idx"
                             },
                             {
-                                "attribute_alias": "status"
+                                "attribute_alias": "run_step_stats__status"
                             },
                             {
                                 "attribute_alias": "name"
