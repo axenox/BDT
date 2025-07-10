@@ -1,4 +1,5 @@
-CREATE OR ALTER VIEW dbo.bdt_run_step_stats ASSELECT
+CREATE OR ALTER VIEW dbo.bdt_run_step_stats AS
+SELECT
     s.oid AS run_step_oid,
     sc.oid AS run_scenario_oid,
     f.oid AS run_feature_oid,

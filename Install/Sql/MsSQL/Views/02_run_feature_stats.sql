@@ -6,8 +6,8 @@ SELECT
     (CASE
          WHEN f.finished_on IS NULL AND DATEDIFF(MINUTE, MAX(ss.started_on), GETDATE()) > 5 THEN 102
          WHEN f.finished_on IS NULL THEN 10
-         ELSE MAX(ss.`status`)
-        END) AS status
+         ELSE MAX(ss.status)
+    END) AS status
 FROM
     bdt_run_step_stats ss
         INNER JOIN bdt_run_feature f ON f.oid = ss.run_feature_oid
