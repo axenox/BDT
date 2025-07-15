@@ -276,6 +276,7 @@ class BehatFormatter implements Formatter
         // Build paths for source and destination directories
         $source = getcwd() . DIRECTORY_SEPARATOR . ".tmp_behatFormatter";
         $destination = FilePathDataType::normalize(
+            $this->base_path . DIRECTORY_SEPARATOR .
             $this->getScreenshotPath(),
             DIRECTORY_SEPARATOR
         );
@@ -417,7 +418,7 @@ class BehatFormatter implements Formatter
     
     public function setScreenshotPath(string $value)
     {
-        $screenshotPath = $this->base_path . DIRECTORY_SEPARATOR . $value . DIRECTORY_SEPARATOR . $this->assetsSubfolder;
+        $screenshotPath = $value . DIRECTORY_SEPARATOR . $this->assetsSubfolder;
         if (!file_exists($screenshotPath)) {
             if (!mkdir($screenshotPath, 0755, true)) {
                 throw new BadOutputPathException(
@@ -807,15 +808,19 @@ class BehatFormatter implements Formatter
         }
 
         if (!$result->isPassed()) {
-            $screenshot = ScreenshotRegistry::getScreenshotName();
-            if(!empty($screenshot)){
-                $tempPath = $this->base_path . DIRECTORY_SEPARATOR . ".tmp_behatFormatter" . DIRECTORY_SEPARATOR . $screenshot;
+            $screenshotName = ScreenshotRegistry::getScreenshotName();
+            if(!empty($screenshotName)){
+                $tempPath = $this->base_path . DIRECTORY_SEPARATOR . ".tmp_behatFormatter" . DIRECTORY_SEPARATOR . $screenshotName;
                 if (file_exists($tempPath)) {
-                    $screenshot = $this->getScreenshotPath()
+                    $screenshotFullPath = $this->base_path 
+                        . DIRECTORY_SEPARATOR 
+                        . $this->getScreenshotPath()
                         . DIRECTORY_SEPARATOR
-                        . $screenshot;
-                    $step->setScreenshot($screenshot);
-                    ScreenshotRegistry::setScreenshotPath($screenshot);
+                        . $screenshotName;
+                    $step->setScreenshot($screenshotFullPath);
+                    ScreenshotRegistry::setScreenshotPath($this->getScreenshotPath()
+                        . DIRECTORY_SEPARATOR
+                        . $screenshotName);
                 }
             }
         }
