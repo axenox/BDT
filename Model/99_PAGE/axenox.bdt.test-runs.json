@@ -11,7 +11,7 @@
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2025-07-08 18:20:52",
     "modified_by_user_selector": "0x31000000000000000000000000000000",
-    "modified_on": "2025-07-10 11:24:35",
+    "modified_on": "2025-07-13 23:09:16",
     "contents": {
         "object_alias": "axenox.BDT.run",
         "widget_type": "SplitHorizontal",
@@ -69,6 +69,9 @@
                                         "widget_type": "DataTable",
                                         "object_alias": "axenox.BDT.run_feature",
                                         "id": "table_features",
+                                        "row_grouper": {
+                                            "group_by_attribute_alias": "app__LABEL"
+                                        },
                                         "filters": [
                                             {
                                                 "attribute_alias": "name"
@@ -82,6 +85,9 @@
                                             }
                                         ],
                                         "columns": [
+                                            {
+                                                "attribute_alias": "app__LABEL"
+                                            },
                                             {
                                                 "attribute_alias": "run_sequence_idx"
                                             },
@@ -186,6 +192,9 @@
                         "filters": [
                             {
                                 "attribute_alias": "name"
+                            },
+                            {
+                                "attribute_alias": "status"
                             },
                             {
                                 "attribute_alias": "run_scenario__run_feature__run",
