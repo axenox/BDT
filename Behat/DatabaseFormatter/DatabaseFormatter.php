@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\DatabaseFormatter;
 
+use axenox\BDT\Behat\Common\ScreenshotRegistry;
 use axenox\BDT\DataTypes\StepStatusDataType;
 use Behat\Behat\EventDispatcher\Event\AfterOutlineTested;
 use Behat\Behat\EventDispatcher\Event\BeforeOutlineTested;
@@ -12,7 +13,6 @@ use Behat\Behat\EventDispatcher\Event\BeforeStepTested;
 use Behat\Behat\EventDispatcher\Event\AfterStepTested;
 use Behat\Behat\EventDispatcher\Event\AfterScenarioTested;
 use Behat\Behat\EventDispatcher\Event\AfterFeatureTested;
-use Behat\Testwork\EventDispatcher\Event\AfterExerciseCompleted;
 use exface\Core\DataTypes\DateTimeDataType;
 use exface\Core\DataTypes\FilePathDataType;
 use exface\Core\DataTypes\StringDataType;
@@ -128,6 +128,7 @@ class DatabaseFormatter implements Formatter
         $this->featureStart = $this->microtime();
         $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_feature');
         $filename = FilePathDataType::normalize($event->getFeature()->getFile(), '/');
+        $content = file_get_contents($filename);
         $vendorPath = FilePathDataType::normalize($this->workbench->filemanager()->getPathToVendorFolder(), '/') . '/';
         $filename = StringDataType::substringAfter($filename, $vendorPath, $filename);
         $ds->addRow([
@@ -138,7 +139,7 @@ class DatabaseFormatter implements Formatter
             'description' => $feature->getDescription(),
             'filename' => $filename,
             'started_on' => DateTimeDataType::now(),
-            'content' => '' // TODO how to get the contents of the entire feature file?
+            'content' => $content
         ]);
         $ds->dataCreate(false);
         $this->featureDataSheet = $ds;
@@ -231,6 +232,8 @@ class DatabaseFormatter implements Formatter
         $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->runStart);
         $ds->setCellValue('status', 0, StepStatusDataType::convertFromBehatResultCode($result->getResultCode()));
         if ($result->getResultCode() === TestResult::FAILED) {
+            $screenshotPath = ScreenshotRegistry::getScreenshotPath();
+            $ds->setCellValue('screenshot_path', 0, $screenshotPath);
             if ($e = $result->getException()) {
                 $ds->setCellValue('error_message', 0, $e->getMessage());
                 if ($e instanceof ExceptionInterface) {

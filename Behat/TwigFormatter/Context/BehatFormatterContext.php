@@ -1,15 +1,13 @@
 <?php
 namespace axenox\BDT\Behat\TwigFormatter\Context;
 
+use axenox\BDT\Behat\Common\ScreenshotRegistry;
 use axenox\BDT\Behat\TwigFormatter\Formatter\BehatFormatter;
 use Behat\Behat\Context\SnippetAcceptingContext;
-use Behat\Gherkin\Node\PyStringNode;
-use Behat\Gherkin\Node\TableNode;
 use Behat\Behat\Hook\Scope\AfterStepScope;
 use Behat\Behat\Hook\Scope\BeforeScenarioScope;
 use Behat\Behat\Hook\Scope\BeforeFeatureScope;
 
-use Behat\Mink\Driver\Selenium2Driver;
 use Behat\MinkExtension\Context\MinkContext;
 
 /**
@@ -59,7 +57,7 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
              
 
         if(!$scope->getTestResult()->isPassed()) {
-            $fileName = BehatFormatter::buildScreenshotFilename(
+            $fileName = $this->buildScreenshotFilename(
                 $scope->getSuite()->getName(),
                 $scope->getFeature()->getFile(),
                 $scope->getStep()->getLine()
@@ -71,7 +69,17 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
             }
     
             error_log("Taking screenshot for failed step: " . $scope->getStep()->getText());
+            ScreenshotRegistry::setScreenshotName($fileName);
             $this->saveScreenshot($fileName, $temp_destination);
         }
+    }
+    
+    public function buildScreenshotFilename(string $suiteName, string $featureFilePath, int $featureLine): string
+    {
+        return $suiteName
+            . "." . str_replace('.feature', '', basename($featureFilePath))
+            . "." . $featureLine
+            . "." . date("YmdHis")
+            . ".png";
     }
 }

@@ -87,9 +87,9 @@
         {
             "_EXPORT_SUMMARY": "BDT step run [axenox.BDT.run_step]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2025-07-08 15:34:05",
+            "MODIFIED_ON": "2025-07-15 11:21:44",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
+            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f0ac35222d57aeac35025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
@@ -102,7 +102,66 @@
             "SHORT_DESCRIPTION": "",
             "PARENT_OBJECT": null,
             "DATA_ADDRESS_PROPS": null,
-            "DEFAULT_EDITOR_UXON": null,
+            "DEFAULT_EDITOR_UXON": {
+                "widget_type": "Dialog",
+                "widgets": [
+                    {
+                        "width": "max",
+                        "columns_in_grid": 2,
+                        "widget_type": "WidgetGroup",
+                        "widgets": [
+                            {
+                                "attribute_alias": "duration_ms"
+                            },
+                            {
+                                "attribute_alias": "error_log_id"
+                            },
+                            {
+                                "attribute_alias": "error_message"
+                            },
+                            {
+                                "attribute_alias": "finished_on"
+                            },
+                            {
+                                "attribute_alias": "line"
+                            },
+                            {
+                                "attribute_alias": "monitor_error"
+                            },
+                            {
+                                "attribute_alias": "name"
+                            },
+                            {
+                                "attribute_alias": "run_scenario"
+                            },
+                            {
+                                "attribute_alias": "run_sequence_idx"
+                            },
+                            {
+                                "attribute_alias": "started_on"
+                            },
+                            {
+                                "attribute_alias": "status"
+                            }
+                        ]
+                    },
+                    {
+                        "widget_type": "WidgetGroup",
+                        "width": "max",
+                        "height": "max",
+                        "widgets": [
+                            {
+                                "widget_type": "Image",
+                                "align": "center",
+                                "width": "max",
+                                "height": "max",
+                                "hide_caption": true,
+                                "attribute_alias": "screenshot_path"
+                            }
+                        ]
+                    }
+                ]
+            },
             "ALIAS": "run_step",
             "DATA_ADDRESS": "bdt_run_step"
         }

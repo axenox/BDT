@@ -2,6 +2,7 @@
 
 namespace axenox\BDT\Behat\TwigFormatter\Formatter;
 
+use axenox\BDT\Behat\Common\ScreenshotRegistry;
 use Behat\Behat\EventDispatcher\Event\AfterFeatureTested;
 use Behat\Behat\EventDispatcher\Event\AfterOutlineTested;
 use Behat\Behat\EventDispatcher\Event\AfterScenarioTested;
@@ -70,6 +71,11 @@ class BehatFormatter implements Formatter
      * @param String $base_path Behat base path
      */
     private $base_path;
+
+    /**
+     * @param string $screenshotPath where to save screenshots
+     */
+    private $screenshotPath;
 
     /**
      * Printer used by this Formatter and Context
@@ -217,6 +223,7 @@ class BehatFormatter implements Formatter
         $this->timer = new Timer();
         $this->timerFeature = new Timer();
         $this->memory = new Memory();
+        $this->setScreenshotPath('data' . DIRECTORY_SEPARATOR . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR . 'Screenshots');
 
         // Initialize the exception listener but don't try to register it directly
         $exceptionPresenter = new \Behat\Testwork\Exception\ExceptionPresenter();
@@ -262,33 +269,30 @@ class BehatFormatter implements Formatter
     }
 
     /**
-     * Copy temporary screenshot folder to the assets folder
+     * Copy temporary screenshot folder to the screenshots folder
      */
     public function copyTempScreenshotDirectory()
     {
         // Build paths for source and destination directories
-
         $source = getcwd() . DIRECTORY_SEPARATOR . ".tmp_behatFormatter";
         $destination = FilePathDataType::normalize(
-            $this->printer->getOutputPath()
-            . DIRECTORY_SEPARATOR . 'assets'
-            . DIRECTORY_SEPARATOR . FilePathDataType::findFileName($this->assetsSubfolder),
+            $this->base_path . DIRECTORY_SEPARATOR .
+            $this->getScreenshotPath(),
             DIRECTORY_SEPARATOR
         );
-        // Log the start of copy operation
-
-        error_log("Copying screenshots from: " . $source . " to: " . $destination);
-        // If destination exists, delete it to ensure clean copy
+        // Create destination directory structure
+        Filemanager::pathConstruct($destination);
 
         if (is_dir($destination)) {
-            Filemanager::deleteDir($destination);
+            // eskiyi boşalt veya yeniden adlandır
+            rmdir($destination);
         }
-        // Create destination directory structure
+        // Log the start of copy operation
+        error_log("Copying screenshots from: " . $source . " to: " . $destination);
 
-        Filemanager::pathConstruct($destination);
         // Move screenshot directory from temp location to final destination
         // Using rename instead of copy for better performance
-        $result = @rename($source, $destination . DIRECTORY_SEPARATOR . 'screenshots');
+        $result = @rename($source, $destination);
         error_log("Screenshot copy result: " . ($result ? 'Success' : 'Failed'));
 
     }
@@ -410,6 +414,38 @@ class BehatFormatter implements Formatter
     public function getOutputPath()
     {
         return $this->outputPath;
+    }
+    
+    public function setScreenshotPath(string $value)
+    {
+        $screenshotPath = $value . DIRECTORY_SEPARATOR . $this->assetsSubfolder;
+        if (!file_exists($screenshotPath)) {
+            if (!mkdir($screenshotPath, 0755, true)) {
+                throw new BadOutputPathException(
+                    sprintf(
+                        'Screenshotput path %s does not exist and could not be created!',
+                        $screenshotPath
+                    ),
+                    $screenshotPath
+                );
+            }
+        } else {
+            if (!is_dir($screenshotPath)) {
+                throw new BadOutputPathException(
+                    sprintf(
+                        'The argument to `screenshot` is expected to the a directory, but got %s!',
+                        $screenshotPath
+                    ),
+                    $screenshotPath
+                );
+            }
+        }
+        $this->screenshotPath = $screenshotPath;
+    }
+
+    public function getScreenshotPath()
+    {
+        return $this->screenshotPath;
     }
 
     /**
@@ -771,40 +807,21 @@ class BehatFormatter implements Formatter
             }
         }
 
-        // Handle screenshots for passed "Then" steps or steps with specific result code
-        if (($step->getResultCode() == "99") || ($step->getResult()->isPassed() && $step->getKeyword() === "Then")) {
-            $screenshot = self::buildScreenshotFilename(
-                $event->getSuite()->getName(),
-                $event->getFeature()->getFile(),
-                $event->getStep()->getLine()
-            );
-
-            // Check if screenshot exists in temporary location
-            $tempPath = getcwd() . DIRECTORY_SEPARATOR . ".tmp_behatFormatter" . DIRECTORY_SEPARATOR . $screenshot;
-            if (file_exists($tempPath)) {
-                // Build the path to the screenshot in the assets directory
-                $screenshot = 'assets/'
-                    . FilePathDataType::findFileName($this->assetsSubfolder)
-                    . '/screenshots/'
-                    . $screenshot;
-                $step->setScreenshot($screenshot);
-            }
-        }
-
         if (!$result->isPassed()) {
-            $screenshot = self::buildScreenshotFilename(
-                $event->getSuite()->getName(),
-                $event->getFeature()->getFile(),
-                $event->getStep()->getLine()
-            );
-
-            $tempPath = getcwd() . DIRECTORY_SEPARATOR . ".tmp_behatFormatter" . DIRECTORY_SEPARATOR . $screenshot;
-            if (file_exists($tempPath)) {
-                $screenshot = 'assets/'
-                    . FilePathDataType::findFileName($this->assetsSubfolder)
-                    . '/screenshots/'
-                    . $screenshot;
-                $step->setScreenshot($screenshot);
+            $screenshotName = ScreenshotRegistry::getScreenshotName();
+            if(!empty($screenshotName)){
+                $tempPath = $this->base_path . DIRECTORY_SEPARATOR . ".tmp_behatFormatter" . DIRECTORY_SEPARATOR . $screenshotName;
+                if (file_exists($tempPath)) {
+                    $screenshotFullPath = $this->base_path 
+                        . DIRECTORY_SEPARATOR 
+                        . $this->getScreenshotPath()
+                        . DIRECTORY_SEPARATOR
+                        . $screenshotName;
+                    $step->setScreenshot($screenshotFullPath);
+                    ScreenshotRegistry::setScreenshotPath($this->getScreenshotPath()
+                        . DIRECTORY_SEPARATOR
+                        . $screenshotName);
+                }
             }
         }
 
@@ -813,7 +830,6 @@ class BehatFormatter implements Formatter
         $print = $this->renderer->renderAfterStep($this);
         $this->printer->writeln($print);
     }
-    //</editor-fold>
 
     /**
      * @param $text
@@ -834,14 +850,6 @@ class BehatFormatter implements Formatter
         $this->printText($result);
     }
 
-    public static function buildScreenshotFilename(string $suiteName, string $featureFilePath, int $featureLine): string
-    {
-        return $suiteName
-            . "." . str_replace('.feature', '', basename($featureFilePath))
-            . "." . $featureLine
-            . "." . date("YmdHis")
-            . ".png";
-    }
 }
 
 
