@@ -6,8 +6,8 @@ SELECT
     r.oid AS run_oid,
     (CASE 
         WHEN s.finished_on IS NULL AND DATEDIFF(MINUTE, s.started_on, GETDATE()) > 5 THEN 102
-        ELSE s.`status`
-    END) AS `status`,
+        ELSE s.status
+    END) AS status,
     s.started_on,
     s.finished_on
 FROM
