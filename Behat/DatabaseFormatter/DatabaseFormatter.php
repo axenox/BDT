@@ -3,6 +3,7 @@ namespace axenox\BDT\Behat\DatabaseFormatter;
 
 use axenox\BDT\Behat\Common\ScreenshotRegistry;
 use axenox\BDT\DataTypes\StepStatusDataType;
+use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 use Behat\Behat\EventDispatcher\Event\AfterOutlineTested;
 use Behat\Behat\EventDispatcher\Event\BeforeOutlineTested;
 use Behat\Testwork\Output\Formatter;
@@ -161,7 +162,8 @@ class DatabaseFormatter implements Formatter
             'run_feature' => $this->featureDataSheet->getUidColumn()->getValue(0),
             'name' => $scenario->getTitle(),
             'line' => $scenario->getLine(),
-            'started_on' => DateTimeDataType::now()
+            'started_on' => DateTimeDataType::now(),
+            'tags' => implode(', ', $scenario->getTags())
         ]);
         $ds->dataCreate(false);
         $this->scenarioDataSheet = $ds;
@@ -176,7 +178,8 @@ class DatabaseFormatter implements Formatter
             'run_feature' => $this->featureDataSheet->getUidColumn()->getValue(0),
             'name' => $outline->getTitle() . ' - with ' . count($outline->getExamples()) . ' examples',
             'line' => $outline->getLine(),
-            'started_on' => DateTimeDataType::now()
+            'started_on' => DateTimeDataType::now(),
+            'tags' => implode(', ', $outline->getTags())
         ]);
         $ds->dataCreate(false);
         $this->scenarioDataSheet = $ds;
@@ -232,12 +235,12 @@ class DatabaseFormatter implements Formatter
         $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->runStart);
         $ds->setCellValue('status', 0, StepStatusDataType::convertFromBehatResultCode($result->getResultCode()));
         if ($result->getResultCode() === TestResult::FAILED) {
-            $screenshotPath = ScreenshotRegistry::getScreenshotPath();
-            $ds->setCellValue('screenshot_path', 0, $screenshotPath);
+            $screenshotRelativePath = ScreenshotRegistry::getScreenshotPath() . DIRECTORY_SEPARATOR . ScreenshotRegistry::getScreenshotName();
+            $ds->setCellValue('screenshot_path', 0, $screenshotRelativePath);
             if ($e = $result->getException()) {
                 $ds->setCellValue('error_message', 0, $e->getMessage());
-                if ($e instanceof ExceptionInterface) {
-                    $ds->setCellValue('error_log_id', 0, $e->getId());
+                if(!empty($logId = ErrorManager::getInstance()->getLastLogId())) {
+                    $ds->setCellValue('error_log_id', 0, $logId);
                 }
             }
         }

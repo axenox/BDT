@@ -20,7 +20,12 @@ class ErrorManager
     {
         $this->lastLogId = $logId;
     }
-
+    
+    public function getLastLogId(): ?string
+    {
+        return $this->lastLogId;
+    }
+    
     private function __construct()
     {
     }

@@ -51,17 +51,27 @@ class BehatFormatterExtension implements ExtensionInterface {
    * @param ArrayNodeDefinition $builder
    */
   public function configure(ArrayNodeDefinition $builder) {
-    $builder->children()->scalarNode("name")->defaultValue("elkanhtml");
-    $builder->children()->scalarNode("projectName")->defaultValue("Elkan's BehatFormatter");
-    $builder->children()->scalarNode("projectImage")->defaultValue(null);
-    $builder->children()->scalarNode("projectDescription")->defaultValue(null);
-    $builder->children()->scalarNode("renderer")->defaultValue("Twig");
-    $builder->children()->scalarNode("file_name")->defaultValue("generated");
-    $builder->children()->scalarNode("print_args")->defaultValue("false");
-    $builder->children()->scalarNode("print_outp")->defaultValue("false");
-    $builder->children()->scalarNode("loop_break")->defaultValue("false");
-    $builder->children()->scalarNode("show_tags")->defaultValue("false");
-    $builder->children()->scalarNode('output')->defaultValue('.');
+    $builder
+        ->children()
+        ->scalarNode("name")->defaultValue("elkanhtml")->end()
+        ->scalarNode("projectName")->defaultValue("Elkan's BehatFormatter")->end()
+        ->scalarNode("projectImage")->defaultNull()->end()
+        ->scalarNode("projectDescription")->defaultNull()->end()
+        ->scalarNode("renderer")->defaultValue("Twig")->end()
+        ->scalarNode("file_name")->defaultValue("generated")->end()
+        ->scalarNode("print_args")->defaultValue(false)->end()
+        ->scalarNode("print_outp")->defaultValue(false)->end()
+        ->scalarNode("loop_break")->defaultValue(false)->end()
+        ->scalarNode("show_tags")->defaultValue(false)->end()
+        ->scalarNode("output")->defaultValue(false)->end()
+        ->scalarNode('screenshots_folder')->defaultValue('Screenshots')->end()
+        // define root_path as an array of strings with a default
+        ->arrayNode('root_path')
+            ->scalarPrototype()->end()
+            ->defaultValue([ '%paths.base%', ])  // or ['.']
+            ->end()
+        ->end()
+    ;
   }
 
   /**
@@ -72,20 +82,27 @@ class BehatFormatterExtension implements ExtensionInterface {
    */
   public function load(ContainerBuilder $container, array $config) {
     $definition = new Definition("axenox\\BDT\\Behat\\TwigFormatter\\Formatter\\BehatFormatter");
-    $definition->addArgument($config['name']);
-    $definition->addArgument($config['projectName']);
-    $definition->addArgument($config['projectImage']);
-    $definition->addArgument($config['projectDescription']);
-    $definition->addArgument($config['renderer']);
-    $definition->addArgument($config['file_name']);
-    $definition->addArgument($config['print_args']);
-    $definition->addArgument($config['print_outp']);
-    $definition->addArgument($config['loop_break']);
-    $definition->addArgument($config['show_tags']);
+      $definition
+          ->addArgument($config['name'])
+          ->addArgument($config['projectName'])
+          ->addArgument($config['projectImage'])
+          ->addArgument($config['projectDescription'])
+          ->addArgument($config['renderer'])
+          ->addArgument($config['file_name'])
+          ->addArgument($config['print_args'])
+          ->addArgument($config['print_outp'])
+          ->addArgument($config['loop_break'])
+          ->addArgument($config['show_tags'])
+          ->addArgument('%paths.base%')
+          ->addArgument($config['screenshots_folder'])
+          ->addArgument($config['root_path'])
+      ;
 
-    $definition->addArgument('%paths.base%');
-    $container->setParameter('timestamp', time());
-    $container->setDefinition("html.formatter", $definition)
-      ->addTag("output.formatter");
+      $container->setParameter('timestamp', time());
+
+      $container
+          ->setDefinition('html.formatter', $definition)
+          ->addTag('output.formatter')
+      ;
   }
 }

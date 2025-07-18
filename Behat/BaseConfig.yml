@@ -85,6 +85,11 @@ default:
     print_outp: true
     loop_break: true
     show_tags: true
+    root_path: 
+      - 'axenox'
+      - 'data'
+      - 'BDT'
+    screenshots_folder: 'Screenshots'
     
   # Save test runs to BDT database
   axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatterExtension: ~
