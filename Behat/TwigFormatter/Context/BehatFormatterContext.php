@@ -2,12 +2,12 @@
 namespace axenox\BDT\Behat\TwigFormatter\Context;
 
 use axenox\BDT\Behat\Common\ScreenshotRegistry;
-use axenox\BDT\Behat\TwigFormatter\Formatter\BehatFormatter;
 use Behat\Behat\Context\SnippetAcceptingContext;
 use Behat\Behat\Hook\Scope\AfterStepScope;
 use Behat\Behat\Hook\Scope\BeforeScenarioScope;
 use Behat\Behat\Hook\Scope\BeforeFeatureScope;
 
+use Behat\Mink\Exception\DriverException;
 use Behat\MinkExtension\Context\MinkContext;
 
 /**
@@ -63,14 +63,29 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
                 $scope->getStep()->getLine()
             );
     
-            $temp_destination = getcwd().DIRECTORY_SEPARATOR.".tmp_behatFormatter";
-            if (!is_dir($temp_destination)) {
-                mkdir($temp_destination, 0777, true);
+            $destination = getcwd() . DIRECTORY_SEPARATOR . ScreenshotRegistry::getScreenshotPath();
+            if (!is_dir($destination)) {
+                mkdir($destination, 0777, true);
             }
     
             error_log("Taking screenshot for failed step: " . $scope->getStep()->getText());
             ScreenshotRegistry::setScreenshotName($fileName);
-            $this->saveScreenshot($fileName, $temp_destination);
+            
+            $attempts = 0;
+            $success = false;
+            while ($attempts < 3 && ! $success) {
+                try {
+                    $this->saveScreenshot($fileName, $destination);
+                    $success = true;
+                } catch (DriverException $e) {
+                    $attempts++;
+                    error_log("[DEBUG] Screenshot attempt #{$attempts} failed: ".$e->getMessage());
+                    usleep(200000); // 200ms
+                }
+            }
+            if (! $success) {
+                error_log("[ERROR] All screenshot attempts failed.");
+            }
         }
     }
     

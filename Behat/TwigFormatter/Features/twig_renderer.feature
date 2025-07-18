@@ -19,6 +19,10 @@
                 projectName: BehatTest
                 projectDescription: This is a default description
                 projectImage: features/example.png
+                root_path: 
+                  - 'example'
+                  - 'example'
+                screenshots_folder: 'Screenshots'
         suites:
             suite1:
                 paths:    [ "%paths.base%/features/suite1" ]
@@ -95,4 +99,3 @@
           Then I give a pending step
       """
     When I run "behat --no-colors"
-

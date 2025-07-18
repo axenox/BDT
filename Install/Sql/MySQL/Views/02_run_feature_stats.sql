@@ -4,8 +4,8 @@ SELECT
     COUNT(ss.run_step_oid) AS steps,
     COUNT(DISTINCT ss.run_scenario_oid) AS scenarios,
     (CASE
-         WHEN f.finished_on IS NULL AND TIMESTAMPDIFF(MINUTE, MAX(ss.started_on), NOW()) > 5 THEN 102
-         WHEN f.finished_on IS NULL THEN 10
+         WHEN MAX(f.finished_on) IS NULL AND TIMESTAMPDIFF(MINUTE, MAX(ss.started_on), NOW()) > 5 THEN 102
+         WHEN MAX(f.finished_on) IS NULL THEN 10
          ELSE MAX(ss.`status`)
     END) AS status
 FROM

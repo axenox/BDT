@@ -6,6 +6,8 @@
 
 namespace axenox\BDT\Behat\TwigFormatter\Renderer;
 
+use axenox\BDT\Behat\Common\ScreenshotRegistry;
+
 class Behat2Renderer implements RendererInterface {
 
     /**
@@ -344,8 +346,8 @@ class Behat2Renderer implements RendererInterface {
                         </div>';
         $exception = $step->getException();
         if(!empty($exception)) {
-            $relativeScreenshotPath = '../Screenshots/'. $suite->getName() .'/' . $feature->getScreenshotFolder() . '/' . $scenario->getScreenshotName();
-            $fullScreenshotPath = $obj->getBasePath() . '/results/html/' . $relativeScreenshotPath;
+            $relativeScreenshotPath = '..' . DIRECTORY_SEPARATOR . ScreenshotRegistry::getScreenshotFolder() . DIRECTORY_SEPARATOR . ScreenshotRegistry::getScreenshotName();
+            $fullScreenshotPath = $obj->getBasePath() . DIRECTORY_SEPARATOR . ScreenshotRegistry::getScreenshotPath() . DIRECTORY_SEPARATOR . ScreenshotRegistry::getScreenshotName();
             $print .= '
                         <pre class="backtrace">'.$step->getException().'</pre>';
             if(file_exists($fullScreenshotPath))

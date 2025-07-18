@@ -28,7 +28,6 @@ class TwigRenderer implements RendererInterface {
      */
     public function renderAfterExercise($obj)
     {
-
         $templatePath = dirname(__FILE__).'/../Templates';
         $loader = new FilesystemLoader($templatePath);
         $twig = new Environment($loader, array());
@@ -54,7 +53,7 @@ class TwigRenderer implements RendererInterface {
                 'TimerFeature'          => $obj->getTimerFeature(),
             )
         );
-        $obj->copyTempScreenshotDirectory();
+        
         return $print;
 
     }
