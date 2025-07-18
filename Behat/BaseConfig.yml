@@ -85,9 +85,9 @@ default:
     print_outp: true
     loop_break: true
     show_tags: true
-    root_path: 
-      - 'axenox'
+    root_path:
       - 'data'
+      - 'axenox'
       - 'BDT'
     screenshots_folder: 'Screenshots'
     
