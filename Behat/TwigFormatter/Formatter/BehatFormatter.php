@@ -789,7 +789,8 @@ class BehatFormatter implements Formatter
             if(!empty($screenshotName)){
                 $screenshotPath = $this->base_path . DIRECTORY_SEPARATOR . ScreenshotRegistry::getScreenshotPath() . DIRECTORY_SEPARATOR . $screenshotName;
                 if (file_exists($screenshotPath)) {
-                    $step->setScreenshot($screenshotPath);
+                    $relativeWebPath = $this->getRelativeWebPath($this->printer->getOutputPath(), $screenshotPath);
+                    $step->setScreenshot($relativeWebPath);
                 }
             }
         }
@@ -818,7 +819,47 @@ class BehatFormatter implements Formatter
         $result = ob_get_clean();
         $this->printText($result);
     }
+    
+    /**
+     * Calculate the relative web path from one directory to another.
+     *
+     * @param string $from Absolute filesystem path of the starting directory (e.g. Reports folder)
+     * @param string $to   Absolute filesystem path of the target directory (e.g. Screenshots folder)
+     * @return string      Relative path using forward slashes (e.g. "../Screenshots/assets")
+     */
+    function getRelativeWebPath(string $from, string $to): string
+    {
+        // Normalize both paths and ensure they exist
+        $from = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, realpath($from));
+        $to   = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, realpath($to));
 
+        // Split the paths into their segments
+        $fromParts = explode(DIRECTORY_SEPARATOR, trim($from, DIRECTORY_SEPARATOR));
+        $toParts   = explode(DIRECTORY_SEPARATOR, trim($to,   DIRECTORY_SEPARATOR));
+
+        // Determine the index of the last common directory
+        $max = min(count($fromParts), count($toParts));
+        $lastCommon = -1;
+        for ($i = 0; $i < $max; $i++) {
+            if ($fromParts[$i] === $toParts[$i]) {
+                $lastCommon = $i;
+            } else {
+                break;
+            }
+        }
+
+        // Calculate how many levels to go up from the 'from' path
+        $upLevels = count($fromParts) - $lastCommon - 1;
+        $relativeSegments = array_fill(0, $upLevels, '..');
+
+        // Get the remaining segments from the 'to' path after the common root
+        $downSegments = array_slice($toParts, $lastCommon + 1);
+
+        // Merge up (`..`) and down segments, and join with forward slashes for URL
+        $webPath = array_merge($relativeSegments, $downSegments);
+        return implode('/', $webPath);
+    }
+    
 }
 
 
