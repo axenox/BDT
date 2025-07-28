@@ -81,15 +81,15 @@ default:
     name: html
     renderer: Twig
     # file_name: Index
-    print_args: true
-    print_outp: true
-    loop_break: true
-    show_tags: true
-    root_path:
+    printArgs: true
+    printOutp: true
+    loopBreak: true
+    showTags: true
+    rootPath:
       - 'data'
       - 'axenox'
       - 'BDT'
-    screenshots_folder: 'Screenshots'
+    screenshotsFolder: 'Screenshots'
     
   # Save test runs to BDT database
   axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatterExtension: ~

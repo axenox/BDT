@@ -85,86 +85,26 @@
     ],
     "rows": [
         {
-            "_EXPORT_SUMMARY": "BDT step run [axenox.BDT.run_step]",
-            "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2025-07-25 13:57:21",
-            "CREATED_BY_USER": "0x31000000000000000000000000000000",
+            "_EXPORT_SUMMARY": " migrations [axenox.BDT.migrations]",
+            "CREATED_ON": "2025-07-11 12:19:46",
+            "MODIFIED_ON": "2025-07-11 12:19:46",
+            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "UID": "0x11f0ac35222d57aeac35025041000001",
+            "UID": "0x11f09dc09190d4aa9dc0025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
-            "COMMENTS": "",
-            "DOCS": "",
-            "NAME": "BDT step run",
+            "COMMENTS": null,
+            "DOCS": null,
+            "NAME": " migrations",
             "INHERIT_DATA_SOURCE_BASE_OBJECT": 1,
             "DATA_SOURCE": "0x11f0aee48b2814e8aee4025041000001",
             "APP": "0x11efa2214f96c8b8a221025041000001",
             "SHORT_DESCRIPTION": "",
             "PARENT_OBJECT": null,
             "DATA_ADDRESS_PROPS": null,
-            "DEFAULT_EDITOR_UXON": {
-                "readonly": true,
-                "widget_type": "Dialog",
-                "widgets": [
-                    {
-                        "width": "max",
-                        "columns_in_grid": 2,
-                        "widget_type": "WidgetGroup",
-                        "widgets": [
-                            {
-                                "attribute_alias": "name"
-                            },
-                            {
-                                "attribute_alias": "started_on"
-                            },
-                            {
-                                "attribute_alias": "finished_on"
-                            },
-                            {
-                                "attribute_alias": "duration_ms"
-                            },
-                            {
-                                "attribute_alias": "run_scenario"
-                            },
-                            {
-                                "attribute_alias": "line"
-                            },
-                            {
-                                "attribute_alias": "run_sequence_idx"
-                            },
-                            {
-                                "attribute_alias": "status"
-                            },
-                            {
-                                "attribute_alias": "monitor_error"
-                            },
-                            {
-                                "attribute_alias": "error_log_id"
-                            },
-                            {
-                                "attribute_alias": "error_message"
-                            }
-                        ]
-                    },
-                    {
-                        "widget_type": "WidgetGroup",
-                        "width": "max",
-                        "height": "max",
-                        "widgets": [
-                            {
-                                "widget_type": "Image",
-                                "align": "center",
-                                "width": "max",
-                                "height": "max",
-                                "hide_caption": true,
-                                "attribute_alias": "screenshot_path"
-                            }
-                        ]
-                    }
-                ]
-            },
-            "ALIAS": "run_step",
-            "DATA_ADDRESS": "bdt_run_step"
+            "DEFAULT_EDITOR_UXON": null,
+            "ALIAS": "migrations",
+            "DATA_ADDRESS": "_migrations"
         }
     ],
     "totals_rows": [],
