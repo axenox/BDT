@@ -1331,7 +1331,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Uses the browser's tile finding method to locate tile elements
         foreach ($this->getBrowser()->findTiles() as $tile) {
             // Extract the caption (name/text) of the current tile
-            $tileName = $tile->getCaption();
+            $raw = $tile->getCaption();
+            $tileName = $this->cleanString($raw);
 
             // Check if the current tile's name matches any of the expected tile names
             // array_search allows for exact matching and provides the index
@@ -1566,6 +1567,26 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     protected function explodeList(string $list): array
     {
         return array_map('trim', explode(',', $list));
+    }
+
+
+    /**
+     * Clean a string for reliable comparison.
+     *
+     * @param  string $s  The raw string to clean (e.g. a tile caption or user‑provided label).
+     * @return string     The cleaned string.
+     * 
+     */
+    protected function cleanString(string $s): string
+    {
+        // Decode HTML entities (&amp;, &quot;, etc.)
+        $s = html_entity_decode($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        // Convert non‑breaking space (\u00A0) to a normal space
+        $s = str_replace("\xc2\xa0", ' ', $s);
+        // Collapse any sequence of whitespace into a single space
+        $s = preg_replace('/\s+/', ' ', $s);
+        // Trim leading and trailing whitespace
+        return trim($s);
     }
 
 }
