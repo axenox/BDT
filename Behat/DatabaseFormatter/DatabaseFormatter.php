@@ -6,6 +6,7 @@ use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 use Behat\Behat\EventDispatcher\Event\AfterOutlineTested;
 use Behat\Behat\EventDispatcher\Event\BeforeOutlineTested;
+use Behat\Testwork\EventDispatcher\Event\AfterSuiteTested;
 use Behat\Testwork\Output\Formatter;
 use Behat\Testwork\EventDispatcher\Event\BeforeExerciseCompleted;
 use Behat\Behat\EventDispatcher\Event\BeforeFeatureTested;
@@ -14,13 +15,13 @@ use Behat\Behat\EventDispatcher\Event\BeforeStepTested;
 use Behat\Behat\EventDispatcher\Event\AfterStepTested;
 use Behat\Behat\EventDispatcher\Event\AfterScenarioTested;
 use Behat\Behat\EventDispatcher\Event\AfterFeatureTested;
+use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\DateTimeDataType;
 use exface\Core\DataTypes\FilePathDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\DataSheets\DataSheetInterface;
-use exface\Core\Interfaces\Exceptions\ExceptionInterface;
 use exface\Core\Interfaces\WorkbenchInterface;
 use Behat\Testwork\Tester\Result\TestResult;
 
@@ -61,6 +62,7 @@ class DatabaseFormatter implements Formatter
             AfterOutlineTested::AFTER => 'onAfterScenario',
             BeforeStepTested::BEFORE => 'onBeforeStep',
             AfterStepTested::AFTER => 'onAfterStep',
+            AfterSuiteTested::AFTER => 'onAfterSuite'
         ];
     }
     
@@ -120,6 +122,27 @@ class DatabaseFormatter implements Formatter
         $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
         $ds->setCellValue('duration_ms', 0,$this->microtime() - $this->runStart);
         $ds->dataUpdate();
+    }
+    
+    public function onAfterSuite(AfterSuiteTested $event) : void
+    {
+        if (!empty(self::$scenarioPages)) {
+            $suite = $event->getSuite();
+            $suiteName = $suite->getName();
+            $existingPages = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'exface.Core.PAGE');
+            $existingPages->getFilters()->addConditionFromString('APP__ALIAS', $suiteName, ComparatorDataType::EQUALS);
+            $existingPages->dataRead();
+            $pageCount = $existingPages->countRows();
+            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_suite');
+            $ds->addRow([
+                'run' => $this->runDataSheet->getUidColumn()->getValue(0),
+                'app' => $suiteName,
+                'effected_page_count' => count(self::$scenarioPages),
+                'total_page_count' => $pageCount,
+                'coverage' => number_format((count(self::$scenarioPages) / $pageCount) * 100, 2)
+            ]);
+            $ds->dataCreate(false);
+        }
     }
 
     public function onBeforeFeature(BeforeFeatureTested $event) {
@@ -247,9 +270,11 @@ class DatabaseFormatter implements Formatter
         $ds->dataUpdate();
     }
     
-    public static function addTestedPage(string $alias)
+    public static function addTestedPage(string $alias): void
     {
-        static::$scenarioPages[] = $alias;
+        if (!in_array($alias, static::$scenarioPages, true)) {
+            static::$scenarioPages[] = $alias;
+        }
     }
     
 }
