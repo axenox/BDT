@@ -85,17 +85,17 @@
     ],
     "rows": [
         {
-            "_EXPORT_SUMMARY": "BDT step run [axenox.BDT.run_step]",
-            "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2025-07-25 13:57:21",
-            "CREATED_BY_USER": "0x31000000000000000000000000000000",
+            "_EXPORT_SUMMARY": "BDT suite run [axenox.BDT.run_suite]",
+            "CREATED_ON": "2025-07-24 12:42:14",
+            "MODIFIED_ON": "2025-07-28 11:32:42",
+            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "UID": "0x11f0ac35222d57aeac35025041000001",
+            "UID": "0x11f084abdca3053c84ab025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
             "COMMENTS": "",
             "DOCS": "",
-            "NAME": "BDT step run",
+            "NAME": "BDT suite run",
             "INHERIT_DATA_SOURCE_BASE_OBJECT": 1,
             "DATA_SOURCE": "0x11f0aee48b2814e8aee4025041000001",
             "APP": "0x11efa2214f96c8b8a221025041000001",
@@ -107,64 +107,75 @@
                 "widget_type": "Dialog",
                 "widgets": [
                     {
-                        "width": "max",
-                        "columns_in_grid": 2,
-                        "widget_type": "WidgetGroup",
-                        "widgets": [
-                            {
-                                "attribute_alias": "name"
-                            },
-                            {
-                                "attribute_alias": "started_on"
-                            },
-                            {
-                                "attribute_alias": "finished_on"
-                            },
-                            {
-                                "attribute_alias": "duration_ms"
-                            },
-                            {
-                                "attribute_alias": "run_scenario"
-                            },
-                            {
-                                "attribute_alias": "line"
-                            },
-                            {
-                                "attribute_alias": "run_sequence_idx"
-                            },
-                            {
-                                "attribute_alias": "status"
-                            },
-                            {
-                                "attribute_alias": "monitor_error"
-                            },
-                            {
-                                "attribute_alias": "error_log_id"
-                            },
-                            {
-                                "attribute_alias": "error_message"
-                            }
-                        ]
+                        "attribute_alias": "UID",
+                        "id": "UID",
+                        "widget_type": "InputHidden"
                     },
                     {
-                        "widget_type": "WidgetGroup",
+                        "attribute_alias": "run",
+                        "id": "run",
+                        "widget_type": "InputHidden"
+                    },
+                    {
+                        "attribute_alias": "run__behat_command"
+                    },
+                    {
+                        "attribute_alias": "app__LABEL"
+                    },
+                    {
+                        "attribute_alias": "effected_page_count"
+                    },
+                    {
+                        "attribute_alias": "total_page_count"
+                    },
+                    {
+                        "attribute_alias": "coverage"
+                    },
+                    {
+                        "attribute_alias": "run__started_on"
+                    },
+                    {
+                        "attribute_alias": "run__finished_on"
+                    },
+                    {
+                        "attribute_alias": "run__run_feature__run_feature_stats__status"
+                    },
+                    {
+                        "widget_type": "DataTableResponsive",
+                        "hide_caption": true,
+                        "object_alias": "axenox.BDT.run_scenario",
+                        "hide_header": false,
                         "width": "max",
                         "height": "max",
-                        "widgets": [
+                        "filters": [
                             {
-                                "widget_type": "Image",
-                                "align": "center",
-                                "width": "max",
-                                "height": "max",
-                                "hide_caption": true,
-                                "attribute_alias": "screenshot_path"
+                                "attribute_alias": "run_feature__run",
+                                "value": "=run!run",
+                                "required": true,
+                                "hidden": true
+                            }
+                        ],
+                        "columns": [
+                            {
+                                "attribute_alias": "run_scenario_action__page__ALIAS:LIST_DISTINCT",
+                                "caption": "Pages"
+                            }
+                        ],
+                        "buttons": [
+                            {
+                                "caption": "Details",
+                                "bind_to_double_click": true,
+                                "action": {
+                                    "alias": "exface.core.ShowObjectInfoDialog",
+                                    "disable_buttons": false
+                                }
                             }
                         ]
                     }
                 ]
             },
-            "ALIAS": "run_step",
-            "DATA_ADDRESS": "bdt_run_step"
+            "ALIAS": "run_suite",
+            "DATA_ADDRESS": "bdt_run_suite"
         }
     ],
     "totals_rows": [],

@@ -70,7 +70,7 @@ class BehatFormatter implements Formatter
     /**
      * @param String $base_path Behat base path
      */
-    private $base_path;
+    private $basePath;
 
     /**
      * @param string $screenshotPath where to save screenshots
@@ -93,43 +93,43 @@ class BehatFormatter implements Formatter
      * Flag used by this Formatter
      * @param $print_args boolean
      */
-    private $print_args;
+    private $printArgs;
 
     /**
      * Flag used by this Formatter
      * @param $print_outp boolean
      */
-    private $print_outp;
+    private $printOutp;
 
     /**
      * Flag used by this Formatter
      * @param $loop_break boolean
      */
-    private $loop_break;
+    private $loopBreak;
 
     /**
      * Flag used by this Formatter
      * @param $show_tags boolean
      */
-    private $show_tags;
+    private $showTags;
 
     /**
      * Flag used by this Formatter
      * @var string
      */
-    private $projectname;
+    private $projectName;
 
     /**
      * Flag used by this Formatter
      * @var string
      */
-    private $projectdescription;
+    private $projectDescription;
 
     /**
      * Flag used by this Formatter
      * @var string
      */
-    private $projectimage;
+    private $projectImage;
 
     /**
      * @var Array
@@ -204,27 +204,52 @@ class BehatFormatter implements Formatter
     //<editor-fold desc="Formatter functions">
     /**
      * @param $name
-     * @param $base_path
+     * @param $projectName
+     * @param $projectImage
+     * @param $projectDescription
+     * @param $renderer
+     * @param $filename
+     * @param $printArgs
+     * @param $printOutp
+     * @param $loopBreak
+     * @param $showTags
+     * @param $basePath
+     * @param $screenshotsFolder
+     * @param $rootPath
      */
-    public function __construct($name, $projectName, $projectImage, $projectDescription, $renderer, $filename, $print_args, $print_outp, $loop_break, $show_tags, $base_path, $screenshots_folder, $root_path)
+    public function __construct(
+        $name,
+        $projectName,
+        $projectImage,
+        $projectDescription,
+        $renderer,
+        $filename,
+        $printArgs,
+        $printOutp,
+        $loopBreak,
+        $showTags,
+        $basePath,
+        $screenshotsFolder,
+        $rootPath
+    )
     {
-        $this->projectname = $projectName;
-        $this->projectimage = $projectImage;
-        $this->projectdescription = $projectDescription;
+        $this->projectName = $projectName;
+        $this->projectImage = $projectImage;
+        $this->projectDescription = $projectDescription;
         $this->name = $name;
-        $this->base_path = $base_path;
-        $this->print_args = $print_args;
-        $this->print_outp = $print_outp;
-        $this->loop_break = $loop_break;
-        $this->show_tags = $show_tags;
-        $this->renderer = new BaseRenderer($renderer, $base_path);
+        $this->basePath = $basePath;
+        $this->printArgs = $printArgs;
+        $this->printOutp = $printOutp;
+        $this->loopBreak = $loopBreak;
+        $this->showTags = $showTags;
+        $this->renderer = new BaseRenderer($renderer, $basePath);
         $this->assetsSubfolder = $filename == 'generated' ? date('YmdHis') : FilePathDataType::findFileName($filename, false);
-        $this->printer = new FileOutputPrinter($this->renderer->getNameList(), $filename, $base_path);
+        $this->printer = new FileOutputPrinter($this->renderer->getNameList(), $filename, $basePath);
         $this->timer = new Timer();
         $this->timerFeature = new Timer();
         $this->memory = new Memory();
-        $this->setScreenshotPath($root_path, $screenshots_folder);
-        $this->setScreenRegistryVariables($this->getScreenshotPath(), $screenshots_folder);
+        $this->setScreenshotPath($rootPath, $screenshotsFolder);
+        $this->setScreenRegistryVariables($this->getScreenshotPath(), $screenshotsFolder);
 
         // Initialize the exception listener but don't try to register it directly
         $exceptionPresenter = new \Behat\Testwork\Exception\ExceptionPresenter();
@@ -266,7 +291,7 @@ class BehatFormatter implements Formatter
      */
     public function getProjectName()
     {
-        return $this->projectname;
+        return $this->projectName;
     }
 
     /**
@@ -274,8 +299,8 @@ class BehatFormatter implements Formatter
      */
     public function getProjectImage()
     {
-        $imagepath = $this->projectimage ? realpath($this->projectimage) : null;
-        if ($imagepath === FALSE || $this->projectimage === null) {
+        $imagePath = $this->projectImage ? realpath($this->projectImage) : null;
+        if ($imagePath === FALSE || $this->projectImage === null) {
             //There is no image to copy
             return null;
         }
@@ -286,8 +311,8 @@ class BehatFormatter implements Formatter
         $destination = $this->printer->getOutputPath() . DIRECTORY_SEPARATOR . 'assets';
         @mkdir($destination);
 
-        $filename = basename($imagepath);
-        copy($imagepath, $destination . DIRECTORY_SEPARATOR . $filename);
+        $filename = basename($imagePath);
+        copy($imagePath, $destination . DIRECTORY_SEPARATOR . $filename);
 
         return "assets/" . $filename;
     }
@@ -297,7 +322,7 @@ class BehatFormatter implements Formatter
      */
     public function getProjectDescription()
     {
-        return $this->projectdescription;
+        return $this->projectDescription;
     }
 
     /**
@@ -305,7 +330,7 @@ class BehatFormatter implements Formatter
      */
     public function getBasePath()
     {
-        return $this->base_path;
+        return $this->basePath;
     }
 
     /**
@@ -354,7 +379,7 @@ class BehatFormatter implements Formatter
      */
     public function setOutputPath($path)
     {
-        $outpath = realpath($this->base_path . DIRECTORY_SEPARATOR . $path);
+        $outpath = realpath($this->basePath . DIRECTORY_SEPARATOR . $path);
         if (!file_exists($outpath)) {
             if (!mkdir($outpath, 0755, true)) {
                 throw new BadOutputPathException(
@@ -388,9 +413,9 @@ class BehatFormatter implements Formatter
         return $this->outputPath;
     }
     
-    public function setScreenshotPath(array $root_path, string $screenshotFolder) : void
+    public function setScreenshotPath(array $rootPath, string $screenshotFolder) : void
     {
-        $screenshotPath = implode(DIRECTORY_SEPARATOR, $root_path) . DIRECTORY_SEPARATOR . $screenshotFolder . DIRECTORY_SEPARATOR . $this->assetsSubfolder;
+        $screenshotPath = implode(DIRECTORY_SEPARATOR, $rootPath) . DIRECTORY_SEPARATOR . $screenshotFolder . DIRECTORY_SEPARATOR . $this->assetsSubfolder;
         if (!file_exists($screenshotPath)) {
             if (!mkdir($screenshotPath, 0755, true)) {
                 throw new BadOutputPathException(
@@ -431,7 +456,7 @@ class BehatFormatter implements Formatter
      */
     public function getPrintArguments()
     {
-        return $this->print_args;
+        return $this->printArgs;
     }
 
     /**
@@ -440,7 +465,7 @@ class BehatFormatter implements Formatter
      */
     public function getPrintOutputs()
     {
-        return $this->print_outp;
+        return $this->printOutp;
     }
 
     /**
@@ -449,7 +474,7 @@ class BehatFormatter implements Formatter
      */
     public function getPrintLoopBreak()
     {
-        return $this->loop_break;
+        return $this->loopBreak;
     }
 
     /**
@@ -469,7 +494,7 @@ class BehatFormatter implements Formatter
      */
     public function getPrintShowTags()
     {
-        return $this->show_tags;
+        return $this->showTags;
     }
 
     public function getTimer()
@@ -625,6 +650,7 @@ class BehatFormatter implements Formatter
 
     /**
      * @param AfterFeatureTested $event
+     * @throws \Exception
      */
     public function onAfterFeatureTested(AfterFeatureTested $event)
     {
@@ -647,6 +673,7 @@ class BehatFormatter implements Formatter
 
     /**
      * @param BeforeScenarioTested $event
+     * @throws \Exception
      */
     public function onBeforeScenarioTested(BeforeScenarioTested $event)
     {
@@ -666,6 +693,7 @@ class BehatFormatter implements Formatter
 
     /**
      * @param AfterScenarioTested $event
+     * @throws \Exception
      */
     public function onAfterScenarioTested(AfterScenarioTested $event)
     {
@@ -787,7 +815,7 @@ class BehatFormatter implements Formatter
         if (!$result->isPassed()) {
             $screenshotName = ScreenshotRegistry::getScreenshotName();
             if(!empty($screenshotName)){
-                $screenshotPath = $this->base_path . DIRECTORY_SEPARATOR . ScreenshotRegistry::getScreenshotPath() . DIRECTORY_SEPARATOR . $screenshotName;
+                $screenshotPath = $this->basePath . DIRECTORY_SEPARATOR . ScreenshotRegistry::getScreenshotPath() . DIRECTORY_SEPARATOR . $screenshotName;
                 if (file_exists($screenshotPath)) {
                     $relativeWebPath = $this->getRelativeWebPath($this->printer->getOutputPath(), $screenshotPath);
                     $step->setScreenshot($relativeWebPath);
