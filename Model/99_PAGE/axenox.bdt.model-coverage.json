@@ -11,7 +11,7 @@
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2025-07-09 11:08:51",
     "modified_by_user_selector": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-    "modified_on": "2025-07-28 12:11:56",
+    "modified_on": "2025-07-29 13:08:47",
     "contents": {
         "widget_type": "DataTable",
         "object_alias": "axenox.BDT.run_suite",
@@ -38,7 +38,7 @@
                 "attribute_alias": "total_page_count"
             },
             {
-                "caption": "Caption (%)",
+                "caption": "Coverage (%)",
                 "attribute_alias": "coverage"
             }
         ],
