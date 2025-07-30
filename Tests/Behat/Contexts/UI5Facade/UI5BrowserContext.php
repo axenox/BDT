@@ -1332,7 +1332,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         foreach ($this->getBrowser()->findTiles() as $tile) {
             // Extract the caption (name/text) of the current tile
             $tileName = $tile->getCaption();
-           
+
             // Check if the current tile's name matches any of the expected tile names
             // array_search allows for exact matching and provides the index
             $matchIndex = array_search($tileName, $captions);
