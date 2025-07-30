@@ -158,6 +158,14 @@ class UI5WaitManager
      */
     public function waitForAppLoaded(string $pageUrl): void
     {
+        // Check early if the browser has rendered a network error page (e.g., 403/404/5xx)
+        // by detecting the presence of Chrome's 'main-frame-error' element in the DOM.
+        $this->session->wait(5000, "document.getElementById('main-frame-error') !== null");
+        $hasErrorFrame = $this->session->evaluateScript("document.getElementById('main-frame-error') !== null");
+        if ($hasErrorFrame) {
+            throw new \RuntimeException("Detected HTTP status error page on app load");
+        }
+
         try {  
             // Wait for initial page load
             $this->waitForPendingOperations(true, false, false);
