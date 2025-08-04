@@ -26,6 +26,8 @@ class DatabaseFormatterExtension implements Extension
         $definition = new Definition(DatabaseFormatter::class, [
             new Reference('database_formatter.workbench'),
         ]);
+
+        $definition->addTag('event_dispatcher.subscriber');
         $definition->addTag('output.formatter');
 
         $container->setDefinition('database_formatter.formatter', $definition);

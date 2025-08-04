@@ -1,7 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\DatabaseFormatter;
 
-use axenox\BDT\Behat\Common\ScreenshotRegistry;
+use axenox\BDT\Behat\Common\ScreenshotTakenEvent;
 use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 use Behat\Behat\EventDispatcher\Event\AfterOutlineTested;
@@ -42,6 +42,9 @@ class DatabaseFormatter implements Formatter
     private ?DataSheetInterface $stepDataSheet = null;
     private float               $stepStart;
     private int                 $stepIdx = 0;
+    private string              $lastScreenshotName;
+    private string              $lastScreenshotPath;
+    private static array        $testedPages = [];
 
     public function __construct(WorkbenchInterface $workbench)
     {
@@ -62,7 +65,8 @@ class DatabaseFormatter implements Formatter
             AfterOutlineTested::AFTER => 'onAfterScenario',
             BeforeStepTested::BEFORE => 'onBeforeStep',
             AfterStepTested::AFTER => 'onAfterStep',
-            AfterSuiteTested::AFTER => 'onAfterSuite'
+            AfterSuiteTested::AFTER => 'onAfterSuite',
+            ScreenshotTakenEvent::AFTER => 'onScreenshotTaken'
         ];
     }
     
@@ -96,7 +100,13 @@ class DatabaseFormatter implements Formatter
     {
         return microtime(true);
     }
-
+    
+    public function onScreenshotTaken(ScreenshotTakenEvent $e): void
+    {
+        $this->lastScreenshotName = $e->getFileName();
+        $this->lastScreenshotPath = $e->getFilePath();
+    }
+    
     public function onBeforeExercise() {
         $this->runStart = $this->microtime();
 
@@ -137,9 +147,9 @@ class DatabaseFormatter implements Formatter
             $ds->addRow([
                 'run' => $this->runDataSheet->getUidColumn()->getValue(0),
                 'app' => $suiteName,
-                'effected_page_count' => count(self::$scenarioPages),
+                'effected_page_count' => count(self::$testedPages),
                 'total_page_count' => $pageCount,
-                'coverage' => number_format((count(self::$scenarioPages) / $pageCount) * 100, 2)
+                'coverage' => number_format((count(self::$testedPages) / $pageCount) * 100, 2)
             ]);
             $ds->dataCreate(false);
         }
@@ -258,7 +268,7 @@ class DatabaseFormatter implements Formatter
         $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->runStart);
         $ds->setCellValue('status', 0, StepStatusDataType::convertFromBehatResultCode($result->getResultCode()));
         if ($result->getResultCode() === TestResult::FAILED) {
-            $screenshotRelativePath = ScreenshotRegistry::getScreenshotPath() . DIRECTORY_SEPARATOR . ScreenshotRegistry::getScreenshotName();
+            $screenshotRelativePath = $this->lastScreenshotPath . DIRECTORY_SEPARATOR . $this->lastScreenshotName;
             $ds->setCellValue('screenshot_path', 0, $screenshotRelativePath);
             if ($e = $result->getException()) {
                 $ds->setCellValue('error_message', 0, $e->getMessage());
@@ -274,6 +284,9 @@ class DatabaseFormatter implements Formatter
     {
         if (!in_array($alias, static::$scenarioPages, true)) {
             static::$scenarioPages[] = $alias;
+        }
+        if (!in_array($alias, static::$testedPages, true)) {
+            static::$testedPages[] = $alias;
         }
     }
     

@@ -2,7 +2,7 @@
 
 namespace axenox\BDT\Behat\TwigFormatter\Formatter;
 
-use axenox\BDT\Behat\Common\ScreenshotRegistry;
+use axenox\BDT\Behat\Common\ScreenshotTakenEvent;
 use Behat\Behat\EventDispatcher\Event\AfterFeatureTested;
 use Behat\Behat\EventDispatcher\Event\AfterOutlineTested;
 use Behat\Behat\EventDispatcher\Event\AfterScenarioTested;
@@ -27,8 +27,6 @@ use axenox\BDT\Behat\TwigFormatter\Classes\Step;
 use axenox\BDT\Behat\TwigFormatter\Classes\Suite;
 use axenox\BDT\Behat\TwigFormatter\Printer\FileOutputPrinter;
 use axenox\BDT\Behat\TwigFormatter\Renderer\BaseRenderer;
-use exface\Core\CommonLogic\Filemanager;
-use exface\Core\DataTypes\FilePathDataType;
 use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 
 global $suiteStartDate, $suiteEndDate, $featureStartDate, $featureEndDate, $scenarioStartDate, $scenarioEndDate, $stepStartDate, $stepEndDate;
@@ -71,11 +69,6 @@ class BehatFormatter implements Formatter
      * @param String $base_path Behat base path
      */
     private $basePath;
-
-    /**
-     * @param string $screenshotPath where to save screenshots
-     */
-    private $screenshotPath;
 
     /**
      * Printer used by this Formatter and Context
@@ -196,7 +189,8 @@ class BehatFormatter implements Formatter
      */
     private $skippedSteps;
 
-    private string $assetsSubfolder;
+    private string $lastScreenshotName;
+    private string $lastScreenshotPath;
 
 
     //</editor-fold>
@@ -214,8 +208,6 @@ class BehatFormatter implements Formatter
      * @param $loopBreak
      * @param $showTags
      * @param $basePath
-     * @param $screenshotsFolder
-     * @param $rootPath
      */
     public function __construct(
         $name,
@@ -228,9 +220,7 @@ class BehatFormatter implements Formatter
         $printOutp,
         $loopBreak,
         $showTags,
-        $basePath,
-        $screenshotsFolder,
-        $rootPath
+        $basePath
     )
     {
         $this->projectName = $projectName;
@@ -243,13 +233,10 @@ class BehatFormatter implements Formatter
         $this->loopBreak = $loopBreak;
         $this->showTags = $showTags;
         $this->renderer = new BaseRenderer($renderer, $basePath);
-        $this->assetsSubfolder = $filename == 'generated' ? date('YmdHis') : FilePathDataType::findFileName($filename, false);
         $this->printer = new FileOutputPrinter($this->renderer->getNameList(), $filename, $basePath);
         $this->timer = new Timer();
         $this->timerFeature = new Timer();
         $this->memory = new Memory();
-        $this->setScreenshotPath($rootPath, $screenshotsFolder);
-        $this->setScreenRegistryVariables($this->getScreenshotPath(), $screenshotsFolder);
 
         // Initialize the exception listener but don't try to register it directly
         $exceptionPresenter = new \Behat\Testwork\Exception\ExceptionPresenter();
@@ -274,7 +261,14 @@ class BehatFormatter implements Formatter
             'tester.outline_tested.before' => 'onBeforeOutlineTested',
             'tester.outline_tested.after' => 'onAfterOutlineTested',
             'tester.step_tested.after' => 'onAfterStepTested',
+            ScreenshotTakenEvent::AFTER => 'onScreenshotTaken'
         );
+    }
+    
+    public function onScreenshotTaken(ScreenshotTakenEvent $e): void
+    {
+        $this->lastScreenshotName = $e->getFileName();
+        $this->lastScreenshotPath = $e->getFilePath();
     }
 
     /**
@@ -412,44 +406,7 @@ class BehatFormatter implements Formatter
     {
         return $this->outputPath;
     }
-    
-    public function setScreenshotPath(array $rootPath, string $screenshotFolder) : void
-    {
-        $screenshotPath = implode(DIRECTORY_SEPARATOR, $rootPath) . DIRECTORY_SEPARATOR . $screenshotFolder . DIRECTORY_SEPARATOR . $this->assetsSubfolder;
-        if (!file_exists($screenshotPath)) {
-            if (!mkdir($screenshotPath, 0755, true)) {
-                throw new BadOutputPathException(
-                    sprintf(
-                        'Screenshot path %s does not exist and could not be created!',
-                        $screenshotPath
-                    ),
-                    $screenshotPath
-                );
-            }
-        } else {
-            if (!is_dir($screenshotPath)) {
-                throw new BadOutputPathException(
-                    sprintf(
-                        'The argument to `screenshot` is expected to the a directory, but got %s!',
-                        $screenshotPath
-                    ),
-                    $screenshotPath
-                );
-            }
-        }
-        $this->screenshotPath = $screenshotPath;
-    }
 
-    public function getScreenshotPath()
-    {
-        return $this->screenshotPath;
-    }
-
-    public function setScreenRegistryVariables(string $screenshotPath, string $screenshotFolder) : void
-    {
-        ScreenshotRegistry::setScreenshotPath($screenshotPath);
-        ScreenshotRegistry::setScreenshotFolder($screenshotFolder . DIRECTORY_SEPARATOR . $this->assetsSubfolder);
-    }
     /**
      * Returns if it should print the step arguments
      * @return boolean
@@ -813,9 +770,8 @@ class BehatFormatter implements Formatter
         }
 
         if (!$result->isPassed()) {
-            $screenshotName = ScreenshotRegistry::getScreenshotName();
-            if(!empty($screenshotName)){
-                $screenshotPath = $this->basePath . DIRECTORY_SEPARATOR . ScreenshotRegistry::getScreenshotPath() . DIRECTORY_SEPARATOR . $screenshotName;
+            if(!empty($this->lastScreenshotName)){
+                $screenshotPath = $this->basePath . DIRECTORY_SEPARATOR .$this->lastScreenshotPath . DIRECTORY_SEPARATOR . $this->lastScreenshotName;
                 if (file_exists($screenshotPath)) {
                     $relativeWebPath = $this->getRelativeWebPath($this->printer->getOutputPath(), $screenshotPath);
                     $step->setScreenshot($relativeWebPath);

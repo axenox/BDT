@@ -87,7 +87,7 @@
         {
             "_EXPORT_SUMMARY": "BDT feature run [axenox.BDT.run_feature]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2025-07-29 08:39:17",
+            "MODIFIED_ON": "2025-08-01 09:12:47",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f0913d222d05ce913d025041000001",
@@ -162,7 +162,7 @@
                                         "attribute_alias": "behat_command"
                                     },
                                     {
-                                        "attribute_alias": "run_feature__run_step_stats__status:MAX",
+                                        "attribute_alias": "run_step_stats__status:MAX",
                                         "caption": "Status"
                                     }
                                 ],

@@ -8,8 +8,7 @@ default:
    html:
      # Directory where HTML test reports will be saved
      # Using paths.base ensures reports are saved relative to project root
-     output_path: '%paths.base%/data/axenox/BDT/Reports' 
-   BDTDatabaseFormatter: ~
+     output_path: '%paths.base%/data/axenox/BDT/Reports'
  
  autoload:
      # Configure PSR-0 autoloader to find test context classes
@@ -85,11 +84,6 @@ default:
     printOutp: true
     loopBreak: true
     showTags: true
-    rootPath:
-      - 'data'
-      - 'axenox'
-      - 'BDT'
-    screenshotsFolder: 'Screenshots'
     
   # Save test runs to BDT database
   axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatterExtension: ~
