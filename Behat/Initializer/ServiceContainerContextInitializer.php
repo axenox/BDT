@@ -1,25 +1,24 @@
 <?php
 namespace axenox\BDT\Behat\Initializer;
 
+use axenox\BDT\Behat\Common\ScreenshotAwareInterface;
+use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
 use Behat\Behat\Context\Initializer\ContextInitializer;
 use Behat\Behat\Context\Context;
-use Behat\Testwork\EventDispatcher\TestworkEventDispatcher;
 
 class ServiceContainerContextInitializer implements ContextInitializer
 {
-    private TestworkEventDispatcher $dispatcher;
+    private ScreenshotProviderInterface $provider;
 
-    // inject the dispatcher directly, not the whole container
-    public function __construct(TestworkEventDispatcher $dispatcher)
+    public function __construct(ScreenshotProviderInterface $provider)
     {
-        $this->dispatcher = $dispatcher;
+        $this->provider = $provider;
     }
 
     public function initializeContext(Context $context): void
     {
-        if (! method_exists($context, 'setEventDispatcher')) {
-            return;
+        if ($context instanceof ScreenshotAwareInterface) {
+            $context->setScreenshotProvider($this->provider);
         }
-        $context->setEventDispatcher($this->dispatcher);
     }
 }

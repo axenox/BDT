@@ -2,6 +2,7 @@
 
 namespace axenox\BDT\Behat\TwigFormatter;
 
+use axenox\BDT\Behat\Common\ScreenshotProvider;
 use axenox\BDT\Behat\Initializer\ServiceContainerContextInitializer;
 use Behat\Testwork\ServiceContainer\Extension as ExtensionInterface;
 use Behat\Testwork\ServiceContainer\ExtensionManager;
@@ -77,11 +78,16 @@ class BehatFormatterExtension implements ExtensionInterface {
    * @param array $config
    */
     public function load(ContainerBuilder $container, array $config) {
-        $init = new Definition(ServiceContainerContextInitializer::class);
-        $init
-            ->addArgument(new Reference('event_dispatcher'))
-            ->addTag('context.initializer');
-        $container->setDefinition('container.context_initializer', $init);
+
+        $providerDef = new Definition(ScreenshotProvider::class);
+        $providerDef->setPublic(true);
+        $container->setDefinition('screenshot.provider', $providerDef);
+        
+        $initializerDef = new Definition(ServiceContainerContextInitializer::class,
+            [ new Reference('screenshot.provider') ]
+        );
+        $initializerDef->addTag('context.initializer');
+        $container->setDefinition('screenshot.context_initializer', $initializerDef);
         
         $definition = new Definition("axenox\\BDT\\Behat\\TwigFormatter\\Formatter\\BehatFormatter");
         $definition
@@ -96,7 +102,7 @@ class BehatFormatterExtension implements ExtensionInterface {
             ->addArgument($config['loopBreak'])
             ->addArgument($config['showTags'])
             ->addArgument('%paths.base%')
-            ->addTag('event_dispatcher.subscriber')
+            ->addArgument(new Reference('screenshot.provider'))
         ;
         
         $container->setParameter('timestamp', time());

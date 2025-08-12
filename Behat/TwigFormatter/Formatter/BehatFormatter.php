@@ -2,7 +2,7 @@
 
 namespace axenox\BDT\Behat\TwigFormatter\Formatter;
 
-use axenox\BDT\Behat\Common\ScreenshotTakenEvent;
+use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
 use Behat\Behat\EventDispatcher\Event\AfterFeatureTested;
 use Behat\Behat\EventDispatcher\Event\AfterOutlineTested;
 use Behat\Behat\EventDispatcher\Event\AfterScenarioTested;
@@ -10,6 +10,7 @@ use Behat\Behat\EventDispatcher\Event\AfterStepTested;
 use Behat\Behat\EventDispatcher\Event\BeforeFeatureTested;
 use Behat\Behat\EventDispatcher\Event\BeforeOutlineTested;
 use Behat\Behat\EventDispatcher\Event\BeforeScenarioTested;
+use Behat\Behat\EventDispatcher\Event\BeforeStepTested;
 use Behat\Behat\Tester\Result\ExecutedStepResult;
 use Behat\Testwork\Counter\Memory;
 use Behat\Testwork\Counter\Timer;
@@ -189,8 +190,7 @@ class BehatFormatter implements Formatter
      */
     private $skippedSteps;
 
-    private string $lastScreenshotName;
-    private string $lastScreenshotPath;
+    private ScreenshotProviderInterface $provider;
 
 
     //</editor-fold>
@@ -220,7 +220,8 @@ class BehatFormatter implements Formatter
         $printOutp,
         $loopBreak,
         $showTags,
-        $basePath
+        $basePath,
+        ScreenshotProviderInterface $provider
     )
     {
         $this->projectName = $projectName;
@@ -237,12 +238,21 @@ class BehatFormatter implements Formatter
         $this->timer = new Timer();
         $this->timerFeature = new Timer();
         $this->memory = new Memory();
-
+        $this->provider = $provider;
+        
         // Initialize the exception listener but don't try to register it directly
         $exceptionPresenter = new \Behat\Testwork\Exception\ExceptionPresenter();
         $this->exceptionListener = new \axenox\BDT\Behat\Listeners\GlobalExceptionListener($exceptionPresenter);
     }
-
+    
+    public function __destruct()
+    {
+        // whenever the formatter object is about to be destroyed
+        // (i.e. at the very end of the test run, even on error), flush the report:
+        $this->timer->stop();
+        $print = $this->renderer->renderAfterExercise($this);
+        $this->printer->writeln($print);
+    }
     /**
      * Returns an array of event names this subscriber wants to listen to.
      * @return array The event names to listen to
@@ -260,15 +270,8 @@ class BehatFormatter implements Formatter
             'tester.scenario_tested.after' => 'onAfterScenarioTested',
             'tester.outline_tested.before' => 'onBeforeOutlineTested',
             'tester.outline_tested.after' => 'onAfterOutlineTested',
-            'tester.step_tested.after' => 'onAfterStepTested',
-            ScreenshotTakenEvent::AFTER => 'onScreenshotTaken'
+            'tester.step_tested.after' => 'onAfterStepTested'
         );
-    }
-    
-    public function onScreenshotTaken(ScreenshotTakenEvent $e): void
-    {
-        $this->lastScreenshotName = $e->getFileName();
-        $this->lastScreenshotPath = $e->getFilePath();
     }
 
     /**
@@ -548,18 +551,6 @@ class BehatFormatter implements Formatter
     }
 
     /**
-     * @param AfterExerciseCompleted $event
-     */
-    public function onAfterExercise(ExerciseCompleted $event)
-    {
-
-        $this->timer->stop();
-
-        $print = $this->renderer->renderAfterExercise($this);
-        $this->printer->writeln($print);
-    }
-
-    /**
      * @param BeforeSuiteTested $event
      */
     public function onBeforeSuiteTested(BeforeSuiteTested $event)
@@ -731,7 +722,7 @@ class BehatFormatter implements Formatter
      * Collects step information, manages error reporting, and handles screenshots
      * @param AfterStepTested $event The event containing information about the tested step
      */
-    public function onAfterStepTested(AfterStepTested $event)
+    public function onAfterStepTested(AfterStepTested $event): void
     {
         error_log("\n=== onAfterStepTested Start ===");
         $result = $event->getTestResult();
@@ -770,8 +761,8 @@ class BehatFormatter implements Formatter
         }
 
         if (!$result->isPassed()) {
-            if(!empty($this->lastScreenshotName)){
-                $screenshotPath = $this->basePath . DIRECTORY_SEPARATOR .$this->lastScreenshotPath . DIRECTORY_SEPARATOR . $this->lastScreenshotName;
+            if(!empty($this->provider->getName())){
+                $screenshotPath = $this->basePath . DIRECTORY_SEPARATOR . $this->provider->getPath() . DIRECTORY_SEPARATOR . $this->provider->getName();
                 if (file_exists($screenshotPath)) {
                     $relativeWebPath = $this->getRelativeWebPath($this->printer->getOutputPath(), $screenshotPath);
                     $step->setScreenshot($relativeWebPath);
@@ -788,7 +779,7 @@ class BehatFormatter implements Formatter
     /**
      * @param $text
      */
-    public function printText($text)
+    public function printText($text): void
     {
         file_put_contents('php://stdout', $text);
     }
@@ -796,7 +787,7 @@ class BehatFormatter implements Formatter
     /**
      * @param $obj
      */
-    public function dumpObj($obj)
+    public function dumpObj($obj): void
     {
         ob_start();
         var_dump($obj);
