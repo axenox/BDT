@@ -25,7 +25,9 @@ class DatabaseFormatterExtension implements Extension
         // Register the formatter as a service
         $definition = new Definition(DatabaseFormatter::class, [
             new Reference('database_formatter.workbench'),
+            new Reference('screenshot.provider')
         ]);
+
         $definition->addTag('output.formatter');
 
         $container->setDefinition('database_formatter.formatter', $definition);

@@ -87,7 +87,7 @@
         {
             "_EXPORT_SUMMARY": "BDT suite run [axenox.BDT.run_suite]",
             "CREATED_ON": "2025-07-24 12:42:14",
-            "MODIFIED_ON": "2025-07-28 11:32:42",
+            "MODIFIED_ON": "2025-07-31 13:11:10",
             "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f084abdca3053c84ab025041000001",
@@ -143,22 +143,28 @@
                     {
                         "widget_type": "DataTableResponsive",
                         "hide_caption": true,
-                        "object_alias": "axenox.BDT.run_scenario",
+                        "object_alias": "axenox.BDT.run_suite_stats",
                         "hide_header": false,
                         "width": "max",
                         "height": "max",
                         "filters": [
                             {
-                                "attribute_alias": "run_feature__run",
-                                "value": "=run!run",
+                                "attribute_alias": "run",
+                                "value": "=run!",
                                 "required": true,
                                 "hidden": true
                             }
                         ],
                         "columns": [
                             {
-                                "attribute_alias": "run_scenario_action__page__ALIAS:LIST_DISTINCT",
+                                "attribute_alias": "page__ALIAS",
                                 "caption": "Pages"
+                            },
+                            {
+                                "attribute_alias": "scenario_count"
+                            },
+                            {
+                                "attribute_alias": "action_count"
                             }
                         ],
                         "buttons": [

@@ -2,11 +2,14 @@
 
 namespace axenox\BDT\Behat\TwigFormatter;
 
+use axenox\BDT\Behat\Common\ScreenshotProvider;
+use axenox\BDT\Behat\Initializer\ServiceContainerContextInitializer;
 use Behat\Testwork\ServiceContainer\Extension as ExtensionInterface;
 use Behat\Testwork\ServiceContainer\ExtensionManager;
 use Symfony\Component\Config\Definition\Builder\ArrayNodeDefinition;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
+use Symfony\Component\DependencyInjection\Reference;
 
 /**
  * Class BehatFormatterExtension
@@ -64,12 +67,6 @@ class BehatFormatterExtension implements ExtensionInterface {
         ->scalarNode("loopBreak")->defaultValue(false)->end()
         ->scalarNode("showTags")->defaultValue(false)->end()
         ->scalarNode("output")->defaultValue(false)->end()
-        ->scalarNode('screenshotsFolder')->defaultValue('Screenshots')->end()
-        // define root_path as an array of strings with a default
-        ->arrayNode('rootPath')
-            ->scalarPrototype()->end()
-            ->defaultValue([ '%paths.base%', ])  // or ['.']
-            ->end()
         ->end()
     ;
   }
@@ -80,29 +77,39 @@ class BehatFormatterExtension implements ExtensionInterface {
    * @param ContainerBuilder $container
    * @param array $config
    */
-  public function load(ContainerBuilder $container, array $config) {
-    $definition = new Definition("axenox\\BDT\\Behat\\TwigFormatter\\Formatter\\BehatFormatter");
-      $definition
-          ->addArgument($config['name'])
-          ->addArgument($config['projectName'])
-          ->addArgument($config['projectImage'])
-          ->addArgument($config['projectDescription'])
-          ->addArgument($config['renderer'])
-          ->addArgument($config['fileName'])
-          ->addArgument($config['printArgs'])
-          ->addArgument($config['printOutp'])
-          ->addArgument($config['loopBreak'])
-          ->addArgument($config['showTags'])
-          ->addArgument('%paths.base%')
-          ->addArgument($config['screenshotsFolder'])
-          ->addArgument($config['rootPath'])
-      ;
+    public function load(ContainerBuilder $container, array $config) {
 
-      $container->setParameter('timestamp', time());
-
-      $container
-          ->setDefinition('html.formatter', $definition)
-          ->addTag('output.formatter')
-      ;
-  }
+        $providerDef = new Definition(ScreenshotProvider::class);
+        $providerDef->setPublic(true);
+        $container->setDefinition('screenshot.provider', $providerDef);
+        
+        $initializerDef = new Definition(ServiceContainerContextInitializer::class,
+            [ new Reference('screenshot.provider') ]
+        );
+        $initializerDef->addTag('context.initializer');
+        $container->setDefinition('screenshot.context_initializer', $initializerDef);
+        
+        $definition = new Definition("axenox\\BDT\\Behat\\TwigFormatter\\Formatter\\BehatFormatter");
+        $definition
+            ->addArgument($config['name'])
+            ->addArgument($config['projectName'])
+            ->addArgument($config['projectImage'])
+            ->addArgument($config['projectDescription'])
+            ->addArgument($config['renderer'])
+            ->addArgument($config['fileName'])
+            ->addArgument($config['printArgs'])
+            ->addArgument($config['printOutp'])
+            ->addArgument($config['loopBreak'])
+            ->addArgument($config['showTags'])
+            ->addArgument('%paths.base%')
+            ->addArgument(new Reference('screenshot.provider'))
+        ;
+        
+        $container->setParameter('timestamp', time());
+        
+        $container
+            ->setDefinition('html.formatter', $definition)
+            ->addTag('output.formatter')
+        ;
+    }
 }

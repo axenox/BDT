@@ -1,20 +1,21 @@
 <?php
 namespace axenox\BDT\Behat\DatabaseFormatter;
 
-use axenox\BDT\Behat\Common\ScreenshotRegistry;
+use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
 use axenox\BDT\DataTypes\StepStatusDataType;
-use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
+use Behat\Testwork\Output\Formatter;
+use Behat\Testwork\Tester\Result\TestResult;
+use Behat\Testwork\EventDispatcher\Event\AfterSuiteTested;
+use Behat\Testwork\EventDispatcher\Event\BeforeExerciseCompleted;
 use Behat\Behat\EventDispatcher\Event\AfterOutlineTested;
 use Behat\Behat\EventDispatcher\Event\BeforeOutlineTested;
-use Behat\Testwork\EventDispatcher\Event\AfterSuiteTested;
-use Behat\Testwork\Output\Formatter;
-use Behat\Testwork\EventDispatcher\Event\BeforeExerciseCompleted;
 use Behat\Behat\EventDispatcher\Event\BeforeFeatureTested;
 use Behat\Behat\EventDispatcher\Event\BeforeScenarioTested;
 use Behat\Behat\EventDispatcher\Event\BeforeStepTested;
 use Behat\Behat\EventDispatcher\Event\AfterStepTested;
 use Behat\Behat\EventDispatcher\Event\AfterScenarioTested;
 use Behat\Behat\EventDispatcher\Event\AfterFeatureTested;
+use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\DateTimeDataType;
 use exface\Core\DataTypes\FilePathDataType;
@@ -23,7 +24,6 @@ use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\DataSheets\DataSheetInterface;
 use exface\Core\Interfaces\WorkbenchInterface;
-use Behat\Testwork\Tester\Result\TestResult;
 
 class DatabaseFormatter implements Formatter
 {
@@ -42,10 +42,13 @@ class DatabaseFormatter implements Formatter
     private ?DataSheetInterface $stepDataSheet = null;
     private float               $stepStart;
     private int                 $stepIdx = 0;
+    private static array        $testedPages = [];
+    private ScreenshotProviderInterface $provider;
 
-    public function __construct(WorkbenchInterface $workbench)
+    public function __construct(WorkbenchInterface $workbench, ScreenshotProviderInterface $provider)
     {
         $this->workbench = $workbench;
+        $this->provider = $provider;
     }
 
     public static function getSubscribedEvents(): array
@@ -96,8 +99,9 @@ class DatabaseFormatter implements Formatter
     {
         return microtime(true);
     }
-
-    public function onBeforeExercise() {
+    
+    public function onBeforeExercise(): void
+    {
         $this->runStart = $this->microtime();
 
         $cliArgs = $_SERVER['argv'] ?? [];
@@ -117,7 +121,8 @@ class DatabaseFormatter implements Formatter
         $this->runDataSheet = $ds;
     }
 
-    public function onAfterExercise() {
+    public function onAfterExercise(): void
+    {
         $ds = $this->runDataSheet->extractSystemColumns();
         $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
         $ds->setCellValue('duration_ms', 0,$this->microtime() - $this->runStart);
@@ -137,9 +142,9 @@ class DatabaseFormatter implements Formatter
             $ds->addRow([
                 'run' => $this->runDataSheet->getUidColumn()->getValue(0),
                 'app' => $suiteName,
-                'effected_page_count' => count(self::$scenarioPages),
+                'effected_page_count' => count(self::$testedPages),
                 'total_page_count' => $pageCount,
-                'coverage' => number_format((count(self::$scenarioPages) / $pageCount) * 100, 2)
+                'coverage' => number_format((count(self::$testedPages) / $pageCount) * 100, 2)
             ]);
             $ds->dataCreate(false);
         }
@@ -247,6 +252,7 @@ class DatabaseFormatter implements Formatter
         ]);
         $ds->dataCreate(false);
         $this->stepDataSheet = $ds;
+        $this->provider->setName($ds->getUidColumn()->getValue(0));
     }
 
     public function onAfterStep(AfterStepTested $event) {
@@ -258,7 +264,7 @@ class DatabaseFormatter implements Formatter
         $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->runStart);
         $ds->setCellValue('status', 0, StepStatusDataType::convertFromBehatResultCode($result->getResultCode()));
         if ($result->getResultCode() === TestResult::FAILED) {
-            $screenshotRelativePath = ScreenshotRegistry::getScreenshotPath() . DIRECTORY_SEPARATOR . ScreenshotRegistry::getScreenshotName();
+            $screenshotRelativePath = $this->provider->getPath() . DIRECTORY_SEPARATOR . $this->provider->getName();
             $ds->setCellValue('screenshot_path', 0, $screenshotRelativePath);
             if ($e = $result->getException()) {
                 $ds->setCellValue('error_message', 0, $e->getMessage());
@@ -274,6 +280,9 @@ class DatabaseFormatter implements Formatter
     {
         if (!in_array($alias, static::$scenarioPages, true)) {
             static::$scenarioPages[] = $alias;
+        }
+        if (!in_array($alias, static::$testedPages, true)) {
+            static::$testedPages[] = $alias;
         }
     }
     
