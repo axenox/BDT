@@ -7,11 +7,11 @@ use Behat\Behat\Context\Context;
 use Behat\Behat\Tester\Result\UndefinedStepResult;
 use Behat\Mink\Element\NodeElement;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
+use exface\Core\CommonLogic\Model\Expression;
 use exface\Core\CommonLogic\Workbench;
 use exface\Core\DataTypes\StringDataType;
-use exface\Core\DataTypes\UrlDataType;
 use exface\Core\Exceptions\RuntimeException;
-use exface\Core\Factories\UiPageFactory;
+use exface\Core\Factories\FormulaFactory;
 use exface\Core\Interfaces\WorkbenchInterface;
 use PHPUnit\Framework\Assert;
 use Behat\Behat\Hook\Scope\BeforeScenarioScope;
@@ -497,30 +497,21 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Get the currently focused node
         $focusedNode = $this->getBrowser()->getFocusedNode();
         Assert::assertNotNull($focusedNode, 'No widget is currently focused. Call "I look at" first.');
-
-        // Find filter containers only within the focused node
-        $filterContainers = $focusedNode->getNodeElement()->findAll('css', '.sapUiVlt.exfw-Filter, .sapMVBox.exfw-Filter');
-
+        
+        $filterNodes = $this->getBrowser()->getFilters();
         $foundFilters = [];
-
-        foreach ($filterContainers as $index => $container) {
+        foreach ($filterNodes as $index => $filterNode) {
             // Find the label for the filter
-            $label = $container->find('css', '.sapMLabel bdi');
+            $caption = $filterNode->getCaption();
+            if (in_array($caption, $expectedFilters)) {
+                $foundFilters[] = $caption;
 
-            if ($label) {
-                $filterText = trim($label->getText());
-
-                // Add to found filters and highlight if it's an expected filter
-                if (in_array($filterText, $expectedFilters)) {
-                    $foundFilters[] = $filterText;
-
-                    // Highlight the filter
-                    $this->getBrowser()->highlightWidget(
-                        $container,
-                        'Filter',
-                        $index  // Use the actual index from the filtered containers
-                    );
-                }
+                // Highlight the filter
+                $this->getBrowser()->highlightWidget(
+                    $filterNode->getNodeElement(),
+                    'Filter',
+                    $index  // Use the actual index from the filtered containers
+                );
             }
         }
 
@@ -536,8 +527,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             );
         }
     }
-
-    //v1 
 
     /**
      * Filter input handling for UI5 applications
@@ -1514,6 +1503,32 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             throw $e;
         }
         return $this->browser;
+    }
+
+    /**
+     * Examples:
+     * 
+     * - [#=Now()#]
+     * - [#=GetConfig('exface.Core', 'CONFIG_KEY')#]
+     * - `TestReport [#=Now('yyyyMMdd_HHmmss')#]`
+     * 
+     * @param string $argument
+     * @return string
+     */
+    protected function parseArgument(string $argument) : string
+    {
+        $phs = StringDataType::findPlaceholders($argument);
+        if (! empty($phs)) {
+            $phVals = [];
+            foreach ($phs as $ph) {
+                if (Expression::detectFormula($ph)) {
+                    $formula = FormulaFactory::createFromString($this->getWorkbench(), $ph);
+                    $phVals[$ph] = $formula->evaluate();
+                }
+                $argument = StringDataType::replacePlaceholders($argument, $phVals);
+            }
+        }
+        return $argument;
     }
 
     protected function splitArgument(string $delimitedList = null, string $delimiter = ','): array

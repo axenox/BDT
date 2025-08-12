@@ -1472,6 +1472,7 @@ JS
     public function getFilters(int $min = 1, int $max = null): array
     {
         $nodes = $this->findWidgetNodes('Filter', 15);
+        $nodes = array_merge($nodes, $this->findWidgetNodes('RangeFilter', 15));
 
         switch (true) {
             case count($nodes) < $min:
