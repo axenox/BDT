@@ -261,7 +261,6 @@ class BehatFormatter implements Formatter
     {
         return array(
             'tester.exercise_completed.before' => 'onBeforeExercise',
-            'tester.exercise_completed.after' => 'onAfterExercise',
             'tester.suite_tested.before' => 'onBeforeSuiteTested',
             'tester.suite_tested.after' => 'onAfterSuiteTested',
             'tester.feature_tested.before' => 'onBeforeFeatureTested',
