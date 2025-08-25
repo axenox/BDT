@@ -63,22 +63,40 @@
         {
             "_EXPORT_SUMMARY": "Nightly autom. tests",
             "CREATED_ON": "2025-08-18 10:09:48",
-            "MODIFIED_ON": "2025-08-18 10:09:48",
+            "MODIFIED_ON": "2025-08-25 11:15:32",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
+            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f0a1a9b58bba36a1a9025041000001",
-            "ACTION_UXON": {
-                "": ""
-            },
+            "ACTION_UXON": null,
             "QUEUE_TOPICS": "behat",
-            "SCHEDULE": "30 23 * * *",
+            "SCHEDULE": "* * * * *",
             "APP": "0x11efa2214f96c8b8a221025041000001",
             "DESCRIPTION": "",
             "NAME": "Nightly autom. tests",
             "TASK_UXON": {
-                "cmd": "vendor\bin\\Behat --tags=Status::Ready"
+                "cmd": "vendor\\bin\\Behat --tags=Status::Ready",
+                "timeout": 2700
             },
             "FIRST_RUN": "2025-08-18 10:06:21"
+        },
+        {
+            "_EXPORT_SUMMARY": "Chrome For Tests",
+            "CREATED_ON": "2025-08-25 11:14:34",
+            "MODIFIED_ON": "2025-08-25 11:15:31",
+            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "UID": "0x11f0909bead8289e909b025041000001",
+            "ACTION_UXON": null,
+            "QUEUE_TOPICS": "behat",
+            "SCHEDULE": "20 23 * * *",
+            "APP": "0x11efa2214f96c8b8a221025041000001",
+            "DESCRIPTION": "",
+            "NAME": "Chrome For Tests",
+            "TASK_UXON": {
+                "cmd": "start \"\" data\\axenox\\BDT\\Chrome.bat",
+                "timeout": 10
+            },
+            "FIRST_RUN": "2025-08-25 09:44:10"
         }
     ],
     "totals_rows": [],
