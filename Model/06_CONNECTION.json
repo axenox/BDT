@@ -1,0 +1,100 @@
+{
+    "object_alias": "exface.Core.CONNECTION",
+    "columns": [
+        {
+            "name": "_EXPORT_SUMMARY",
+            "hidden": true,
+            "attribute_alias": "LABEL"
+        },
+        {
+            "name": "CREATED_ON",
+            "attribute_alias": "CREATED_ON"
+        },
+        {
+            "name": "MODIFIED_ON",
+            "attribute_alias": "MODIFIED_ON"
+        },
+        {
+            "name": "CREATED_BY_USER",
+            "attribute_alias": "CREATED_BY_USER"
+        },
+        {
+            "name": "MODIFIED_BY_USER",
+            "attribute_alias": "MODIFIED_BY_USER"
+        },
+        {
+            "name": "UID",
+            "attribute_alias": "UID"
+        },
+        {
+            "name": "APP",
+            "attribute_alias": "APP"
+        },
+        {
+            "name": "TIME_ZONE",
+            "attribute_alias": "TIME_ZONE"
+        },
+        {
+            "name": "LABEL",
+            "attribute_alias": "LABEL"
+        },
+        {
+            "name": "CONNECTOR",
+            "attribute_alias": "CONNECTOR"
+        },
+        {
+            "name": "CONFIG",
+            "attribute_alias": "CONFIG"
+        },
+        {
+            "name": "READONLY",
+            "attribute_alias": "READONLY"
+        },
+        {
+            "name": "ALIAS",
+            "attribute_alias": "ALIAS"
+        }
+    ],
+    "rows": [
+        {
+            "_EXPORT_SUMMARY": "BDT File Storage (local)",
+            "CREATED_ON": "2025-07-23 11:16:00",
+            "MODIFIED_ON": "2025-07-23 11:16:00",
+            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "UID": "0x11f0a73ba6306bfaa73b025041000001",
+            "APP": "0x11efa2214f96c8b8a221025041000001",
+            "TIME_ZONE": null,
+            "LABEL": "BDT File Storage (local)",
+            "CONNECTOR": "exface/Core/DataConnectors/LocalFileConnector.php",
+            "CONFIG": "$$~~A4jS2CAjI26kl5aDruYQDeggXCSWZKJrz7zotrdAllDeuBaJzKdtjKJo9lqwh4YlILP56W8yz23tlgBW3rjWp/PyAdFJVZ3P8Q==",
+            "READONLY": 0,
+            "ALIAS": "bdt_file_storage_local"
+        }
+    ],
+    "totals_rows": [],
+    "filters": {
+        "operator": "AND",
+        "base_object_alias": "exface.Core.CONNECTION",
+        "conditions": [
+            {
+                "expression": "APP",
+                "comparator": "=",
+                "value": "0x11efa2214f96c8b8a221025041000001",
+                "object_alias": "exface.Core.CONNECTION"
+            }
+        ]
+    },
+    "rows_limit": null,
+    "rows_offset": 0,
+    "sorters": [
+        {
+            "attribute_alias": "CREATED_ON",
+            "direction": "ASC"
+        },
+        {
+            "attribute_alias": "UID",
+            "direction": "ASC"
+        }
+    ]
+}

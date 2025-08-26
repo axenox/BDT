@@ -1,0 +1,19 @@
+{
+    "uid": "0x11f0a4fab920e95aa4fa025041000001",
+    "alias_with_namespace": "axenox.bdt.bdt-sql-migrations",
+    "menu_parent_page_selector": "0xb90bb0b8949f11e7a605028037ec0200",
+    "menu_index": 0,
+    "menu_visible": true,
+    "name": "BDT SQL migrations",
+    "description": "",
+    "intro": "",
+    "replaces_page_selector": null,
+    "created_by_user_selector": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+    "created_on": "2025-08-25 19:55:44",
+    "modified_by_user_selector": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+    "modified_on": "2025-08-26 08:49:04",
+    "contents": {
+        "extend_widget": "[exface.core.core-sql-migrations]",
+        "object_alias": "axenox.BDT.BDT_SQLMigrations"
+    }
+}
