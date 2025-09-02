@@ -11,7 +11,7 @@
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2025-07-08 18:20:52",
     "modified_by_user_selector": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-    "modified_on": "2025-07-29 11:22:14",
+    "modified_on": "2025-09-02 21:02:24",
     "contents": {
         "object_alias": "axenox.BDT.run",
         "widget_type": "SplitHorizontal",
@@ -39,6 +39,21 @@
                             },
                             {
                                 "attribute_alias": "behat_command"
+                            },
+                            {
+                                "attribute_alias": "finished_on"
+                            },
+                            {
+                                "attribute_alias": "run_stats__steps_total"
+                            },
+                            {
+                                "attribute_alias": "run_stats__steps_passed"
+                            },
+                            {
+                                "attribute_alias": "run_stats__steps_failed"
+                            },
+                            {
+                                "attribute_alias": "run_stats__steps_skipped"
                             }
                         ],
                         "sorters": [
@@ -98,10 +113,19 @@
                                                 "attribute_alias": "name"
                                             },
                                             {
-                                                "attribute_alias": "run_feature_stats__scenarios"
+                                                "attribute_alias": "run_feature_stats__scenarios_total"
                                             },
                                             {
-                                                "attribute_alias": "run_feature_stats__steps"
+                                                "attribute_alias": "run_feature_stats__steps_total"
+                                            },
+                                            {
+                                                "attribute_alias": "run_feature_stats__steps_passed"
+                                            },
+                                            {
+                                                "attribute_alias": "run_feature_stats__steps_failed"
+                                            },
+                                            {
+                                                "attribute_alias": "run_feature_stats__steps_skipped"
                                             }
                                         ],
                                         "sorters": [
@@ -149,7 +173,7 @@
                                                 "attribute_alias": "line"
                                             },
                                             {
-                                                "attribute_alias": "run_step_stats__status:MAX",
+                                                "attribute_alias": "run_scenario_stats__status",
                                                 "caption": "Status"
                                             },
                                             {
@@ -161,6 +185,18 @@
                                             {
                                                 "attribute_alias": "run_scenario_action__page_alias:LIST_DISTINCT",
                                                 "caption": "Pages"
+                                            },
+                                            {
+                                                "attribute_alias": "run_scenario_stats__steps_total"
+                                            },
+                                            {
+                                                "attribute_alias": "run_scenario_stats__steps_passed"
+                                            },
+                                            {
+                                                "attribute_alias": "run_scenario_stats__steps_failed"
+                                            },
+                                            {
+                                                "attribute_alias": "run_scenario_stats__steps_skipped"
                                             }
                                         ],
                                         "sorters": [
