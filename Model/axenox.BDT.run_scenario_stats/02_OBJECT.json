@@ -85,17 +85,17 @@
     ],
     "rows": [
         {
-            "_EXPORT_SUMMARY": "BDT feature stats [axenox.BDT.run_feature_stats]",
-            "CREATED_ON": "2025-09-02 20:39:02",
-            "MODIFIED_ON": "2025-09-02 20:47:18",
+            "_EXPORT_SUMMARY": "BDT scenario stats [axenox.BDT.run_scenario_stats]",
+            "CREATED_ON": "2025-09-02 20:48:26",
+            "MODIFIED_ON": "2025-09-02 20:49:16",
             "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "UID": "0x11f09f6718d40b0c9f67025041000001",
+            "UID": "0x11f09fa968dbbbee9fa9025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
             "COMMENTS": "",
             "DOCS": "",
-            "NAME": "BDT feature stats",
+            "NAME": "BDT scenario stats",
             "INHERIT_DATA_SOURCE_BASE_OBJECT": 0,
             "DATA_SOURCE": "0x11f0aee48b2814e8aee4025041000001",
             "APP": "0x11efa2214f96c8b8a221025041000001",
@@ -103,8 +103,8 @@
             "PARENT_OBJECT": null,
             "DATA_ADDRESS_PROPS": null,
             "DEFAULT_EDITOR_UXON": null,
-            "ALIAS": "run_feature_stats",
-            "DATA_ADDRESS": "bdt_run_feature_stats"
+            "ALIAS": "run_scenario_stats",
+            "DATA_ADDRESS": "bdt_run_scenario_stats"
         }
     ],
     "totals_rows": [],
