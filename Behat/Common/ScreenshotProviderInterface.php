@@ -8,4 +8,5 @@ interface ScreenshotProviderInterface
     public function setName(string $fileName): void;
     public function getName(): ?string;
     public function getPath(): ?string;
+    public function isCaptured(): bool;
 }
