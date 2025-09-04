@@ -760,7 +760,7 @@ class BehatFormatter implements Formatter
         }
 
         if (!$result->isPassed()) {
-            if(!empty($this->provider->getName())){
+            if($this->provider->isCaptured()){
                 $screenshotPath = $this->basePath . DIRECTORY_SEPARATOR . $this->provider->getPath() . DIRECTORY_SEPARATOR . $this->provider->getName();
                 if (file_exists($screenshotPath)) {
                     $relativeWebPath = $this->getRelativeWebPath($this->printer->getOutputPath(), $screenshotPath);

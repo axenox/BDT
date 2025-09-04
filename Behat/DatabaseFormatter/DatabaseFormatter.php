@@ -264,8 +264,10 @@ class DatabaseFormatter implements Formatter
         $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->runStart);
         $ds->setCellValue('status', 0, StepStatusDataType::convertFromBehatResultCode($result->getResultCode()));
         if ($result->getResultCode() === TestResult::FAILED) {
-            $screenshotRelativePath = $this->provider->getPath() . DIRECTORY_SEPARATOR . $this->provider->getName();
-            $ds->setCellValue('screenshot_path', 0, $screenshotRelativePath);
+            if($this->provider->isCaptured()) {
+                $screenshotRelativePath = $this->provider->getPath() . DIRECTORY_SEPARATOR . $this->provider->getName();
+                $ds->setCellValue('screenshot_path', 0, $screenshotRelativePath);
+            }
             if ($e = $result->getException()) {
                 $ds->setCellValue('error_message', 0, $e->getMessage());
                 if(!empty($logId = ErrorManager::getInstance()->getLastLogId())) {
