@@ -130,7 +130,7 @@
                                             },
                                             {
                                                 "attribute_alias": "run_feature_stats__scenarios_skipped",
-                                                "caption (copy)": "S. Scenarios"
+                                                "caption": "S. Scenarios"
                                             }
                                         ],
                                         "sorters": [
