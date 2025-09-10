@@ -87,9 +87,9 @@
         {
             "_EXPORT_SUMMARY": "BDT test run [axenox.BDT.run]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2025-07-08 15:33:26",
+            "MODIFIED_ON": "2025-09-10 16:54:40",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
+            "MODIFIED_BY_USER": "0x11eca7f5b092f284a7f5005056bea39f",
             "UID": "0x11f08c1d222cd23e8c1d025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
@@ -102,7 +102,150 @@
             "SHORT_DESCRIPTION": "",
             "PARENT_OBJECT": null,
             "DATA_ADDRESS_PROPS": null,
-            "DEFAULT_EDITOR_UXON": null,
+            "DEFAULT_EDITOR_UXON": {
+                "widget_type": "Dialog",
+                "width": 3,
+                "widgets": [
+                    {
+                        "widget_type": "InputHidden",
+                        "attribute_alias": "UID",
+                        "id": "run_uid_field"
+                    },
+                    {
+                        "widget_type": "SplitVertical",
+                        "panels": [
+                            {
+                                "height": "50%",
+                                "widgets": [
+                                    {
+                                        "widget_type": "SplitHorizontal",
+                                        "panels": [
+                                            {
+                                                "caption": "Failed scenarios",
+                                                "width": "50%",
+                                                "widgets": [
+                                                    {
+                                                        "widget_type": "Chart",
+                                                        "id": "failed_scenarios_chart",
+                                                        "object_alias": "axenox.BDT.run_scenario_stats",
+                                                        "data": {
+                                                            "filters": [
+                                                                {
+                                                                    "attribute_alias": "run_feature__run",
+                                                                    "hidden": true,
+                                                                    "required": true,
+                                                                    "value": "=run_uid_field",
+                                                                    "comparator": "=="
+                                                                }
+                                                            ],
+                                                            "aggregate_by_attribute_alias": [
+                                                                "status"
+                                                            ]
+                                                        },
+                                                        "series": [
+                                                            {
+                                                                "type": "pie",
+                                                                "value_attribute_alias": "run_scenario:COUNT",
+                                                                "text_attribute_alias": "status"
+                                                            }
+                                                        ]
+                                                    }
+                                                ]
+                                            },
+                                            {
+                                                "caption": "Something else"
+                                            }
+                                        ]
+                                    }
+                                ]
+                            },
+                            {
+                                "caption": "Scenarios",
+                                "height": "50%",
+                                "widgets": [
+                                    {
+                                        "widget_type": "DataTable",
+                                        "object_alias": "axenox.BDT.run_scenario",
+                                        "freeze_columns": 3,
+                                        "row_grouper": {
+                                            "group_by_attribute_alias": "run_feature__name"
+                                        },
+                                        "filters": [
+                                            {
+                                                "attribute_alias": "run_feature__run__UID",
+                                                "comparator": "==",
+                                                "required": true,
+                                                "hidden": true
+                                            },
+                                            {
+                                                "attribute_alias": "run_scenario_stats__status",
+                                                "value": "=failed_scenarios_chart!status",
+                                                "apply_on_change": true
+                                            }
+                                        ],
+                                        "columns": [
+                                            {
+                                                "attribute_alias": "run_feature__name"
+                                            },
+                                            {
+                                                "attribute_alias": "line"
+                                            },
+                                            {
+                                                "attribute_alias": "run_scenario_stats__status",
+                                                "caption": "Status"
+                                            },
+                                            {
+                                                "attribute_alias": "name"
+                                            },
+                                            {
+                                                "attribute_alias": "tags"
+                                            },
+                                            {
+                                                "attribute_alias": "run_scenario_action__page_alias:LIST_DISTINCT",
+                                                "caption": "Pages"
+                                            },
+                                            {
+                                                "attribute_alias": "run_scenario_stats__steps_total"
+                                            },
+                                            {
+                                                "attribute_alias": "run_scenario_stats__steps_passed"
+                                            },
+                                            {
+                                                "attribute_alias": "run_scenario_stats__steps_failed"
+                                            },
+                                            {
+                                                "attribute_alias": "run_scenario_stats__steps_skipped"
+                                            },
+                                            {
+                                                "attribute_alias": "duration_ms"
+                                            }
+                                        ],
+                                        "sorters": [
+                                            {
+                                                "attribute_alias": "run_feature__started_on",
+                                                "direction": "asc"
+                                            },
+                                            {
+                                                "attribute_alias": "line",
+                                                "direction": "asc"
+                                            }
+                                        ],
+                                        "buttons": [
+                                            {
+                                                "action_alias": "exface.core.ShowObjectEditDialog",
+                                                "bind_to_double_click": true
+                                            },
+                                            {
+                                                "action_alias": "axenox.BDT.RunScenarioRetest"
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            },
             "ALIAS": "run",
             "DATA_ADDRESS": "bdt_run"
         }
