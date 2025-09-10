@@ -110,10 +110,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
                 ->setDescription('Include an app (alias) when running tests on the current installation'),
             (new ServiceParameter($this))
                 ->setName(self::CLI_OPT_BROWSER)
-                ->setDescription('Use this browser configuration from configuration file "axenox.Behat.config.json"'),
-            (new ServiceParameter($this))
-                ->setName('verbose')
-                ->setDescription('Enable verbose error reporting')
+                ->setDescription('Use this browser configuration from configuration file "axenox.Behat.config.json"')
         ];
     }
 
