@@ -61,61 +61,23 @@
     ],
     "rows": [
         {
-            "_EXPORT_SUMMARY": "Nightly autom. tests",
+            "_EXPORT_SUMMARY": "Nightly automated BDT test run",
             "CREATED_ON": "2025-08-18 10:09:48",
-            "MODIFIED_ON": "2025-09-04 11:10:01",
+            "MODIFIED_ON": "2025-09-10 15:53:42",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x11efa24edb84611aa24e025041000001",
+            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11f0a1a9b58bba36a1a9025041000001",
             "ACTION_UXON": null,
             "QUEUE_TOPICS": "behat",
             "SCHEDULE": "30 23 * * *",
             "APP": "0x11efa2214f96c8b8a221025041000001",
-            "DESCRIPTION": "",
-            "NAME": "Nightly autom. tests",
+            "DESCRIPTION": "This will run all test scenarios marked with tag Status::Ready at night",
+            "NAME": "Nightly automated BDT test run",
             "TASK_UXON": {
-                "cmd": "vendor\\bin\\Behat --tags=Status::Ready",
+                "cmd": "vendor\\bin\\action axenox.BDT:Behat init & vendor\\bin\\Behat --tags=Status::Ready",
                 "timeout": 10800
             },
             "FIRST_RUN": "2025-08-18 10:06:21"
-        },
-        {
-            "_EXPORT_SUMMARY": "Chrome For Tests CMD",
-            "CREATED_ON": "2025-08-27 11:34:48",
-            "MODIFIED_ON": "2025-08-27 12:07:06",
-            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "UID": "0x11f08f62135404468f62025041000001",
-            "ACTION_UXON": null,
-            "QUEUE_TOPICS": "behat",
-            "SCHEDULE": "* * * * *",
-            "APP": "0x11efa2214f96c8b8a221025041000001",
-            "DESCRIPTION": "",
-            "NAME": "Chrome For Tests CMD",
-            "TASK_UXON": {
-                "cmd": "C:\\wamp\\www\\exface\\exface\\data\\axenox\\BDT\\Chrome\\GoogleChromePortable\\GoogleChromePortable.exe --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222",
-                "timeout": 10
-            },
-            "FIRST_RUN": "2025-08-25 09:44:10"
-        },
-        {
-            "_EXPORT_SUMMARY": "Chrome For Tests",
-            "CREATED_ON": "2025-08-27 11:54:14",
-            "MODIFIED_ON": "2025-09-04 11:09:48",
-            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "MODIFIED_BY_USER": "0x11efa24edb84611aa24e025041000001",
-            "UID": "0x11f08f64ca6095768f64025041000001",
-            "ACTION_UXON": null,
-            "QUEUE_TOPICS": "behat",
-            "SCHEDULE": "20 23 * * *",
-            "APP": "0x11efa2214f96c8b8a221025041000001",
-            "DESCRIPTION": "",
-            "NAME": "Chrome For Tests",
-            "TASK_UXON": {
-                "cmd": "start \"\" data\\axenox\\BDT\\Chrome.bat",
-                "timeout": 10
-            },
-            "FIRST_RUN": "2025-08-25 09:44:10"
         }
     ],
     "totals_rows": [],
