@@ -125,10 +125,10 @@
                                 "attribute_alias": "name"
                             },
                             {
-                                "attribute_alias": "run_feature_stats__scenarios"
+                                "attribute_alias": "run_feature_stats__scenarios_total"
                             },
                             {
-                                "attribute_alias": "run_feature_stats__steps"
+                                "attribute_alias": "run_feature_stats__steps_total"
                             },
                             {
                                 "attribute_alias": "filename",

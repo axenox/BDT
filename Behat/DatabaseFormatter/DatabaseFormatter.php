@@ -177,7 +177,7 @@ class DatabaseFormatter implements Formatter
     public function onAfterFeature(AfterFeatureTested $event) {
         $ds = $this->featureDataSheet->extractSystemColumns();
         $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
-        $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->runStart);
+        $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->featureStart);
         $ds->dataUpdate();
     }
 
@@ -216,7 +216,7 @@ class DatabaseFormatter implements Formatter
     public function onAfterScenario(AfterScenarioTested|AfterOutlineTested $event) {
         $ds = $this->scenarioDataSheet->extractSystemColumns();
         $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
-        $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->runStart);
+        $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->scenarioStart);
         $ds->dataUpdate();
         $cenarioUid = $ds->getUidColumn()->getValue(0);
 
@@ -261,7 +261,7 @@ class DatabaseFormatter implements Formatter
 
         $ds = $this->stepDataSheet->extractSystemColumns();
         $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
-        $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->runStart);
+        $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->stepStart);
         $ds->setCellValue('status', 0, StepStatusDataType::convertFromBehatResultCode($result->getResultCode()));
         if ($result->getResultCode() === TestResult::FAILED) {
             if($this->provider->isCaptured()) {
