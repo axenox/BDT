@@ -73,16 +73,11 @@ class TestDataInstaller extends DataInstaller
                     $expr = $condition->getExpression();
                     return $expr->isMetaAttribute() && $expr->getAttribute()->isExactly($uidAttr);
                 })[0];
-                if ($uidCondition === null) {
-                    $e = 1;
-                }
                 $existingUids = explode($uidAttr->getValueListDelimiter(), $uidCondition->getValue());
                 $inputUids = $inputSheet->getUidColumn()->getValues();
                 $uids = array_unique(array_merge($existingUids, $inputUids));
                 $newUids = array_diff($uids, $existingUids);
-                if (! empty($newUids)) {
-                    $uidCondition->setValue(implode($uidAttr->getValueListDelimiter(), $uids));
-                }
+                $uidCondition->setValue(implode($uidAttr->getValueListDelimiter(), $uids));
                 yield 'Added ' . (count($uids) - count($existingUids)) . ' rows to existing test data for ' . $obj->__toString() . PHP_EOL;
                 break;
             }
@@ -112,10 +107,10 @@ class TestDataInstaller extends DataInstaller
                     }
                     $leftFileIdx = $this->getModelFileIndex($obj->getAliasWithNamespace());
                     $rel = $attr->getRelation();
-                    if ($rel->isForwardRelation() && $rel->isDefinedInLeftObject()) {
+                    if ($rel->isForwardRelation() && $rel->isDefinedInLeftObject() && $rel->getRightObject()->isWritable()) {
                         $leftKeys = $column->getValues();
                         if ($rel->getRightKeyAttribute()->isUidForObject()) {
-                            $rightUids = array_unique($leftKeys);
+                            $rightUids = array_filter(array_unique($leftKeys));
                         } else {
                             // TODO find the UIDs of the right object
                             yield $indent . $indent . 'Cannot save related test data for relation ' . $rel->toString() . ' - relations to non-UID attributes not supported yet' . PHP_EOL;
