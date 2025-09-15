@@ -3,13 +3,11 @@ namespace axenox\BDT\Common\Installer;
 
 use exface\Core\Behaviors\TimeStampingBehavior;
 use exface\Core\CommonLogic\AppInstallers\DataInstaller;
-use exface\Core\CommonLogic\AppInstallers\MetaModelInstaller;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Interfaces\AppInterface;
 use exface\Core\Interfaces\DataSheets\DataSheetInterface;
 use exface\Core\Interfaces\Model\ConditionInterface;
 use exface\Core\Interfaces\Model\MetaObjectInterface;
-use exface\Core\Interfaces\Selectors\SelectorInterface;
 
 class TestDataInstaller extends DataInstaller
 {
