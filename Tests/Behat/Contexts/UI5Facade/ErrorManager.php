@@ -184,4 +184,56 @@ class ErrorManager
         return $message;
     }
 
+    /**
+     *  Logs an exception with additional context and outputs the associated LogID.
+     *
+     *  This function is intended to be used in any part of the application where exceptions need to be tracked
+     *  and correlated across different systems or log files. It wraps the given exception in a RuntimeException
+     *  (to ensure consistent handling and LogID generation), stores it in the ErrorManager's error list,
+     *  and optionally logs it to an external logger (e.g. the workbench logger). The LogID is echoed to the console
+     *  for easier debugging and tracing.
+     *
+     *  Usage:
+     *    try {
+     *        // risky operation
+     *    } catch (\Exception $e) {
+     *        ErrorManager::getInstance()->logExceptionWithId($e, 'SomeSource', $this->workbench);
+     *    }
+     * 
+     * @param \Exception $e
+     * @param string $source
+     * @param $workbench
+     * @return mixed
+     * @throws \Exception
+     */
+    public function logExceptionWithId(\Exception $e, string $source = 'Unknown', $workbench = null)
+    {
+        $wrappedException = new \RuntimeException(
+            $e->getMessage(),
+            0,
+            $e
+        );
+
+        $logId = method_exists($wrappedException, 'getId') ? $wrappedException->getId() : null;
+
+        $this->addError([
+            'type'    => 'Exception',
+            'message' => $e->getMessage(),
+            'status'  => $e->getCode(),
+            'stack'   => $e->getTraceAsString(),
+            'logId'   => $logId,
+        ], $source);
+
+        if ($workbench && method_exists($workbench, 'getLogger')) {
+            $workbench->getLogger()->logException($wrappedException);
+        }
+
+        if ($logId) {
+            $this->setLastLogId($logId);
+            echo "[ERROR] LogID: " . $logId . PHP_EOL;
+        } else {
+            echo "[ERROR] " . $e->getMessage() . PHP_EOL;
+        }
+        throw $e;
+    }
 }
