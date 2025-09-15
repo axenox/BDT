@@ -111,171 +111,224 @@ class DatabaseFormatter implements Formatter
             $filepath = array_shift($cliArgs);
             $command = implode(' ', $cliArgs);
         }
-
-        $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run');
-        $ds->addRow([
-            'started_on' => DateTimeDataType::now(),
-            'behat_command' => $command
-        ]);
-        $ds->dataCreate(false);
-        $this->runDataSheet = $ds;
+        try{
+            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run');
+            $ds->addRow([
+                'started_on' => DateTimeDataType::now(),
+                'behat_command' => $command
+            ]);
+            $ds->dataCreate(false);
+            $this->runDataSheet = $ds;            
+        }
+        catch(\Exception $e){
+            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+        }
     }
 
     public function onAfterExercise(): void
     {
-        $ds = $this->runDataSheet->extractSystemColumns();
-        $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
-        $ds->setCellValue('duration_ms', 0,$this->microtime() - $this->runStart);
-        $ds->dataUpdate();
+        try{
+            $ds = $this->runDataSheet->extractSystemColumns();
+            $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
+            $ds->setCellValue('duration_ms', 0,$this->microtime() - $this->runStart);
+            $ds->dataUpdate();
+        }
+        catch(\Exception $e){
+            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+        }
     }
     
     public function onAfterSuite(AfterSuiteTested $event) : void
     {
-        if (!empty(self::$scenarioPages)) {
-            $suite = $event->getSuite();
-            $suiteName = $suite->getName();
-            $existingPages = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'exface.Core.PAGE');
-            $existingPages->getFilters()->addConditionFromString('APP__ALIAS', $suiteName, ComparatorDataType::EQUALS);
-            $existingPages->dataRead();
-            $pageCount = $existingPages->countRows();
-            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_suite');
-            $ds->addRow([
-                'run' => $this->runDataSheet->getUidColumn()->getValue(0),
-                'app' => $suiteName,
-                'effected_page_count' => count(self::$testedPages),
-                'total_page_count' => $pageCount,
-                'coverage' => number_format((count(self::$testedPages) / $pageCount) * 100, 2)
-            ]);
-            $ds->dataCreate(false);
+        try{
+            if (!empty(self::$scenarioPages)) {
+                $suite = $event->getSuite();
+                $suiteName = $suite->getName();
+                $existingPages = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'exface.Core.PAGE');
+                $existingPages->getFilters()->addConditionFromString('APP__ALIAS', $suiteName, ComparatorDataType::EQUALS);
+                $existingPages->dataRead();
+                $pageCount = $existingPages->countRows();
+                $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_suite');
+                $ds->addRow([
+                    'run' => $this->runDataSheet->getUidColumn()->getValue(0),
+                    'app' => $suiteName,
+                    'effected_page_count' => count(self::$testedPages),
+                    'total_page_count' => $pageCount,
+                    'coverage' => number_format((count(self::$testedPages) / $pageCount) * 100, 2)
+                ]);
+                $ds->dataCreate(false);
+            }
+        }
+        catch(\Exception $e){
+            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
         }
     }
 
-    public function onBeforeFeature(BeforeFeatureTested $event) {
-        $feature = $event->getFeature();
-        $suite = $event->getSuite();
-        $this->featureIdx++;
-        $this->featureStart = $this->microtime();
-        $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_feature');
-        $filename = FilePathDataType::normalize($event->getFeature()->getFile(), '/');
-        $content = file_get_contents($filename);
-        $vendorPath = FilePathDataType::normalize($this->workbench->filemanager()->getPathToVendorFolder(), '/') . '/';
-        $filename = StringDataType::substringAfter($filename, $vendorPath, $filename);
-        $ds->addRow([
-            'run' => $this->runDataSheet->getUidColumn()->getValue(0),
-            'run_sequence_idx' => $this->featureIdx,
-            'app_alias' => $suite->getName(),
-            'name' => $feature->getTitle(),
-            'description' => $feature->getDescription(),
-            'filename' => $filename,
-            'started_on' => DateTimeDataType::now(),
-            'content' => $content
-        ]);
-        $ds->dataCreate(false);
-        $this->featureDataSheet = $ds;
+    public function onBeforeFeature(BeforeFeatureTested $event) 
+    {
+        try{
+            $feature = $event->getFeature();
+            $suite = $event->getSuite();
+            $this->featureIdx++;
+            $this->featureStart = $this->microtime();
+            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_feature');
+            $filename = FilePathDataType::normalize($event->getFeature()->getFile(), '/');
+            $content = file_get_contents($filename);
+            $vendorPath = FilePathDataType::normalize($this->workbench->filemanager()->getPathToVendorFolder(), '/') . '/';
+            $filename = StringDataType::substringAfter($filename, $vendorPath, $filename);
+            $ds->addRow([
+                'run' => $this->runDataSheet->getUidColumn()->getValue(0),
+                'run_sequence_idx' => $this->featureIdx,
+                'app_alias' => $suite->getName(),
+                'name' => $feature->getTitle(),
+                'description' => $feature->getDescription(),
+                'filename' => $filename,
+                'started_on' => DateTimeDataType::now(),
+                'content' => $content
+            ]);
+            $ds->dataCreate(false);
+            $this->featureDataSheet = $ds;
+        }
+        catch(\Exception $e){
+            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+        }
     }
 
-    public function onAfterFeature(AfterFeatureTested $event) {
-        $ds = $this->featureDataSheet->extractSystemColumns();
-        $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
-        $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->featureStart);
-        $ds->dataUpdate();
+    public function onAfterFeature(AfterFeatureTested $event) 
+    {
+        try{
+            $ds = $this->featureDataSheet->extractSystemColumns();
+            $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
+            $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->featureStart);
+            $ds->dataUpdate();
+        }
+        catch(\Exception $e){
+            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+        }
     }
 
     public function onBeforeScenario(BeforeScenarioTested $event) {
         static::$scenarioPages = [];
-        $scenario = $event->getScenario();
-        $this->scenarioStart = $this->microtime();
-        $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_scenario');
-        $ds->addRow([
-            'run_feature' => $this->featureDataSheet->getUidColumn()->getValue(0),
-            'name' => $scenario->getTitle(),
-            'line' => $scenario->getLine(),
-            'started_on' => DateTimeDataType::now(),
-            'tags' => implode(', ', $scenario->getTags())
-        ]);
-        $ds->dataCreate(false);
-        $this->scenarioDataSheet = $ds;
+        try{
+            $scenario = $event->getScenario();
+            $this->scenarioStart = $this->microtime();
+            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_scenario');
+            $ds->addRow([
+                'run_feature' => $this->featureDataSheet->getUidColumn()->getValue(0),
+                'name' => $scenario->getTitle(),
+                'line' => $scenario->getLine(),
+                'started_on' => DateTimeDataType::now(),
+                'tags' => implode(', ', $scenario->getTags())
+            ]);
+            $ds->dataCreate(false);
+            $this->scenarioDataSheet = $ds;
+        }
+        catch(\Exception $e){
+            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+        }
     }
 
     public function onBeforeOutline(BeforeOutlineTested $event) {
         static::$scenarioPages = [];
-        $outline = $event->getOutline();
-        $this->scenarioStart = $this->microtime();
-        $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_scenario');
-        $ds->addRow([
-            'run_feature' => $this->featureDataSheet->getUidColumn()->getValue(0),
-            'name' => $outline->getTitle() . ' - with ' . count($outline->getExamples()) . ' examples',
-            'line' => $outline->getLine(),
-            'started_on' => DateTimeDataType::now(),
-            'tags' => implode(', ', $outline->getTags())
-        ]);
-        $ds->dataCreate(false);
-        $this->scenarioDataSheet = $ds;
-    }
-
-    public function onAfterScenario(AfterScenarioTested|AfterOutlineTested $event) {
-        $ds = $this->scenarioDataSheet->extractSystemColumns();
-        $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
-        $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->scenarioStart);
-        $ds->dataUpdate();
-        $cenarioUid = $ds->getUidColumn()->getValue(0);
-
-        $dsActions = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_scenario_action');
-        foreach (static::$scenarioPages as $pageAlias) {
-            try {
-                $page = UiPageFactory::createFromModel($this->workbench, $pageAlias);
-                $pageUid = $page->getUid();
-            } catch (\Throwable $e) {
-                $pageUid = null;
-            }
-            $dsActions->addRow([
-                'run_scenario' => $cenarioUid,
-                'page_alias' => $pageAlias,
-                'page' => $pageUid
+        try{
+            $outline = $event->getOutline();
+            $this->scenarioStart = $this->microtime();
+            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_scenario');
+            $ds->addRow([
+                'run_feature' => $this->featureDataSheet->getUidColumn()->getValue(0),
+                'name' => $outline->getTitle() . ' - with ' . count($outline->getExamples()) . ' examples',
+                'line' => $outline->getLine(),
+                'started_on' => DateTimeDataType::now(),
+                'tags' => implode(', ', $outline->getTags())
             ]);
+            $ds->dataCreate(false);
+            $this->scenarioDataSheet = $ds;
         }
-        $dsActions->dataCreate();
+        catch(\Exception $e){
+            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+        }
     }
 
-    public function onBeforeStep(BeforeStepTested $event) {
-        $step = $event->getStep();
-        $this->stepIdx++;
-        $this->stepStart = $this->microtime();
-        $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_step');
-        $ds->addRow([
-            'run_scenario' => $this->scenarioDataSheet->getUidColumn()->getValue(0),
-            'run_sequence_idx' => $this->stepIdx,
-            'name' => $step->getText(),
-            'line' => $step->getLine(),
-            'started_on' => DateTimeDataType::now(),
-            'status' => 10
-        ]);
-        $ds->dataCreate(false);
-        $this->stepDataSheet = $ds;
-        $this->provider->setName($ds->getUidColumn()->getValue(0));
-    }
-
-    public function onAfterStep(AfterStepTested $event) {
-        $step = $event->getStep();
-        $result = $event->getTestResult();
-
-        $ds = $this->stepDataSheet->extractSystemColumns();
-        $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
-        $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->stepStart);
-        $ds->setCellValue('status', 0, StepStatusDataType::convertFromBehatResultCode($result->getResultCode()));
-        if ($result->getResultCode() === TestResult::FAILED) {
-            if($this->provider->isCaptured()) {
-                $screenshotRelativePath = $this->provider->getPath() . DIRECTORY_SEPARATOR . $this->provider->getName();
-                $ds->setCellValue('screenshot_path', 0, $screenshotRelativePath);
+    public function onAfterScenario(AfterScenarioTested|AfterOutlineTested $event) 
+    {
+        try{
+            $ds = $this->scenarioDataSheet->extractSystemColumns();
+            $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
+            $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->scenarioStart);
+            $ds->dataUpdate();
+            $cenarioUid = $ds->getUidColumn()->getValue(0);
+    
+            $dsActions = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_scenario_action');
+            foreach (static::$scenarioPages as $pageAlias) {
+                try {
+                    $page = UiPageFactory::createFromModel($this->workbench, $pageAlias);
+                    $pageUid = $page->getUid();
+                } catch (\Throwable $e) {
+                    $pageUid = null;
+                }
+                $dsActions->addRow([
+                    'run_scenario' => $cenarioUid,
+                    'page_alias' => $pageAlias,
+                    'page' => $pageUid
+                ]);
             }
-            if ($e = $result->getException()) {
-                $ds->setCellValue('error_message', 0, $e->getMessage());
-                if(!empty($logId = ErrorManager::getInstance()->getLastLogId())) {
-                    $ds->setCellValue('error_log_id', 0, $logId);
+            $dsActions->dataCreate();
+        }
+        catch(\Exception $e){
+            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+        }
+    }
+
+    public function onBeforeStep(BeforeStepTested $event) 
+    {
+        try{
+            $step = $event->getStep();
+            $this->stepIdx++;
+            $this->stepStart = $this->microtime();
+            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_step');
+            $ds->addRow([
+                'run_scenario' => $this->scenarioDataSheet->getUidColumn()->getValue(0),
+                'run_sequence_idx' => $this->stepIdx,
+                'name' => $step->getText(),
+                'line' => $step->getLine(),
+                'started_on' => DateTimeDataType::now(),
+                'status' => 10
+            ]);
+            $ds->dataCreate(false);
+            $this->stepDataSheet = $ds;
+            $this->provider->setName($ds->getUidColumn()->getValue(0));
+        }
+        catch(\Exception $e){
+            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+        }
+    }
+
+    public function onAfterStep(AfterStepTested $event) 
+    {
+        try{
+            $result = $event->getTestResult();
+    
+            $ds = $this->stepDataSheet->extractSystemColumns();
+            $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
+            $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->stepStart);
+            $ds->setCellValue('status', 0, StepStatusDataType::convertFromBehatResultCode($result->getResultCode()));
+            if ($result->getResultCode() === TestResult::FAILED) {
+                if($this->provider->isCaptured()) {
+                    $screenshotRelativePath = $this->provider->getPath() . DIRECTORY_SEPARATOR . $this->provider->getName();
+                    $ds->setCellValue('screenshot_path', 0, $screenshotRelativePath);
+                }
+                if ($e = $result->getException()) {
+                    $ds->setCellValue('error_message', 0, $e->getMessage());
+                    if(!empty($logId = ErrorManager::getInstance()->getLastLogId())) {
+                        $ds->setCellValue('error_log_id', 0, $logId);
+                    }
                 }
             }
+            $ds->dataUpdate();
         }
-        $ds->dataUpdate();
+        catch(\Exception $e){
+            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+        }
     }
     
     public static function addTestedPage(string $alias): void
