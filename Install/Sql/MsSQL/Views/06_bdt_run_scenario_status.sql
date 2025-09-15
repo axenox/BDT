@@ -13,6 +13,7 @@ WITH OrderedScenarios AS (
         s.tags,
         rs.status,
         s.finished_on,
+        s.absolute,
         ROW_NUMBER() OVER (
             PARTITION BY f.filename, s.name
             ORDER BY s.finished_on DESC
@@ -21,8 +22,6 @@ WITH OrderedScenarios AS (
         bdt_run_scenario s
         INNER JOIN bdt_run_feature f ON f.oid = s.run_feature_oid
         INNER JOIN bdt_run_scenario_stats rs ON rs.run_scenario_oid = s.oid
-                WHERE
-        s.absolute IS NULL OR s.absolute != 1
 )
 SELECT
     run_scenario_oid,
@@ -47,5 +46,6 @@ SELECT
 FROM
     OrderedScenarios
 WHERE
+    ([absolute] IS NULL OR [absolute] != 1) AND
     rn = 1
 ;

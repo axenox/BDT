@@ -66,11 +66,11 @@
     "rows": [
         {
             "_EXPORT_SUMMARY": "BDT scenario run: Retest scenario [RunScenarioRetest]",
-            "CREATED_ON": "2025-09-10 16:48:24",
-            "MODIFIED_ON": "2025-09-10 16:48:24",
-            "CREATED_BY_USER": "0x11eca7f5b092f284a7f5005056bea39f",
-            "MODIFIED_BY_USER": "0x11eca7f5b092f284a7f5005056bea39f",
-            "UID": "0x11f0a97e340e6348a97e005056bef75d",
+            "CREATED_ON": "2025-09-11 09:23:13",
+            "MODIFIED_ON": "2025-09-11 09:23:13",
+            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "UID": "0x11f08ea32d2e05fc8ea3025041000001",
             "OBJECT": "0x11f08f0e222d25a48f0e025041000001",
             "ACTION_PROTOTYPE": "exface/core/Actions/CustomFacadeScript.php",
             "ALIAS": "RunScenarioRetest",
@@ -78,6 +78,67 @@
             "SHORT_DESCRIPTION": "",
             "CONFIG_UXON": {
                 "script": "alert('This is not implemented yet')"
+            },
+            "APP": "0x11efa2214f96c8b8a221025041000001",
+            "USE_IN_OBJECT_BASKET_FLAG": 0,
+            "DOCS": ""
+        },
+        {
+            "_EXPORT_SUMMARY": "BDT scenario run: Enable Absolute [EnableAbsolute]",
+            "CREATED_ON": "2025-09-12 12:47:10",
+            "MODIFIED_ON": "2025-09-15 15:50:49",
+            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "UID": "0x11f0a9a7d56b104ea9a7025041000001",
+            "OBJECT": "0x11f08f0e222d25a48f0e025041000001",
+            "ACTION_PROTOTYPE": "exface/core/Actions/UpdateData.php",
+            "ALIAS": "EnableAbsolute",
+            "NAME": "Enable Absolute",
+            "SHORT_DESCRIPTION": "",
+            "CONFIG_UXON": {
+                "alias": "exface.core.UpdateData",
+                "input_rows_min": 1,
+                "input_object_alias": "axenox.BDT.run_scenario",
+                "icon": "toggle-on",
+                "input_mapper": {
+                    "from_object_alias": "axenox.BDT.run_scenario",
+                    "column_to_column_mappings": [
+                        {
+                            "from": "=1",
+                            "to": "absolute"
+                        }
+                    ]
+                }
+            },
+            "APP": "0x11efa2214f96c8b8a221025041000001",
+            "USE_IN_OBJECT_BASKET_FLAG": 0,
+            "DOCS": ""
+        },
+        {
+            "_EXPORT_SUMMARY": "BDT scenario run: Disable Absolute [DisableAbsolute]",
+            "CREATED_ON": "2025-09-12 12:48:24",
+            "MODIFIED_ON": "2025-09-12 12:48:24",
+            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "UID": "0x11f085ac01a61c4485ac025041000001",
+            "OBJECT": "0x11f08f0e222d25a48f0e025041000001",
+            "ACTION_PROTOTYPE": "exface/core/Actions/UpdateData.php",
+            "ALIAS": "DisableAbsolute",
+            "NAME": "Disable Absolute",
+            "SHORT_DESCRIPTION": "",
+            "CONFIG_UXON": {
+                "input_rows_min": 1,
+                "input_object_alias": "axenox.BDT.run_scenario",
+                "icon": "toggle-off",
+                "input_mapper": {
+                    "inherit_columns": "own_attributes",
+                    "column_to_column_mappings": [
+                        {
+                            "from": "=0",
+                            "to": "absolute"
+                        }
+                    ]
+                }
             },
             "APP": "0x11efa2214f96c8b8a221025041000001",
             "USE_IN_OBJECT_BASKET_FLAG": 0,
