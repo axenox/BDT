@@ -3,6 +3,7 @@ namespace axenox\BDT\Actions;
 
 use axenox\BDT\Common\Installer\TestDataInstaller;
 use exface\Core\CommonLogic\AbstractAction;
+use exface\Core\CommonLogic\Constants\Icons;
 use exface\Core\Factories\ResultFactory;
 use exface\Core\Interfaces\DataSources\DataTransactionInterface;
 use exface\Core\Interfaces\Tasks\ResultInterface;
@@ -18,6 +19,7 @@ class SaveTestData extends AbstractAction
     {
         parent::init();
         $this->setInputRowsMin(1);
+        $this->setIcon(Icons::BULLSEYE);
     }
     
     /**
