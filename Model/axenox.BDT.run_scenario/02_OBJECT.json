@@ -87,7 +87,7 @@
         {
             "_EXPORT_SUMMARY": "BDT scenario run [axenox.BDT.run_scenario]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2025-09-11 09:19:18",
+            "MODIFIED_ON": "2025-09-12 13:05:06",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f08f0e222d25a48f0e025041000001",
@@ -145,6 +145,10 @@
                             },
                             {
                                 "attribute_alias": "tags"
+                            },
+                            {
+                                "attribute_alias": "absolute",
+                                "widget_type": "Icon"
                             },
                             {
                                 "widget_type": "DataTableResponsive",

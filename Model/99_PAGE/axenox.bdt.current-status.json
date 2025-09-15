@@ -11,7 +11,7 @@
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2025-07-09 10:27:43",
     "modified_by_user_selector": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-    "modified_on": "2025-09-11 12:23:55",
+    "modified_on": "2025-09-12 13:25:05",
     "contents": {
         "object_alias": "axenox.BDT.run_scenario_status",
         "widget_type": "SplitHorizontal",
@@ -22,6 +22,7 @@
                 "widgets": [
                     {
                         "widget_type": "DataTable",
+                        "id": "scenario_table",
                         "object_alias": "axenox.BDT.run_scenario",
                         "row_grouper": {
                             "group_by_attribute_alias": "run_feature__app__LABEL"
@@ -37,6 +38,10 @@
                             }
                         ],
                         "columns": [
+                            {
+                                "attribute_alias": "absolute",
+                                "hidden": true
+                            },
                             {
                                 "attribute_alias": "run_feature__filename",
                                 "hidden": true
@@ -81,6 +86,34 @@
                                         ]
                                     }
                                 }
+                            },
+                            {
+                                "action_alias": "axenox.BDT.EnableAbsolute",
+                                "disabled_if": {
+                                    "operator": "AND",
+                                    "conditions": [
+                                        {
+                                            "value_left": "=scenario_table!Absolute",
+                                            "comparator": "==",
+                                            "value_right": 1
+                                        }
+                                    ]
+                                }
+                            },
+                            {
+                                "/*": "",
+                                "action_alias": "axenox.BDT.DisableAbsolute",
+                                "disabled_if": {
+                                    "operator": "AND",
+                                    "conditions": [
+                                        {
+                                            "value_left": "=scenario_table!Absolute",
+                                            "comparator": "!=",
+                                            "value_right": 1
+                                        }
+                                    ]
+                                },
+                                "*/": ""
                             }
                         ]
                     }
