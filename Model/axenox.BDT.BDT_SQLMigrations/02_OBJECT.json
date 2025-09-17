@@ -87,9 +87,9 @@
         {
             "_EXPORT_SUMMARY": "BDT SQL Migrations [axenox.BDT.BDT_SQLMigrations]",
             "CREATED_ON": "2025-07-11 12:19:46",
-            "MODIFIED_ON": "2025-08-26 08:48:36",
+            "MODIFIED_ON": "2025-09-15 17:43:05",
             "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11f08fac91910bc88fac025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
@@ -100,7 +100,7 @@
             "DATA_SOURCE": "0x11f0aee48b2814e8aee4025041000001",
             "APP": "0x11efa2214f96c8b8a221025041000001",
             "SHORT_DESCRIPTION": "",
-            "PARENT_OBJECT": null,
+            "PARENT_OBJECT": "0x11e960ea52c375a6afc2ecf4bb639fc6",
             "DATA_ADDRESS_PROPS": null,
             "DEFAULT_EDITOR_UXON": {
                 "widget_type": "Tabs",

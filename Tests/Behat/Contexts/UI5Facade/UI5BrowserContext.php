@@ -3,11 +3,13 @@ namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use axenox\BDT\Behat\TwigFormatter\Context\BehatFormatterContext;
+use axenox\BDT\Common\Installer\TestDataInstaller;
 use Behat\Behat\Context\Context;
 use Behat\Behat\Tester\Result\UndefinedStepResult;
 use Behat\Mink\Element\NodeElement;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use exface\Core\CommonLogic\Model\Expression;
+use exface\Core\CommonLogic\Selectors\AppSelector;
 use exface\Core\CommonLogic\Workbench;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\RuntimeException;
@@ -1417,6 +1419,28 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $this->getBrowser()->highlightWidget($foundedTab, "Tab", 0);
         }
 
+    }
+
+    /**
+     * Given I log in ...
+     * And test data from "my.App" folder "Global" is loaded
+     * When I do...
+     * 
+     * @Given test data from ":appAlias" folder ":subfolder" is loaded
+     * 
+     * @param string $appAlias
+     * @param string $subfolder
+     * @return void
+     */
+    public function testDataIsLoaded(string $appAlias, string $subfolder)
+    {
+        $workbench = $this->getWorkbench();
+        $appSelector = new AppSelector($workbench, $appAlias);
+        $installer = new TestDataInstaller($appSelector);
+        $log = '';
+        foreach ($installer->installTestData($subfolder) as $output) {
+            $log .= $output . PHP_EOL;
+        }
     }
 
 
