@@ -148,15 +148,17 @@ class DatabaseFormatter implements Formatter
                 $existingPages->getFilters()->addConditionFromString('APP__ALIAS', $suiteName, ComparatorDataType::EQUALS);
                 $existingPages->dataRead();
                 $pageCount = $existingPages->countRows();
-                $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_suite');
-                $ds->addRow([
-                    'run' => $this->runDataSheet->getUidColumn()->getValue(0),
-                    'app' => $suiteName,
-                    'effected_page_count' => count(self::$testedPages),
-                    'total_page_count' => $pageCount,
-                    'coverage' => number_format((count(self::$testedPages) / $pageCount) * 100, 2)
-                ]);
-                $ds->dataCreate(false);
+                if ($pageCount > 0) {
+                    $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_suite');
+                    $ds->addRow([
+                        'run' => $this->runDataSheet->getUidColumn()->getValue(0),
+                        'app' => $suiteName,
+                        'effected_page_count' => count(self::$testedPages),
+                        'total_page_count' => $pageCount,
+                        'coverage' => number_format((count(self::$testedPages) / $pageCount) * 100, 2)
+                    ]);
+                    $ds->dataCreate(false);
+                }
             }
         }
         catch(\Exception $e){
