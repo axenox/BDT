@@ -92,6 +92,36 @@
             },
             "ALIAS": "StepStatus",
             "SHORT_DESCRIPTION": ""
+        },
+        {
+            "_EXPORT_SUMMARY": "Test scenario status",
+            "CREATED_ON": "2025-09-30 21:04:43",
+            "MODIFIED_ON": "2025-09-30 21:04:43",
+            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "UID": "0x11f0932f52e3e41a932f025041000001",
+            "APP": "0x11efa2214f96c8b8a221025041000001",
+            "NAME": "Test scenario status",
+            "PROTOTYPE": "axenox/bdt/DataTypes/ScenarioStatusDataType.php",
+            "CONFIG_UXON": null,
+            "VALIDATION_ERROR": null,
+            "DEFAULT_DISPLAY_UXON": {
+                "widget_type": "ColorIndicator",
+                "fill": true,
+                "color_only": false,
+                "color_scale": {
+                    "started": "~WARNING",
+                    "paused": "#ff8e0c",
+                    "pending": "lightgray",
+                    "passed": "~OK",
+                    "failed": "~ERROR"
+                }
+            },
+            "DEFAULT_EDITOR_UXON": {
+                "widget_type": "InputSelect"
+            },
+            "ALIAS": "ScenarioStatus",
+            "SHORT_DESCRIPTION": ""
         }
     ],
     "totals_rows": [],

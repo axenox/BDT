@@ -453,7 +453,7 @@
         {
             "_EXPORT_SUMMARY": "Status [status]",
             "CREATED_ON": "2025-09-10 14:38:26",
-            "MODIFIED_ON": "2025-09-10 14:39:07",
+            "MODIFIED_ON": "2025-09-30 21:05:34",
             "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f082ba0c28b0de82ba025041000001",
@@ -475,7 +475,7 @@
             "TYPE": "D",
             "COPYABLEFLAG": 0,
             "ALIAS": "status",
-            "DATATYPE": "0x30000000000000000000000000000000",
+            "DATATYPE": "0x11f0932f52e3e41a932f025041000001",
             "DATA_ADDRESS": "scenario_status",
             "OBJECT": "0x11f0bd71b6a08574bd71025041000001",
             "FORMATTER": "",
