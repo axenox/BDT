@@ -14,6 +14,7 @@ WITH OrderedScenarios AS (
         rs.status,
         s.finished_on,
         s.absolute,
+        s.paused,
         ROW_NUMBER() OVER (
             PARTITION BY f.filename, s.name
             ORDER BY s.finished_on DESC
@@ -32,6 +33,7 @@ SELECT
     steps_failed,
     steps_skipped,
     CASE
+        WHEN paused = 1 THEN 'paused'
         WHEN tags IS NULL THEN 'paused'
         WHEN tags NOT LIKE '%Status::Ready%' THEN 'paused'
         WHEN status IN (101, 102) THEN 'failed'
