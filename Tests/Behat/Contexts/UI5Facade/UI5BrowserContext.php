@@ -1436,7 +1436,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         $workbench = $this->getWorkbench();
         $appSelector = new AppSelector($workbench, $appAlias);
-        $installer = new TestDataInstaller($appSelector);
+        $installer = new TestDataInstaller($appSelector, $subfolder);
         $log = '';
         foreach ($installer->installTestData($subfolder) as $output) {
             $log .= $output . PHP_EOL;
