@@ -10,8 +10,8 @@
     "replaces_page_selector": null,
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2025-07-08 18:20:52",
-    "modified_by_user_selector": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-    "modified_on": "2025-09-17 15:20:26",
+    "modified_by_user_selector": "0x11eca7f5b092f284a7f5005056bea39f",
+    "modified_on": "2025-09-30 13:55:13",
     "contents": {
         "widget_type": "DataTable",
         "id": "table_runs",
@@ -71,38 +71,14 @@
                 "caption": "Rerun",
                 "icon": "repeat",
                 "action": {
-                    "maximize": true,
-                    "alias": "exface.core.ShowDialog",
-                    "dialog": {
-                        "height": "max",
-                        "widget_type": "SplitHorizontal",
-                        "panels": [
+                    "alias": "axenox.BDT.RunTestDialog",
+                    "input_mapper": {
+                        "from_object_alias": "axenox.BDT.run",
+                        "to_object_alias": "axenox.BDT.run",
+                        "column_to_column_mappings": [
                             {
-                                "width": "%33",
-                                "caption": "Console",
-                                "object_alias": "axenox.BDT.run",
-                                "widgets": [
-                                    {
-                                        "widget_type": "Console",
-                                        "object_alias": "exface.Core.ACTION",
-                                        "id": "test_cli",
-                                        "allowed_commands": [
-                                            "/action.*/i",
-                                            "/behat.*/i"
-                                        ],
-                                        "start_commands": [
-                                            "vendor/bin/action axenox.BDT:Behat init",
-                                            "vendor/bin/Behat [#behat_command#]"
-                                        ]
-                                    }
-                                ]
-                            },
-                            {
-                                "caption": "Scenarios"
-                            },
-                            {
-                                "width": "%33",
-                                "caption": "Steps"
+                                "from": "behat_command",
+                                "to": "behat_command"
                             }
                         ]
                     }
