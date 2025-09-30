@@ -10,8 +10,8 @@
     "replaces_page_selector": null,
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2025-07-09 10:27:43",
-    "modified_by_user_selector": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-    "modified_on": "2025-09-17 15:02:52",
+    "modified_by_user_selector": "0x11eca7f5b092f284a7f5005056bea39f",
+    "modified_on": "2025-09-30 13:35:26",
     "contents": {
         "object_alias": "axenox.BDT.run_scenario_status",
         "widget_type": "SplitHorizontal",
@@ -51,6 +51,17 @@
                             },
                             {
                                 "attribute_alias": "name"
+                            },
+                            {
+                                "attribute_alias": "run_scenario_status__status"
+                            },
+                            {
+                                "attribute_alias": "run_step__error_message:MAX",
+                                "caption": "Error"
+                            },
+                            {
+                                "attribute_alias": "CREATED_ON",
+                                "caption": "Last run"
                             },
                             {
                                 "attribute_alias": "tags"
