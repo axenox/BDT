@@ -11,7 +11,7 @@
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2025-07-09 10:27:43",
     "modified_by_user_selector": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-    "modified_on": "2025-09-30 21:07:28",
+    "modified_on": "2025-10-02 11:30:47",
     "contents": {
         "object_alias": "axenox.BDT.run_scenario_status",
         "widget_type": "SplitHorizontal",
@@ -30,8 +30,7 @@
                         "filters": [
                             {
                                 "attribute_alias": "run_scenario_status__status",
-                                "value": "'failed'",
-                                "comparator": "=="
+                                "value": "'failed,paused'"
                             },
                             {
                                 "attribute_alias": "run_feature__app"
@@ -50,18 +49,27 @@
                                 "attribute_alias": "run_feature__name"
                             },
                             {
-                                "attribute_alias": "name"
+                                "attribute_alias": "name",
+                                "width_max": "300px"
                             },
                             {
                                 "attribute_alias": "run_scenario_status__status"
                             },
                             {
                                 "attribute_alias": "run_step__error_message:MAX",
-                                "caption": "Error"
+                                "caption": "Error",
+                                "width_max": "300px"
                             },
                             {
                                 "attribute_alias": "CREATED_ON",
                                 "caption": "Last run"
+                            },
+                            {
+                                "attribute_alias": "comment"
+                            },
+                            {
+                                "attribute_alias": "commented_by__USERNAME",
+                                "caption": "Commented by"
                             },
                             {
                                 "attribute_alias": "tags"
@@ -126,6 +134,9 @@
                                         }
                                     ]
                                 }
+                            },
+                            {
+                                "action_alias": "axenox.BDT.AddRunScenarioComment"
                             }
                         ]
                     }

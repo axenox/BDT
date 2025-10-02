@@ -86,7 +86,7 @@
         {
             "_EXPORT_SUMMARY": "BDT scenario run: Enable Absolute [EnableAbsolute]",
             "CREATED_ON": "2025-09-12 12:47:10",
-            "MODIFIED_ON": "2025-09-15 15:50:49",
+            "MODIFIED_ON": "2025-10-01 20:40:45",
             "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f0a9a7d56b104ea9a7025041000001",
@@ -94,7 +94,7 @@
             "ACTION_PROTOTYPE": "exface/core/Actions/UpdateData.php",
             "ALIAS": "EnableAbsolute",
             "NAME": "Enable Absolute",
-            "SHORT_DESCRIPTION": "",
+            "SHORT_DESCRIPTION": "Marking a scenario as \"Absolute\" hides it from the dashboard, even if its last run failed. Use this to exclude scenarios that have been renamed, removed, or are no longer relevant.",
             "CONFIG_UXON": {
                 "alias": "exface.core.UpdateData",
                 "input_rows_min": 1,
@@ -147,7 +147,7 @@
         {
             "_EXPORT_SUMMARY": "BDT scenario run: Mark as Paused [MarkAsPaused]",
             "CREATED_ON": "2025-09-30 21:06:29",
-            "MODIFIED_ON": "2025-09-30 21:07:40",
+            "MODIFIED_ON": "2025-10-01 20:44:57",
             "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f0a7bf91edac9aa7bf025041000001",
@@ -155,7 +155,7 @@
             "ACTION_PROTOTYPE": "exface/core/Actions/UpdateData.php",
             "ALIAS": "MarkAsPaused",
             "NAME": "Mark as Paused",
-            "SHORT_DESCRIPTION": "",
+            "SHORT_DESCRIPTION": "Mark the scenario as \"Paused\" to indicate that it is temporarily excluded from automated runs until the issue is resolved.",
             "CONFIG_UXON": {
                 "alias": "exface.core.UpdateData",
                 "input_rows_min": 1,
@@ -167,6 +167,72 @@
                         {
                             "from": "=1",
                             "to": "paused"
+                        }
+                    ]
+                }
+            },
+            "APP": "0x11efa2214f96c8b8a221025041000001",
+            "USE_IN_OBJECT_BASKET_FLAG": 0,
+            "DOCS": ""
+        },
+        {
+            "_EXPORT_SUMMARY": "BDT scenario run: Add Comment [AddRunScenarioComment]",
+            "CREATED_ON": "2025-10-01 16:46:44",
+            "MODIFIED_ON": "2025-10-01 20:52:54",
+            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "UID": "0x11f09b5b72dd9d389b5b025041000001",
+            "OBJECT": "0x11f08f0e222d25a48f0e025041000001",
+            "ACTION_PROTOTYPE": "exface/core/Actions/ShowDialog.php",
+            "ALIAS": "AddRunScenarioComment",
+            "NAME": "Add Comment",
+            "SHORT_DESCRIPTION": "Used for scenario comments. Only the most recent comment is stored; new comments overwrite the previous one.",
+            "CONFIG_UXON": {
+                "input_rows_min": 1,
+                "input_rows_max": 1,
+                "input_object_alias": "axenox.BDT.run_scenario",
+                "icon": "comments",
+                "dialog": {
+                    "height": "auto",
+                    "width": 1,
+                    "columns_in_grid": 1,
+                    "maximized": false,
+                    "caption": "Add Comment",
+                    "object_alias": "axenox.BDT.run_scenario",
+                    "widgets": [
+                        {
+                            "widget_type": "WidgetGroup",
+                            "caption": "Comment",
+                            "widgets": [
+                                {
+                                    "data_column_name": "_comment",
+                                    "widget_type": "InputText",
+                                    "required": true,
+                                    "hide_caption": true
+                                }
+                            ]
+                        }
+                    ],
+                    "buttons": [
+                        {
+                            "visibility": "promoted",
+                            "align": "opposite",
+                            "action": {
+                                "alias": "exface.core.UpdateData",
+                                "object_alias": "axenox.BDT.run_scenario",
+                                "input_mapper": {
+                                    "column_to_column_mappings": [
+                                        {
+                                            "from": "_comment",
+                                            "to": "comment"
+                                        },
+                                        {
+                                            "from": "=User('UID')",
+                                            "to": "commented_by"
+                                        }
+                                    ]
+                                }
+                            }
                         }
                     ]
                 }
