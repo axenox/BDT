@@ -14,6 +14,8 @@ use exface\Core\CommonLogic\Workbench;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Factories\FormulaFactory;
+use exface\Core\Factories\UiPageFactory;
+use exface\Core\Interfaces\Model\UiPageInterface;
 use exface\Core\Interfaces\WorkbenchInterface;
 use PHPUnit\Framework\Assert;
 use Behat\Behat\Hook\Scope\BeforeScenarioScope;
@@ -42,6 +44,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     private $workbench = null;
     private $debug = false;
+    private $pagesVisited = [];
 
     /** 
      * Initializes and starts the workbench for the test environment
@@ -323,6 +326,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $pageAlias = StringDataType::substringAfter($url, '/', false, true);
         $pageAlias = StringDataType::substringBefore($url, '.html', $url, false, true);
         DatabaseFormatter::addTestedPage($pageAlias);
+        $this->pagesVisited[] = $pageAlias;
         
         // Navigate to the page using Mink's path navigation
         $this->visitPath('/' . $url);
@@ -1605,6 +1609,33 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     protected function explodeList(string $list): array
     {
         return array_map('trim', explode(',', $list));
+    }
+
+    /**
+     * Example
+     * 
+     * ```
+     * Given I log in ...
+     * When I look at table 1
+     * Then it works as expected
+     * ```
+     * @Then it works as expected
+     * 
+     * @return void
+     */
+    public function ItWorksAsExpected()
+    {
+        $node = $this->getBrowser()->getFocusedNode();
+        if (! ($node instanceof UI5DataTableNode)) {
+            // TODO fail the step
+        }
+        $node->testWorksAsExpected($this->getPageCurrent());
+    }
+
+    public function getPageCurrent() : ?UiPageInterface
+    {
+        $pageAlias = end($this->pagesVisited);
+        return UiPageFactory::createFromModel($this->getWorkbench(), $pageAlias);
     }
 
 }

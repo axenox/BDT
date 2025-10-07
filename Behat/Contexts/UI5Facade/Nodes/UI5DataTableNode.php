@@ -1,6 +1,8 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
+use exface\Core\Interfaces\Model\UiPageInterface;
+use exface\Core\Interfaces\WidgetInterface;
 use PHPUnit\Framework\Assert;
 
 class UI5DataTableNode extends UI5AbstractNode
@@ -84,5 +86,21 @@ class UI5DataTableNode extends UI5AbstractNode
         }
 
         return null;
+    }
+    
+    public function getWidget(UiPageInterface $page) : ?WidgetInterface
+    {
+        $innerNode = $this->find('css', '.sapUiTable');
+        if ($innerNode) {
+            $widgetId = $innerNode->getAttribute('id');
+            return $page->getWidget($widgetId);
+        }
+        return null;
+    }
+    
+    public function testWorksAsExpected(UiPageInterface $page)
+    {
+        $widget = $this->getWidget($page);
+        // TODO
     }
 }
