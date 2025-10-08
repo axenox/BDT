@@ -1,7 +1,7 @@
 -- UP
-ALTER TABLE [bdt_run_scenario]
-    ADD [comment] NVARCHAR(300) NULL,
-    ADD [commented_by_user_oid] UNIQUEIDENTIFIER NULL;
+ALTER TABLE [dbo].[bdt_run_scenario] ADD
+    [comment] nvarchar(300) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+    [commented_by_user_oid] binary(16) NULL;
 
 -- DOWN
 ALTER TABLE [bdt_run_scenario]
