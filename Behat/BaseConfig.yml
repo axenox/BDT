@@ -54,7 +54,7 @@ default:
       CHROME_DEBUG_API:
         chrome:
           # Chrome debugging API endpoint
-          api_url: "http://localhost:9223"
+          api_url: "http://localhost:9222"
           # Extended timeout for initial Chrome startup
           # Particularly important for first test run
           socket_timeout: 120 # 2 minutes 
