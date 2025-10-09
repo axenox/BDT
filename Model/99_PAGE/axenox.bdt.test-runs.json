@@ -2,7 +2,7 @@
     "uid": "0x11f0bbc384cc67e6bbc3025041000001",
     "alias_with_namespace": "axenox.bdt.test-runs",
     "menu_parent_page_selector": "0x11ef9cade73751fa9cad025041000001",
-    "menu_index": 1,
+    "menu_index": 0,
     "menu_visible": true,
     "name": "Test runs",
     "description": "",
@@ -11,7 +11,7 @@
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2025-07-08 18:20:52",
     "modified_by_user_selector": "0x11eca7f5b092f284a7f5005056bea39f",
-    "modified_on": "2025-09-30 13:55:13",
+    "modified_on": "2025-10-08 18:38:10",
     "contents": {
         "widget_type": "DataTable",
         "id": "table_runs",

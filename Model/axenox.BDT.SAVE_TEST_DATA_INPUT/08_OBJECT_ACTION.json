@@ -65,13 +65,13 @@
     ],
     "rows": [
         {
-            "_EXPORT_SUMMARY": "Dummy object: Save Test Data [SaveTestDataDialog]",
+            "_EXPORT_SUMMARY": "Save test data: Save Test Data [SaveTestDataDialog]",
             "CREATED_ON": "2025-10-01 16:47:42",
-            "MODIFIED_ON": "2025-10-02 12:05:37",
+            "MODIFIED_ON": "2025-10-09 08:07:06",
             "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11f0835595bf897e8355025041000001",
-            "OBJECT": "0x11eba704501ef4d6a704025041000001",
+            "OBJECT": "0x11f0877da5e29d0c877d025041000001",
             "ACTION_PROTOTYPE": "exface/core/Actions/ShowDialog.php",
             "ALIAS": "SaveTestDataDialog",
             "NAME": "Save Test Data",

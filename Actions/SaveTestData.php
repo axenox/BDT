@@ -76,7 +76,7 @@ class SaveTestData extends AbstractActionDeferred implements iCanBeCalledFromCLI
         AppInterface $targetApp = null,
         string $subfolder = self::DEFAULT_SUBFOLDER
     ) : \Generator {
-        $installer = new TestDataInstaller($targetApp->getSelector(), $subfolder);
+        $installer = new TestDataInstaller($targetApp->getSelector(), '');
         yield from $installer->dumpTestData($inputSheet, $targetApp, $subfolder, self::DUMP_MAX_DEPTH);
     }
     

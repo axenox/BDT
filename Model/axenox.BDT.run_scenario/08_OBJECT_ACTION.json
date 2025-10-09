@@ -84,22 +84,22 @@
             "DOCS": ""
         },
         {
-            "_EXPORT_SUMMARY": "BDT scenario run: Enable Absolute [EnableAbsolute]",
+            "_EXPORT_SUMMARY": "BDT scenario run: Mark obsolete [RunScenarioMarkObsolete]",
             "CREATED_ON": "2025-09-12 12:47:10",
-            "MODIFIED_ON": "2025-10-01 20:40:45",
+            "MODIFIED_ON": "2025-10-08 18:40:11",
             "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x11eca7f5b092f284a7f5005056bea39f",
             "UID": "0x11f0a9a7d56b104ea9a7025041000001",
             "OBJECT": "0x11f08f0e222d25a48f0e025041000001",
             "ACTION_PROTOTYPE": "exface/core/Actions/UpdateData.php",
-            "ALIAS": "EnableAbsolute",
-            "NAME": "Enable Absolute",
-            "SHORT_DESCRIPTION": "Marking a scenario as \"Absolute\" hides it from the dashboard, even if its last run failed. Use this to exclude scenarios that have been renamed, removed, or are no longer relevant.",
+            "ALIAS": "RunScenarioMarkObsolete",
+            "NAME": "Mark obsolete",
+            "SHORT_DESCRIPTION": "Marking a scenario as \"obsolete\" hides it from the dashboard, even if its last run failed. Use this to exclude scenarios that have been renamed, removed, or are no longer relevant.",
             "CONFIG_UXON": {
                 "alias": "exface.core.UpdateData",
                 "input_rows_min": 1,
                 "input_object_alias": "axenox.BDT.run_scenario",
-                "icon": "toggle-on",
+                "icon": "trash",
                 "input_mapper": {
                     "from_object_alias": "axenox.BDT.run_scenario",
                     "column_to_column_mappings": [
@@ -115,21 +115,21 @@
             "DOCS": ""
         },
         {
-            "_EXPORT_SUMMARY": "BDT scenario run: Disable Absolute [DisableAbsolute]",
+            "_EXPORT_SUMMARY": "BDT scenario run: Restore [RunScenarioMarkNotObsolete]",
             "CREATED_ON": "2025-09-12 12:48:24",
-            "MODIFIED_ON": "2025-09-12 12:48:24",
+            "MODIFIED_ON": "2025-10-08 18:36:14",
             "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x11eca7f5b092f284a7f5005056bea39f",
             "UID": "0x11f085ac01a61c4485ac025041000001",
             "OBJECT": "0x11f08f0e222d25a48f0e025041000001",
             "ACTION_PROTOTYPE": "exface/core/Actions/UpdateData.php",
-            "ALIAS": "DisableAbsolute",
-            "NAME": "Disable Absolute",
+            "ALIAS": "RunScenarioMarkNotObsolete",
+            "NAME": "Restore",
             "SHORT_DESCRIPTION": "",
             "CONFIG_UXON": {
                 "input_rows_min": 1,
                 "input_object_alias": "axenox.BDT.run_scenario",
-                "icon": "toggle-off",
+                "icon": "recycle",
                 "input_mapper": {
                     "inherit_columns": "own_attributes",
                     "column_to_column_mappings": [
@@ -145,16 +145,16 @@
             "DOCS": ""
         },
         {
-            "_EXPORT_SUMMARY": "BDT scenario run: Mark as Paused [MarkAsPaused]",
+            "_EXPORT_SUMMARY": "BDT scenario run: Pause scenario [RunScenarioMarkPaused]",
             "CREATED_ON": "2025-09-30 21:06:29",
-            "MODIFIED_ON": "2025-10-01 20:44:57",
+            "MODIFIED_ON": "2025-10-08 18:40:33",
             "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x11eca7f5b092f284a7f5005056bea39f",
             "UID": "0x11f0a7bf91edac9aa7bf025041000001",
             "OBJECT": "0x11f08f0e222d25a48f0e025041000001",
             "ACTION_PROTOTYPE": "exface/core/Actions/UpdateData.php",
-            "ALIAS": "MarkAsPaused",
-            "NAME": "Mark as Paused",
+            "ALIAS": "RunScenarioMarkPaused",
+            "NAME": "Pause scenario",
             "SHORT_DESCRIPTION": "Mark the scenario as \"Paused\" to indicate that it is temporarily excluded from automated runs until the issue is resolved.",
             "CONFIG_UXON": {
                 "alias": "exface.core.UpdateData",

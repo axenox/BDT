@@ -2,7 +2,7 @@
     "uid": "0x11ef9cade73751fa9cad025041000001",
     "alias_with_namespace": "axenox.bdt.home",
     "menu_parent_page_selector": "0xf8310d4bba2c11e7895fe4b318306b9a",
-    "menu_index": 14,
+    "menu_index": 16,
     "menu_visible": true,
     "name": "Automated tests",
     "description": "",
@@ -10,86 +10,150 @@
     "replaces_page_selector": null,
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2024-12-02 09:10:33",
-    "modified_by_user_selector": "0x31000000000000000000000000000000",
-    "modified_on": "2025-03-25 12:15:25",
+    "modified_by_user_selector": "0x11eca7f5b092f284a7f5005056bea39f",
+    "modified_on": "2025-10-08 19:18:49",
     "contents": {
-        "object_alias": "exface.Core.DUMMY",
+        "object_alias": "axenox.BDT.run_scenario_status",
         "widget_type": "SplitHorizontal",
         "panels": [
             {
-                "caption": "Command line",
-                "width": "50%",
+                "caption": "Scenario Statuses",
+                "width": "80%",
                 "widgets": [
                     {
-                        "widget_type": "Console",
-                        "object_alias": "exface.Core.ACTION",
-                        "id": "test_cli",
-                        "allowed_commands": [
-                            "/action.*/i",
-                            "/behat.*/i",
-                            "/git.*/i",
-                            "/whoami/",
-                            "/data\\\\axenox\\\\BDT\\\\Chrome.bat/"
+                        "widget_type": "DataTable",
+                        "object_alias": "axenox.BDT.run_scenario",
+                        "id": "scenario_table",
+                        "row_grouper": {
+                            "group_by_attribute_alias": "run_feature__app__LABEL"
+                        },
+                        "filters": [
+                            {
+                                "attribute_alias": "run_scenario_status__status",
+                                "value": "'failed,paused'"
+                            },
+                            {
+                                "attribute_alias": "run_feature__app"
+                            }
                         ],
-                        "start_commands": [
-                            "vendor/bin/action axenox.BDT:Behat init"
+                        "columns": [
+                            {
+                                "attribute_alias": "absolute",
+                                "hidden": true
+                            },
+                            {
+                                "attribute_alias": "run_feature__filename",
+                                "hidden": false
+                            },
+                            {
+                                "attribute_alias": "run_feature__name"
+                            },
+                            {
+                                "attribute_alias": "name",
+                                "width_max": "300px"
+                            },
+                            {
+                                "attribute_alias": "run_scenario_status__status"
+                            },
+                            {
+                                "attribute_alias": "run_step__error_message:MAX",
+                                "caption": "Error",
+                                "width_max": "300px"
+                            },
+                            {
+                                "attribute_alias": "CREATED_ON",
+                                "caption": "Last run"
+                            },
+                            {
+                                "attribute_alias": "comment"
+                            },
+                            {
+                                "attribute_alias": "commented_by__USERNAME",
+                                "caption": "Commented by"
+                            },
+                            {
+                                "attribute_alias": "tags"
+                            },
+                            {
+                                "attribute_alias": "run_scenario_action__page_alias:LIST_DISTINCT"
+                            }
                         ],
-                        "command_presets": [
+                        "sorters": [
                             {
-                                "caption": "Run all tests",
-                                "hint": "Runs all available test",
-                                "commands": [
-                                    "vendor/bin/Behat --colors"
-                                ]
+                                "attribute_alias": "run_feature__app__LABEL",
+                                "direction": "desc"
+                            }
+                        ],
+                        "buttons": [
+                            {
+                                "action": {
+                                    "alias": "exface.Core.ShowObjectInfoDialog",
+                                    "disable_buttons": false
+                                },
+                                "bind_to_double_click": true
                             },
                             {
-                                "caption": "Run suite",
-                                "hint": "Run only the given test suite",
-                                "commands": [
-                                    "vendor/bin/Behat --colors --suite=<Suite>"
-                                ]
+                                "caption": "Edit Feature",
+                                "action": {
+                                    "alias": "exface.Core.ShowObjectEditDialog",
+                                    "object_alias": "axenox.BDT.BEHAT_FEATURE",
+                                    "input_mapper": {
+                                        "from_object_alias": "axenox.BDT.run_scenario",
+                                        "to_object_alias": "axenox.BDT.BEHAT_FEATURE",
+                                        "column_to_column_mappings": [
+                                            {
+                                                "from": "run_feature__filename",
+                                                "to": "PATHNAME_RELATIVE"
+                                            }
+                                        ]
+                                    }
+                                }
                             },
                             {
-                                "caption": "Run file",
-                                "hint": "Run a feature file",
-                                "commands": [
-                                    "vendor/bin/Behat \"vendor/<Filepath relative to vendor>\" --colors"
-                                ]
+                                "caption": "Rerun feature",
+                                "icon": "repeat",
+                                "action": {
+                                    "alias": "axenox.BDT.RunTestDialog",
+                                    "input_mapper": {
+                                        "from_object_alias": "axenox.BDT.run_scenario",
+                                        "to_object_alias": "axenox.BDT.run",
+                                        "column_to_column_mappings": [
+                                            {
+                                                "from": "=Concatenate('\"vendor/', run_feature__filename, '\" --tags=Status::Ready')",
+                                                "to": "behat_command"
+                                            }
+                                        ]
+                                    }
+                                }
                             },
                             {
-                                "caption": "Run tags",
-                                "hint": "Run tests marked with one or more tags",
-                                "commands": [
-                                    "vendor/bin/Behat --colors --tags=<Tags (,)>"
-                                ]
+                                "action_alias": "axenox.BDT.RunScenarioMarkObsolete",
+                                "disabled_if": {
+                                    "operator": "AND",
+                                    "conditions": [
+                                        {
+                                            "value_left": "=scenario_table!Absolute",
+                                            "comparator": "==",
+                                            "value_right": 1
+                                        }
+                                    ]
+                                }
                             },
                             {
-                                "caption": "Init",
-                                "hint": "Set up this installation for testing",
-                                "commands": [
-                                    "vendor/bin/action axenox.BDT:Behat init"
-                                ]
+                                "action_alias": "axenox.BDT.RunScenarioMarkPaused",
+                                "disabled_if": {
+                                    "operator": "AND",
+                                    "conditions": [
+                                        {
+                                            "value_left": "=scenario_table!paused",
+                                            "comparator": "==",
+                                            "value_right": 1
+                                        }
+                                    ]
+                                }
                             },
                             {
-                                "caption": "Add app",
-                                "hint": "Set up an app to be tested",
-                                "commands": [
-                                    "vendor/bin/action axenox.BDT:Behat init --addApp=<App alias>"
-                                ]
-                            },
-                            {
-                                "caption": "Restart Chrome",
-                                "hint": "Run preconfigured Chrome.bat in data folder",
-                                "commands": [
-                                    "data\\axenox\\BDT\\Chrome.bat"
-                                ]
-                            },
-                            {
-                                "caption": "Start browser",
-                                "hint": "Start a remote controlled browser for UI tests",
-                                "commands": [
-                                    "vendor/bin/action axenox.BDT:Behat startBrowser --browser=<Browser config key>"
-                                ]
+                                "action_alias": "axenox.BDT.AddRunScenarioComment"
                             }
                         ]
                     }
@@ -101,137 +165,106 @@
                         "widget_type": "SplitVertical",
                         "panels": [
                             {
-                                "height": "60%",
+                                "height": "33%",
                                 "widgets": [
                                     {
-                                        "widget_type": "DataTable",
-                                        "object_alias": "axenox.BDT.BEHAT_FEATURE",
-                                        "caption": "Features",
-                                        "filters": [
-                                            {
-                                                "attribute_alias": "PATHNAME_RELATIVE",
-                                                "caption": "File"
-                                            },
-                                            {
-                                                "attribute_alias": "CONTENTS",
-                                                "caption": "Contents"
-                                            },
-                                            {
-                                                "attribute_alias": "APP",
-                                                "caption": "App / Suite",
-                                                "input_widget": {
-                                                    "widget_type": "Input"
+                                        "caption": "Scenarios tested today",
+                                        "widget_type": "Chart",
+                                        "object_alias": "axenox.BDT.run_scenario",
+                                        "hide_header": true,
+                                        "data": {
+                                            "aggregate_by_attribute_alias": [
+                                                "run_scenario_stats__status"
+                                            ],
+                                            "filters": [
+                                                {
+                                                    "attribute_alias": "run_feature__run__finished_on",
+                                                    "comparator": ">=",
+                                                    "value": "=Today()",
+                                                    "hidden": true
                                                 }
-                                            }
-                                        ],
-                                        "columns": [
+                                            ]
+                                        },
+                                        "series": [
                                             {
-                                                "attribute_alias": "APP__ALIAS",
-                                                "caption": "Test suite"
-                                            },
-                                            {
-                                                "attribute_alias": "FEATURE_NAME"
-                                            },
-                                            {
-                                                "attribute_alias": "PATHNAME_RELATIVE",
-                                                "caption": "File"
-                                            },
-                                            {
-                                                "attribute_alias": "APP__NAME"
-                                            }
-                                        ],
-                                        "sorters": [
-                                            {
-                                                "attribute_alias": "NAME",
-                                                "direction": "asc"
-                                            }
-                                        ],
-                                        "buttons": [
-                                            {
-                                                "action_alias": "exface.Core.ShowObjectCreateDialog"
-                                            },
-                                            {
-                                                "action_alias": "exface.Core.ShowObjectEditDialog",
-                                                "bind_to_double_click": true
-                                            },
-                                            {
-                                                "caption": "Run suite",
-                                                "action": {
-                                                    "alias": "exface.Core.CallWidgetFunction",
-                                                    "widget_id": "test_cli",
-                                                    "function": "run_command(\"vendor/bin/Behat --colors --suite=[#APP__ALIAS#]\")"
-                                                }
-                                            },
-                                            {
-                                                "action_alias": "exface.Core.ShowObjectCopyDialog"
-                                            },
-                                            {
-                                                "caption": "Language reference",
-                                                "icon": "question-circle",
-                                                "action": {
-                                                    "alias": "exface.Core.ShowDialog",
-                                                    "dialog": {
-                                                        "widgets": [
-                                                            {
-                                                                "widget_type": "Browser",
-                                                                "object_alias": "exface.Core.DUMMY",
-                                                                "url": "api/docs/axenox/BDT/Docs/Introduction/Writing_tests_-_Gherkin_language.md"
-                                                            }
-                                                        ]
-                                                    }
-                                                }
-                                            },
-                                            {
-                                                "action_alias": "exface.Core.DeleteObject",
-                                                "visibility": "optional"
+                                                "type": "pie",
+                                                "value_attribute_alias": "UID:COUNT",
+                                                "text_attribute_alias": "run_scenario_stats__status"
                                             }
                                         ]
                                     }
                                 ]
                             },
                             {
+                                "caption": "Apps",
+                                "widgets": [
+                                    {
+                                        "widget_type": "Chart",
+                                        "object_alias": "axenox.BDT.run_scenario_status",
+                                        "hide_header": true,
+                                        "data": {
+                                            "aggregate_by_attribute_alias": [
+                                                "app_alias",
+                                                "status"
+                                            ]
+                                        },
+                                        "series": [
+                                            {
+                                                "type": "bar",
+                                                "caption": "Scenarios",
+                                                "x_attribute_alias": "run_scenario:COUNT",
+                                                "y_attribute_alias": "app_alias",
+                                                "split_by_attribute_alias": "status",
+                                                "split_with_color_gradients": false,
+                                                "stacked": true
+                                            }
+                                        ],
+                                        "axis_y": [
+                                            {
+                                                "attribute_alias": "app_alias",
+                                                "hide_caption": true
+                                            }
+                                        ]
+                                    }
+                                ]
+                            },
+                            {
+                                "caption": "Top long-runner scenarios",
+                                "height": "33%",
                                 "widgets": [
                                     {
                                         "widget_type": "DataTable",
-                                        "object_alias": "axenox.BDT.TEST_REPORT",
+                                        "object_alias": "axenox.BDT.run_scenario",
+                                        "hide_header": true,
+                                        "hide_footer": true,
+                                        "paginator": {
+                                            "count_all_rows": false,
+                                            "page_size": 20
+                                        },
+                                        "paginate": false,
                                         "filters": [
                                             {
-                                                "attribute_alias": "NAME"
+                                                "attribute_alias": "run_feature__run__finished_on",
+                                                "comparator": ">=",
+                                                "value": "=Today()",
+                                                "hidden": true
                                             }
                                         ],
                                         "columns": [
                                             {
-                                                "attribute_alias": "NAME"
+                                                "attribute_alias": "duration_ms"
                                             },
                                             {
-                                                "attribute_alias": "CREATED_ON"
+                                                "attribute_alias": "name"
                                             },
                                             {
-                                                "attribute_alias": "SIZE"
+                                                "attribute_alias": "run_feature__name"
                                             }
                                         ],
                                         "sorters": [
                                             {
-                                                "attribute_alias": "NAME",
+                                                "attribute_alias": "duration_ms",
                                                 "direction": "desc"
-                                            }
-                                        ],
-                                        "buttons": [
-                                            {
-                                                "caption": "Open Report",
-                                                "bind_to_double_click": true,
-                                                "action": {
-                                                    "alias": "exface.Core.ShowDialog",
-                                                    "dialog": {
-                                                        "width": 3,
-                                                        "widgets": [
-                                                            {
-                                                                "widget_type": "Browser",
-                                                                "attribute_alias": "PATHNAME_RELATIVE"
-                                                            }
-                                                        ]
-                                                    }
-                                                }
                                             }
                                         ]
                                     }

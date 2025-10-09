@@ -1,0 +1,47 @@
+{
+    "uid": "0x11f0a763cca6c9faa763c84bd653ed63",
+    "alias_with_namespace": "axenox.bdt.test-data",
+    "menu_parent_page_selector": "0x11ef9cade73751fa9cad025041000001",
+    "menu_index": 0,
+    "menu_visible": true,
+    "name": "Test data",
+    "description": "",
+    "intro": "",
+    "replaces_page_selector": null,
+    "created_by_user_selector": "0x31000000000000000000000000000000",
+    "created_on": "2025-10-09 08:11:31",
+    "modified_by_user_selector": "0x31000000000000000000000000000000",
+    "modified_on": "2025-10-09 08:53:30",
+    "contents": {
+        "widget_type": "DataTable",
+        "object_alias": "axenox.BDT.TEST_DATA_SET",
+        "filters": [
+            {
+                "attribute_alias": "FILENAME"
+            },
+            {
+                "attribute_alias": "PATHNAME_RELATIVE"
+            }
+        ],
+        "columns": [
+            {
+                "attribute_alias": "APP__ALIAS"
+            },
+            {
+                "attribute_alias": "FILENAME"
+            },
+            {
+                "attribute_alias": "PATHNAME_RELATIVE"
+            }
+        ],
+        "buttons": [
+            {
+                "action_alias": "axenox.bdt.RestoreTestData",
+                "caption": "Restore test data"
+            },
+            {
+                "action_alias": "exface.Core.DeleteObject"
+            }
+        ]
+    }
+}
