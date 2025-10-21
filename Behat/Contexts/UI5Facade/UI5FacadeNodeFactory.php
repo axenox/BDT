@@ -24,24 +24,25 @@ class UI5FacadeNodeFactory
 
     /**
      * Creates a node object for a specific widget type
-     * 
-     * This method attempts to find the appropriate node class for a given 
-     * widget type and creates an instance with the provided node element 
+     *
+     * This method attempts to find the appropriate node class for a given
+     * widget type and creates an instance with the provided node element
      * and session.
-     * 
+     *
      * @param string $widgetType The type of widget to create a node for
      * @param NodeElement $nodeElement The HTML/UI5 element to wrap
      * @param Session $session The current browser session
+     * @param UI5Browser $browser
      * @return FacadeNodeInterface The created node object
      * @throws \Exception If node creation fails
      */
-    public static function createFromNodeElement(string $widgetType, NodeElement $nodeElement, Session $session): FacadeNodeInterface
+    public static function createFromNodeElement(string $widgetType, NodeElement $nodeElement, Session $session, UI5Browser $browser): FacadeNodeInterface
     {
         try {
             // Resolve the appropriate node class for the widget type
             $class = self::getNodeClassForWidgetType($widgetType);
             // Create and return a new node instance
-            return new $class($nodeElement, $session);
+            return new $class($nodeElement, $session, $browser);
         } catch (\Exception $e) {
             // Detailed Error Info
             echo "Error in createFromNodeElement: " . $e->getMessage() . "\n";
