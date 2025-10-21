@@ -46,6 +46,8 @@ class UI5Browser
     private UI5WaitManager $waitManager;
     private array $focusStack = [];
 
+    private string $locale;
+
     /**
      * Constructor - initializes the UI5Browser with necessary dependencies
      * 
@@ -53,11 +55,12 @@ class UI5Browser
      * @param mixed $session session for browser interaction
      * @param string $ui5AppUrl URL of the UI5 application to load
      */
-    public function __construct(WorkbenchInterface $workbench, $session, string $ui5AppUrl)
+    public function __construct(WorkbenchInterface $workbench, $session, string $ui5AppUrl, string $locale)
     {
         $this->session = $session;
         $this->workbench = $workbench;
         $this->waitManager = new UI5WaitManager($session);
+        $this->locale = $locale;
 
         // Initialize XHR monitoring to track AJAX requests
         $this->initializeXHRMonitoring();
@@ -96,6 +99,16 @@ class UI5Browser
     public function getWorkbench()
     {
         return $this->workbench;
+    }
+
+    /**
+     * Returns the locale information about session
+     * 
+     * @return string
+     */
+    public function getLocale(): string
+    {
+        return $this->locale;
     }
 
     /**
@@ -201,18 +214,18 @@ class UI5Browser
                 el.style.outline = '';
                 el.style.border = '';
             });
-    
+
             // Call global highlight clearing function if it exists
             if (window.clearHighlight && typeof window.clearHighlight === 'function') {
-         
+
                 window.clearHighlight();
             }
-    
+
             // Remove all debug labels
             document.querySelectorAll('.debug-highlight-label').forEach(label => {
                 label.remove();
             });
-     
+
             JS;
 
             $this->session->executeScript($debugScript);
@@ -317,7 +330,7 @@ class UI5Browser
                 // Add new highlight
                 el.style.outline = '5px solid %s';
                 el.style.outlineOffset = '4px';
-    
+
                 // Remove existing debug label if present
                 const existingLabel = el.querySelector('.debug-highlight-label');
                 if (existingLabel) {
@@ -340,7 +353,7 @@ class UI5Browser
                 label.textContent = '%s #%d';
                 
                 el.appendChild(label);
-    
+
                 // Call global highlight function if it exists
                 if (window.highlightElement && typeof window.highlightElement === 'function') {
                     window.highlightElement(el, '%s', '%s #%d');
@@ -538,7 +551,7 @@ JS
                 // everything is finde
                 break;
             case $node instanceof NodeElement:
-                $node = new GenericHtmlNode($node, $this->getSession());
+                $node = new GenericHtmlNode($node, $this->getSession(), $this);
                 break;
             default:
                 throw new InvalidArgumentException('Cannot focus on "' . gettype($node) . '": expecting Mink NodeElement or FacadeNodeInterface');
@@ -558,7 +571,7 @@ JS
     public function getFocusedNode(): FacadeNodeInterface
     {
         if (empty($this->focusStack)) {
-            return new UI5PageNode($this->getPage()->find('css', 'body'), $this->getSession());
+            return new UI5PageNode($this->getPage()->find('css', 'body'), $this->getSession(), $this);
         }
         $top = end($this->focusStack);
         return $top;
@@ -639,8 +652,8 @@ JS
             // Check each expected content item
             foreach ($expectedContent as $content) {
                 $columnName = $content['column'];
-                $searchText = trim($content['text'], '"\'');
-                $found = false;
+                $searchValue = trim($content['value'], '"\'');
+                $rawCmp = $content['comparator'] ?? '==';
 
                 // First find column headers
                 $headers = $table->findAll('css', '.sapUiTableHeaderDataCell label, .sapMListTblHeader .sapMColumnHeader');
@@ -658,49 +671,253 @@ JS
                 Assert::assertNotNull($columnIndex, "Column '$columnName' not found in table");
 
                 // Check table cells
-                $rows = $table->findAll('css', '.sapUiTableContentRow, .sapMListTblRow');
+                $rows = $table->findAll(
+                    'css',
+                    // data scrollers: fixed + scrollable
+                    '.sapUiTableCtrlFixed .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden), ' .
+                    '.sapUiTableCtrl .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden)'
+                );
+                $considered = 0;
+                $matches = 0;
+                $firstFailures = []; // collect first few failures for better error messages
                 foreach ($rows as $row) {
+                    if ($row->getAttribute('aria-hidden') === 'true') {
+                        continue;
+                    }
+
                     $cells = $row->findAll('css', '.sapUiTableCell, .sapMListTblCell');
-                    if (isset($cells[$columnIndex])) {
-                        $cell = $cells[$columnIndex];
+                    if (count($cells) === 0) {
+                        continue; // row has no cells at all
+                    }
+                    if (!isset($cells[$columnIndex])) {
+                        continue;
+                    }
+                   
+                    // Extract visible text from the target cell
+                    $cell = $cells[$columnIndex];
 
-                        // Check different UI5 text elements
-                        $textElements = $cell->findAll(
-                            'css',
-                            '.sapMText, .sapMLabel, .sapMObjectNumber, ' .
-                            '.sapMPI .sapMPITextLeft, .sapMPI .sapMPITextRight, ' .
-                            '.sapMObjStatus .sapMObjStatusText'
-                        );
+                    $cellText = $this->extractCellText($cell); // see helper below
 
-                        foreach ($textElements as $element) {
-                            if (stripos($element->getText(), $searchText) !== false) {
-                                $found = true;
-                                break 2;
-                            }
+                    // Skip truly empty rows (no content at all)
+                    if ($cellText === '') {
+                        // If you want empty to be considered a value, remove this continue
+                        continue;
+                    }
+
+                    $considered++;
+
+                    // Strict comparison using your limited operator set
+                    $ok = $this->compareCell($cellText, $searchValue, $rawCmp);
+
+                    if ($ok) {
+                        $matches++;
+                    } else {
+                        if (count($firstFailures) < 3) {
+                            $firstFailures[] = $cellText;
                         }
                     }
                 }
 
-                Assert::assertTrue($found, "Text '$searchText' not found in column '$columnName'");
+                Assert::assertSame(
+                    $considered,
+                    $matches,
+                    "Not all rows of the table fits the column '{$columnName}'. {$matches}/{$considered} matched. First mismatches: " . implode(' | ', $firstFailures)
+                );
+                
             }
-
         } catch (\Exception $e) {
             throw new \RuntimeException(
-                // sprintf(
-                //     "Failed to verify table content. Error: %s\nTable structure: %s",
-                //     $e->getMessage(),
-                //     $table->getOuterHtml()
-                // )
+            // sprintf(
+            //     "Failed to verify table content. Error: %s\nTable structure: %s",
+            //     $e->getMessage(),
+            //     $table->getOuterHtml()
+            // )
                 sprintf(
                     "Failed to verify table content"
                 )
             );
         }
     }
+    
+    /**
+     * Strict comparator :
+     * - == / !=, <>: string comparison only (no numeric/date coercion).
+     * - >, <, >=, <=: strict numeric or strict ISO date compare. If parsing fails, returns false.
+     */
+    private function compareCell(?string $cellText, $expected, string $cmp): bool
+    {
+        $cellText = (string)$cellText;
+
+        switch ($cmp) {
+            case '==':
+                if (is_array($expected)) return false;
+                return $this->normalizeText($cellText) === $this->normalizeText((string)$expected);
+
+            case '!=':
+            case '<>':
+                if (is_array($expected)) return false;
+                return $this->normalizeText($cellText) !== $this->normalizeText((string)$expected);
+
+            case '>':
+            case '<':
+            case '>=':
+            case '<=':
+            {
+                // Parse both sides to the same strict type (number or ISO date). Otherwise, fail.
+                [$cv, $typeC] = $this->parseComparableStrict($cellText, $expected);
+                [$ev, $typeE] = $this->parseComparableStrict((string)$expected, $expected);
+                if ($cv === null || $ev === null || $typeC !== $typeE) {
+                    return false;
+                }
+
+                switch ($cmp) {
+                    case '>':   return $cv >  $ev;
+                    case '<':   return $cv <  $ev;
+                    case '>=':  return $cv >= $ev;
+                    case '<=':  return $cv <= $ev;
+                }
+            }
+            default:
+                return $this->normalizeText($cellText) === $this->normalizeText((string)$expected);
+        }
+    }
+    
+    /**
+     * Strict comparable parsing.
+     * - If $expected is numeric (int/float), treat both as numbers; cell must be strictly numeric: ^[+-]?\d+(\.\d+)?$
+     * - Else if $expected is ISO date string (YYYY-MM-DD[ HH:MM[:SS]]), treat both as timestamps.
+     * - Else FAIL (return [null, null]).
+     */
+    private function parseComparableStrict(string $cellText, $expected): array
+    {
+        // strict number: dot-decimal only
+        $numRe = '/^[+-]?\d+(?:\.\d+)?$/';
+        if (is_int($expected) || is_float($expected) || (is_string($expected) && preg_match($numRe, $expected))) {
+            if (preg_match($numRe, $cellText)) {
+                return [(float)$cellText, 'number'];
+            }
+            return [null, null];
+        }
+
+        // strict date: support ISO and (optionally) current-locale strict pattern
+        $locale = $this->getLocale();
+
+        $eTs = $this->parseDateStrict((string)$expected, $locale);
+        if ($eTs !== null) {
+            $cTs = $this->parseDateStrict($cellText, $locale);
+            if ($cTs !== null) {
+                return [$cTs, 'date'];
+            }
+            return [null, null];
+        }
+
+        // unknown type
+        return [null, null];
+    }
+    
+    /**
+     * Strict date parsing with a small whitelist of formats:
+     * - ISO: YYYY-MM-DD or YYYY-MM-DD[ T]HH:MM[:SS]
+     * - de_DE: dd.MM.yyyy or dd.MM.yyyy HH:MM[:SS]
+     * Add more locales explicitly if needed.
+     */
+    private function parseDateStrict(string $s, ?string $locale): ?int
+    {
+        $s = trim($s);
+
+        // ISO first (YYYY-MM-DD or with time / 'T')
+        if (preg_match('/^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?$/', $s)) {
+            $ts = strtotime(str_replace('T', ' ', $s));
+            return $ts === false ? null : $ts;
+        }
+
+        // Locale-specific strict formats
+        if ($locale && stripos($locale, 'de_') === 0) {
+            // dd.MM.yyyy or dd.MM.yyyy HH:MM[:SS]
+            if (preg_match('/^\d{2}\.\d{2}\.\d{4}(?: \d{2}:\d{2}(?::\d{2})?)?$/', $s)) {
+                // Convert dd.MM.yyyy[ time] -> YYYY-MM-DD[ time] for reliable strtotime
+                if (preg_match('/^(\d{2})\.(\d{2})\.(\d{4})(?: (.*))?$/', $s, $m)) {
+                    $day  = $m[1];
+                    $mon  = $m[2];
+                    $year = $m[3];
+                    $time = isset($m[4]) ? ' ' . $m[4] : '';
+                    $iso  = sprintf('%04d-%02d-%02d%s', (int)$year, (int)$mon, (int)$day, $time);
+                    $ts   = strtotime($iso);
+                    return $ts === false ? null : $ts;
+                }
+            }
+        }
+
+        // Not a supported strict date format
+        return null;
+    }
 
 
+    private function normalizeText(?string $s): string
+    {
+        $s = (string)$s;
+        $s = trim($s);
+        $s = preg_replace('/\s+/u', ' ', $s);
+        return mb_strtolower($s);
+    }
+    
+    /** 
+     * Extracts robust text from a cell by reading common UI5 text carriers and stripping HTML/nbsp. 
+     */
+    private function extractCellText(NodeElement $cell): string
+    {
+        // 1) Special-case: sap.m.ProgressIndicator
+        $pi = $cell->find('css', '[role="progressbar"].sapMPI');
+        if ($pi) {
+            // Prefer aria-valuetext if present (most reliable business text)
+            $vt = trim((string)$pi->getAttribute('aria-valuetext'));
+            if ($vt !== '') {
+                return $vt;
+            }
+            // Fall back to left/right texts
+            $left  = $pi->find('css', '.sapMPITextLeft');
+            $right = $pi->find('css', '.sapMPITextRight');
+            $parts = [];
+            if ($left)  { $t = trim($left->getText());  if ($t !== '') $parts[] = $t; }
+            if ($right) { $t = trim($right->getText()); if ($t !== '') $parts[] = $t; }
+            if (!empty($parts)) {
+                return implode(' ', $parts);
+            }
+            // As a last resort use title (often a descriptive tooltip)
+            $title = trim((string)$pi->getAttribute('title'));
+            if ($title !== '') {
+                return $title;
+            }
+            // If nothing found, return empty
+            return '';
+        }
 
+        // 2) Common UI5 text carriers (labels, text, link, object status, etc.)
+        $candidates = $cell->findAll('css', implode(', ', [
+            '.sapMText', '.sapMLabel', '.sapMLnk', '.sapMLink',
+            '.sapMObjectNumber', '.sapMObjectIdentifierTitle', '.sapMObjectIdentifierText',
+            '.sapMObjStatusText', '.sapMObjStatus .sapMObjStatusText',
+            '.sapMPITextLeft', '.sapMPITextRight',
+            'input', 'textarea', 'select'
+        ]));
 
+        $parts = [];
+        foreach ($candidates as $el) {
+            $t = trim($el->getText());
+            if ($t !== '') { $parts[] = $t; }
+        }
+        if (!empty($parts)) {
+            return trim(implode(' ', $parts));
+        }
+
+        // Fallback: strip inner HTML (helps with &nbsp;)
+        $html = $cell->getHtml();
+        $html = html_entity_decode($html, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $html = str_replace("\xc2\xa0", ' ', $html);
+        $text = trim(preg_replace('/\s+/u', ' ', strip_tags($html)));
+        return $text;
+    }
+    
     /**
      * Initializes XHR and AJAX Request Monitoring System
      * 
@@ -745,7 +962,7 @@ JS
                         return `\${error.type}|\${error.status}|\${url}`;
                     }
                 };
-    
+
                 // XHR logging object with improved error handling
                 window.exfXHRLog = {
                     requests: [],
@@ -769,7 +986,7 @@ JS
                         }
                     }
                 };
-    
+
                 // Enhance jQuery AJAX monitoring
                 if (typeof jQuery !== 'undefined') {
                     const originalAjax = jQuery.ajax;
@@ -805,7 +1022,7 @@ JS
                         return originalAjax.apply(this, arguments);
                     };
                 }
-    
+
                 // Enhanced fetch API monitoring
                 if (typeof window.fetch === 'function') {
                     const originalFetch = window.fetch;
@@ -850,7 +1067,7 @@ JS
                         }
                     };
                 }
-    
+
                 console.log('Enhanced XHR monitoring initialized successfully');
             })();
             JS
@@ -1135,7 +1352,7 @@ JS
             if (!$nodeEl->isVisible()) {
                 continue;
             }
-            $nodes[] = UI5FacadeNodeFactory::createFromNodeElement($widgetType, $nodeEl, $this->getSession());
+            $nodes[] = UI5FacadeNodeFactory::createFromNodeElement($widgetType, $nodeEl, $this->getSession(), $this);
         }
 
         return $nodes;
@@ -1155,7 +1372,7 @@ JS
         // Store the tile names on the page
         $tiles = [];
         foreach ($nodes ?? [] as $node) {
-            $tile = new UI5TileNode($node, $this->getSession());
+            $tile = new UI5TileNode($node, $this->getSession(), $this);
             $tiles[] = $tile;
         }
         Assert::assertNotEmpty($tiles, 'No tiles found');

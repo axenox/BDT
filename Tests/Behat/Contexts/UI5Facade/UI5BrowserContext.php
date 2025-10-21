@@ -45,6 +45,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private $workbench = null;
     private $debug = false;
     private $pagesVisited = [];
+    private string $locale = 'de_DE';
 
     /** 
      * Initializes and starts the workbench for the test environment
@@ -72,7 +73,17 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         return $this->getWorkbench()->getInstallationPath();
     }
+    
+    public function getLocale(): string
+    {
+        return $this->locale;
+    }
 
+    public function setLocale(string $value): void
+    {
+        $this->locale = $value;
+    }
+    
     /**
      * Logs failed steps to the workbench log
      * Captures exceptions and ensures they are properly recorded
@@ -281,7 +292,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         unset($loginFields['_tab']);
         $btnCaption = $loginFields['_button'];
         unset($loginFields['_button']);
-
+        
+        $this->setLocale($userLocale);
+        
         // Go to the page
         $this->iVisitPage($url);
 
@@ -332,7 +345,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->visitPath('/' . $url);
         $this->logDebug("Debug - New page is loading...\n");
         // Initialize the UI5Browser with the current session and URL
-        $this->browser = new UI5Browser($this->getWorkbench(), $this->getSession(), $url);
+        $this->browser = new UI5Browser($this->getWorkbench(), $this->getSession(), $url, $this->getLocale());
         return;
         // } catch (FacadeBrowserException $e) {
         //     echo "Debug - 5"; 
@@ -610,7 +623,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         // Verify the first DataTable contains the expected text in the specified column
         $this->getBrowser()->verifyTableContent($focusedNode->getNodeElement(), [
-            ['column' => $columnName, 'text' => $text]
+            ['column' => $columnName, 'value' => $text]
         ]);
 
     }
@@ -1618,18 +1631,20 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * Given I log in ...
      * When I look at table 1
      * Then it works as expected
+     * Column Caption | Filter Caption | Button Caption
+     * 
      * ```
      * @Then it works as expected
+     * | :Column Caption | :Filter Caption | :Button Caption |
      * 
+     * @param TableNode $fields Table with field names and values
      * @return void
      */
-    public function ItWorksAsExpected()
+    public function itWorksAsExpected(TableNode $fields)
     {
         $node = $this->getBrowser()->getFocusedNode();
-        if (! ($node instanceof UI5DataTableNode)) {
-            // TODO fail the step
-        }
-        $node->testWorksAsExpected($this->getPageCurrent());
+        Assert::assertInstanceOf(UI5DataTableNode::class, $node, 'Focused node is not a data table');
+        $node->itWorksAsExpected($this->getPageCurrent(), $fields);
     }
 
     public function getPageCurrent() : ?UiPageInterface
