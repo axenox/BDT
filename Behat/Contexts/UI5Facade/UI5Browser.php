@@ -653,7 +653,7 @@ JS
             foreach ($expectedContent as $content) {
                 $columnName = $content['column'];
                 $searchValue = trim($content['value'], '"\'');
-                $rawCmp = $content['comparator'] ?? '==';
+                $rawCmp = $content['comparator'] ?? '[';
 
                 // First find column headers
                 $headers = $table->findAll('css', '.sapUiTableHeaderDataCell label, .sapMListTblHeader .sapMColumnHeader');
@@ -747,17 +747,72 @@ JS
     private function compareCell(?string $cellText, $expected, string $cmp): bool
     {
         $cellText = (string)$cellText;
-
+        $trim = static fn($v) => trim((string)$v);
+        $ciContains = function (string $haystack, string $needle): bool {
+            if ($needle === '') return true;
+            return mb_stripos($haystack, $needle) !== false;
+        };
+        $splitList = static function (string $list): array {
+            // a,b , c  -> ['a','b','c']
+            $parts = preg_split('/\s*,\s*/u', (string)$list, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+            return array_values(array_filter(array_map('trim', $parts), fn($x) => $x !== ''));
+        };
         switch ($cmp) {
             case '==':
                 if (is_array($expected)) return false;
                 return $this->normalizeText($cellText) === $this->normalizeText((string)$expected);
 
+
+            case '!==': {
+                if (is_array($expected)) return false;
+                [$cv, $typeC] = $this->parseComparableStrict($cellText, $expected);
+                [$ev, $typeE] = $this->parseComparableStrict((string)$expected, $expected);
+                if ($cv !== null && $ev !== null && $typeC === $typeE) {
+                    return $cv !== $ev;
+                }
+                return $trim($cellText) !== $trim((string)$expected);
+            }
+            
+            // UNIVERSAL (LIKE '%expected%')
+            case '=': {
+                if (is_array($expected)) return false;
+
+                $leftN  = $this->normalizeText($cellText);
+                $rightN = $this->normalizeText((string)$expected);
+                if ($leftN !== '' || $rightN !== '') {
+                    return $ciContains($leftN, $rightN);
+                }
+
+                [$cv] = $this->parseComparableStrict($cellText, $expected);
+                [$ev] = $this->parseComparableStrict((string)$expected, $expected);
+                return $cv == $ev;
+            }
+
+            // UNIVERSAL not-like
             case '!=':
-            case '<>':
+            case '<>': {
                 if (is_array($expected)) return false;
                 return $this->normalizeText($cellText) !== $this->normalizeText((string)$expected);
-
+            }
+            
+            // IN 
+            case '[':
+                $items = is_array($expected) ? $expected : $splitList((string)$expected);
+                foreach ($items as $item) {
+                   if (stripos($this->normalizeText($item), $this->normalizeText($expected)) === false)
+                       return false;
+                }
+                return true;
+            // NOT IN
+            case '![': {
+                $items = is_array($expected) ? $expected : $splitList((string)$expected);
+                foreach ($items as $item) {
+                    if (stripos($this->normalizeText($item), $this->normalizeText($expected)) !== false)
+                        return false;
+                }
+                return true;
+            }
+            
             case '>':
             case '<':
             case '>=':
@@ -777,6 +832,7 @@ JS
                     case '<=':  return $cv <= $ev;
                 }
             }
+            
             default:
                 return $this->normalizeText($cellText) === $this->normalizeText((string)$expected);
         }
