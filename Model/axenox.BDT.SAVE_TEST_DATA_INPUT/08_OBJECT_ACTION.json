@@ -67,7 +67,7 @@
         {
             "_EXPORT_SUMMARY": "Save test data: Save Test Data [SaveTestDataDialog]",
             "CREATED_ON": "2025-10-01 16:47:42",
-            "MODIFIED_ON": "2025-10-09 08:07:06",
+            "MODIFIED_ON": "2025-11-05 14:54:49",
             "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11f0835595bf897e8355025041000001",
@@ -82,6 +82,7 @@
                 "input_rows_max": 1,
                 "icon": "bullseye",
                 "object_alias": "axenox.BDT.SAVE_TEST_DATA_INPUT",
+                "offline_strategy": "ignore",
                 "input_mapper": {
                     "column_to_column_mappings": [
                         {
