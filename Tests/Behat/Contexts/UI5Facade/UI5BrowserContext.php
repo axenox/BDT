@@ -153,9 +153,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         if (!$this->browser) {
             return;
         }
-
+        
         // Clear the ErrorManager for a fresh start
-        ErrorManager::getInstance()->clearErrors();
+        $errorManager->clearErrors();
 
         // Clear XHR logs to monitor only current step's network activity
         $this->browser->clearXHRLog();
@@ -196,9 +196,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function completeAfterStep(AfterStepScope $scope): void
     {
-        $errorManager = ErrorManager::getInstance();
-
-
         // Skip if step already failed
         if (!$scope->getTestResult()->isPassed()) {
             return;
@@ -375,6 +372,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeWidgets(int $number, string $widgetType, string $objectAlias = null): void
     {
+        $this->checkPageSideErrors();
         // Clear all focus stack
         $this->getBrowser()->clearFocusStack();
 
@@ -483,7 +481,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iFillTheFollowingFields(TableNode $fields): void
     {
-
+        $this->checkPageSideErrors();
         // Process each row in the table
         foreach ($fields->getHash() as $row) {
             // Find input by caption
@@ -510,6 +508,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function itHasFilters(string $filterList): void
     {
+        $this->checkPageSideErrors();
         // Parse the comma-separated filter list
         $expectedFilters = array_map('trim', explode(',', $filterList));
 
@@ -615,6 +614,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeInColumn(string $text, string $columnName): void
     {
+        $this->checkPageSideErrors();
         $focusedNode = $this->getBrowser()->getFocusedNode();
 
         // Find all DataTable widgets on the page
@@ -815,7 +815,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iTypeIntoWidgetWithCaption(string $value, string $caption): void
     {
-
+        $this->checkPageSideErrors();
         // Find the input widget by its caption
         $widget = $this->getBrowser()->findInputByCaption($caption);
         Assert::assertNotNull($widget, 'Cannot find input widget "' . $caption . '"');
@@ -837,7 +837,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iLookAtWidget(string $widgetType, int $number = 1): void
     {
-
+        $this->checkPageSideErrors();
         // Find all widgets of the specified type
         $widgetNodes = $this->getBrowser()->findWidgets($widgetType);
         // Get the widget at the specified position (1-based index)
@@ -866,6 +866,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iShouldSeeButton(string $buttonText, string $tableName = null)
     {
+        $this->checkPageSideErrors();
         $buttons = $this->explodeList($buttonText);
         foreach ($buttons as $buttonText) {
             // Attempt to find the button using the UI5Browser instance
@@ -892,7 +893,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function itHasColumn(string $caption): void
     {
-
+        $this->checkPageSideErrors();
         /**
          * @var \Behat\Mink\Element\NodeElement $tableNode
          */
@@ -919,7 +920,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function theDataTableContains(string $text): void
     {
-
+        $this->checkPageSideErrors();
         // Find all DataTable widgets on the page
         $dataTables = $this->getBrowser()->findWidgets('DataTable');
         Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
@@ -950,7 +951,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeFilteredResultsInDataTable(): void
     {
-
+        $this->checkPageSideErrors();
 
         $dataTable = $this->getBrowser()->getFocusedNode();
         Assert::assertNotNull($dataTable, 'No focused node found');
@@ -1079,7 +1080,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iLookAtTable(int $index): void
     {
-
+        $this->checkPageSideErrors();
         // Adjust to 0-based index for internal use
         $tableIndex = $index - 1;
         $tables = $this->getBrowser()->findWidgetNodes('DataTable');
@@ -1102,6 +1103,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSelectTableRow(int $rowNumber)
     {
+        $this->checkPageSideErrors();
         // Use the focused table (if there is no error, throw an error)
         /** @var \axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataTableNode $table */
         $table = $this->getBrowser()->getFocusedNode();
@@ -1121,6 +1123,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iClickButtonOnTable(string $buttonCaption, $tableIndex = 1)
     {
+        $this->checkPageSideErrors();
         $this->logDebug("Button Click Started: $buttonCaption, Table: $tableIndex");
 
         // Wait for all pending operations to complete
@@ -1327,6 +1330,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeTiles($tileNames): void
     {
+        $this->checkPageSideErrors();
         // Convert the comma-separated tile names into an array
         // Trims whitespace and handles multiple tile names
         $captions = $this->explodeList($tileNames);
@@ -1373,6 +1377,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iOnlySeeTiles($tileNames): void
     {
+        $this->checkPageSideErrors();
         $captions = $this->explodeList($tileNames);
 
         $otherCaptions = [];
@@ -1396,6 +1401,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iShouldNotSeeTheFollowingButtons($unexpectedButtons, $tableIndex = null)
     {
+        $this->checkPageSideErrors();
         $page = $this->getBrowser()->getPage();
 
         // Parse the comma-separated tile list
@@ -1428,6 +1434,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeTabs($tabs): void
     {
+        $this->checkPageSideErrors();
         $tabs = $this->explodeList($tabs);
 
         foreach ($tabs as $tab) {
@@ -1451,6 +1458,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function testDataIsLoaded(string $appAlias, string $subfolder)
     {
+        $this->checkPageSideErrors();
         $workbench = $this->getWorkbench();
         $appSelector = new AppSelector($workbench, $appAlias);
         $installer = new TestDataInstaller($appSelector, '');
@@ -1471,7 +1479,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     private function verifyToastMessage(string $expectedText, int $timeout = 30): void
     {
-
+        $this->checkPageSideErrors();
         // Start timer
         $start = time();
         $toastFound = false;
@@ -1642,6 +1650,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function itWorksAsExpected(TableNode $fields)
     {
+        $this->checkPageSideErrors();
         $node = $this->getBrowser()->getFocusedNode();
         Assert::assertInstanceOf(UI5DataTableNode::class, $node, 'Focused node is not a data table');
         $node->itWorksAsExpected($this->getPageCurrent(), $fields);
@@ -1652,5 +1661,25 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $pageAlias = end($this->pagesVisited);
         return UiPageFactory::createFromModel($this->getWorkbench(), $pageAlias);
     }
+    
+    private function checkPageSideErrors()
+    {
+        $errorManager = ErrorManager::getInstance();
+        $downstream = $errorManager->consumeTransientDownstreamErrors();
+        if (!empty($downstream)) {
+            $lines = array_map(function ($e) {
+                return sprintf(
+                    '[%s] %s%s%s%s%s',
+                    (string)($e['source'] ?? 'UNKNOWN'),
+                    (string)($e['message'] ?? '-'),
+                    isset($e['code'])   ? ' | code='   . $e['code']   : '',
+                    isset($e['logid'])  ? ' | logid='  . $e['logid']  : '',
+                    isset($e['status']) ? ' | status=' . $e['status'] : '',
+                    isset($e['url'])    ? ' | url='    . $e['url']    : ''
+                );
+            }, $downstream);
 
+            Assert::fail("--- Downstream Errors (pre-step) ---\n\n" . implode("\n\n---\n\n", $lines));
+        }
+    }
 }
