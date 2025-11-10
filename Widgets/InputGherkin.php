@@ -89,6 +89,9 @@ JS;
     {
         $steps = $this->findStepsInContexts();
         $aceCompletions = [
+            ['caption' => '@Status::Ready', 'value' => '@Status::Ready ', 'meta' => 'Keyword'],
+            ['caption' => '@Status::Draft', 'value' => '@Status::Draft ', 'meta' => 'Keyword'],
+            ['caption' => '@DevMan::TC', 'value' => '@DevMan::TC.... #Fill here with Testcase Number from DevMan ' , 'meta' => 'Keyword'],
             ['caption' => 'Given', 'value' => 'Given ', 'meta' => 'Keyword'],
             ['caption' => 'When', 'value' => 'When ', 'meta' => 'Keyword'],
             ['caption' => 'Then', 'value' => 'Then ', 'meta' => 'Keyword'],

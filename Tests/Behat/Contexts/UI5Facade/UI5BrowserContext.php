@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\DataSpreadSheetNode;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use axenox\BDT\Behat\TwigFormatter\Context\BehatFormatterContext;
 use axenox\BDT\Common\Installer\TestDataInstaller;
@@ -839,7 +840,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         $this->checkPageSideErrors();
         // Find all widgets of the specified type
-        $widgetNodes = $this->getBrowser()->findWidgets($widgetType);
+        $widgetNodes = $this->getBrowser()->findWidgetNodes($widgetType,15);
         // Get the widget at the specified position (1-based index)
         $node = $widgetNodes[$number - 1];
         Assert::assertNotNull($node, 'Cannot find "' . $widgetType . '" no. ' . $number . '!');
@@ -877,6 +878,140 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
             // Highlight the button for debugging purposes
             $this->getBrowser()->highlightWidget($button, 'Button', 0);
+        }
+
+    }
+
+    /**
+     * @Then the column :columnName in data spreadsheet should be disabled
+     */
+    public function theColumnInDataSpreadsheetShouldBeDisabled($columnName)
+    {
+        // Find the column by its header text
+        $dataSpreadSheetNode = $this->getBrowser()->findWidgetNodes("DataSpreadSheet", 15);
+
+        // Find header cells (column names)
+        $headers = $dataSpreadSheetNode[0]->getNodeElement()->findAll('css', "table.jexcel thead tr td");
+        $columnIndex = null;
+
+        foreach ($headers as $index => $header) {
+            //& !strpos(trim($header->getText()), "hidden" )
+            if (trim($header->getText()) === $columnName ) {
+                print($header->getText() . "\n");
+                $columnIndex = $index;
+                break;
+            }
+        }
+        if ($columnIndex === null) {
+            throw new \Exception("Column '$columnName' not found in Data Spreadsheet.");
+        }
+
+        // Find all cells in that column
+        $rows = $dataSpreadSheetNode[0]->getNodeElement()->findAll('css', "table.jexcel tbody tr");
+
+        foreach ($rows as $rowIndex => $row) {
+            $tds = $row->findAll('css', "td");
+            $cell = $tds[$columnIndex];
+
+            $class = $cell->getAttribute('class');
+
+            // If the class is not readonly class throw Exception
+            if (strpos($class, 'readonly') === false) {
+                throw new \Exception("Column '$columnName' is NOT disabled in row " . ($rowIndex + 1));
+            }
+        }
+    }
+
+    /**
+     *
+     * Fills multiple form fields with values from a table
+     * The table should have columns 'Column' and 'Value'
+     *
+     * @When I fill the row :rowIndex of data spreadsheet with:
+     * @When I fill the last row of data spreadsheet with:
+     *
+     *
+     */
+    public function iFillTheNthRowOfDataSpreadsheetWith(TableNode $table, $rowIndex = null)
+    {
+        if ($rowIndex === null) {
+            $rowIndex = 'last';
+        }
+
+        $dataSpreadSheetNode = $this->getBrowser()->findWidgetNodes("DataSpreadSheet", 15);
+
+
+        // get headers
+        $headers = $dataSpreadSheetNode[0]->getNodeElement()->findAll('css', "table.jexcel thead tr td");
+
+        $headerMap = [];
+        foreach ($headers as $index => $header) {
+            $headerMap[trim($header->getText())] = $index;
+        }
+
+        // last row
+        $rows = $dataSpreadSheetNode[0]->getNodeElement()->findAll('css', "table.jexcel tbody tr");
+        if (empty($rows)) {
+            throw new \Exception("No rows found in Data Spreadsheet.");
+        }
+
+        if (strtolower($rowIndex) === 'last') {
+            $rowNumber = count($rows) - 1;
+        } else {
+            $rowNumber = intval($rowIndex) - 1; // adjust to 0-based
+        }
+
+        if (!isset($rows[$rowNumber])) {
+            throw new \Exception("Row '$rowIndex' not found.");
+        }
+        $targetRow = $rows[$rowNumber];
+        $tds = $targetRow->findAll('css', "td");
+
+
+        // loop over table rows given in feature file
+        foreach ($table->getHash() as $row) {
+            $columnName = $row['Column'];
+            $value = $row['Value'];
+
+            if (!isset($headerMap[$columnName])) {
+                throw new \Exception("Column '$columnName' not found.");
+            }
+            $columnIndex = $headerMap[$columnName];
+            $cell = $tds[$columnIndex];
+
+            // double click to activate editor
+            $cell->doubleClick();
+
+            // try to find editor element inside cell
+            $editor = $cell->find('css', 'input, textarea, [contenteditable]');
+
+            if ($editor !== null) {
+                // execute events
+                $editor->setValue($value);
+                $this->getSession()->executeScript("
+                    var el = document.activeElement;
+                    if (el) {
+                        el.dispatchEvent(new Event('input',{bubbles:true}));
+                        el.dispatchEvent(new Event('change',{bubbles:true}));
+                    }
+                ");
+
+                // check if dropdowns?
+                $dropdownItem = $this->getSession()->getPage()->find('xpath', "//div[contains(@class,'jdropdown') or contains(@class,'jexcel_dropdown')]//div[text()=".json_encode($value)."]");
+                if ($dropdownItem !== null) {
+                    $dropdownItem->click();
+                }
+
+            } else {
+                // if there is no editor
+                $this->getSession()->executeScript(sprintf(
+                    "var row = document.querySelectorAll('table.jexcel tbody tr')[%d];
+                     var cell = row.querySelectorAll('td')[%d];
+                     if(cell){ cell.textContent = %s; }",
+                    $rowNumber, $columnIndex, json_encode($value)
+                ));
+            }
+
         }
 
     }
