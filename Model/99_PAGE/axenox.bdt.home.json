@@ -10,8 +10,8 @@
     "replaces_page_selector": null,
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2024-12-02 09:10:33",
-    "modified_by_user_selector": "0x11eca7f5b092f284a7f5005056bea39f",
-    "modified_on": "2025-10-08 19:18:49",
+    "modified_by_user_selector": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+    "modified_on": "2025-12-04 13:23:08",
     "contents": {
         "object_alias": "axenox.BDT.run_scenario_status",
         "widget_type": "SplitHorizontal",
@@ -38,7 +38,7 @@
                         ],
                         "columns": [
                             {
-                                "attribute_alias": "absolute",
+                                "attribute_alias": "obsolete",
                                 "hidden": true
                             },
                             {
@@ -132,7 +132,7 @@
                                     "operator": "AND",
                                     "conditions": [
                                         {
-                                            "value_left": "=scenario_table!Absolute",
+                                            "value_left": "=scenario_table!obsolete",
                                             "comparator": "==",
                                             "value_right": 1
                                         }
