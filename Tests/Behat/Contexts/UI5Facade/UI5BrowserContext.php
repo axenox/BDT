@@ -1765,21 +1765,40 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * ```
      * Given I log in ...
      * When I look at table 1
-     * Then it works as expected
+     * Then it works as shown below
      * Column Caption | Filter Caption | Button Caption
      * 
      * ```
-     * @Then it works as expected
+     * @Then it works as shown below
      * | :Column Caption | :Filter Caption | :Button Caption |
      * 
      * @param TableNode $fields Table with field names and values
      * @return void
      */
-    public function itWorksAsExpected(TableNode $fields)
+    public function itWorksAsShown(TableNode $fields)
     {
         $node = $this->getBrowser()->getFocusedNode();
         Assert::assertInstanceOf(UI5DataTableNode::class, $node, 'Focused node is not a data table');
-        $node->itWorksAsExpected($this->getPageCurrent(), $fields);
+        $node->itWorksAsShown($this->getPageCurrent(), $fields);
+    }
+
+    /**
+     * Example
+     *
+     * ```
+     * Given I log in ...
+     * When I look at table 1
+     * Then it works as expected
+     * ```
+     * @Then it works as expected
+     * 
+     * @return void
+     */
+    public function itWorksAsExpected()
+    {
+        $node = $this->getBrowser()->getFocusedNode();
+        Assert::assertInstanceOf(UI5DataTableNode::class, $node, 'Focused node is not a data table');
+        $node->itWorksAsExpected($this->getPageCurrent());
     }
 
     public function getPageCurrent() : ?UiPageInterface
