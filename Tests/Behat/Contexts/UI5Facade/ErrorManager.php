@@ -13,6 +13,22 @@ class ErrorManager
     private float $lastErrorTime = 0;
 
     private ?string $lastLogId = null;
+    private ?array $transientDownstreamErrors = null;
+
+    /** Store errors for the current step; will be consumed by the formatter hook. */
+    public function setTransientDownstreamErrors(array $errors): void
+    {
+        $this->transientDownstreamErrors = $errors;
+    }
+
+    /** Return and clear the transient errors (single-consume semantics). */
+    public function consumeTransientDownstreamErrors(): ?array
+    {
+        $out = $this->transientDownstreamErrors;
+        $this->transientDownstreamErrors = null;
+        return $out;
+    }
+    
     /**
      * Set the last log ID for error tracking
      */

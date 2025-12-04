@@ -24,6 +24,7 @@ default:
        # List of context classes that provide test steps
        # UI5BrowserContext handles UI5-specific testing functionality
        - axenox\BDT\Tests\Behat\Contexts\UI5Facade\UI5BrowserContext
+       - axenox\BDT\Tests\Behat\Contexts\UI5Facade\BackendErrorGuardContext
      # Timeout and failure handling settings
      stop_on_failure: false    # Continue testing even if a test fails
      fail_on_timeout: false    # Don't mark test as failed on timeout
@@ -58,7 +59,17 @@ default:
           # Extended timeout for initial Chrome startup
           # Particularly important for first test run
           socket_timeout: 120 # 2 minutes 
-      
+
+      chrome:
+        selenium2:
+          browser: chrome
+          capabilities:
+            extra_capabilities:
+              goog:loggingPrefs:
+                browser: ALL
+                performance: ALL
+              goog:chromeOptions:
+                args: [ "--headless=new","--disable-gpu","--no-sandbox" ]
       # Selenium WebDriver configuration (legacy support)
       # Note: Selenium 2 is outdated, consider upgrading to Selenium 4
       SELENIUM:
