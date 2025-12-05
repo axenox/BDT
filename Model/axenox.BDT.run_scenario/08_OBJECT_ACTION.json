@@ -86,9 +86,9 @@
         {
             "_EXPORT_SUMMARY": "BDT scenario run: Mark obsolete [RunScenarioMarkObsolete]",
             "CREATED_ON": "2025-09-12 12:47:10",
-            "MODIFIED_ON": "2025-10-08 18:40:11",
+            "MODIFIED_ON": "2025-12-04 13:20:18",
             "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "MODIFIED_BY_USER": "0x11eca7f5b092f284a7f5005056bea39f",
+            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f0a9a7d56b104ea9a7025041000001",
             "OBJECT": "0x11f08f0e222d25a48f0e025041000001",
             "ACTION_PROTOTYPE": "exface/core/Actions/UpdateData.php",
@@ -105,7 +105,7 @@
                     "column_to_column_mappings": [
                         {
                             "from": "=1",
-                            "to": "absolute"
+                            "to": "obsolete"
                         }
                     ]
                 }
@@ -117,9 +117,9 @@
         {
             "_EXPORT_SUMMARY": "BDT scenario run: Restore [RunScenarioMarkNotObsolete]",
             "CREATED_ON": "2025-09-12 12:48:24",
-            "MODIFIED_ON": "2025-10-08 18:36:14",
+            "MODIFIED_ON": "2025-12-04 13:20:31",
             "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "MODIFIED_BY_USER": "0x11eca7f5b092f284a7f5005056bea39f",
+            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f085ac01a61c4485ac025041000001",
             "OBJECT": "0x11f08f0e222d25a48f0e025041000001",
             "ACTION_PROTOTYPE": "exface/core/Actions/UpdateData.php",
@@ -135,7 +135,7 @@
                     "column_to_column_mappings": [
                         {
                             "from": "=0",
-                            "to": "absolute"
+                            "to": "obsolete"
                         }
                     ]
                 }

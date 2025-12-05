@@ -13,7 +13,7 @@ WITH OrderedScenarios AS (
         s.tags,
         rs.status,
         s.finished_on,
-        s.absolute,
+        s.obsolete,
         s.paused,
         ROW_NUMBER() OVER (
             PARTITION BY f.filename, s.name
@@ -48,6 +48,6 @@ SELECT
 FROM
     OrderedScenarios
 WHERE
-    (`absolute` IS NULL OR `absolute` != 1) AND
+    (`obsolete` IS NULL OR `obsolete` != 1) AND
     rn = 1
 ;
