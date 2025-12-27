@@ -146,7 +146,7 @@ class UI5DataTableNode extends UI5AbstractNode
      * @param UiPageInterface $page
      * @param TableNode $fields
      */
-    public function itWorksAsExpected(UiPageInterface $page, \Behat\Gherkin\Node\TableNode $fields)
+    public function itWorksAsShown(UiPageInterface $page, \Behat\Gherkin\Node\TableNode $fields)
     {
         /* @var $widget \exface\Core\Widgets\DataTable */
         $widget = $this->getWidget($page);
@@ -207,19 +207,31 @@ class UI5DataTableNode extends UI5AbstractNode
             Assert::assertEmpty($missingButtons, 'Missing buttons: ' . implode(', ', $missingButtons));
             Assert::assertEmpty($extraButtons,   'Unexpected buttons: ' . implode(', ', $extraButtons));
         }
-        
+        $this->itWorksAsExpected($page);
+    }
+
+    /**
+     * @param UiPageInterface $page
+     * @return void
+     */
+    public function itWorksAsExpected(UiPageInterface $page)
+    {
+        /* @var $widget \exface\Core\Widgets\DataTable */
+        $widget = $this->getWidget($page);
+        Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
+
         // Test regular filters
         foreach ($widget->getFilters() as $i => $filter) {
             if ($filter->isHidden()) {
                 // will be used as a filter to get a valid value
-                $this->hiddenFilters[] = $filter;                
+                $this->hiddenFilters[] = $filter;
                 continue;
             }
             // Get a valid value for filtering
             $filterAttr = $filter->getAttribute();
             $filterVal = $this->getAnyValue($filterAttr);
             $filterNode = $this->getBrowser()->getFilterByCaption($filterAttr->getName());
-            
+
             $filterNode->setValue($filterVal);
             if ($filterAttr->isRelation()) {
                 $this->getSession()->wait(1000);
@@ -229,27 +241,26 @@ class UI5DataTableNode extends UI5AbstractNode
             $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
                 ['column' => $filterAttr->getName(), 'value' => $filterVal, 'comparator' => $filter->getComparator()]
             ]);
-            
+
             $this->triggerReset();
         }
-/*
-        // Test column caption filters
-        foreach ($widget->getColumns() as $column) {
-            if ($column->isHidden() || !$column->isFilterable()) {
-                continue;
-            }
-            $columnNode = $this->getColumnByCaption($column->getAttribute()->getName());
-            $columnAttr = $column->getAttribute();
-            $filterVal = $this->getAnyValue($columnAttr);
-            $this->filterColumn($columnNode->getCaption(), $filterVal);
-            $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
-                ['column' => $columnAttr->getName(), 'value' => $filterVal, 'comparator' => ComparatorDataType::EQUALS]
-            ]);
-            $this->resetFilterColumn($columnNode->getCaption());
-        }
-*/
+        /*
+                // Test column caption filters
+                foreach ($widget->getColumns() as $column) {
+                    if ($column->isHidden() || !$column->isFilterable()) {
+                        continue;
+                    }
+                    $columnNode = $this->getColumnByCaption($column->getAttribute()->getName());
+                    $columnAttr = $column->getAttribute();
+                    $filterVal = $this->getAnyValue($columnAttr);
+                    $this->filterColumn($columnNode->getCaption(), $filterVal);
+                    $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
+                        ['column' => $columnAttr->getName(), 'value' => $filterVal, 'comparator' => ComparatorDataType::EQUALS]
+                    ]);
+                    $this->resetFilterColumn($columnNode->getCaption());
+                }
+        */
     }
-        
     protected function getAnyValue(MetaAttributeInterface $attr, string $sort = null)
     {        
         // if it is not relation return the value that is found
