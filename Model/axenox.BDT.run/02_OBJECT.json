@@ -87,9 +87,9 @@
         {
             "_EXPORT_SUMMARY": "BDT test run [axenox.BDT.run]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2025-10-09 11:59:41",
+            "MODIFIED_ON": "2025-12-04 13:21:46",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
+            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f08c1d222cd23e8c1d025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
@@ -222,7 +222,7 @@
                                             },
                                             {
                                                 "hidden": true,
-                                                "attribute_alias": "absolute"
+                                                "attribute_alias": "obsolete"
                                             }
                                         ],
                                         "sorters": [
@@ -252,7 +252,7 @@
                                                     "operator": "AND",
                                                     "conditions": [
                                                         {
-                                                            "value_left": "=scenario_table!absolute",
+                                                            "value_left": "=scenario_table!obsolete",
                                                             "comparator": "!=",
                                                             "value_right": 1
                                                         }
