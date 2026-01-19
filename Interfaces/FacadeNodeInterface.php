@@ -2,6 +2,7 @@
 namespace axenox\BDT\Interfaces;
 
 use Behat\Mink\Element\NodeElement;
+use exface\Core\Interfaces\Model\UiPageInterface;
 
 interface FacadeNodeInterface
 {
@@ -17,4 +18,7 @@ interface FacadeNodeInterface
     // Checks if the UI node can capture  focus
 
     public function capturesFocus(): bool;
+    
+    //checks the functionality of the node
+    public function itWorksAsExpected(UiPageInterface $page): void;
 }
