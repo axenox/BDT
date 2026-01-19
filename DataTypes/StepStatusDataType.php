@@ -18,6 +18,7 @@ class StepStatusDataType extends IntegerDataType implements EnumDataTypeInterfac
     
     CONST PENDING = 0;
     CONST STARTED = 10;
+    CONST UNDEFINED = 30;
     CONST SKIPPED = 99;
     CONST PASSED = 100;
     CONST FAILED = 101;
@@ -50,6 +51,9 @@ class StepStatusDataType extends IntegerDataType implements EnumDataTypeInterfac
             case TestResult::SKIPPED: $status = self::SKIPPED; break;
             case TestResult::PENDING: $status = self::PENDING; break;
             case TestResult::FAILED: $status = self::FAILED; break;
+            case 30: $status = self::UNDEFINED; break; // for UndefinedResult-class
+            default:
+                $status = self::UNDEFINED;
         }
         return $status;
     }
