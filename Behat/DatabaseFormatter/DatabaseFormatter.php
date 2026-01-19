@@ -128,6 +128,9 @@ class DatabaseFormatter implements Formatter
     public function onAfterExercise(): void
     {
         try{
+            if ($this->runDataSheet === null) {
+                $this->runStart = $this->onBeforeExercise();
+            }
             $ds = $this->runDataSheet->extractSystemColumns();
             $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
             $ds->setCellValue('duration_ms', 0,$this->microtime() - $this->runStart);
