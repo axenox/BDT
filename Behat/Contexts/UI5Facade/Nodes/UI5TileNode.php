@@ -1,6 +1,10 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
+use exface\Core\Interfaces\Model\UiPageInterface;
+use exface\Core\Interfaces\WidgetInterface;
+use PHPUnit\Framework\Assert;
+
 class UI5TileNode extends UI5AbstractNode
 {
     public function getCaption(): string
@@ -16,5 +20,24 @@ class UI5TileNode extends UI5AbstractNode
         // Trim leading and trailing whitespace
         return trim($s);
     }
+    
+    public function getWidget(UiPageInterface $page) : WidgetInterface
+    {
+        $widgetId = $this->getNodeElement()->getAttribute('id');
+        return $page->getWidget($widgetId);
+    }
 
+    /**
+     * @param UiPageInterface $page
+     * @return void
+     */
+    public function itWorksAsExpected(UiPageInterface $page) :void
+    {
+        $widget = $this->getWidget($page);
+        if($widget->getAction()->getAlias() === 'exface.Core.GoToPage') {
+            //get page_alias of the action
+            //click on the tile
+        }
+        Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
+    }
 }
