@@ -85,7 +85,7 @@
             "UID": "0x11f0aee48b2814e8aee4025041000001",
             "APP": "0x11efa2214f96c8b8a221025041000001",
             "DEFAULT_CONNECTION": "0x11ea72c00f0fadeca3480205857feb80",
-            "DEFAULT_QUERY_BUILDER": "exface/Core/QueryBuilders/ModelLoaderQueryBuilder.php",
+            "DEFAULT_QUERY_BUILDER": "exface/core/QueryBuilders/ModelLoaderQueryBuilder.php",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
             "BASE_OBJECT": "0x32370000000000000000000000000000",

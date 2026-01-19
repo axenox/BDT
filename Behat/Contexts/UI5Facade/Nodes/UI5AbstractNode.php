@@ -4,9 +4,9 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Mink\Element\NodeElement;
-use exface\Core\CommonLogic\Workbench;
 use exface\Core\DataTypes\StringDataType;
 use Behat\Mink\Session;
+use exface\Core\Interfaces\Model\UiPageInterface;
 
 abstract class UI5AbstractNode implements FacadeNodeInterface
 {
@@ -60,5 +60,10 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
     public function capturesFocus() : bool
     {
         return true;
+    }
+
+    public function itWorksAsExpected(UiPageInterface $page): void
+    {
+        
     }
 }
