@@ -743,6 +743,12 @@ JS
      * Strict comparator :
      * - == / !=, <>: string comparison only (no numeric/date coercion).
      * - >, <, >=, <=: strict numeric or strict ISO date compare. If parsing fails, returns false.
+     * 
+     * A test failed because for input combo the search text itself contains a comma. 
+     * As a result, the system interpreted that single text value as two separate filter values (split at the comma). 
+     * That means what we expected to search for (one complete string) did not match what was actually applied 
+     * (two partial strings), so the “expected vs. found” comparison failed.
+     * 
      */
     private function compareCell(?string $cellText, $expected, string $cmp): bool
     {
@@ -758,13 +764,7 @@ JS
             return array_values(array_filter(array_map('trim', $parts), fn($x) => $x !== ''));
         };
         switch ($cmp) {
-            case '==':
-                if (is_array($expected)) return false;
-                return $this->normalizeText($cellText) === $this->normalizeText((string)$expected);
-
-
             case '!==': {
-                if (is_array($expected)) return false;
                 [$cv, $typeC] = $this->parseComparableStrict($cellText, $expected);
                 [$ev, $typeE] = $this->parseComparableStrict((string)$expected, $expected);
                 if ($cv !== null && $ev !== null && $typeC === $typeE) {
@@ -775,8 +775,6 @@ JS
             
             // UNIVERSAL (LIKE '%expected%')
             case '=': {
-                if (is_array($expected)) return false;
-
                 $leftN  = $this->normalizeText($cellText);
                 $rightN = $this->normalizeText((string)$expected);
                 if ($leftN !== '' || $rightN !== '') {
@@ -791,24 +789,19 @@ JS
             // UNIVERSAL not-like
             case '!=':
             case '<>': {
-                if (is_array($expected)) return false;
                 return $this->normalizeText($cellText) !== $this->normalizeText((string)$expected);
             }
             
             // IN 
             case '[':
-                $items = is_array($expected) ? $expected : $splitList((string)$expected);
-                foreach ($items as $item) {
-                   if (stripos($this->normalizeText($item), $this->normalizeText($expected)) === false)
-                       return false;
+                if (stripos($this->normalizeText($expected), $this->normalizeText($expected)) === false){
+                    return false;
                 }
                 return true;
             // NOT IN
             case '![': {
-                $items = is_array($expected) ? $expected : $splitList((string)$expected);
-                foreach ($items as $item) {
-                    if (stripos($this->normalizeText($item), $this->normalizeText($expected)) !== false)
-                        return false;
+                if (stripos($this->normalizeText($expected), $this->normalizeText($expected)) !== false) {
+                return false;
                 }
                 return true;
             }

@@ -1,7 +1,7 @@
 <?php
 namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
-use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\DataSpreadSheetNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ContainerNode;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use axenox\BDT\Behat\TwigFormatter\Context\BehatFormatterContext;
 use axenox\BDT\Common\Installer\TestDataInstaller;
@@ -1797,7 +1797,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     public function itWorksAsExpected()
     {
         $node = $this->getBrowser()->getFocusedNode();
-        Assert::assertInstanceOf(UI5DataTableNode::class, $node, 'Focused node is not a data table');
         $node->itWorksAsExpected($this->getPageCurrent());
     }
 

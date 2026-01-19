@@ -214,7 +214,7 @@ class UI5DataTableNode extends UI5AbstractNode
      * @param UiPageInterface $page
      * @return void
      */
-    public function itWorksAsExpected(UiPageInterface $page)
+    public function itWorksAsExpected(UiPageInterface $page) :void
     {
         /* @var $widget \exface\Core\Widgets\DataTable */
         $widget = $this->getWidget($page);
