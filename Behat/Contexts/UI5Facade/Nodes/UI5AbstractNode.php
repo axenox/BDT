@@ -6,7 +6,9 @@ use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Mink\Element\NodeElement;
 use exface\Core\DataTypes\StringDataType;
 use Behat\Mink\Session;
+use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\Model\UiPageInterface;
+use exface\Core\Interfaces\WidgetInterface;
 
 abstract class UI5AbstractNode implements FacadeNodeInterface
 {
@@ -65,5 +67,20 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
     public function itWorksAsExpected(UiPageInterface $page): void
     {
         
+    }
+
+    /**
+     * @param string $ui5ElementId
+     * @return string
+     */
+    protected function getWidgetFromElementId(string $ui5ElementId, ?UiPageInterface $page = null) : WidgetInterface
+    {
+        list($pageUid, $widgetId) = explode('__', $ui5ElementId);
+        // Make sure the page UID has the 0x-format
+        $pageUid = '0' . ltrim($pageUid, '0');
+        if ($page === null) {
+            $page = UiPageFactory::createFromModel($this->browser->getWorkbench(), $pageUid);
+        }
+        return $page->getWidget($widgetId);
     }
 }

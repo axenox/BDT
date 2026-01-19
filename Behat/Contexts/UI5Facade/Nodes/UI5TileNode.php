@@ -3,6 +3,7 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use exface\Core\Interfaces\Model\UiPageInterface;
 use exface\Core\Interfaces\WidgetInterface;
+use exface\Core\Widgets\Tile;
 use PHPUnit\Framework\Assert;
 
 class UI5TileNode extends UI5AbstractNode
@@ -20,11 +21,15 @@ class UI5TileNode extends UI5AbstractNode
         // Trim leading and trailing whitespace
         return trim($s);
     }
-    
+
+    /**
+     * @param UiPageInterface $page
+     * @return Tile
+     */
     public function getWidget(UiPageInterface $page) : WidgetInterface
     {
-        $widgetId = $this->getNodeElement()->getAttribute('id');
-        return $page->getWidget($widgetId);
+        $elementId = $this->getNodeElement()->getAttribute('id');
+        return $this->getWidgetFromElementId($elementId);
     }
 
     /**
