@@ -10,6 +10,7 @@ use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Session;
 use exface\Core\Actions\Login;
+use exface\Core\CommonLogic\Security\AuthenticationToken\MetamodelUsernamePasswordAuthToken;
 use exface\Core\CommonLogic\Security\Authenticators\MetamodelAuthenticator;
 use exface\Core\CommonLogic\Workbench;
 use exface\Core\DataTypes\ComparatorDataType;
@@ -1632,10 +1633,12 @@ JS
             'USERNAME'
         ]);
         $userSheet->dataRead();
+        $testRunnerUsername = $config->getOption('TEST_USER.USERNAME');
+        $testRunnerPassword = $config->getOption('TEST_USER.PASSWORD');
         if ($userSheet->isEmpty()) {
             $userSheet->addRow([
-                'USERNAME' => $config->getOption('TEST_USER.USERNAME'),
-                'PASSWORD' => $config->getOption('TEST_USER.PASSWORD'),
+                'USERNAME' => $testRunnerUsername,
+                'PASSWORD' => $testRunnerPassword,
                 'FIRST_NAME' => $config->getOption('TEST_USER.FIRST_NAME'),
                 'LAST_NAME' => $config->getOption('TEST_USER.LAST_NAME'),
                 'LOCALE' => $workbench->getConfig()->getOption('SERVER.DEFAULT_LOCALE')
@@ -1651,16 +1654,18 @@ JS
         if (!empty($roles)) {
             $roleSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER_ROLE');
             $roleSheet->getColumns()->addFromSystemAttributes();
+            $roleAliasCol = $roleSheet->getColumns()->addFromExpression('ALIAS_WITH_NS');
+            $roleUidCol = $roleSheet->getUidColumn();
             $roleSheet->getFilters()
                 ->addNestedOR()
                 ->addConditionFromValueArray('ALIAS_WITH_NS', $roles)
                 ->addConditionFromValueArray('NAME', $roles);
             $roleSheet->dataRead();
-            Assert::assertEquals(count($roles), $roleSheet->countRows(), 'Not all rows found!');
+            Assert::assertEquals(count($roles), $roleSheet->countRows(), 'From the requested ' . count($roles) . ' user roles only the following were found: ' . implode(', ', $roleAliasCol->getValues()));
 
             $userRoleSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER_ROLE_USERS');
             $userRoleSheet->getFilters()->addConditionFromString('USER', $userId);
-            foreach ($roleSheet->getUidColumn()->getValues() as $roleUid) {
+            foreach ($roleUidCol->getValues() as $roleUid) {
                 $userRoleSheet->addRow([
                     'USER_ROLE' => $roleUid
                 ]);
@@ -1668,6 +1673,18 @@ JS
             $userSheet->setCellValue('USER_ROLE_USERS', 0, $userRoleSheet->exportUxonObject()->toArray());
         }
         $userSheet->dataUpdate();
+        
+        // Change the currently logged-in user to make sure the facade nodes "see" exaclty the same as the user in
+        // the scenario. This is important because different users see slightly different UIs. If the scenario user
+        // Only sees two tiles of four, they will have ids "Tile" and "Tile02" while a SUPERUSER might see more
+        // tiles on the same page, where there would be also ids "Tile" and "Tile02", but those would be different
+        // tiles if the scenario user is not allowed to see the first couple of tiles in the menu (in this case,
+        // his "first" tile is different from the SUPERUSERs first tile).
+        $testRunnerToken = new MetamodelUsernamePasswordAuthToken(
+            $testRunnerUsername,
+            $testRunnerPassword,
+        );
+        $workbench->getSecurity()->authenticate($testRunnerToken);
 
         $loginFields = [];
         foreach ($workbench->getConfig()->getOption('SECURITY.AUTHENTICATORS') as $authUxon) {
@@ -1678,6 +1695,7 @@ JS
                 $loginFields[$loginDataObj->getAttribute('PASSWORD')->getName()] = $config->getOption('TEST_USER.PASSWORD');
                 $loginAction = ActionFactory::createFromString($workbench, Login::class);
                 $loginFields['_button'] = $loginAction->getName();
+                break;
             }
         }
         return $loginFields;

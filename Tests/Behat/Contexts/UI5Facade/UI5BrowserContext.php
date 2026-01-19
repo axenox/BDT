@@ -10,10 +10,12 @@ use Behat\Behat\Tester\Result\UndefinedStepResult;
 use Behat\Mink\Element\NodeElement;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use exface\Core\CommonLogic\Model\Expression;
+use exface\Core\CommonLogic\Security\AuthenticationToken\CliEnvAuthToken;
 use exface\Core\CommonLogic\Selectors\AppSelector;
 use exface\Core\CommonLogic\Workbench;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\RuntimeException;
+use exface\Core\Facades\ConsoleFacade;
 use exface\Core\Factories\FormulaFactory;
 use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\Model\UiPageInterface;
@@ -55,6 +57,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         $this->workbench = new Workbench();
         $this->workbench->start();
+        // Authenticated with the default CLI user if called from CLI. The authenticated
+        // user will change with Browser::setupUser() later, but for now the CLI user is
+        // better than no user at all!
+        if (ConsoleFacade::isPhpScriptRunInCli()) {
+            $token = new CliEnvAuthToken();
+            $this->workbench->getSecurity()->authenticate($token);
+        }
         $this->debug = $debug; // Add this line
     }
 
