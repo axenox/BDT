@@ -119,12 +119,12 @@ TXT             ,
             [
                 'caption' => 'Feature - a new feature file',
                 'value' => <<<TXT
-Feature: [name]
+Feature: [name of feature]
     In order to write good automated tests
     As a test manager
     I need to fill out templates provided by this editor
 
-    Scenario:
+    Scenario: [name of scenario]
         # steps here
 TXT,
                 'meta' => 'Template'
