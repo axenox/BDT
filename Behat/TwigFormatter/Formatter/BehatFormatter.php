@@ -192,10 +192,12 @@ class BehatFormatter implements Formatter
 
     private ScreenshotProviderInterface $provider;
 
+    private Timer $timerFeature;
 
     //</editor-fold>
 
     //<editor-fold desc="Formatter functions">
+
     /**
      * @param $name
      * @param $projectName
@@ -208,6 +210,7 @@ class BehatFormatter implements Formatter
      * @param $loopBreak
      * @param $showTags
      * @param $basePath
+     * @param ScreenshotProviderInterface $provider
      */
     public function __construct(
         $name,
