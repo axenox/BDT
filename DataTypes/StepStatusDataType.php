@@ -51,7 +51,7 @@ class StepStatusDataType extends IntegerDataType implements EnumDataTypeInterfac
             case TestResult::SKIPPED: $status = self::SKIPPED; break;
             case TestResult::PENDING: $status = self::PENDING; break;
             case TestResult::FAILED: $status = self::FAILED; break;
-            case 30: $status = self::UNDEFINED; break; // for UndefinedResult-class
+            case 30: $status = self::UNDEFINED; break; // for `\Behat\Behat\Tester\Result\UndefinedStepResult`
             default:
                 $status = self::UNDEFINED;
         }
