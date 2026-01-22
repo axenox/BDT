@@ -453,7 +453,7 @@
         {
             "_EXPORT_SUMMARY": "Tags [tags]",
             "CREATED_ON": "2025-07-18 13:52:49",
-            "MODIFIED_ON": "2025-07-18 13:52:49",
+            "MODIFIED_ON": "2026-01-20 10:41:13",
             "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f09ac6ba4e31029ac6025041000001",
@@ -484,7 +484,7 @@
             "UIDFLAG": 0,
             "HIDDENFLAG": 0,
             "EDITABLEFLAG": 1,
-            "REQUIREDFLAG": 1,
+            "REQUIREDFLAG": 0,
             "RELATED_OBJ": null,
             "SORTERPOS": null,
             "SORTERDIR": "",

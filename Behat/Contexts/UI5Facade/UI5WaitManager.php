@@ -330,6 +330,7 @@ class UI5WaitManager
      * 1. XHR (network) errors
      * 2. UI5 MessageManager errors
      * 3. JavaScript errors
+     * 4. Popup (.exf-error)
      * 
      * @throws \RuntimeException If any errors are found
      */
@@ -339,6 +340,34 @@ class UI5WaitManager
         $errorManager = ErrorManager::getInstance();
 
         try {
+            // 4) Popup (.exf-error) - primary source
+            $popupErrors = $this->getSession()->evaluateScript(<<<'JS'
+(function () {
+    function isVisible(el) {
+        return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+    }
+
+    var nodes = Array.prototype.slice.call(document.querySelectorAll('.exf-error'));
+    var visible = nodes.filter(isVisible);
+
+    return visible.map(function (el) {
+        var text = (el.innerText || el.textContent || '').trim();
+        if (!text) text = (el.getAttribute('aria-label') || '').trim();
+
+        return {
+            type: 'Popup',
+            message: text || 'Error popup detected (.exf-error) but no text found',
+            details: (el.getAttribute('data-exf-error-details') || '').trim(),
+            id: el.id || ''
+        };
+    });
+})();
+JS);
+
+            foreach ($popupErrors as $error) {
+                $errorManager->addError($error, 'Popup');
+            }
+            
             // Check for XHR (network) errors
             $networkErrors = $this->getSession()->evaluateScript('
                 if (window.exfXHRLog && window.exfXHRLog.errors) {
@@ -355,30 +384,32 @@ class UI5WaitManager
                 $errorManager->addError($error, 'XHR');
             }
 
-            // Check for UI5 MessageManager errors (Error or Fatal type)
-            $ui5Errors = $this->getSession()->evaluateScript('
-                if (typeof sap !== "undefined" && sap.ui && sap.ui.getCore()) {
-                    var messageManager = sap.ui.getCore().getMessageManager();
-                    if (messageManager && messageManager.getMessageModel) {
-                        return messageManager.getMessageModel().getData()
-                            .filter(function(msg) {
-                                return msg.type === "Error" || msg.type === "Fatal";
-                            })
-                            .map(function(msg) {
-                                return {
-                                    type: "UI5",
-                                    message: msg.message,
-                                    details: msg.description || ""
-                                };
-                            });
+            if(!$errorManager->hasErrors()) {
+                // Check for UI5 MessageManager errors (Error or Fatal type)
+                $ui5Errors = $this->getSession()->evaluateScript('
+                    if (typeof sap !== "undefined" && sap.ui && sap.ui.getCore()) {
+                        var messageManager = sap.ui.getCore().getMessageManager();
+                        if (messageManager && messageManager.getMessageModel) {
+                            return messageManager.getMessageModel().getData()
+                                .filter(function(msg) {
+                                    return msg.type === "Error" || msg.type === "Fatal";
+                                })
+                                .map(function(msg) {
+                                    return {
+                                        type: "UI5",
+                                        message: msg.message,
+                                        details: msg.description || ""
+                                    };
+                                });
+                        }
                     }
+                    return [];
+                ');
+    
+                // Add each UI5 error to the error manager
+                foreach ($ui5Errors as $error) {
+                    $errorManager->addError($error, 'UI5');
                 }
-                return [];
-            ');
-
-            // Add each UI5 error to the error manager
-            foreach ($ui5Errors as $error) {
-                $errorManager->addError($error, 'UI5');
             }
 
             // Check for JavaScript errors
