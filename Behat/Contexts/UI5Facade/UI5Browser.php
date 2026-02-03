@@ -5,6 +5,7 @@ use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5FilterNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5PageNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5TileNode;
+use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 use Behat\Mink\Element\NodeElement;
@@ -22,6 +23,7 @@ use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\FacadeFactory;
 use exface\Core\Factories\MetaObjectFactory;
 use exface\Core\Factories\UiPageFactory;
+use exface\Core\Interfaces\Model\UiPageInterface;
 use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Interfaces\WorkbenchInterface;
 use exface\UI5Facade\Facades\UI5Facade;
@@ -47,11 +49,9 @@ class UI5Browser
     private $objectAlias = null;
     private UI5WaitManager $waitManager;
     private array $focusStack = [];
+    private array $pagesVisited = [];
 
     private string $locale;
-
-    /** @var callable|null */
-    private $syncAfterUiNavigation;
 
     /** @var callable|null */
     private $verifyCurrentPage = null;
@@ -73,6 +73,7 @@ class UI5Browser
         $this->workbench = $workbench;
         $this->waitManager = new UI5WaitManager($session);
         $this->locale = $locale;
+        $this->pagesVisited[] = StringDataType::substringBefore($ui5AppUrl, '.html');
 
         // Initialize XHR monitoring to track AJAX requests
         $this->initializeXHRMonitoring();
@@ -101,20 +102,6 @@ class UI5Browser
             throw new \RuntimeException('Navigator callback is not configured on UI5Browser.');
         }
         ($this->navigator)($pageAlias);
-    }
-
-    public function setSyncAfterUiNavigation(callable $fn): void
-    {
-        $this->syncAfterUiNavigation = $fn;
-    }
-
-    public function syncAfterUiNavigation(): string
-    {
-        if (!$this->syncAfterUiNavigation) {
-            throw new \RuntimeException('syncAfterUiNavigation is not configured.');
-        }
-
-        return ($this->syncAfterUiNavigation)();
     }
     
     public function setVerifyCurrentPage(callable $fn): void
@@ -1867,5 +1854,74 @@ JS
     {
         $this->getSession()->executeScript('window.history.back();');
         $this->getWaitManager()->waitForPendingOperations(true, true, true);
+    }
+
+    public function getPageCurrent() : ?UiPageInterface
+    {
+        $this->syncUiNavigation();
+        $pageAlias = end($this->pagesVisited);
+        return UiPageFactory::createFromModel($this->getWorkbench(), $pageAlias);
+    }
+
+    /**
+     * Fills the internal history of this class from the current JS state
+     *
+     * @return string
+     */
+    protected function syncUiNavigation(): string
+    {
+        $this->getWaitManager()->waitForPendingOperations(true, true, true);
+        $pageAlias = $this->getPageAliasFromCurrentUrl();
+        if (!$pageAlias) {
+            throw new \RuntimeException('Cannot determine current page alias after UI navigation.');
+        }
+
+        $prevAlias = end($this->pagesVisited);
+        if ($prevAlias !== $pageAlias) {
+            DatabaseFormatter::addTestedPage($pageAlias);
+            $this->pagesVisited[] = $pageAlias;
+        }
+
+        return $pageAlias;
+    }
+
+    /**
+     * Returns the "logical" UI page alias from the current URL.
+     *
+     * Why:
+     * - Some pages use hash-based routing (SPA style).
+     * - In that case, the real target page alias lives in the URL fragment (#/...),
+     *   not in the ".html" part.
+     *
+     * Example:
+     *   /nbr.onelink.trasse-ausfuehrung.html#/nbr.onelink.trasse-ausfuehrung-trasse/%257B...
+     *   -> should return: nbr.onelink.trasse-ausfuehrung-trasse
+     */
+    private function getPageAliasFromCurrentUrl(): ?string
+    {
+        $hash = (string) $this->getSession()->evaluateScript('return window.location.hash || "";');
+        if ($hash === '' || $hash === '#') {
+            return null;
+        }
+
+        $hash = ltrim($hash, '#');
+        $hash = ltrim($hash, '/');
+
+        $alias = strtok($hash, '/');
+        if ($alias === false || $alias === '') {
+            return null;
+        }
+
+        return urldecode($alias);
+    }
+
+    private function findMainWidgetNodeElementForCurrentPage(string $pageAlias) :?NodeElement
+    {
+        $page = UiPageFactory::createFromModel($this->getWorkbench(), $pageAlias);
+        $elementId =$this->getBrowser()->getElementIdFromWidget( $page->getWidgetRoot());
+
+        $rootElementNode = $this->getSession()->getPage()->find('css', $elementId);
+
+        return $rootElementNode;
     }
 }
