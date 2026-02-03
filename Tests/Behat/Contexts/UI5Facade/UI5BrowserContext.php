@@ -1,7 +1,7 @@
 <?php
 namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
-use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ContainerNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use axenox\BDT\Behat\TwigFormatter\Context\BehatFormatterContext;
 use axenox\BDT\Common\Installer\TestDataInstaller;
@@ -49,7 +49,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private $debug = false;
     private $pagesVisited = [];
     private string $locale = 'de_DE';
-
+    /** @var array<string,bool> */
+    private array $validatedAliases = [];
     /** 
      * Initializes and starts the workbench for the test environment
      */
@@ -340,7 +341,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iVisitPage(string $url): void
     {
-        // try {
         if ($url && !StringDataType::endsWith($url, '.html')) {
             $url .= '.html';
         }
@@ -348,24 +348,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Page alias like `axenox.bdt.home`
         $pageAlias = StringDataType::substringAfter($url, '/', false, true);
         $pageAlias = StringDataType::substringBefore($url, '.html', $url, false, true);
-        DatabaseFormatter::addTestedPage($pageAlias);
-        $this->pagesVisited[] = $pageAlias;
         
-        // Navigate to the page using Mink's path navigation
-        $this->visitPath('/' . $url);
-        $this->logDebug("Debug - New page is loading...\n");
-        // Initialize the UI5Browser with the current session and URL
-        $this->browser = new UI5Browser($this->getWorkbench(), $this->getSession(), $url, $this->getLocale());
-        return;
-        // } catch (FacadeBrowserException $e) {
-        //     echo "Debug - 5"; 
-        //     // Hata durumunda, DebugMessage kullanarak hata widget'Ä± oluÅŸturma
-        //     $debugMessage = new DebugMessage($this->getWorkbench());
-        //     $e->createDebugWidget($debugMessage);
-        //     throw $e;
-        // }  
+        $this->navigateToPageAlias($pageAlias);
     }
-
 
 
     /**
@@ -684,7 +669,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             }
         }
 
-        // If still doesnt find, check it in entire page
+        // If still doesn't find, check it in entire page
         if (!$button) {
             $page = $this->getSession()->getPage();
             $buttons = $page->findAll('css', 'button');
@@ -707,14 +692,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
 
         if ($button) {
-            // Butonu highlightWidget ile vurgulayın
+            // highlight the button with highlightWidget
             $this->getBrowser()->highlightWidget(
                 $button,
-                'Button',  // Widget tipi
-                0           // Index (ilk buton olduğu için 0)
+                'Button',  // Widget type
+                0           // Index (0 for the first button)
             );
 
-            // Butonu tıklama işlemi
+            // button click process
             try {
                 $button->click();
             } catch (\Exception $e) {
@@ -727,7 +712,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         try {
             $button->click();
         } catch (\Exception $e) {
-            // If error accures while clicking
+            // If error occurs while clicking
             //$this->debugButtonClickContext($button, $caption);
             throw $e;
         }
@@ -1166,7 +1151,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iVisitTheFollowingPages(TableNode $table): void
     {
-
+        //TODO: this also needs to add visited pages to the DatabaseFormatter
         $urls = $table->getHash();
         $currentSession = $this->getSession();
 
@@ -1185,8 +1170,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $currentSession->visit($fullUrl);
 
             // Initialize browser with current session
-            $this->browser = new UI5Browser($this->getWorkbench(), $currentSession, $url);
-
+            $this->browser = new UI5Browser($this->getWorkbench(), $currentSession, $url, $this->getLocale());
+            $this->wireBrowserCallbacks();
             // Verify page loaded
             $this->iShouldSeeThePage();
         }
@@ -1813,6 +1798,147 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         $pageAlias = end($this->pagesVisited);
         return UiPageFactory::createFromModel($this->getWorkbench(), $pageAlias);
+    }
+
+    /**
+     * Centralized navigation helper.
+     *
+     * This method is the single source of truth for:
+     *  1) DB/report logging of visited pages
+     *  2) actual browser navigation
+     *  3) UI5Browser re-initialization after navigation
+     *
+     * @param string $pageAlias
+     */
+    private function navigateToPageAlias(string $pageAlias): void
+    {
+        DatabaseFormatter::addTestedPage($pageAlias);
+        $this->pagesVisited[] = $pageAlias;
+
+        // Navigate to the page using Mink's path navigation
+        $url = $pageAlias . '.html';
+        $this->visitPath('/' . $url);
+        $this->logDebug("Debug - New page is loading: {$url}\n");
+
+        // Initialize the UI5Browser with the current session and URL
+        $this->browser = new UI5Browser($this->getWorkbench(), $this->getSession(), $url, $this->getLocale());
+        $this->wireBrowserCallbacks();
+    }
+
+    /**
+     * Returns the "logical" UI page alias from the current URL.
+     *
+     * Why:
+     * - Some pages use hash-based routing (SPA style).
+     * - In that case, the real target page alias lives in the URL fragment (#/...),
+     *   not in the ".html" part.
+     *
+     * Example:
+     *   /nbr.onelink.trasse-ausfuehrung.html#/nbr.onelink.trasse-ausfuehrung-trasse/%257B...
+     *   -> should return: nbr.onelink.trasse-ausfuehrung-trasse
+     */
+    private function getCurrentPageAliasFromCurrentUrl(): ?string
+    {
+        $hash = (string) $this->getSession()->evaluateScript('return window.location.hash || "";');
+        if ($hash === '' || $hash === '#') {
+            return null;
+        }
+
+        $hash = ltrim($hash, '#');
+        $hash = ltrim($hash, '/');
+
+        $alias = strtok($hash, '/');
+        if ($alias === false || $alias === '') {
+            return null;
+        }
+
+        return urldecode($alias);
+    }
+
+    /**
+     * After a click event on the UI Browser needs to be synchronized with the new pageAlias
+     * 
+     * @return string
+     */
+    private function syncBrowserAfterUiNavigation(): string
+    {
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+        $pageAlias = $this->getCurrentPageAliasFromCurrentUrl();
+        if (!$pageAlias) {
+            throw new \RuntimeException('Cannot determine current page alias after UI navigation.');
+        }
+
+        DatabaseFormatter::addTestedPage($pageAlias);
+        $this->pagesVisited[] = $pageAlias;
+
+        return $pageAlias;
+    }
+
+    private function wireBrowserCallbacks(): void
+    {
+        $this->browser->setNavigator(function (string $pageAlias): void {
+            $this->navigateToPageAlias($pageAlias);
+        });
+
+        // Used after Tile click to detect routed alias + wait + reporting
+        $this->browser->setSyncAfterUiNavigation(function (): string {
+            return $this->syncBrowserAfterUiNavigation();
+        });
+
+        // Used to start validation on whatever page is currently loaded
+        $this->browser->setVerifyCurrentPage(function (): void {
+            $this->verifyCurrentPageWorksAsExpected();
+        });
+    }
+
+    /**
+     * Entry point to validate the currently loaded page.
+     *
+     * Why:
+     * - After UI navigation (e.g., clicking a Tile), we need to start validation from
+     *   the "main widget" on the new page.
+     * - Nodes should validate their own subtree, but choosing the correct starting node
+     *   is orchestration logic and belongs to the context/browser layer.
+     */
+    private function verifyCurrentPageWorksAsExpected(): void
+    {
+        $alias = $this->getCurrentPageAliasFromCurrentUrl();
+
+        if ($alias && isset($this->validatedAliases[$alias])) {
+            return;
+        }
+        if ($alias) {
+            $this->validatedAliases[$alias] = true;
+        }
+        
+        /*
+        
+        // Decide which widget type is the best "root" for the page validation.
+        $rootNodeElement = $this->findMainWidgetNodeElementForCurrentPage($alias);
+        Assert::assertNotNull($rootNodeElement, 'Cannot determine the main widget for the current page.(' . $alias . '.html)');
+
+        $widgetType = $this->browser->getNodeWidgetType($rootNodeElement);
+
+        $node = UI5FacadeNodeFactory::createFromNodeElement(
+            $widgetType,
+            $rootNodeElement,
+            $this->getSession(),
+            $this->browser
+        );
+
+        $page = $this->getPageCurrent();
+        $node->itWorksAsExpected($page);
+        */
+    }
+
+    private function findMainWidgetNodeElementForCurrentPage(string $pageAlias) :?NodeElement
+    {
+        $page = UiPageFactory::createFromModel($this->getWorkbench(), $pageAlias);
+        $elementId =$this->getBrowser()->getElementIdFromWidget( $page->getWidgetRoot());
+        
+        $rootElementNode = $this->getSession()->getPage()->find('css', $elementId);
+        
+        return $rootElementNode;
     }
 
 }
