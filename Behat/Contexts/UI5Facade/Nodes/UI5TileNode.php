@@ -1,6 +1,8 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
+use axenox\BDT\Interfaces\FacadeNodeInterface;
+use exface\Core\Actions\GoToPage;
 use exface\Core\Interfaces\Model\UiPageInterface;
 use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Widgets\Tile;
@@ -35,28 +37,41 @@ class UI5TileNode extends UI5AbstractNode
      * @param UiPageInterface $page
      * @return void
      */
-    public function itWorksAsExpected(UiPageInterface $page) :void
+    public function itWorksAsExpected() :void
     {
         $widget = $this->getWidget();
         Assert::isInstanceOf(Tile::class , $widget, 'Tile widget not found for this node.');
-        if ($widget->getAction()->getAlias() === 'GoToPage') {
-            $expectedAlias = $widget->getActionUxon()->getProperty('page_alias')->toString();
-            //click on the tile
-            $this->getNodeElement()->click();
-            $directedAlias = $this->getBrowser()->syncAfterUiNavigation();
+        $action = $widget->getAction();
+        
+        switch (true) {
+            case $action instanceof GoToPage:
+                $expectedAlias = $action->getPage()->getAliasWithNamespace();
+                //click on the tile
+                $this->click();
+                $directedAlias = $this->getBrowser()->getPageCurrent()->getAliasWithNamespace();
 
-            Assert::assertSame(
-                $expectedAlias,
-                $directedAlias,
-                sprintf(
-                    'Tile "%s" navigated to "%s" but expected "%s".',
-                    $widget->getCaption(),
+                Assert::assertSame(
+                    $expectedAlias,
                     $directedAlias,
-                    $expectedAlias
-                )
-            );
-            $this->getBrowser()->verifyCurrentPageWorksAsExpected();
-            $this->getBrowser()->navigateToPreviousPage();
+                    sprintf(
+                        'Tile "%s" navigated to "%s" but expected "%s".',
+                        $widget->getCaption(),
+                        $directedAlias,
+                        $expectedAlias
+                    )
+                );
+                $this->getBrowser()->verifyCurrentPageWorksAsExpected();
+                $this->getBrowser()->navigateToPreviousPage();
+                break;
+            // TODO more action validation here??
         }
-    }    
+    }
+
+    /**
+     * @return void
+     */
+    public function click() : void
+    {
+        $this->getNodeElement()->click();
+    }
 }
