@@ -12,7 +12,7 @@ class UI5ContainerNode extends UI5AbstractNode
         return '';
     }
 
-    public function itWorksAsExpected(UiPageInterface $page): void
+    public function itWorksAsExpected(): void
     {
         $childWidgetNodes = $this->getNodeElement()->findAll('css', '.exfw');
         foreach ($childWidgetNodes as $childWidgetNode) {
@@ -21,7 +21,7 @@ class UI5ContainerNode extends UI5AbstractNode
             if($this->getNodeElement()->getAttribute('id')=== $childWidgetNode->getAttribute('id') ) {
                 continue;
             }
-            $node->itWorksAsExpected($page);
+            $node->itWorksAsExpected();
         }
     }
 }
