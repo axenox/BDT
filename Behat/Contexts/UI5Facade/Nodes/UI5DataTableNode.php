@@ -131,10 +131,11 @@ class UI5DataTableNode extends UI5AbstractNode
         return null;
     }
     
-    public function getWidget(UiPageInterface $page) : ?WidgetInterface
+    public function getWidget() : ?WidgetInterface
     {
         $innerNode = $this->find('css', '.sapUiTable');
         if ($innerNode) {
+            $page = $this->getBrowser()->getPageCurrent();
             $widgetId = $innerNode->getAttribute('id');
             $widgetId = StringDataType::substringAfter( $widgetId, ltrim($page->getUid(), '0') . '__');
             return $page->getWidget($widgetId);
@@ -146,8 +147,9 @@ class UI5DataTableNode extends UI5AbstractNode
      * @param UiPageInterface $page
      * @param TableNode $fields
      */
-    public function itWorksAsShown(UiPageInterface $page, \Behat\Gherkin\Node\TableNode $fields)
+    public function itWorksAsShown(\Behat\Gherkin\Node\TableNode $fields)
     {
+        $page = $this->getBrowser()->getPageCurrent();
         /* @var $widget \exface\Core\Widgets\DataTable */
         $widget = $this->getWidget($page);
         Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
@@ -214,10 +216,10 @@ class UI5DataTableNode extends UI5AbstractNode
      * @param UiPageInterface $page
      * @return void
      */
-    public function itWorksAsExpected(UiPageInterface $page) :void
+    public function itWorksAsExpected() :void
     {
         /* @var $widget \exface\Core\Widgets\DataTable */
-        $widget = $this->getWidget($page);
+        $widget = $this->getWidget();
         Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
 
         // Test regular filters

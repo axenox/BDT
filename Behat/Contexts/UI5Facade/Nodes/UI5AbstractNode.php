@@ -64,7 +64,7 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
         return true;
     }
 
-    public function itWorksAsExpected(UiPageInterface $page): void
+    public function itWorksAsExpected(): void
     {
         
     }
@@ -82,5 +82,17 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
             $page = UiPageFactory::createFromModel($this->browser->getWorkbench(), $pageUid);
         }
         return $page->getWidget($widgetId);
+    }
+
+    /**
+     * 
+     * $this->getElementIdFromWidget($page->getWidgetRoot())
+     * 
+     * @param WidgetInterface $widget
+     * @return string
+     */
+    protected function getElementIdFromWidget(WidgetInterface $widget) : string
+    {
+        return $widget->getPage()->getUid() . '__' . $widget->getId();
     }
 }
