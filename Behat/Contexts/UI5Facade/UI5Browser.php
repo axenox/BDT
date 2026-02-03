@@ -22,6 +22,7 @@ use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\FacadeFactory;
 use exface\Core\Factories\MetaObjectFactory;
 use exface\Core\Factories\UiPageFactory;
+use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Interfaces\WorkbenchInterface;
 use exface\UI5Facade\Facades\UI5Facade;
 use PHPUnit\Framework\Assert;
@@ -49,6 +50,16 @@ class UI5Browser
 
     private string $locale;
 
+    /** @var callable|null */
+    private $syncAfterUiNavigation;
+
+    /** @var callable|null */
+    private $verifyCurrentPage = null;
+    
+    /** @var callable|null */
+    private $navigator = null;
+
+
     /**
      * Constructor - initializes the UI5Browser with necessary dependencies
      * 
@@ -71,6 +82,58 @@ class UI5Browser
         $this->waitManager->waitForAppLoaded($ui5AppUrl);
     }
 
+    /**
+     * Allows nodes to trigger navigation through the same pipeline
+     * (DB/report logging + Mink visitPath + browser re-init) owned by the context.
+     */
+    public function setNavigator(callable $navigator): void
+    {
+        $this->navigator = $navigator;
+    }
+
+    /**
+     * Navigate using the injected navigator.
+     * This is intentionally not implemented here, because the context owns logging/reporting.
+     */
+    public function navigateToPageAlias(string $pageAlias): void
+    {
+        if (!$this->navigator) {
+            throw new \RuntimeException('Navigator callback is not configured on UI5Browser.');
+        }
+        ($this->navigator)($pageAlias);
+    }
+
+    public function setSyncAfterUiNavigation(callable $fn): void
+    {
+        $this->syncAfterUiNavigation = $fn;
+    }
+
+    public function syncAfterUiNavigation(): string
+    {
+        if (!$this->syncAfterUiNavigation) {
+            throw new \RuntimeException('syncAfterUiNavigation is not configured.');
+        }
+
+        return ($this->syncAfterUiNavigation)();
+    }
+    
+    public function setVerifyCurrentPage(callable $fn): void
+    {
+        $this->verifyCurrentPage = $fn;
+    }
+
+    /**
+     * Entry point to validate the currently loaded page.
+     * This is orchestration logic implemented in the context, injected as callback.
+     */
+    public function verifyCurrentPageWorksAsExpected(): void
+    {
+        if (!$this->verifyCurrentPage) {
+            throw new \RuntimeException('VerifyCurrentPage callback is not configured on UI5Browser.');
+        }
+        ($this->verifyCurrentPage)();
+    }
+    
     /**
      * Gets the wait manager instance that handles all wait operations
      * 
@@ -1784,4 +1847,25 @@ JS
         throw new RuntimeException("Filter {$filterName} not found");
     }
 
+    /**
+     *
+     * $this->getElementIdFromWidget($page->getWidgetRoot())
+     *
+     * @param WidgetInterface $widget
+     * @return string
+     */
+    public function getElementIdFromWidget(WidgetInterface $widget) : string
+    {
+        return substr($widget->getPage()->getUid(), 1) . '__' . $widget->getId();
+    }
+
+    /**
+     * Since UI5 combines pages one after another, there are a lot of back button 
+     * so instead of using the back buton, window history back was used
+     */
+    public function navigateToPreviousPage(): void
+    {
+        $this->getSession()->executeScript('window.history.back();');
+        $this->getWaitManager()->waitForPendingOperations(true, true, true);
+    }
 }

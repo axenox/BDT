@@ -23,10 +23,9 @@ class UI5TileNode extends UI5AbstractNode
     }
 
     /**
-     * @param UiPageInterface $page
      * @return Tile
      */
-    public function getWidget(UiPageInterface $page) : WidgetInterface
+    public function getWidget() : WidgetInterface
     {
         $elementId = $this->getNodeElement()->getAttribute('id');
         return $this->getWidgetFromElementId($elementId);
@@ -38,11 +37,26 @@ class UI5TileNode extends UI5AbstractNode
      */
     public function itWorksAsExpected(UiPageInterface $page) :void
     {
-        $widget = $this->getWidget($page);
-        if($widget->getAction()->getAlias() === 'exface.Core.GoToPage') {
-            //get page_alias of the action
+        $widget = $this->getWidget();
+        Assert::isInstanceOf(Tile::class , $widget, 'Tile widget not found for this node.');
+        if ($widget->getAction()->getAlias() === 'GoToPage') {
+            $expectedAlias = $widget->getActionUxon()->getProperty('page_alias')->toString();
             //click on the tile
+            $this->getNodeElement()->click();
+            $directedAlias = $this->getBrowser()->syncAfterUiNavigation();
+
+            Assert::assertSame(
+                $expectedAlias,
+                $directedAlias,
+                sprintf(
+                    'Tile "%s" navigated to "%s" but expected "%s".',
+                    $widget->getCaption(),
+                    $directedAlias,
+                    $expectedAlias
+                )
+            );
+            $this->getBrowser()->verifyCurrentPageWorksAsExpected();
+            $this->getBrowser()->navigateToPreviousPage();
         }
-        Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
-    }
+    }    
 }
