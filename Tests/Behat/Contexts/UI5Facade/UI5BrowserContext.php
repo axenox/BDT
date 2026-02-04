@@ -1849,22 +1849,23 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         if ($alias) {
             $this->validatedAliases[$alias] = true;
         }
-        /*
-        $rootNodeElement = $this->getBrowser()->getElementIdFromWidget($page->getWidgetRoot());
+        
+        $rootWidget = $page->getWidgetRoot();
+        $rootElementId = $this->getBrowser()->getElementIdFromWidget($rootWidget);
+        $rootNode = $this->getSession()->getPage()->findById($rootElementId);
         // Decide which widget type is the best "root" for the page validation.
         // $rootNodeElement = $this->findMainWidgetNodeElementForCurrentPage($alias);
-        Assert::assertNotNull($rootNodeElement, 'Cannot determine the main widget for the current page.(' . $alias . '.html)');
+        Assert::assertNotNull($rootNode, 'Cannot determine the main widget for the current page.(' . $alias . '.html)');
 
-        $widgetType = $this->browser->getNodeWidgetType($rootNodeElement);
+        $widgetType = $rootWidget->getWidgetType();
 
-        $node = UI5FacadeNodeFactory::createFromNodeElement(
+        $facadeNode = UI5FacadeNodeFactory::createFromNodeElement(
             $widgetType,
-            $rootNodeElement,
+            $rootNode,
             $this->getSession(),
             $this->browser
         );
 
-        $node->itWorksAsExpected();
-        */
+        $facadeNode->itWorksAsExpected();
     }
 }
