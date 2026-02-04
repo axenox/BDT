@@ -4,6 +4,7 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Mink\Element\NodeElement;
+use Behat\Mink\Exception\DriverException;
 use exface\Core\DataTypes\StringDataType;
 use Behat\Mink\Session;
 use exface\Core\Factories\UiPageFactory;
@@ -94,5 +95,24 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
     protected function getElementIdFromWidget(WidgetInterface $widget) : string
     {
         return $widget->getPage()->getUid() . '__' . $widget->getId();
+    }
+    
+    public static function findWidgetNode(NodeElement $innerDomNode) : NodeElement
+    {
+        if ($innerDomNode->hasClass('exfw')) {
+            return $innerDomNode;
+        }
+        
+        try {
+            $currentDomNode = $innerDomNode;
+            while ($parentDomNode = $currentDomNode->getParent()) {
+                if ($parentDomNode->hasClass('exfw')) {
+                    return $parentDomNode;
+                }
+                $currentDomNode = $parentDomNode;
+            }
+        } catch (DriverException $e) {
+            return $innerDomNode;
+        }
     }
 }

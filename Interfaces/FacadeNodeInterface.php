@@ -20,4 +20,12 @@ interface FacadeNodeInterface
     
     //checks the functionality of the node
     public function itWorksAsExpected(): void;
+
+    /**
+     * Returns the (outer) DOM node, that contains the entire widget, searching from the given inner node upwards
+     * 
+     * @param NodeElement $innerDomNode
+     * @return NodeElement
+     */
+    public static function findWidgetNode(NodeElement $innerDomNode) : NodeElement;
 }
