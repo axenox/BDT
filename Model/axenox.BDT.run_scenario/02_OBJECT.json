@@ -87,7 +87,7 @@
         {
             "_EXPORT_SUMMARY": "BDT scenario run [axenox.BDT.run_scenario]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2025-12-04 13:22:09",
+            "MODIFIED_ON": "2026-02-06 08:59:04",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f08f0e222d25a48f0e025041000001",
@@ -180,6 +180,9 @@
                                     },
                                     {
                                         "attribute_alias": "duration_ms"
+                                    },
+                                    {
+                                        "attribute_alias": "error_log_id"
                                     }
                                 ],
                                 "sorters": [
@@ -195,6 +198,19 @@
                                             "alias": "exface.Core.ShowObjectInfoDialog"
                                         },
                                         "bind_to_double_click": true
+                                    },
+                                    {
+                                        "action_alias": "axenox.BDT.ShowRunStepErrorDetails",
+                                        "disabled_if": {
+                                            "operator": "AND",
+                                            "conditions": [
+                                                {
+                                                    "value_left": "=~input!error_log_id",
+                                                    "comparator": "==",
+                                                    "value_right": ""
+                                                }
+                                            ]
+                                        }
                                     }
                                 ]
                             }
