@@ -1,13 +1,18 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
+use exface\Core\CommonLogic\Model\RelationPath;
+use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Interfaces\DataTypes\EnumDataTypeInterface;
+use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\MetaAttributeInterface;
 use exface\Core\Interfaces\Model\UiPageInterface;
 use exface\Core\Interfaces\WidgetInterface;
 use Behat\Mink\Element\NodeElement;
+use exface\Core\Widgets\Filter;
+use exface\Core\Widgets\InputComboTable;
 use PHPUnit\Framework\Assert;
 
 class UI5DataTableNode extends UI5AbstractNode
@@ -209,14 +214,16 @@ class UI5DataTableNode extends UI5AbstractNode
             Assert::assertEmpty($missingButtons, 'Missing buttons: ' . implode(', ', $missingButtons));
             Assert::assertEmpty($extraButtons,   'Unexpected buttons: ' . implode(', ', $extraButtons));
         }
-        $this->itWorksAsExpected($page);
+
+        $logbook = new MarkdownLogBook($this->getCaption());
+        $this->itWorksAsExpected($logbook);
     }
 
     /**
      * @param UiPageInterface $page
      * @return void
      */
-    public function itWorksAsExpected() :void
+    public function itWorksAsExpected(LogBookInterface $logbook) :void
     {
         /* @var $widget \exface\Core\Widgets\DataTable */
         $widget = $this->getWidget();
@@ -231,7 +238,7 @@ class UI5DataTableNode extends UI5AbstractNode
             }
             // Get a valid value for filtering
             $filterAttr = $filter->getAttribute();
-            $filterVal = $this->getAnyValue($filterAttr);
+            $filterVal = $this->getAnyValue($filterAttr, $filter);
             $filterNode = $this->getBrowser()->getFilterByCaption($filterAttr->getName());
 
             $filterNode->setValue($filterVal);
@@ -263,8 +270,28 @@ class UI5DataTableNode extends UI5AbstractNode
                 }
         */
     }
-    protected function getAnyValue(MetaAttributeInterface $attr, string $sort = null)
+    protected function getAnyValue(MetaAttributeInterface $attr, Filter $filterWidget, string $sort = null)
     {        
+        $inputWidget = $filterWidget->getInputWidget();
+        // Mast__MastZuLeitungsanlege__Leitungsanlage
+        // TODO
+        /*
+        if ($inputWidget instanceof InputComboTable) {
+            $inputWidget->getTextAttribute(); // This gives us what we need to type into the filter (e.g. Name)
+            $inputWidget->getValueAttribute(); // This is what the filter will produce (e.g. Id)
+            // Leitungsanlage
+            $tableObj = $inputWidget->getTableObject(); // Both attributes above blong to this object, NOT the object of the filter widget
+            $anySheet = DataSheetFactory::createFromObject($tableObj);
+            $anySheet->getColumns()->addFromAttribute($inputWidget->getTextAttribute());
+            // Mast__MastZuLeitungsanlege__
+            $relPath = $inputWidget->getAttribute()->getRelationPath();
+            // MastZuLeitungsanlege__Mast
+            $revPath = $relPath->reverse();
+            // MastZuLeitungsanlege__Mast:COUNT
+            // MastZuLeitungsanlege__Mast__Id:COUNT
+            // if ($filterWidget->getMetaObject()->hasUid()) {...} else {$logbook->addLine('Cannot check filter because')}
+            $anySheet->getFilters()->addConditionFromString(RelationPath::join([$revPath->toString(), $filterWidget->getMetaObject()->getUidAttributeAlias()]) . ':COUNT', 0, ComparatorDataType::GREATER_THAN);
+        }*/
         // if it is not relation return the value that is found
         if (!$attr->isRelation()) {
             $returnValue =  $this->findValue($attr, $attr->getAlias(), $sort);

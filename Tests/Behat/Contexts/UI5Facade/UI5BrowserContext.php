@@ -9,6 +9,7 @@ use Behat\Behat\Context\Context;
 use Behat\Behat\Tester\Result\UndefinedStepResult;
 use Behat\Mink\Element\NodeElement;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
+use exface\Core\CommonLogic\Debugger\LogBooks\MarkdownLogBook;
 use exface\Core\CommonLogic\Model\Expression;
 use exface\Core\CommonLogic\Security\AuthenticationToken\CliEnvAuthToken;
 use exface\Core\CommonLogic\Selectors\AppSelector;
@@ -17,8 +18,7 @@ use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Facades\ConsoleFacade;
 use exface\Core\Factories\FormulaFactory;
-use exface\Core\Factories\UiPageFactory;
-use exface\Core\Interfaces\Model\UiPageInterface;
+use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\WorkbenchInterface;
 use PHPUnit\Framework\Assert;
 use Behat\Behat\Hook\Scope\BeforeScenarioScope;
@@ -170,6 +170,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Clear XHR logs to monitor only current step's network activity
         $this->browser->clearXHRLog();
 
+        // install http status interceptor to eliminate bad requests
+        $this->getBrowser()->getWaitManager()->installHttpInterceptor();
+        
         // Add a small additional wait to ensure complete stability
         $this->getSession()->wait(1000);
 
@@ -297,6 +300,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Setup the user and get the required login data
         $userRolesArray = $this->splitArgument($userRoles);
         $loginFields = UI5Browser::setupUser($this->getWorkbench(), $userRolesArray, $userLocale);
+        if ($userLocale === null) {
+            $userLocale = $this->getWorkbench()->getConfig()->getOption('SERVER.DEFAULT_LOCALE');
+        }
         // Extract tab and button captions from the login field data
         $tabCaption = $loginFields['_tab'];
         unset($loginFields['_tab']);
@@ -1790,7 +1796,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     public function itWorksAsExpected()
     {
         $node = $this->getBrowser()->getFocusedNode();
-        $node->itWorksAsExpected();
+        $logbook = new MarkdownLogBook($node->getCaption());
+        $logbook->setIndentActive(1);
+        DatabaseFormatter::addTestLoogbook($logbook);
+        $node->itWorksAsExpected($logbook);
     }
 
     /**
@@ -1838,7 +1847,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * - Nodes should validate their own subtree, but choosing the correct starting node
      *   is orchestration logic and belongs to the context/browser layer.
      */
-    private function verifyCurrentPageWorksAsExpected(): void
+    private function verifyCurrentPageWorksAsExpected(?LogBookInterface $logbook = null): void
     {
         $page = $this->getBrowser()->getPageCurrent();
         $alias = $page->getAliasWithNamespace();
@@ -1866,6 +1875,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $this->browser
         );
 
-        $facadeNode->itWorksAsExpected();
+
+        $logbook = $logbook ?? new MarkdownLogBook($page->getName());
+        $facadeNode->itWorksAsExpected($logbook);
     }
 }

@@ -2,6 +2,7 @@
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
+use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\UiPageInterface;
 
 class UI5ContainerNode extends UI5AbstractNode
@@ -12,7 +13,7 @@ class UI5ContainerNode extends UI5AbstractNode
         return '';
     }
 
-    public function itWorksAsExpected(): void
+    public function itWorksAsExpected(LogBookInterface $logbook): void
     {
         $childWidgetNodes = $this->getNodeElement()->findAll('css', '.exfw');
         foreach ($childWidgetNodes as $childWidgetNode) {
@@ -21,7 +22,7 @@ class UI5ContainerNode extends UI5AbstractNode
             if($this->getNodeElement()->getAttribute('id')=== $childWidgetNode->getAttribute('id') ) {
                 continue;
             }
-            $node->itWorksAsExpected();
+            $node->itWorksAsExpected($logbook);
         }
     }
 }

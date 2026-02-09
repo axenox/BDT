@@ -23,6 +23,7 @@ use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\FacadeFactory;
 use exface\Core\Factories\MetaObjectFactory;
 use exface\Core\Factories\UiPageFactory;
+use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\UiPageInterface;
 use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Interfaces\WorkbenchInterface;
@@ -113,12 +114,12 @@ class UI5Browser
      * Entry point to validate the currently loaded page.
      * This is orchestration logic implemented in the context, injected as callback.
      */
-    public function verifyCurrentPageWorksAsExpected(): void
+    public function verifyCurrentPageWorksAsExpected(LogBookInterface $logBook): void
     {
         if (!$this->verifyCurrentPage) {
             throw new \RuntimeException('VerifyCurrentPage callback is not configured on UI5Browser.');
         }
-        ($this->verifyCurrentPage)();
+        ($this->verifyCurrentPage)($logBook);
     }
     
     /**
