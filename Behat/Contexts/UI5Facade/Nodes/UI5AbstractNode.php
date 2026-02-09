@@ -8,6 +8,7 @@ use Behat\Mink\Exception\DriverException;
 use exface\Core\DataTypes\StringDataType;
 use Behat\Mink\Session;
 use exface\Core\Factories\UiPageFactory;
+use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\UiPageInterface;
 use exface\Core\Interfaces\WidgetInterface;
 
@@ -65,7 +66,7 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
         return true;
     }
 
-    public function itWorksAsExpected(): void
+    public function itWorksAsExpected(LogBookInterface $logbook): void
     {
         
     }

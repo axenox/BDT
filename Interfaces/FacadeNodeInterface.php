@@ -2,6 +2,7 @@
 namespace axenox\BDT\Interfaces;
 
 use Behat\Mink\Element\NodeElement;
+use exface\Core\Interfaces\Debug\LogBookInterface;
 
 interface FacadeNodeInterface
 {
@@ -19,7 +20,7 @@ interface FacadeNodeInterface
     public function capturesFocus(): bool;
     
     //checks the functionality of the node
-    public function itWorksAsExpected(): void;
+    public function itWorksAsExpected(LogBookInterface $logbook): void;
 
     /**
      * Returns the (outer) DOM node, that contains the entire widget, searching from the given inner node upwards
