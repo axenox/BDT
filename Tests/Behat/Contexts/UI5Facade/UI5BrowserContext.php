@@ -170,6 +170,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Clear XHR logs to monitor only current step's network activity
         $this->browser->clearXHRLog();
 
+        // install http status interceptor to eliminate bad requests
+        $this->getBrowser()->getWaitManager()->installHttpInterceptor();
+        
         // Add a small additional wait to ensure complete stability
         $this->getSession()->wait(1000);
 
