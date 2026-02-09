@@ -158,15 +158,8 @@ class UI5WaitManager
      */
     public function waitForAppLoaded(string $pageUrl): void
     {
-        // Check early if the browser has rendered a network error page (e.g., 403/404/5xx)
-        // by detecting the presence of Chrome's 'main-frame-error' element in the DOM.
-        $this->session->wait(5000, "document.getElementById('main-frame-error') !== null");
-        $hasErrorFrame = $this->session->evaluateScript("document.getElementById('main-frame-error') !== null");
-        if ($hasErrorFrame) {
-            throw new \RuntimeException("Detected HTTP status error page on app load");
-        }
-
-        try {  
+        try 
+        {
             // Wait for initial page load
             $this->waitForPendingOperations(true, false, false);
            
@@ -340,6 +333,27 @@ class UI5WaitManager
         $errorManager = ErrorManager::getInstance();
 
         try {
+            $errors = $this->getSession()->evaluateScript('
+    return (window.exfXHRLog && Array.isArray(window.exfXHRLog.errors)) ? window.exfXHRLog.errors : [];
+');
+            foreach ($errors as $error) {
+                if (($error['type'] ?? '') === 'NetworkError') 
+                {
+                    $errorManager->addError($error, 'HTTP');
+                } 
+                elseif (($error['type'] ?? '') === 'JSError') 
+                {
+                    $errorManager->addError($error, 'JavaScript');
+                }
+                elseif (($error['type'] ?? '') === 'AppError')
+                {
+                    $errorManager->addError($error, 'App');
+                } 
+                else {
+                    $errorManager->addError($error, 'XHR');
+                }
+            }
+            
             // 4) Popup (.exf-error) - primary source
             $popupErrors = $this->getSession()->evaluateScript(<<<'JS'
 (function () {
@@ -468,5 +482,193 @@ JS);
             $timeoutInSeconds * 1000,
             "($('{$cssSelector}').length >= {$number})"
         );
+    }
+
+    public function installHttpInterceptor(): void
+    {
+        $this->getSession()->evaluateScript(<<<'JS'
+(function () {
+  if (window.__exfHttpInterceptorInstalled) return;
+  window.__exfHttpInterceptorInstalled = true;
+
+  // existing structure or create
+  window.exfXHRLog = window.exfXHRLog || {};
+  window.exfXHRLog.errors = window.exfXHRLog.errors || [];
+  function pushError(err) {
+    try {
+      var list = window.exfXHRLog.errors;
+      var key = (err.type||'') + '|' + (err.status||'') + '|' + (err.method||'') + '|' + (err.url||'');
+      for (var i = Math.max(0, list.length - 20); i < list.length; i++) {
+        var e = list[i];
+        var k = (e.type||'') + '|' + (e.status||'') + '|' + (e.method||'') + '|' + (e.url||'');
+        if (k === key) return;
+      }
+      list.push(err);
+    } catch (e) {}
+  }
+
+  // allow clearing between steps if desired
+  window.exfXHRLog.clear = function () {
+    window.exfXHRLog.errors = [];
+  };
+
+  // -------- XHR --------
+  var origOpen = XMLHttpRequest.prototype.open;
+  var origSend = XMLHttpRequest.prototype.send;
+
+  XMLHttpRequest.prototype.open = function(method, url) {
+    this.__exfMethod = method;
+    this.__exfUrl = url;
+    return origOpen.apply(this, arguments);
+  };
+
+  XMLHttpRequest.prototype.send = function() {
+    var xhr = this;
+    function done() {
+      try {
+        var st = xhr.status; // 0 = aborted/cors/file;
+        var url = xhr.__exfUrl || '';
+        var body = '';
+        try { body = (xhr.responseText || '').toString(); } catch (e) { body = ''; }
+
+        // 1) non-2xx network errors
+        if (st && (st < 200 || st >= 300)) {
+          pushError({
+            type: 'NetworkError',
+            source: 'XHR',
+            status: st,
+            statusText: xhr.statusText || '',
+            method: xhr.__exfMethod || '',
+            url: url,
+            message: (st + ' ' + (xhr.statusText || '')).trim(),
+            responseSnippet: body.slice(0, 1200)
+          });
+          return;
+        }
+
+        var looksBad =
+          /Fatal error|Compile Error|Undefined constant|Whoops, looks like something went wrong|Stack trace|Symfony\\Component\\ErrorHandler|Internal error|Internal Server Error/i.test(body);
+
+        if (url.indexOf('/api/pwa/errors') !== -1 && /error|fehler|internal/i.test(body)) {
+          looksBad = true;
+        }
+
+        if (looksBad) {
+  // extract meaningful message
+  var extracted = '';
+
+  // 1) Common backend error patterns in body
+  var m =
+    body.match(/(Fatal error[^<\n\r]*|Compile Error[^<\n\r]*|Undefined constant[^<\n\r]*|Whoops, looks like something went wrong[^<\n\r]*|Internal Server Error[^<\n\r]*)/i);
+  if (m && m[1]) extracted = m[1].trim();
+
+  // 2) If body looks like UI5 error-view/controller JS, read the visible UI message instead
+  var looksLikeUi5ErrorController =
+  /sap\.ui\.(jsview|define)\s*\(/i.test(body) && /controller\.Error/i.test(body);
+
+if (!extracted && looksLikeUi5ErrorController) {
+  setTimeout(function () {
+    try {
+      function pickText(sel) {
+        var el = document.querySelector(sel);
+        if (!el) return '';
+        return ((el.innerText || el.textContent || '') + '').trim();
+      }
+
+      // Prefer MessagePage main text, else header title inner, else any visible title text
+      var txt =
+        pickText('.sapMMessagePageMainText') ||
+        pickText('#__page1-title-inner') ||
+        pickText('[id$="-title-inner"]') ||
+        pickText('.sapMTitle');
+
+      // Only accept if it contains "Fehler"
+      if (!/fehler/i.test(txt)) {
+        txt = 'UI5 error page shown (Fehler text not found)';
+      }
+
+      pushError({
+        type: 'AppError',
+        source: (url.indexOf('/api/pwa/errors') !== -1) ? 'errorsEndpoint' : 'XHRBody',
+        status: st || 200,
+        statusText: xhr.statusText || '',
+        method: xhr.__exfMethod || '',
+        url: url,
+        message: txt,
+        responseSnippet: body.slice(0, 1200)
+      });
+    } catch (e) {}
+  }, 0);
+
+  return;
+}
+
+  // 3) Fallback (safe): short, non-code message
+  if (!extracted) {
+    extracted = 'Application error detected (see responseSnippet)';
+  }
+
+  pushError({
+    type: 'AppError',
+    source: (url.indexOf('/api/pwa/errors') !== -1) ? 'errorsEndpoint' : 'XHRBody',
+    status: st || 200,
+    statusText: xhr.statusText || '',
+    method: xhr.__exfMethod || '',
+    url: url,
+    message: extracted,
+    responseSnippet: body.slice(0, 1200)
+  });
+}
+
+      } catch (e) {}
+    }
+
+    xhr.addEventListener('loadend', done);
+    return origSend.apply(this, arguments);
+  };
+
+  // -------- fetch --------
+  if (window.fetch) {
+    var origFetch = window.fetch;
+    window.fetch = function(input, init) {
+      var method = (init && init.method) ? init.method : 'GET';
+      var url = (typeof input === 'string') ? input : (input && input.url ? input.url : '');
+
+      return origFetch.apply(this, arguments).then(function(res) {
+        try {
+          if (res && res.ok === false) {
+            // clone so we don't consume the original body
+            var c = res.clone();
+            c.text().then(function(t){
+              pushError({
+                type: 'NetworkError',
+                source: 'fetch',
+                status: res.status,
+                statusText: res.statusText || '',
+                method: method,
+                url: url,
+                message: (res.status + ' ' + (res.statusText || '')).trim(),
+                responseSnippet: (t || '').slice(0, 1200)
+              });
+            }).catch(function(){
+              pushError({
+                type: 'NetworkError',
+                source: 'fetch',
+                status: res.status,
+                statusText: res.statusText || '',
+                method: method,
+                url: url,
+                message: (res.status + ' ' + (res.statusText || '')).trim(),
+                responseSnippet: ''
+              });
+            });
+          }
+        } catch (e) {}
+        return res;
+      });
+    };
+  }
+})();
+JS);
     }
 }
