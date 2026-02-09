@@ -3,6 +3,7 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use exface\Core\Actions\GoToPage;
+use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\UiPageInterface;
 use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Widgets\Tile;
@@ -37,7 +38,7 @@ class UI5TileNode extends UI5AbstractNode
      * @param UiPageInterface $page
      * @return void
      */
-    public function itWorksAsExpected() :void
+    public function itWorksAsExpected(LogBookInterface $logbook) :void
     {
         $widget = $this->getWidget();
         Assert::isInstanceOf(Tile::class , $widget, 'Tile widget not found for this node.');
@@ -46,6 +47,7 @@ class UI5TileNode extends UI5AbstractNode
         switch (true) {
             case $action instanceof GoToPage:
                 $expectedAlias = $action->getPage()->getAliasWithNamespace();
+                $logbook->addLine('Click Tile `' . $this->getCaption() . '`');
                 //click on the tile
                 $this->click();
                 $directedAlias = $this->getBrowser()->getPageCurrent()->getAliasWithNamespace();
@@ -60,7 +62,21 @@ class UI5TileNode extends UI5AbstractNode
                         $expectedAlias
                     )
                 );
-                $this->getBrowser()->verifyCurrentPageWorksAsExpected();
+                $logbook->addIndent(+1);
+                /* # Page "Main menu" 
+                 * 
+                 * - Click Tile `NavTiles1-Link1` 
+                 *   - Click Tile `NavTiles2-Link2` // inside the page from link 1
+                 *     - Test table 1
+                 *     - Test table 2
+                 *   - Click tile `NavTiles2-Link3`
+                 * - Click Tile `NavTiles1-Link2` 
+                 * 
+                 * 
+                 */
+                
+                $this->getBrowser()->verifyCurrentPageWorksAsExpected($logbook);
+                $logbook->addIndent(-1);
                 $this->getBrowser()->navigateToPreviousPage();
                 break;
             // TODO more action validation here??

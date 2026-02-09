@@ -16,6 +16,7 @@ use Behat\Behat\EventDispatcher\Event\AfterStepTested;
 use Behat\Behat\EventDispatcher\Event\AfterScenarioTested;
 use Behat\Behat\EventDispatcher\Event\AfterFeatureTested;
 use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
+use exface\Core\CommonLogic\Debugger\LogBooks\MarkdownLogBook;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\DateTimeDataType;
 use exface\Core\DataTypes\FilePathDataType;
@@ -23,6 +24,7 @@ use exface\Core\DataTypes\StringDataType;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\DataSheets\DataSheetInterface;
+use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\WorkbenchInterface;
 
 class DatabaseFormatter implements Formatter
@@ -44,6 +46,8 @@ class DatabaseFormatter implements Formatter
     private int                 $stepIdx = 0;
     private static array        $testedPages = [];
     private ScreenshotProviderInterface $provider;
+    /** @var MarkdownLogBook[]  */
+    private static array        $stepLogbooks = [];
 
     public function __construct(WorkbenchInterface $workbench, ScreenshotProviderInterface $provider)
     {
@@ -286,6 +290,7 @@ class DatabaseFormatter implements Formatter
 
     public function onBeforeStep(BeforeStepTested $event) 
     {
+        static::$stepLogbooks = [];
         try{
             $step = $event->getStep();
             $this->stepIdx++;
@@ -329,6 +334,11 @@ class DatabaseFormatter implements Formatter
                     }
                 }
             }
+            
+            // TODO save logbook markdown to a new DB field: 
+            foreach ($this::$stepLogbooks as $logbook) {
+                $md .= $logbook->__toString();
+            }
             $ds->dataUpdate();
         }
         catch(\Exception $e){
@@ -343,6 +353,13 @@ class DatabaseFormatter implements Formatter
         }
         if (!in_array($alias, static::$testedPages, true)) {
             static::$testedPages[] = $alias;
+        }
+    }
+
+    public static function addTestLoogbook(LogBookInterface $logbook): void
+    {
+        if (!in_array($logbook, static::$stepLogbooks, true)) {
+            static::$stepLogbooks[] = $logbook;
         }
     }
     
