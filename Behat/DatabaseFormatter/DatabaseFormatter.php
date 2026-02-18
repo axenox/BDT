@@ -133,7 +133,7 @@ class DatabaseFormatter implements Formatter
     {
         try{
             if ($this->runDataSheet === null) {
-                $this->runStart = $this->onBeforeExercise();
+                $this->onBeforeExercise();
             }
             $ds = $this->runDataSheet->extractSystemColumns();
             $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
@@ -334,11 +334,12 @@ class DatabaseFormatter implements Formatter
                     }
                 }
             }
-            
+            $md = '';
             // TODO save logbook markdown to a new DB field: 
             foreach ($this::$stepLogbooks as $logbook) {
                 $md .= $logbook->__toString();
             }
+            $ds->setCellValue('details', 0, $md);            
             $ds->dataUpdate();
         }
         catch(\Exception $e){
@@ -356,7 +357,7 @@ class DatabaseFormatter implements Formatter
         }
     }
 
-    public static function addTestLoogbook(LogBookInterface $logbook): void
+    public static function addTestLogbook(LogBookInterface $logbook): void
     {
         if (!in_array($logbook, static::$stepLogbooks, true)) {
             static::$stepLogbooks[] = $logbook;
