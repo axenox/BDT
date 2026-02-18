@@ -1,10 +1,8 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
-use axenox\BDT\Interfaces\FacadeNodeInterface;
 use exface\Core\Actions\GoToPage;
 use exface\Core\Interfaces\Debug\LogBookInterface;
-use exface\Core\Interfaces\Model\UiPageInterface;
 use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Widgets\Tile;
 use PHPUnit\Framework\Assert;
@@ -35,7 +33,7 @@ class UI5TileNode extends UI5AbstractNode
     }
 
     /**
-     * @param UiPageInterface $page
+     * @param LogBookInterface $logbook
      * @return void
      */
     public function itWorksAsExpected(LogBookInterface $logbook) :void
@@ -76,8 +74,9 @@ class UI5TileNode extends UI5AbstractNode
                  */
                 
                 $this->getBrowser()->verifyCurrentPageWorksAsExpected($logbook);
-                $logbook->addIndent(-1);
                 $this->getBrowser()->navigateToPreviousPage();
+                $logbook->addLine('Returned to the page :`' . $this->getBrowser()->getPageCurrent()->getAliasWithNamespace() . '`');
+                $logbook->addIndent(-1);
                 break;
             // TODO more action validation here??
         }

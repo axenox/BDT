@@ -1774,11 +1774,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param TableNode $fields Table with field names and values
      * @return void
      */
-    public function itWorksAsShown(TableNode $fields)
+    public function itWorksAsShown(TableNode $fields): void
     {
         $node = $this->getBrowser()->getFocusedNode();
         Assert::assertInstanceOf(UI5DataTableNode::class, $node, 'Focused node is not a data table');
-        $node->itWorksAsShown($fields);
+        $logbook = new MarkdownLogBook($node->getCaption());
+        $logbook->setIndentActive(1);
+        DatabaseFormatter::addTestLogbook($logbook);
+        $node->itWorksAsShown($fields, $logbook);
     }
 
     /**
@@ -1793,12 +1796,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * 
      * @return void
      */
-    public function itWorksAsExpected()
+    public function itWorksAsExpected(): void
     {
         $node = $this->getBrowser()->getFocusedNode();
         $logbook = new MarkdownLogBook($node->getCaption());
         $logbook->setIndentActive(1);
-        DatabaseFormatter::addTestLoogbook($logbook);
+        DatabaseFormatter::addTestLogbook($logbook);
         $node->itWorksAsExpected($logbook);
     }
 
@@ -1833,8 +1836,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         });
 
         // Used to start validation on whatever page is currently loaded
-        $this->browser->setVerifyCurrentPage(function (): void {
-            $this->verifyCurrentPageWorksAsExpected();
+        $this->browser->setVerifyCurrentPage(function (?LogBookInterface $logbook = null): void {
+            $this->verifyCurrentPageWorksAsExpected($logbook);
         });
     }
 
