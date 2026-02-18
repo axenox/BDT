@@ -1,16 +1,14 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
-use exface\Core\CommonLogic\Model\RelationPath;
-use exface\Core\DataTypes\ComparatorDataType;
+use Behat\Gherkin\Node\TableNode;
+use exface\Core\CommonLogic\Model\MetaObject;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Interfaces\DataTypes\EnumDataTypeInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\MetaAttributeInterface;
-use exface\Core\Interfaces\Model\UiPageInterface;
 use exface\Core\Interfaces\WidgetInterface;
-use Behat\Mink\Element\NodeElement;
 use exface\Core\Widgets\Filter;
 use exface\Core\Widgets\InputComboTable;
 use PHPUnit\Framework\Assert;
@@ -24,7 +22,6 @@ class UI5DataTableNode extends UI5AbstractNode
     public function getCaption(): string
     {
         return strstr($this->getNodeElement()->getAttribute('aria-label'), "\n", true);
-        ;
     }
 
     public function capturesFocus(): bool
@@ -117,7 +114,7 @@ class UI5DataTableNode extends UI5AbstractNode
      * @param string $ordinal The ordinal number (e.g., "1.", "2.")
      * @return int Zero-based index
      */
-    public function convertOrdinalToIndex($ordinal)
+    public function convertOrdinalToIndex(string $ordinal): int
     {
         // Remove any trailing period and convert to integer
         $number = (int) str_replace('.', '', $ordinal);
@@ -129,11 +126,7 @@ class UI5DataTableNode extends UI5AbstractNode
     {
         // Delegate the find method to the underlying node element
         $nodeElement = $this->getNodeElement();
-        if ($nodeElement) {
-            return $nodeElement->find($selector, $locator);
-        }
-
-        return null;
+        return $nodeElement->find($selector, $locator);
     }
     
     public function getWidget() : ?WidgetInterface
@@ -149,14 +142,14 @@ class UI5DataTableNode extends UI5AbstractNode
     }
 
     /**
-     * @param UiPageInterface $page
+     *
      * @param TableNode $fields
+     * @param LogBookInterface $logbook
      */
-    public function itWorksAsShown(\Behat\Gherkin\Node\TableNode $fields)
+    public function itWorksAsShown(TableNode $fields, LogBookInterface $logbook): void
     {
-        $page = $this->getBrowser()->getPageCurrent();
         /* @var $widget \exface\Core\Widgets\DataTable */
-        $widget = $this->getWidget($page);
+        $widget = $this->getWidget();
         Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
         $expectedButtons = [];
         $expectedFilters = [];
@@ -215,12 +208,12 @@ class UI5DataTableNode extends UI5AbstractNode
             Assert::assertEmpty($extraButtons,   'Unexpected buttons: ' . implode(', ', $extraButtons));
         }
 
-        $logbook = new MarkdownLogBook($this->getCaption());
         $this->itWorksAsExpected($logbook);
     }
 
     /**
-     * @param UiPageInterface $page
+     *
+     * @param LogBookInterface $logbook
      * @return void
      */
     public function itWorksAsExpected(LogBookInterface $logbook) :void
@@ -230,28 +223,31 @@ class UI5DataTableNode extends UI5AbstractNode
         Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
 
         // Test regular filters
-        foreach ($widget->getFilters() as $i => $filter) {
+        foreach ($widget->getFilters() as $filter) {
             if ($filter->isHidden()) {
                 // will be used as a filter to get a valid value
                 $this->hiddenFilters[] = $filter;
                 continue;
             }
+            $logbook->addLine('Filter was found :`' . $filter->getCaption() . '`');
             // Get a valid value for filtering
             $filterAttr = $filter->getAttribute();
             $filterVal = $this->getAnyValue($filterAttr, $filter);
-            $filterNode = $this->getBrowser()->getFilterByCaption($filterAttr->getName());
+            $filterNode = $this->getBrowser()->getFilterByCaption($filter->getCaption());
 
             $filterNode->setValue($filterVal);
+            $logbook->addLine('`' . $filterVal . '` was entered in the filter ' . $filter->getCaption());
             if ($filterAttr->isRelation()) {
                 $this->getSession()->wait(1000);
             }
             $this->triggerSearch();
             // Verify the first DataTable contains the expected text in the specified column
             $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
-                ['column' => $filterAttr->getName(), 'value' => $filterVal, 'comparator' => $filter->getComparator()]
+                ['column' => $filter->getCaption(), 'value' => $filterVal, 'comparator' => $filter->getComparator()]
             ]);
-
+            $logbook->addLine('The value was searched through the table');
             $this->triggerReset();
+            $logbook->addLine('The filter was reset');
         }
         /*
                 // Test column caption filters
@@ -273,28 +269,15 @@ class UI5DataTableNode extends UI5AbstractNode
     protected function getAnyValue(MetaAttributeInterface $attr, Filter $filterWidget, string $sort = null)
     {        
         $inputWidget = $filterWidget->getInputWidget();
-        // Mast__MastZuLeitungsanlege__Leitungsanlage
-        // TODO
-        /*
         if ($inputWidget instanceof InputComboTable) {
-            $inputWidget->getTextAttribute(); // This gives us what we need to type into the filter (e.g. Name)
-            $inputWidget->getValueAttribute(); // This is what the filter will produce (e.g. Id)
-            // Leitungsanlage
-            $tableObj = $inputWidget->getTableObject(); // Both attributes above blong to this object, NOT the object of the filter widget
-            $anySheet = DataSheetFactory::createFromObject($tableObj);
-            $anySheet->getColumns()->addFromAttribute($inputWidget->getTextAttribute());
-            // Mast__MastZuLeitungsanlege__
-            $relPath = $inputWidget->getAttribute()->getRelationPath();
-            // MastZuLeitungsanlege__Mast
-            $revPath = $relPath->reverse();
-            // MastZuLeitungsanlege__Mast:COUNT
-            // MastZuLeitungsanlege__Mast__Id:COUNT
-            // if ($filterWidget->getMetaObject()->hasUid()) {...} else {$logbook->addLine('Cannot check filter because')}
-            $anySheet->getFilters()->addConditionFromString(RelationPath::join([$revPath->toString(), $filterWidget->getMetaObject()->getUidAttributeAlias()]) . ':COUNT', 0, ComparatorDataType::GREATER_THAN);
-        }*/
+            $textAttr = $inputWidget->getTextAttribute(); // This gives us what we need to type into the filter (e.g. Name)
+            $tableObj = $inputWidget->getTableObject(); // Both attributes above belong to this object, NOT the object of the filter widget
+            return $this->findValue($tableObj, $textAttr, $textAttr->getName(), $sort);
+        }
         // if it is not relation return the value that is found
         if (!$attr->isRelation()) {
-            $returnValue =  $this->findValue($attr, $attr->getAlias(), $sort);
+            $returnColumn = $attr->getName();
+            $returnValue =  $this->findValue($inputWidget->getMetaObject(), $attr, $returnColumn, $sort);
             $datatype = $attr->getDataType();
             // if the datatype is EnumDataType return its label
             if ($datatype instanceof EnumDataTypeInterface) {
@@ -310,34 +293,39 @@ class UI5DataTableNode extends UI5AbstractNode
         // if it is a relation find the label of the found uid
         $rel = $attr->getRelation();
         $rightObj = $rel->getRightObject();
-        return $this->findValue($attr, $attr->getName() . '__' . $rightObj->getLabelAttribute()->getName(), $sort);
-        
+        $returnColumn = $attr->getName() . '__' . $rightObj->getLabelAttribute()->getName();
+        return  $this->findValue($attr->getObject(), $attr, $returnColumn , $sort);
     }
     
-    private function findValue(MetaAttributeInterface $attr, string $returnColumn = null, string $sort = null)
+    private function findValue(MetaObject $metaObject, MetaAttributeInterface $attr, string $returnColumn = null, string $sort = null)
     {
-        $ds = DataSheetFactory::createFromObject($attr->getObject());
-        $ds->getColumns()->addFromAttribute($attr);
-        foreach ($this->hiddenFilters as $hiddenFilter) {
-            if($hiddenFilter->getMetaObject()->isExactly($ds->getMetaObject())) {
-                $ds->getFilters()->addConditionFromString(
-                    $hiddenFilter->getAttributeAlias(),
-                    $hiddenFilter->getValue(),
-                    $hiddenFilter->getComparator()
-                );
+        try {
+            $ds = DataSheetFactory::createFromObject($metaObject);
+            $ds->getColumns()->addFromAttribute($attr);
+            foreach ($this->hiddenFilters as $hiddenFilter) {
+                if($hiddenFilter->getMetaObject()->isExactly($ds->getMetaObject())) {
+                    $ds->getFilters()->addConditionFromString(
+                        $hiddenFilter->getAttributeAlias(),
+                        $hiddenFilter->getValue(),
+                        $hiddenFilter->getComparator()
+                    );
+                }
             }
+            if ($returnColumn !== null) {
+                $ds->getColumns()->addFromExpression($returnColumn);
+            }
+            
+            if ($sort !== null) {
+                $ds->getSorters()->addFromString($attr->getAlias(), $sort);
+            }
+            
+            $ds->getFilters()->addConditionForAttributeIsNotNull($attr);
+            $ds->dataRead(1, 1);
+            return $ds->getRows()[0][$returnColumn] ?? $ds->getRows()[0][$attr->getAlias()];
         }
-        if ($returnColumn !== null) {
-            $ds->getColumns()->addFromExpression($returnColumn);
+        catch (\Throwable $e) {
+            return null;
         }
-        
-        if ($sort !== null) {
-            $ds->getSorters()->addFromString($attr->getAlias(), $sort);
-        }
-        
-        $ds->getFilters()->addConditionForAttributeIsNotNull($attr);
-        $ds->dataRead(1, 1);
-        return $ds->getRows()[0][$returnColumn ? $returnColumn : $attr->getAlias()];
     }
 
     protected function triggerSearch(): void
@@ -358,6 +346,8 @@ class UI5DataTableNode extends UI5AbstractNode
             ->getTranslator($this->getBrowser()->getLocale())
             ->translate($caption);
         $button = $this->find('named', ['button', $buttonCaption]);
+        
+        Assert::assertNotNull($button, sprintf('Button %s was not found.', $buttonCaption));
         $this->getBrowser()->highlightWidget(
             $button,
             'Button',
