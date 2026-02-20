@@ -15,6 +15,10 @@ use exface\Core\CommonLogic\Security\AuthenticationToken\MetamodelUsernamePasswo
 use exface\Core\CommonLogic\Security\Authenticators\MetamodelAuthenticator;
 use exface\Core\CommonLogic\Workbench;
 use exface\Core\DataTypes\ComparatorDataType;
+use exface\Core\DataTypes\DateDataType;
+use exface\Core\DataTypes\DateTimeDataType;
+use exface\Core\DataTypes\IntegerDataType;
+use exface\Core\DataTypes\NumberDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\InvalidArgumentException;
 use exface\Core\Exceptions\RuntimeException;
@@ -23,6 +27,7 @@ use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\FacadeFactory;
 use exface\Core\Factories\MetaObjectFactory;
 use exface\Core\Factories\UiPageFactory;
+use exface\Core\Interfaces\DataTypes\DataTypeInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\UiPageInterface;
 use exface\Core\Interfaces\WidgetInterface;
@@ -706,6 +711,7 @@ JS
                 $columnName = $content['column'];
                 $searchValue = trim($content['value'], '"\'');
                 $rawCmp = $content['comparator'] ?? '[';
+                $inputDataType = $content['dataType'] ?? null;
 
                 // First find column headers
                 $headers = $table->findAll('css', '.sapUiTableHeaderDataCell label, .sapMListTblHeader .sapMColumnHeader');
@@ -759,7 +765,7 @@ JS
                     $considered++;
 
                     // Strict comparison using your limited operator set
-                    $ok = $this->compareCell($cellText, $searchValue, $rawCmp);
+                    $ok = $this->compareCell($cellText, $searchValue, $rawCmp, $inputDataType);
 
                     if ($ok) {
                         $matches++;
@@ -802,157 +808,59 @@ JS
      * (two partial strings), so the “expected vs. found” comparison failed.
      * 
      */
-    private function compareCell(?string $cellText, $expected, string $cmp): bool
+    private function compareCell(?string $cellText, $expected, string $cmp, DataTypeInterface $dataType): bool
     {
         $cellText = (string)$cellText;
-        $trim = static fn($v) => trim((string)$v);
-        $ciContains = function (string $haystack, string $needle): bool {
-            if ($needle === '') return true;
-            return mb_stripos($haystack, $needle) !== false;
-        };
-        $splitList = static function (string $list): array {
-            // a,b , c  -> ['a','b','c']
-            $parts = preg_split('/\s*,\s*/u', (string)$list, -1, PREG_SPLIT_NO_EMPTY) ?: [];
-            return array_values(array_filter(array_map('trim', $parts), fn($x) => $x !== ''));
-        };
+        switch ($dataType) {
+            case NumberDataType::class:
+            case IntegerDataType::class:
+                $left  = (float)str_replace(',', '.', $cellText);
+                $right = (float)$expected;
+                break;
+
+            case DateDataType::class:
+            case DateTimeDataType::class:
+                $left  = \DateTime::createFromFormat('d.m.Y', $cellText);
+                $right = new \DateTime($expected);
+
+                if (!$left || !$right) {
+                    return false;
+                }
+
+                $left  = $left->getTimestamp();
+                $right = $right->getTimestamp();
+                break;
+
+            default:
+                $left  = $this->normalizeText($cellText);
+                $right = $this->normalizeText((string)$expected);
+        }
+
         switch ($cmp) {
-            case '!==': {
-                [$cv, $typeC] = $this->parseComparableStrict($cellText, $expected);
-                [$ev, $typeE] = $this->parseComparableStrict((string)$expected, $expected);
-                if ($cv !== null && $ev !== null && $typeC === $typeE) {
-                    return $cv !== $ev;
-                }
-                return $trim($cellText) !== $trim((string)$expected);
-            }
-            
-            // UNIVERSAL (LIKE '%expected%')
-            case '=': {
-                $leftN  = $this->normalizeText($cellText);
-                $rightN = $this->normalizeText((string)$expected);
-                if ($leftN !== '' || $rightN !== '') {
-                    return $ciContains($leftN, $rightN);
-                }
-
-                [$cv] = $this->parseComparableStrict($cellText, $expected);
-                [$ev] = $this->parseComparableStrict((string)$expected, $expected);
-                return $cv == $ev;
-            }
-
             // UNIVERSAL not-like
             case '!=':
-            case '<>': {
-                return $this->normalizeText($cellText) !== $this->normalizeText((string)$expected);
-            }
-            
-            // IN 
-            case '[':
-                if (stripos($this->normalizeText($expected), $this->normalizeText($expected)) === false){
-                    return false;
-                }
-                return true;
-            // NOT IN
-            case '![': {
-                if (stripos($this->normalizeText($expected), $this->normalizeText($expected)) !== false) {
-                return false;
-                }
-                return true;
-            }
-            
+            case '<>':
+                return $left !== $right;
+                
+            case '==':
+                return $left === $right;
+
             case '>':
+                return $left > $right;
+
             case '<':
+                return $left < $right;
+
             case '>=':
+                return $left >= $right;
+
             case '<=':
-            {
-                // Parse both sides to the same strict type (number or ISO date). Otherwise, fail.
-                [$cv, $typeC] = $this->parseComparableStrict($cellText, $expected);
-                [$ev, $typeE] = $this->parseComparableStrict((string)$expected, $expected);
-                if ($cv === null || $ev === null || $typeC !== $typeE) {
-                    return false;
-                }
-
-                switch ($cmp) {
-                    case '>':   return $cv >  $ev;
-                    case '<':   return $cv <  $ev;
-                    case '>=':  return $cv >= $ev;
-                    case '<=':  return $cv <= $ev;
-                }
-            }
-            
+                return $left <= $right;
+            // IN '['
             default:
-                return $this->normalizeText($cellText) === $this->normalizeText((string)$expected);
+                return stripos((string)$left, (string)$right) !== false;
         }
     }
-    
-    /**
-     * Strict comparable parsing.
-     * - If $expected is numeric (int/float), treat both as numbers; cell must be strictly numeric: ^[+-]?\d+(\.\d+)?$
-     * - Else if $expected is ISO date string (YYYY-MM-DD[ HH:MM[:SS]]), treat both as timestamps.
-     * - Else FAIL (return [null, null]).
-     */
-    private function parseComparableStrict(string $cellText, $expected): array
-    {
-        // strict number: dot-decimal only
-        $numRe = '/^[+-]?\d+(?:\.\d+)?$/';
-        if (is_int($expected) || is_float($expected) || (is_string($expected) && preg_match($numRe, $expected))) {
-            if (preg_match($numRe, $cellText)) {
-                return [(float)$cellText, 'number'];
-            }
-            return [null, null];
-        }
-
-        // strict date: support ISO and (optionally) current-locale strict pattern
-        $locale = $this->getLocale();
-
-        $eTs = $this->parseDateStrict((string)$expected, $locale);
-        if ($eTs !== null) {
-            $cTs = $this->parseDateStrict($cellText, $locale);
-            if ($cTs !== null) {
-                return [$cTs, 'date'];
-            }
-            return [null, null];
-        }
-
-        // unknown type
-        return [null, null];
-    }
-    
-    /**
-     * Strict date parsing with a small whitelist of formats:
-     * - ISO: YYYY-MM-DD or YYYY-MM-DD[ T]HH:MM[:SS]
-     * - de_DE: dd.MM.yyyy or dd.MM.yyyy HH:MM[:SS]
-     * Add more locales explicitly if needed.
-     */
-    private function parseDateStrict(string $s, ?string $locale): ?int
-    {
-        $s = trim($s);
-
-        // ISO first (YYYY-MM-DD or with time / 'T')
-        if (preg_match('/^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?$/', $s)) {
-            $ts = strtotime(str_replace('T', ' ', $s));
-            return $ts === false ? null : $ts;
-        }
-
-        // Locale-specific strict formats
-        if ($locale && stripos($locale, 'de_') === 0) {
-            // dd.MM.yyyy or dd.MM.yyyy HH:MM[:SS]
-            if (preg_match('/^\d{2}\.\d{2}\.\d{4}(?: \d{2}:\d{2}(?::\d{2})?)?$/', $s)) {
-                // Convert dd.MM.yyyy[ time] -> YYYY-MM-DD[ time] for reliable strtotime
-                if (preg_match('/^(\d{2})\.(\d{2})\.(\d{4})(?: (.*))?$/', $s, $m)) {
-                    $day  = $m[1];
-                    $mon  = $m[2];
-                    $year = $m[3];
-                    $time = isset($m[4]) ? ' ' . $m[4] : '';
-                    $iso  = sprintf('%04d-%02d-%02d%s', (int)$year, (int)$mon, (int)$day, $time);
-                    $ts   = strtotime($iso);
-                    return $ts === false ? null : $ts;
-                }
-            }
-        }
-
-        // Not a supported strict date format
-        return null;
-    }
-
 
     private function normalizeText(?string $s): string
     {
@@ -1510,7 +1418,7 @@ JS
         }
 
         // Perform the XPath search and return the result
-        $button = $this->getSession()->find('xpath', $xpath);
+        $button = $this->getPage()->find('xpath', $xpath);
 
         return $button;
     }
@@ -1655,15 +1563,14 @@ JS
     }
 
 
-
     /**
-     * 
+     *
      * @param string $pageUrl
-     * @param string $widgetId
-     * @param string $assertWidgetType
-     * @return \exface\Core\Interfaces\WidgetInterface
+     * @param string|null $widgetId
+     * @param string|null $assertWidgetType
+     * @return WidgetInterface
      */
-    protected function getWidget(string $pageUrl, string $widgetId = null, string $assertWidgetType = null)
+    protected function getWidget(string $pageUrl, string $widgetId = null, string $assertWidgetType = null): WidgetInterface
     {
         $page = UiPageFactory::createFromModel($this->getWorkbench(), $pageUrl);
         $widget = $widgetId !== null ? $page->getWidget($widgetId) : $page->getWidgetRoot();
@@ -1799,8 +1706,7 @@ JS
     /**
      * Summary of getFilters
      * @param int $min
-     * @param int $max
-     * @param FacadeNodeInterface $withinNode
+     * @param ?int $max
      * @throws \RuntimeException
      * @return UI5FilterNode[]
      */
@@ -1820,7 +1726,7 @@ JS
 
     public function getFilterByCaption(string $filterName): UI5FilterNode
     {
-        $filterNodes = $this->getFilters();
+        $filterNodes = $this->getFilters(0);
 
         // Iterate through each filter container
         foreach ($filterNodes as $filterNode) {
@@ -1832,7 +1738,7 @@ JS
                 return $filterNode;
             }
         }
-        throw new RuntimeException("Filter {$filterName} not found");
+        throw new RuntimeException("Filter `{$filterName}` not found");
     }
 
     /**
@@ -1868,6 +1774,7 @@ JS
      * Fills the internal history of this class from the current JS state
      *
      * @return string
+     * @throws \Exception
      */
     protected function syncUiNavigation(): string
     {
@@ -1901,28 +1808,30 @@ JS
     private function getPageAliasFromCurrentUrl(): ?string
     {
         $hash = (string) $this->getSession()->evaluateScript('return window.location.hash || "";');
-        if ($hash === '' || $hash === '#') {
+        if ($hash !== '' && $hash !== '#') {
+            $hash = ltrim($hash, '#');
+            $hash = ltrim($hash, '/');
+
+            $alias = strtok($hash, '/');
+            if ($alias !== false && $alias !== '') {
+                return urldecode($alias);
+            }            
+        }
+        $url = $this->getSession()->getCurrentUrl();
+        if ($url === '') {
             return null;
         }
 
-        $hash = ltrim($hash, '#');
-        $hash = ltrim($hash, '/');
-
-        $alias = strtok($hash, '/');
-        if ($alias === false || $alias === '') {
+        $parts = parse_url($url);
+        if (empty($parts['path'])) {
             return null;
         }
 
-        return urldecode($alias);
-    }
+        $file = basename($parts['path']);
+        if (str_ends_with($file, '.html')) {
+            return substr($file, 0, -5);
+        }
 
-    private function findMainWidgetNodeElementForCurrentPage(string $pageAlias) :?NodeElement
-    {
-        $page = UiPageFactory::createFromModel($this->getWorkbench(), $pageAlias);
-        $elementId =$this->getBrowser()->getElementIdFromWidget( $page->getWidgetRoot());
-
-        $rootElementNode = $this->getSession()->getPage()->find('css', $elementId);
-
-        return $rootElementNode;
+        return null;
     }
 }
