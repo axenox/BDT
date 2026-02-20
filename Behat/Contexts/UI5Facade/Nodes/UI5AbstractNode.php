@@ -115,5 +115,106 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
         } catch (DriverException $e) {
             return $innerDomNode;
         }
+        return $innerDomNode;
+    }
+    
+    public function findVisibleButtonByCaption(string $translated, ?NodeElement $scope = null): ?NodeElement
+    {
+        // 1) Search scoped first (important in UI5: previous pages stay in DOM but are hidden)
+        $contexts = [];
+        if ($scope) {
+            $contexts[] = $scope;
+        }
+        $contexts[] = $this->getSession()->getPage();
+
+        // Prefer robust selectors that match UI5 button structure:
+        // - <button ...>
+        // - inside: <bdi>Caption</bdi>
+        // - OR title/aria-label equals caption (depending on UI5 control)
+        $xpath = sprintf(
+            ".//button[
+            .//bdi[normalize-space(.)=%s]
+            or normalize-space(@title)=%s
+            or normalize-space(@aria-label)=%s
+        ]",
+            $this->xpathLiteral($translated),
+            $this->xpathLiteral($translated),
+            $this->xpathLiteral($translated)
+        );
+
+        foreach ($contexts as $ctx) {
+            $candidates = $ctx->findAll('xpath', $xpath);
+            if (!$candidates) {
+                continue;
+            }
+
+            // 2) Filter only *actually visible* elements (UI5 keeps hidden duplicates in DOM)
+            foreach (array_reverse($candidates) as $el) {
+                if ($this->isElementVisibleInBrowser($el)) {
+                    return $el;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    public function isElementVisibleInBrowser(NodeElement $el): bool
+    {
+        $id = $el->getAttribute('id');
+        if (!$id) {
+            return false;
+        }
+
+        $idJs = json_encode($id, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        $script = <<<JS
+(function(){
+  var el = document.getElementById($idJs);
+  if (!el) return false;
+
+  // Check aria-hidden on ancestors
+  for (var p = el; p; p = p.parentElement) {
+    if (p.getAttribute && p.getAttribute('aria-hidden') === 'true') return false;
+  }
+
+  var cs = window.getComputedStyle(el);
+  if (!cs) return false;
+  if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+
+  var opacity = parseFloat(cs.opacity || '1');
+  if (opacity <= 0) return false;
+
+  var rect = el.getBoundingClientRect();
+  if (!rect || (rect.width <= 0 && rect.height <= 0)) return false;
+
+  return true;
+})();
+JS;
+
+        return (bool) $this->getSession()->evaluateScript($script);
+    }
+
+
+    /**
+     * Safely quote arbitrary strings for XPath literal usage.
+     */
+    public function xpathLiteral(string $value): string
+    {
+        // If the string contains no single quotes, we can wrap it in single quotes.
+        if (!str_contains($value, "'")) {
+            return "'" . $value . "'";
+        }
+        // Otherwise build concat('a', "'", 'b', ...)
+        $parts = explode("'", $value);
+        $out = "concat(";
+        foreach ($parts as $i => $p) {
+            if ($i > 0) {
+                $out .= ", \"'\", ";
+            }
+            $out .= "'" . $p . "'";
+        }
+        $out .= ")";
+        return $out;
     }
 }

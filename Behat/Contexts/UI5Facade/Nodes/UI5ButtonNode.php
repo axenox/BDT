@@ -1,24 +1,25 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
+use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Session;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
-use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5AbstractNode;
 
 class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
 {
 
     /**
      * Constructor
-     * 
+     *
      * @param NodeElement $nodeElement
      * @param Session $session
+     * @param UI5Browser $browser
      */
-    public function __construct(NodeElement $nodeElement, Session $session)
+    public function __construct(NodeElement $nodeElement, Session $session, UI5Browser $browser)
     {
         // Call upper level constructor
-        parent::__construct($nodeElement, $session);
+        parent::__construct($nodeElement, $session, $browser);
     }
 
     public function click(): void
@@ -50,7 +51,7 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
 
     private function unfocusAfterClose(): void
     {
-        // Call unfocus metod on Browser
+        // Call unfocus method on Browser
         $this->getSession()->evaluateScript('
             if (window.unfocusDialog) {
                 window.unfocusDialog();

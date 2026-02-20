@@ -3,8 +3,10 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use Behat\Gherkin\Node\TableNode;
 use exface\Core\CommonLogic\Model\MetaObject;
+use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Factories\DataSheetFactory;
+use exface\Core\Interfaces\DataTypes\DataTypeInterface;
 use exface\Core\Interfaces\DataTypes\EnumDataTypeInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\MetaAttributeInterface;
@@ -18,7 +20,8 @@ class UI5DataTableNode extends UI5AbstractNode
 
     /* @var $hiddenFilters \exface\Core\Widgets\Filter[] */
     private array $hiddenFilters = [];
-    
+    private DataTypeInterface $inputDataType;
+
     public function getCaption(): string
     {
         return strstr($this->getNodeElement()->getAttribute('aria-label'), "\n", true);
@@ -128,7 +131,7 @@ class UI5DataTableNode extends UI5AbstractNode
         $nodeElement = $this->getNodeElement();
         return $nodeElement->find($selector, $locator);
     }
-    
+
     public function getWidget() : ?WidgetInterface
     {
         $innerNode = $this->find('css', '.sapUiTable');
@@ -153,7 +156,7 @@ class UI5DataTableNode extends UI5AbstractNode
         Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
         $expectedButtons = [];
         $expectedFilters = [];
-        $expectedColumns = []; 
+        $expectedColumns = [];
         foreach ($fields->getHash() as $row) {
             // Find input by caption
             if(!empty($row['Filter Caption'])) {
@@ -178,9 +181,9 @@ class UI5DataTableNode extends UI5AbstractNode
             $extraColumns   = array_diff($actualColumns, $expectedColumns);
             Assert::assertEmpty($missingColumns, 'Missing columns: ' . implode(', ', $missingColumns));
             Assert::assertEmpty($extraColumns,   'Unexpected columns: ' . implode(', ', $extraColumns));
-            
+
         }
-        
+
         if (!empty($expectedFilters)) {
             $actualFilters = array_map(
                 fn($f) => trim($f->getCaption()),
@@ -192,14 +195,14 @@ class UI5DataTableNode extends UI5AbstractNode
             $extraFilters   = array_diff($actualFilters, $expectedFilters);
             Assert::assertEmpty($missingFilters, 'Missing filters: ' . implode(', ', $missingFilters));
             Assert::assertEmpty($extraFilters,   'Unexpected filters: ' . implode(', ', $extraFilters));
-            
+
         }
-        
+
         if (!empty($actualColumns)) {
             $actualButtons = array_map(
                 fn($b) => trim($b->getCaption()),
                 array_filter($widget->getButtons(), fn($b) => !$b->isHidden() && !$b->isDisabled())
-            );        
+            );
             $expectedButtons = array_filter(array_unique($expectedButtons));
             $actualButtons = array_filter(array_unique($actualButtons));
             $missingButtons = array_diff($expectedButtons, $actualButtons);
@@ -222,6 +225,8 @@ class UI5DataTableNode extends UI5AbstractNode
         $widget = $this->getWidget();
         Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
 
+        $mainObject = $widget->getMetaObject();
+
         // Test regular filters
         foreach ($widget->getFilters() as $filter) {
             if ($filter->isHidden()) {
@@ -232,7 +237,7 @@ class UI5DataTableNode extends UI5AbstractNode
             $logbook->addLine('Filter was found :`' . $filter->getCaption() . '`');
             // Get a valid value for filtering
             $filterAttr = $filter->getAttribute();
-            $filterVal = $this->getAnyValue($filterAttr, $filter);
+            $filterVal = $this->getAnyValue($filterAttr, $filter, $mainObject);
             $filterNode = $this->getBrowser()->getFilterByCaption($filter->getCaption());
 
             $filterNode->setValue($filterVal);
@@ -241,9 +246,20 @@ class UI5DataTableNode extends UI5AbstractNode
                 $this->getSession()->wait(1000);
             }
             $this->triggerSearch();
+            $columnCaption = $filter->getCaption();
+            // sometimes column captions are not the same as filter captions
+            foreach ($widget->getColumns() as $column) {
+                if ($column->isHidden() || !$column->isFilterable()) {
+                    continue;
+                }
+                if($column->getMetaObject() === $filter->getMetaObject()) {
+                    $columnCaption = $column->getCaption();
+                    break;
+                }
+            }
             // Verify the first DataTable contains the expected text in the specified column
             $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
-                ['column' => $filter->getCaption(), 'value' => $filterVal, 'comparator' => $filter->getComparator()]
+                ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
             ]);
             $logbook->addLine('The value was searched through the table');
             $this->triggerReset();
@@ -266,78 +282,116 @@ class UI5DataTableNode extends UI5AbstractNode
                 }
         */
     }
-    protected function getAnyValue(MetaAttributeInterface $attr, Filter $filterWidget, string $sort = null)
-    {        
+
+    protected function getAnyValue(MetaAttributeInterface $attr, Filter $filterWidget, MetaObject $metaObject, string $sort = null)
+    {
         $inputWidget = $filterWidget->getInputWidget();
+        $returnValue = null;
+        $rowIndex = 0;
         if ($inputWidget instanceof InputComboTable) {
             $textAttr = $inputWidget->getTextAttribute(); // This gives us what we need to type into the filter (e.g. Name)
             $tableObj = $inputWidget->getTableObject(); // Both attributes above belong to this object, NOT the object of the filter widget
-            return $this->findValue($tableObj, $textAttr, $textAttr->getName(), $sort);
-        }
-        // if it is not relation return the value that is found
-        if (!$attr->isRelation()) {
-            $returnColumn = $attr->getName();
-            $returnValue =  $this->findValue($inputWidget->getMetaObject(), $attr, $returnColumn, $sort);
-            $datatype = $attr->getDataType();
-            // if the datatype is EnumDataType return its label
-            if ($datatype instanceof EnumDataTypeInterface) {
-                foreach ($datatype->getLabels() as $key => $label) {
-                    if($key === $returnValue){
-                        $returnValue = $label;
-                        break;
-                    }
+            while($returnValue === null) {
+                $foundValue = $this->findValue($tableObj, $textAttr, $textAttr->getName(), $sort, $rowIndex);
+                if ($foundValue !== null && $this->checkTheValueFromTable($metaObject, $inputWidget->getAttributeAlias() . '__' . $textAttr->getName(), $foundValue)) {
+                    $returnValue = $foundValue;
                 }
+                $rowIndex++;
             }
             return $returnValue;
         }
+        
+        // if it is not relation return the value that is found
+        if (!$attr->isRelation()) {
+            $returnColumn = $attr->getAlias();
+            while($returnValue === null) {
+                $foundValue = $this->findValue($inputWidget->getMetaObject(), $attr, $returnColumn, $sort, $rowIndex);
+                $datatype = $attr->getDataType();
+                // if the datatype is EnumDataType return its label
+                if ($datatype instanceof EnumDataTypeInterface) {
+                    foreach ($datatype->getLabels() as $key => $label) {
+                        if ($key === (int)$foundValue) {
+                            $foundLabel = $label;
+                            break;
+                        }
+                    }
+                }
+                if ($foundValue !== null && $this->checkTheValueFromTable($metaObject, $returnColumn, $foundValue)) {
+                    $returnValue = $datatype instanceof EnumDataTypeInterface
+                        ? $foundLabel
+                        : $foundValue;
+                }
+                $rowIndex++;
+            }
+            return $returnValue;
+        }
+        
         // if it is a relation find the label of the found uid
         $rel = $attr->getRelation();
         $rightObj = $rel->getRightObject();
         $returnColumn = $attr->getName() . '__' . $rightObj->getLabelAttribute()->getName();
-        return  $this->findValue($attr->getObject(), $attr, $returnColumn , $sort);
+        while($returnValue === null)
+        {
+            $foundValue =  $this->findValue($attr->getObject(), $attr, $returnColumn , $sort, $rowIndex);
+            if ($foundValue !== null && $this->checkTheValueFromTable($metaObject, $returnColumn, $foundValue)) {
+                $returnValue = $foundValue;
+            }
+            $rowIndex++;
+        }
+        return $returnValue;
+
     }
-    
-    private function findValue(MetaObject $metaObject, MetaAttributeInterface $attr, string $returnColumn = null, string $sort = null)
+
+    private function findValue(MetaObject $metaObject, MetaAttributeInterface $attr, string $returnColumn = null, string $sort = null, $rowIndex = 0)
     {
-        try {
-            $ds = DataSheetFactory::createFromObject($metaObject);
-            $ds->getColumns()->addFromAttribute($attr);
-            foreach ($this->hiddenFilters as $hiddenFilter) {
-                if($hiddenFilter->getMetaObject()->isExactly($ds->getMetaObject())) {
-                    $ds->getFilters()->addConditionFromString(
-                        $hiddenFilter->getAttributeAlias(),
-                        $hiddenFilter->getValue(),
-                        $hiddenFilter->getComparator()
-                    );
-                }
+        $ds = DataSheetFactory::createFromObject($metaObject);
+        $ds->getColumns()->addFromAttribute($attr);
+        foreach ($this->hiddenFilters as $hiddenFilter) {
+            if($hiddenFilter->getMetaObject()->isExactly($ds->getMetaObject())) {
+                $ds->getFilters()->addConditionFromString(
+                    $hiddenFilter->getAttributeAlias(),
+                    $hiddenFilter->getValue(),
+                    $hiddenFilter->getComparator()
+                );
             }
-            if ($returnColumn !== null) {
-                $ds->getColumns()->addFromExpression($returnColumn);
-            }
-            
-            if ($sort !== null) {
-                $ds->getSorters()->addFromString($attr->getAlias(), $sort);
-            }
-            
-            $ds->getFilters()->addConditionForAttributeIsNotNull($attr);
-            $ds->dataRead(1, 1);
-            return $ds->getRows()[0][$returnColumn] ?? $ds->getRows()[0][$attr->getAlias()];
         }
-        catch (\Throwable $e) {
-            return null;
+        if ($returnColumn !== null) {
+            $ds->getColumns()->addFromExpression($returnColumn);
         }
+
+        if ($sort !== null) {
+            $ds->getSorters()->addFromString($attr->getAlias(), $sort);
+        }
+
+        $ds->getFilters()->addConditionForAttributeIsNotNull($attr);
+        $ds->dataRead(1, $rowIndex);
+        if($ds->getColumn($returnColumn) !== null) {
+            $this->setInputDataType($ds->getColumn($returnColumn)->getDataType());
+            return $ds->getColumn($returnColumn)->getValuesNormalized()[0];
+        }
+        $this->setInputDataType($ds->getColumn($attr->getAlias())->getDataType());
+        return $ds->getColumn($attr->getAlias())->getValuesNormalized()[0];
+    }
+
+    private function checkTheValueFromTable(MetaObject $metaObject, string $returnColumn, string $returnValue): bool
+    {
+        $ds = DataSheetFactory::createFromObject($metaObject);
+        $ds->getFilters()->addConditionFromString($returnColumn, $returnValue, ComparatorDataType::EQUALS);
+        $ds->dataRead(1, 1);
+        return $ds->dataCount() > 0;
+
     }
 
     protected function triggerSearch(): void
     {
         $this->clickButtonByCaption('ACTION.READDATA.SEARCH');
     }
-    
+
     protected function triggerReset(): void
     {
         $this->clickButtonByCaption('ACTION.RESETWIDGET.NAME');
     }
-    
+
     protected function clickButtonByCaption(string $caption): void
     {
         $buttonCaption = $this->getBrowser()
@@ -345,8 +399,8 @@ class UI5DataTableNode extends UI5AbstractNode
             ->getCoreApp()
             ->getTranslator($this->getBrowser()->getLocale())
             ->translate($caption);
-        $button = $this->find('named', ['button', $buttonCaption]);
-        
+        $button = $this->findVisibleButtonByCaption($buttonCaption, $this->getNodeElement());
+
         Assert::assertNotNull($button, sprintf('Button %s was not found.', $buttonCaption));
         $this->getBrowser()->highlightWidget(
             $button,
@@ -377,7 +431,7 @@ class UI5DataTableNode extends UI5AbstractNode
 
     /**
      * Filters the given caption of the column with the given value
-     * 
+     *
      * @param string $caption
      * @param string $value
      */
@@ -386,9 +440,9 @@ class UI5DataTableNode extends UI5AbstractNode
         $headerNode = $this->getColumnByCaption($caption);
         $headerEl   = $headerNode->getNodeElement();
         Assert::assertNotNull($headerEl, "Header element for '$caption' not found.");
-        
+
         $headerNode->clickHeader();
-        
+
         // Locate menu and input
         $page  = $this->getSession()->getPage();
         $menu  = $page->find('css', '.sapUiTableColumnMenu.sapUiMnu');
@@ -421,5 +475,15 @@ class UI5DataTableNode extends UI5AbstractNode
     private function resetFilterColumn(string $caption) :void
     {
         $this->filterColumn($caption, "");
+    }
+
+    private function getInputDataType()
+    {
+        return $this->inputDataType;
+    }
+
+    private function setInputDataType(DataTypeInterface $dataType): void
+    {
+        $this->inputDataType = $dataType;
     }
 }
