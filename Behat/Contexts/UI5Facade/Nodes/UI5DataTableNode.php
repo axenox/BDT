@@ -4,7 +4,9 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 use Behat\Gherkin\Node\TableNode;
 use exface\Core\CommonLogic\Model\MetaObject;
 use exface\Core\DataTypes\ComparatorDataType;
+use exface\Core\DataTypes\MarkdownDataType;
 use exface\Core\DataTypes\StringDataType;
+use exface\Core\Facades\DocsFacade;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Interfaces\DataTypes\DataTypeInterface;
 use exface\Core\Interfaces\DataTypes\EnumDataTypeInterface;
@@ -223,9 +225,16 @@ class UI5DataTableNode extends UI5AbstractNode
     {
         /* @var $widget \exface\Core\Widgets\DataTable */
         $widget = $this->getWidget();
-        Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
-
         $mainObject = $widget->getMetaObject();
+        $lineNumber = count($logbook->getLinesInSection());
+        $tableCaption = !empty($this->getCaption()) ? 
+            '`' .$this->getCaption() . '`' : 
+            '[' . MarkdownDataType::escapeString($mainObject->__toString()) . '](' . DocsFacade::buildUrlToDocsForMetaObject($mainObject) . ')' ;
+
+        $logbook->addLine('Looking at DataTable ' . $tableCaption);
+        $logbook->addIndent(1);
+
+        Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
 
         // Test regular filters
         foreach ($widget->getFilters() as $filter) {
@@ -234,21 +243,20 @@ class UI5DataTableNode extends UI5AbstractNode
                 $this->hiddenFilters[] = $filter;
                 continue;
             }
-            $logbook->addLine('Filter was found :`' . $filter->getCaption() . '`');
             // Get a valid value for filtering
             $filterAttr = $filter->getAttribute();
             $filterVal = $this->getAnyValue($filterAttr, $filter, $mainObject);
             $filterNode = $this->getBrowser()->getFilterByCaption($filter->getCaption());
-
+            $logbook->addLine('Filtering`' . $filter->getCaption() . '` with value `' . $filterVal . '`');
+            $lineNumber++;
             $filterNode->setValue($filterVal);
-            $logbook->addLine('`' . $filterVal . '` was entered in the filter ' . $filter->getCaption());
             if ($filterAttr->isRelation()) {
                 $this->getSession()->wait(1000);
             }
             $this->triggerSearch();
             $columnCaption = $filter->getCaption();
             // sometimes column captions are not the same as filter captions
-            foreach ($widget->getColumns() as $column) {
+            /*foreach ($widget->getColumns() as $column) {
                 if ($column->isHidden() || !$column->isFilterable()) {
                     continue;
                 }
@@ -256,15 +264,18 @@ class UI5DataTableNode extends UI5AbstractNode
                     $columnCaption = $column->getCaption();
                     break;
                 }
-            }
+            }*/
+            $logbook->removeLine(null, $lineNumber);
+            $logbook->addLine('Filtering`' . $filter->getCaption() . '` with value `' . $filterVal . '` - found `unknown` rows');
             // Verify the first DataTable contains the expected text in the specified column
             $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
                 ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
             ]);
-            $logbook->addLine('The value was searched through the table');
             $this->triggerReset();
-            $logbook->addLine('The filter was reset');
+            $logbook->removeLine(null, $lineNumber);
+            $logbook->addLine('Filtering`' . $filter->getCaption() . '` with value `' . $filterVal . '` - found `unknown` rows - resetting configurator');
         }
+        $logbook->addIndent(-1);
         /*
                 // Test column caption filters
                 foreach ($widget->getColumns() as $column) {
@@ -297,6 +308,9 @@ class UI5DataTableNode extends UI5AbstractNode
                     $returnValue = $foundValue;
                 }
                 $rowIndex++;
+                if ($rowIndex > 100){
+                    break;
+                }
             }
             return $returnValue;
         }
@@ -322,6 +336,9 @@ class UI5DataTableNode extends UI5AbstractNode
                         : $foundValue;
                 }
                 $rowIndex++;
+                if ($rowIndex > 100){
+                    break;
+                }
             }
             return $returnValue;
         }
@@ -337,6 +354,9 @@ class UI5DataTableNode extends UI5AbstractNode
                 $returnValue = $foundValue;
             }
             $rowIndex++;
+            if ($rowIndex > 100){
+                break;
+            }
         }
         return $returnValue;
 

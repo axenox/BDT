@@ -26,6 +26,7 @@ use exface\Core\Factories\ActionFactory;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\FacadeFactory;
 use exface\Core\Factories\MetaObjectFactory;
+use exface\Core\Factories\SelectorFactory;
 use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\DataTypes\DataTypeInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
@@ -711,7 +712,8 @@ JS
                 $columnName = $content['column'];
                 $searchValue = trim($content['value'], '"\'');
                 $rawCmp = $content['comparator'] ?? '[';
-                $inputDataType = $content['dataType'] ?? null;
+                /** @var class-string<DataTypeInterface> $inputDataType */
+                $inputDataType = $content['dataType'] ??  new StringDataType(SelectorFactory::createDataTypeSelector($this->getWorkbench(), static::class));
 
                 // First find column headers
                 $headers = $table->findAll('css', '.sapUiTableHeaderDataCell label, .sapMListTblHeader .sapMColumnHeader');
