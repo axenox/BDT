@@ -45,7 +45,7 @@ class UI5TileNode extends UI5AbstractNode
         switch (true) {
             case $action instanceof GoToPage:
                 $expectedAlias = $action->getPage()->getAliasWithNamespace();
-                $logbook->addLine('Click Tile `' . $this->getCaption() . '`');
+                $logbook->addLine('Clicking Tile `' . $this->getCaption() . '`');
                 //click on the tile
                 $this->click();
                 $directedAlias = $this->getBrowser()->getPageCurrent()->getAliasWithNamespace();
@@ -75,7 +75,7 @@ class UI5TileNode extends UI5AbstractNode
                 
                 $this->getBrowser()->verifyCurrentPageWorksAsExpected($logbook);
                 $this->getBrowser()->navigateToPreviousPage();
-                $logbook->addLine('Returned to the page :`' . $this->getBrowser()->getPageCurrent()->getAliasWithNamespace() . '`');
+                $logbook->addLine('Pressing browser back button');
                 $logbook->addIndent(-1);
                 break;
             // TODO more action validation here??

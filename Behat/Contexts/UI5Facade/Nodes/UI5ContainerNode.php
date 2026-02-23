@@ -24,7 +24,6 @@ class UI5ContainerNode extends UI5AbstractNode
             }
             $widgetType = $this->getBrowser()->getNodeWidgetType($childWidgetNode);
             $node = UI5FacadeNodeFactory::createFromNodeElement($widgetType, $childWidgetNode, $this->getSession(), $this->getBrowser());
-            $logbook->addLine($node->getWidgetType() . ' was found ' . $node->getCaption());
             $node->itWorksAsExpected($logbook);
         }
     }
