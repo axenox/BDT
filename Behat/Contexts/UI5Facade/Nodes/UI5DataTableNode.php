@@ -1,8 +1,6 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
-use axenox\BDT\Behat\Events\AfterSubstep;
-use axenox\BDT\Behat\Events\BeforeSubstep;
 use Behat\Gherkin\Node\TableNode;
 use exface\Core\CommonLogic\Model\MetaObject;
 use exface\Core\DataTypes\ComparatorDataType;
@@ -15,6 +13,8 @@ use exface\Core\Interfaces\DataTypes\EnumDataTypeInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\MetaAttributeInterface;
 use exface\Core\Interfaces\WidgetInterface;
+use exface\Core\Interfaces\Widgets\iFilterData;
+use exface\Core\Interfaces\Widgets\iShowData;
 use exface\Core\Widgets\Filter;
 use exface\Core\Widgets\InputComboTable;
 use exface\Core\Widgets\InputSelect;
@@ -249,10 +249,10 @@ JS;
      */
     public function itWorksAsExpected(LogBookInterface $logbook) :void
     {
+        $failed = false;
         /* @var $widget \exface\Core\Widgets\DataTable */
         $widget = $this->getWidget();
         $mainObject = $widget->getMetaObject();
-        $lineNumber = count($logbook->getLinesInSection());
         $tableCaption = !empty($this->getCaption()) ? 
             '`' .$this->getCaption() . '`' : 
             '[' . MarkdownDataType::escapeString($mainObject->__toString()) . '](' . DocsFacade::buildUrlToDocsForMetaObject($mainObject) . ')' ;
@@ -269,46 +269,17 @@ JS;
                 $this->hiddenFilters[] = $filter;
                 continue;
             }
-            // Get a valid value for filtering
-            $filterAttr = $filter->getAttribute();
-            $filterVal = $this->getAnyValue($filterAttr, $filter, $mainObject);
-            $filterNode = $this->getBrowser()->getFilterByCaption($filter->getCaption());
-            $substepName = 'Filtering`' . $filter->getCaption() . '` with value `' . $filterVal . '`';
-            $logbook->addLine($substepName);
-            $lineNumber++;
-            $filterNode->setValue($filterVal);
-            if ($filterAttr->isRelation()) {
-                $this->getSession()->wait(1000);
+            $substepResult = $this->runAsSubstep(
+                function() use ($filter, $widget, $logbook) {
+                    $this->worksAsExpectedFilter($filter, $widget, $logbook);
+                },
+                'Filtering`' . $filter->getCaption() . '`',
+                'Filtering',
+                $logbook
+            );
+            if ($substepResult->isFailed()) {
+                $failed = true;
             }
-            $this->getBrowser()->getEventDispatcher()->dispatch(new BeforeSubstep($substepName, 'Filtering'));
-            $this->triggerSearch();
-            $this->getBrowser()->getWaitManager()->waitForPendingOperations(false,true,true);
-            $loadedRowCount = $this->getLoadedRowCount($widget);
-            $this->getBrowser()->getEventDispatcher()->dispatch(new AfterSubstep($substepName, 'Filtering'));
-            
-            $logbook->removeLine(null, $lineNumber);
-            $logbook->addLine('Filtering`' . $filter->getCaption() . '` with value `' . $filterVal . '` - found `' . $loadedRowCount . '` rows');
-            
-            // Verify the first DataTable contains the expected text in the specified column
-            // sometimes column captions are not the same as filter captions
-            $columnCaption = null;
-            foreach ($widget->getColumns() as $column) {
-                if ($column->isHidden() || !$column->isFilterable()) {
-                    continue;
-                }
-                if($column->getAttribute() === $filterAttr) {
-                    $columnCaption = $column->getCaption();
-                    break;
-                }
-            }
-            if ($columnCaption !== null) {
-                $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
-                    ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
-                ]);
-            }
-            $this->triggerReset();
-            $logbook->removeLine(null, $lineNumber);
-            $logbook->addLine('Filtering`' . $filter->getCaption() . '` with value `' . $filterVal . '` - found `unknown` rows - resetting configurator');
         }
         $logbook->addIndent(-1);
         /*
@@ -327,6 +298,48 @@ JS;
                     $this->resetFilterColumn($columnNode->getCaption());
                 }
         */
+        Assert::assertFalse($failed, $widget->getWidgetType() . ' does not work as expected.');
+    }
+    
+    protected function worksAsExpectedFilter(iFilterData $filter, iShowData $dataWidget, LogBookInterface $logbook) : ?string
+    {
+        $logbook->addLine('Filtering`' . $filter->getCaption() . '`');
+        // Get a valid value for filtering
+        $filterAttr = $filter->getAttribute();
+        $filterVal = $this->getAnyValue($filterAttr, $filter, $dataWidget->getMetaObject());
+        $filterNode = $this->getBrowser()->getFilterByCaption($filter->getCaption());
+        $logbook->continueLine(' with value `' . $filterVal . '`');
+        $filterNode->setValue($filterVal);
+        // TODO why are we waiting? To wait from the autosuggest? If so, we should call waitForPendingOperations()
+        // in $filterNode->setValue() if getInputWidget() instanceof InputComboTable
+        if ($filterAttr->isRelation()) {
+            $this->getSession()->wait(1000);
+        }
+        $this->triggerSearch();
+        $loadedRowCount = $this->getLoadedRowCount($dataWidget);
+
+        $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');
+
+        // Verify the first DataTable contains the expected text in the specified column
+        // sometimes column captions are not the same as filter captions
+        $columnCaption = null;
+        foreach ($dataWidget->getColumns() as $column) {
+            if ($column->isHidden() || !$column->isFilterable()) {
+                continue;
+            }
+            if ($column->getAttribute() === $filterAttr) {
+                $columnCaption = $column->getCaption();
+                break;
+            }
+        }
+        if ($columnCaption !== null) {
+            $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
+                ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
+            ]);
+        }
+        $this->triggerReset();
+        $logbook->continueLine(' - resetting configurator');
+        return $logbook->getLineActive();
     }
 
     protected function getAnyValue(MetaAttributeInterface $attr, Filter $filterWidget, MetaObject $metaObject, string $sort = null)
@@ -446,6 +459,7 @@ JS;
     protected function triggerSearch(): void
     {
         $this->clickButtonByCaption('ACTION.READDATA.SEARCH');
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(false,true,true);
     }
 
     protected function triggerReset(): void

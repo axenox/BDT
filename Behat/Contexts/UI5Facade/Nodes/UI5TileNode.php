@@ -38,42 +38,41 @@ class UI5TileNode extends UI5AbstractNode
      */
     public function itWorksAsExpected(LogBookInterface $logbook) :void
     {
-        try {
-            /* @var $widget \exface\Core\Widgets\Tile */
-            $widget = $this->getWidget();
-            Assert::assertNotNull($widget, 'Tile widget not found for this node.');
-            $action = $widget->getAction();
+        /* @var $widget \exface\Core\Widgets\Tile */
+        $widget = $this->getWidget();
+        Assert::assertNotNull($widget, 'Tile widget not found for this node.');
+        $action = $widget->getAction();
 
-            switch (true) {
-                case $action instanceof GoToPage:
-                    $expectedAlias = $action->getPage()->getAliasWithNamespace();
-                    //click on the tile
-                    $this->click();
-                    $directedAlias = $this->getBrowser()->getPageCurrent()->getAliasWithNamespace();
+        switch (true) {
+            case $action instanceof GoToPage:
+                $expectedAlias = $action->getPage()->getAliasWithNamespace();
+                // click on the tile
+                $this->click();
+                $realAlias = $this->getBrowser()->getPageCurrent()->getAliasWithNamespace();
 
-                    Assert::assertSame(
-                        $expectedAlias,
-                        $directedAlias,
-                        sprintf(
-                            'Tile "%s" navigated to "%s" but expected "%s".',
-                            $widget->getCaption(),
-                            $directedAlias,
-                            $expectedAlias
-                        )
-                    );
-                    $logbook->addLine('Clicking Tile [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
-                    $logbook->addIndent(+1);
-
+                Assert::assertSame(
+                    $expectedAlias,
+                    $realAlias,
+                    sprintf(
+                        'Tile "%s" navigated to `%s` but expected `%s`.',
+                        $widget->getCaption(),
+                        $realAlias,
+                        $expectedAlias
+                    )
+                );
+                $logbook->addLine('Clicking Tile [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
+                $logbook->addIndent(+1);
+                
+                try {
                     $this->getBrowser()->verifyCurrentPageWorksAsExpected($logbook);
-                    $this->getBrowser()->navigateToPreviousPage();
-                    $logbook->addLine('Pressing browser back button');
-                    $logbook->addIndent(-1);
-                    break;
-                // TODO more action validation here??
-            }
-        }
-        catch (\Throwable $e) {
-            $logbook->addLine($e->getMessage());
+                } catch (\Throwable $e) {
+                    $logbook->addLine('**Failed** to check if page `' . $realAlias . '` works as expected - aborting and continuing. ' . $e->getMessage());
+                }
+                $this->getBrowser()->navigateToPreviousPage();
+                $logbook->addLine('Pressing browser back button');
+                $logbook->addIndent(-1);
+                break;
+            // TODO more action validation here??
         }
     }
 
@@ -83,5 +82,6 @@ class UI5TileNode extends UI5AbstractNode
     public function click() : void
     {
         $this->getNodeElement()->click();
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations();
     }
 }

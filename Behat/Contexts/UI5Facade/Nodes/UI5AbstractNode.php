@@ -2,6 +2,8 @@
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
+use axenox\BDT\Behat\Events\AfterSubstep;
+use axenox\BDT\Behat\Events\BeforeSubstep;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Exception\DriverException;
@@ -243,5 +245,20 @@ JS;
     public function isVisible(): bool
     {
         return $this->getNodeElement()->isVisible();
+    }
+    
+    public function runAsSubstep(callable $callable, string $title, ?string $category = null, ?LogBookInterface $logbook) : AfterSubstep
+    {
+        $dispatcher = $this->getBrowser()->getEventDispatcher();
+        $dispatcher->dispatch(new BeforeSubstep($title, $category));
+        try {
+            $title = $callable() ?? $title;
+            $resultEvent = new AfterSubstep($title, $category);
+        } catch (\Throwable $e) {
+            $logbook?->addLine('**ERROR:** ' . $e->getMessage());
+            $resultEvent = new AfterSubstep($title, $category, $e);
+        }
+        $dispatcher->dispatch($resultEvent);
+        return $resultEvent;
     }
 }

@@ -347,7 +347,7 @@ class DatabaseFormatter implements Formatter
         $row = [
             'run_scenario' => $this->scenarioDataSheet->getUidColumn()->getValue(0),
             'run_sequence_idx' => $this->stepIdx,
-            'name' => $title,
+            'name' => mb_ucfirst($title),
             'line' => $line,
             'started_on' => DateTimeDataType::now(),
             'status' => 10
@@ -360,11 +360,14 @@ class DatabaseFormatter implements Formatter
         return $ds;
     }
     
-    protected function logStepEnd(DataSheetInterface $ds, float $stepStartTime, int $behatResultCode, ?\Throwable $e = null, array $logbooks = []) : DataSheetInterface
+    protected function logStepEnd(DataSheetInterface $ds, float $stepStartTime, int $behatResultCode, ?\Throwable $e = null, array $logbooks = [], ?string $updatedTitle = null) : DataSheetInterface
     {
         $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
         $ds->setCellValue('duration_ms', 0, $this->microtime() - $stepStartTime);
         $ds->setCellValue('status', 0, StepStatusDataType::convertFromBehatResultCode($behatResultCode));
+        if ($updatedTitle !== null) {
+            $ds->setCellValue('name', 0, mb_ucfirst($updatedTitle));
+        }
         if ($behatResultCode === TestResult::FAILED) {
             if($this->provider->isCaptured()) {
                 $screenshotRelativePath = $this->provider->getPath() . DIRECTORY_SEPARATOR . $this->provider->getName();
@@ -411,7 +414,7 @@ class DatabaseFormatter implements Formatter
     {
         try {
             $ds = $this->substepDataSheet->extractSystemColumns();
-            $this->logStepEnd($ds, $this->substepStart, $event->getResultCode(), $event->getException());
+            $this->logStepEnd($ds, $this->substepStart, $event->getResultCode(), $event->getException(), [], $event->getSubstepName());
         }
         catch(\Exception $e){
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
