@@ -2,6 +2,9 @@
 namespace axenox\BDT\Behat\DatabaseFormatter;
 
 use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
+use axenox\BDT\Behat\Events\AfterPageVisited;
+use axenox\BDT\Behat\Events\AfterSubstep;
+use axenox\BDT\Behat\Events\BeforeSubstep;
 use axenox\BDT\DataTypes\StepStatusDataType;
 use Behat\Testwork\Output\Formatter;
 use Behat\Testwork\Tester\Result\TestResult;
@@ -26,9 +29,12 @@ use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\DataSheets\DataSheetInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\WorkbenchInterface;
+use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 
 class DatabaseFormatter implements Formatter
-{
+{    
+    private static $eventDispatcher;
+    
     private WorkbenchInterface  $workbench;
     private ?DataSheetInterface $runDataSheet = null;
     private float               $runStart;
@@ -44,13 +50,18 @@ class DatabaseFormatter implements Formatter
     private ?DataSheetInterface $stepDataSheet = null;
     private float               $stepStart;
     private int                 $stepIdx = 0;
+
+    private ?DataSheetInterface $substepDataSheet = null;
+    private float               $substepStart;
+    
     private static array        $testedPages = [];
     private ScreenshotProviderInterface $provider;
     /** @var MarkdownLogBook[]  */
     private static array        $stepLogbooks = [];
 
-    public function __construct(WorkbenchInterface $workbench, ScreenshotProviderInterface $provider)
+    public function __construct(WorkbenchInterface $workbench, ScreenshotProviderInterface $provider, EventDispatcherInterface $eventDispatcher)
     {
+        self::$eventDispatcher = $eventDispatcher;
         $this->workbench = $workbench;
         $this->provider = $provider;
     }
@@ -61,6 +72,7 @@ class DatabaseFormatter implements Formatter
             BeforeExerciseCompleted::BEFORE => 'onBeforeExercise',
             // Use __destruct() to finish the log on inner errors too
             // AfterExerciseCompleted::AFTER => 'onAfterExercise',
+            AfterSuiteTested::AFTER => 'onAfterSuite',
             BeforeFeatureTested::BEFORE => 'onBeforeFeature',
             AfterFeatureTested::AFTER => 'onAfterFeature',
             BeforeScenarioTested::BEFORE => 'onBeforeScenario',
@@ -69,7 +81,9 @@ class DatabaseFormatter implements Formatter
             AfterOutlineTested::AFTER => 'onAfterScenario',
             BeforeStepTested::BEFORE => 'onBeforeStep',
             AfterStepTested::AFTER => 'onAfterStep',
-            AfterSuiteTested::AFTER => 'onAfterSuite'
+            BeforeSubstep::class => 'onBeforeSubstep',
+            AfterSubstep::class => 'onAfterSubstep',
+            AfterPageVisited::class => 'onAfterPageVisited',
         ];
     }
     
@@ -281,7 +295,9 @@ class DatabaseFormatter implements Formatter
                     'page' => $pageUid
                 ]);
             }
-            $dsActions->dataCreate();
+            if (! $dsActions->isEmpty()) {
+                $dsActions->dataCreate();
+            }
         }
         catch(\Exception $e){
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
@@ -317,43 +333,88 @@ class DatabaseFormatter implements Formatter
     {
         try{
             $result = $event->getTestResult();
-    
             $ds = $this->stepDataSheet->extractSystemColumns();
-            $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
-            $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->stepStart);
-            $ds->setCellValue('status', 0, StepStatusDataType::convertFromBehatResultCode($result->getResultCode()));
-            if ($result->getResultCode() === TestResult::FAILED) {
-                if($this->provider->isCaptured()) {
-                    $screenshotRelativePath = $this->provider->getPath() . DIRECTORY_SEPARATOR . $this->provider->getName();
-                    $ds->setCellValue('screenshot_path', 0, $screenshotRelativePath);
-                }
-                if ($e = $result->getException()) {
-                    $ds->setCellValue('error_message', 0, $e->getMessage());
-                    if(!empty($logId = ErrorManager::getInstance()->getLastLogId())) {
-                        $ds->setCellValue('error_log_id', 0, $logId);
-                    }
-                }
-            }
-            $md = '';
-            // TODO save logbook markdown to a new DB field: 
-            foreach ($this::$stepLogbooks as $logbook) {
-                $md .= $logbook->__toString();
-            }
-            $ds->setCellValue('details', 0, $md);            
-            $ds->dataUpdate();
+            $this->logStepEnd($ds, $this->stepStart, $result->getResultCode(), $result->getException(), $this::$stepLogbooks);
         }
         catch(\Exception $e){
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
         }
     }
     
-    public static function addTestedPage(string $alias): void
+    protected function logStepStart(string $title, int $line, ?string $parentStepUid = null) : DataSheetInterface
     {
-        if (!in_array($alias, static::$scenarioPages, true)) {
-            static::$scenarioPages[] = $alias;
+        $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_step');
+        $row = [
+            'run_scenario' => $this->scenarioDataSheet->getUidColumn()->getValue(0),
+            'run_sequence_idx' => $this->stepIdx,
+            'name' => $title,
+            'line' => $line,
+            'started_on' => DateTimeDataType::now(),
+            'status' => 10
+        ];
+        if ($parentStepUid !== null) {
+            $row['parent_step'] = $parentStepUid;
         }
-        if (!in_array($alias, static::$testedPages, true)) {
-            static::$testedPages[] = $alias;
+        $ds->addRow($row);
+        $ds->dataCreate(false);
+        return $ds;
+    }
+    
+    protected function logStepEnd(DataSheetInterface $ds, float $stepStartTime, int $behatResultCode, ?\Throwable $e = null, array $logbooks = []) : DataSheetInterface
+    {
+        $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
+        $ds->setCellValue('duration_ms', 0, $this->microtime() - $stepStartTime);
+        $ds->setCellValue('status', 0, StepStatusDataType::convertFromBehatResultCode($behatResultCode));
+        if ($behatResultCode === TestResult::FAILED) {
+            if($this->provider->isCaptured()) {
+                $screenshotRelativePath = $this->provider->getPath() . DIRECTORY_SEPARATOR . $this->provider->getName();
+                $ds->setCellValue('screenshot_path', 0, $screenshotRelativePath);
+            }
+            if ($e) {
+                $ds->setCellValue('error_message', 0, $e->getMessage());
+                if(!empty($logId = ErrorManager::getInstance()->getLastLogId())) {
+                    $ds->setCellValue('error_log_id', 0, $logId);
+                }
+            }
+        }
+        $md = '';
+        // TODO save logbook markdown to a new DB field: 
+        foreach ($logbooks as $logbook) {
+            $md .= $logbook->__toString();
+        }
+        if ($md !== '') {
+            $ds->setCellValue('details', 0, $md);
+        }
+        $ds->dataUpdate();
+        return $ds;
+    }
+
+    public function onBeforeSubstep(BeforeSubstep $event)
+    {
+        try{
+            $this->stepIdx++;
+            $this->substepStart = $this->microtime();
+            $ds = $this->logStepStart(
+                $event->getSubstepName(), 
+                $this->stepDataSheet->getCellValue('line', 0),
+                $this->stepDataSheet->getUidColumn()->getValue(0)
+            );
+            $this->substepDataSheet = $ds;
+            $this->provider->setName($ds->getUidColumn()->getValue(0));
+        }
+        catch(\Exception $e){
+            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+        }
+    }
+
+    public function onAfterSubstep(AfterSubstep $event)
+    {
+        try {
+            $ds = $this->substepDataSheet->extractSystemColumns();
+            $this->logStepEnd($ds, $this->substepStart, $event->getResultCode(), $event->getException());
+        }
+        catch(\Exception $e){
+            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
         }
     }
 
@@ -363,5 +424,25 @@ class DatabaseFormatter implements Formatter
             static::$stepLogbooks[] = $logbook;
         }
     }
-    
+
+    /**
+     * @param AfterPageVisited $event
+     * @return void
+     */
+    public function onAfterPageVisited(AfterPageVisited $event)
+    {
+        $alias = $event->getPageAlias();
+
+        if (!in_array($alias, static::$scenarioPages, true)) {
+            static::$scenarioPages[] = $alias;
+        }
+        if (!in_array($alias, static::$testedPages, true)) {
+            static::$testedPages[] = $alias;
+        }
+    }
+
+    public static function getEventDispatcher(): EventDispatcherInterface
+    {
+        return self::$eventDispatcher;
+    }
 }

@@ -87,9 +87,9 @@
         {
             "_EXPORT_SUMMARY": "BDT step run [axenox.BDT.run_step]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-02-16 09:25:48",
+            "MODIFIED_ON": "2026-02-24 17:42:33",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11f0ac35222d57aeac35025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
@@ -162,7 +162,8 @@
                                                 "id": "ERROR_ID"
                                             },
                                             {
-                                                "attribute_alias": "error_message"
+                                                "attribute_alias": "error_message",
+                                                "width": 2
                                             }
                                         ]
                                     },
@@ -261,6 +262,7 @@
                 "buttons": [
                     {
                         "action_alias": "axenox.BDT.ShowRunStepErrorDetails",
+                        "close_dialog": false,
                         "disabled_if": {
                             "operator": "AND",
                             "conditions": [

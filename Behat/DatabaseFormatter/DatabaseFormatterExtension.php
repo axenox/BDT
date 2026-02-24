@@ -10,7 +10,7 @@ use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\Reference;
 
 class DatabaseFormatterExtension implements Extension
-{
+{    
     public function getConfigKey(): string
     {
         return 'database_formatter';
@@ -25,7 +25,8 @@ class DatabaseFormatterExtension implements Extension
         // Register the formatter as a service
         $definition = new Definition(DatabaseFormatter::class, [
             new Reference('database_formatter.workbench'),
-            new Reference('screenshot.provider')
+            new Reference('screenshot.provider'),
+            new Reference('event_dispatcher'),
         ]);
 
         $definition->addTag('output.formatter');

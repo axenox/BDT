@@ -87,9 +87,9 @@
         {
             "_EXPORT_SUMMARY": "BDT scenario run [axenox.BDT.run_scenario]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-02-06 08:59:04",
+            "MODIFIED_ON": "2026-02-24 17:41:31",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11f08f0e222d25a48f0e025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
@@ -103,165 +103,183 @@
             "PARENT_OBJECT": null,
             "DATA_ADDRESS_PROPS": null,
             "DEFAULT_EDITOR_UXON": {
-                "widget_type": "Tabs",
-                "tabs": [
+                "widget_type": "Dialog",
+                "widgets": [
                     {
-                        "readonly": true,
-                        "caption": "Detail",
-                        "widgets": [
+                        "widget_type": "Tabs",
+                        "tabs": [
                             {
-                                "attribute_alias": "UID",
-                                "id": "UID",
-                                "widget_type": "InputHidden"
-                            },
-                            {
-                                "attribute_alias": "name",
-                                "id": "name",
-                                "widget_type": "InputHidden"
-                            },
-                            {
-                                "attribute_alias": "run_feature__filename",
-                                "id": "file",
-                                "widget_type": "InputHidden"
-                            },
-                            {
-                                "attribute_alias": "run_feature__name",
-                                "caption": "Feature Name"
-                            },
-                            {
-                                "attribute_alias": "name"
-                            },
-                            {
-                                "attribute_alias": "line"
-                            },
-                            {
-                                "attribute_alias": "started_on"
-                            },
-                            {
-                                "attribute_alias": "finished_on"
-                            },
-                            {
-                                "attribute_alias": "duration_ms"
-                            },
-                            {
-                                "attribute_alias": "tags"
-                            },
-                            {
-                                "attribute_alias": "obsolete",
-                                "widget_type": "Icon"
-                            },
-                            {
-                                "widget_type": "DataTableResponsive",
-                                "caption": "Steps",
-                                "object_alias": "axenox.BDT.run_step",
-                                "hide_header": false,
-                                "width": "max",
-                                "height": "max",
-                                "filters": [
+                                "readonly": true,
+                                "caption": "Scenario",
+                                "widgets": [
                                     {
-                                        "attribute_alias": "run_scenario",
-                                        "value": "=UID",
-                                        "required": true,
-                                        "hidden": true
-                                    }
-                                ],
-                                "columns": [
-                                    {
-                                        "attribute_alias": "run_sequence_idx"
+                                        "attribute_alias": "UID",
+                                        "id": "UID",
+                                        "widget_type": "InputHidden"
                                     },
                                     {
-                                        "attribute_alias": "run_step_stats__status"
+                                        "attribute_alias": "name",
+                                        "id": "name",
+                                        "widget_type": "InputHidden"
+                                    },
+                                    {
+                                        "attribute_alias": "run_feature__filename",
+                                        "id": "file",
+                                        "widget_type": "InputHidden"
+                                    },
+                                    {
+                                        "attribute_alias": "run_feature__name",
+                                        "caption": "Feature Name"
                                     },
                                     {
                                         "attribute_alias": "name"
                                     },
                                     {
-                                        "attribute_alias": "run_scenario__LABEL"
-                                    },
-                                    {
-                                        "attribute_alias": "duration_ms"
-                                    },
-                                    {
-                                        "attribute_alias": "error_log_id"
-                                    }
-                                ],
-                                "sorters": [
-                                    {
-                                        "attribute_alias": "run_sequence_idx",
-                                        "direction": "asc"
-                                    }
-                                ],
-                                "buttons": [
-                                    {
-                                        "action": {
-                                            "disable_buttons": false,
-                                            "alias": "exface.Core.ShowObjectInfoDialog"
-                                        },
-                                        "bind_to_double_click": true
-                                    },
-                                    {
-                                        "action_alias": "axenox.BDT.ShowRunStepErrorDetails",
-                                        "disabled_if": {
-                                            "operator": "AND",
-                                            "conditions": [
-                                                {
-                                                    "value_left": "=~input!error_log_id",
-                                                    "comparator": "==",
-                                                    "value_right": ""
-                                                }
-                                            ]
-                                        }
-                                    }
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        "caption": "History",
-                        "widgets": [
-                            {
-                                "widget_type": "DataTableResponsive",
-                                "object_alias": "axenox.BDT.run",
-                                "filters": [
-                                    {
-                                        "attribute_alias": "run_feature__filename",
-                                        "value": "=file!",
-                                        "required": true,
-                                        "hidden": true
-                                    },
-                                    {
-                                        "attribute_alias": "run_feature__run_scenario__name",
-                                        "value": "=name!",
-                                        "required": true,
-                                        "hidden": true
-                                    }
-                                ],
-                                "columns": [
-                                    {
-                                        "attribute_alias": "UID",
-                                        "hidden": true
+                                        "attribute_alias": "line"
                                     },
                                     {
                                         "attribute_alias": "started_on"
                                     },
                                     {
-                                        "attribute_alias": "behat_command"
+                                        "attribute_alias": "finished_on"
                                     },
                                     {
-                                        "attribute_alias": "run_stats__status",
-                                        "caption": "Status"
-                                    }
-                                ],
-                                "sorters": [
+                                        "attribute_alias": "duration_ms"
+                                    },
                                     {
-                                        "attribute_alias": "started_on",
-                                        "direction": "desc"
-                                    }
-                                ],
-                                "buttons": [
+                                        "attribute_alias": "tags"
+                                    },
                                     {
-                                        "action_alias": "exface.Core.ShowObjectInfoDialog",
-                                        "bind_to_double_click": true
+                                        "attribute_alias": "obsolete",
+                                        "widget_type": "Icon"
+                                    },
+                                    {
+                                        "widget_type": "DataTableResponsive",
+                                        "caption": "Steps",
+                                        "object_alias": "axenox.BDT.run_step",
+                                        "hide_header": false,
+                                        "width": "max",
+                                        "height": "max",
+                                        "filters": [
+                                            {
+                                                "attribute_alias": "run_scenario",
+                                                "value": "=UID",
+                                                "required": true,
+                                                "hidden": true
+                                            }
+                                        ],
+                                        "columns": [
+                                            {
+                                                "attribute_alias": "run_sequence_idx"
+                                            },
+                                            {
+                                                "attribute_alias": "run_step_stats__status"
+                                            },
+                                            {
+                                                "attribute_alias": "name"
+                                            },
+                                            {
+                                                "attribute_alias": "run_scenario__LABEL"
+                                            },
+                                            {
+                                                "attribute_alias": "duration_ms"
+                                            },
+                                            {
+                                                "attribute_alias": "error_log_id"
+                                            }
+                                        ],
+                                        "sorters": [
+                                            {
+                                                "attribute_alias": "run_sequence_idx",
+                                                "direction": "asc"
+                                            }
+                                        ],
+                                        "buttons": [
+                                            {
+                                                "action": {
+                                                    "disable_buttons": false,
+                                                    "alias": "exface.Core.ShowObjectInfoDialog"
+                                                },
+                                                "bind_to_double_click": true
+                                            },
+                                            {
+                                                "action_alias": "axenox.BDT.ShowRunStepErrorDetails",
+                                                "disabled_if": {
+                                                    "operator": "AND",
+                                                    "conditions": [
+                                                        {
+                                                            "value_left": "=~input!error_log_id",
+                                                            "comparator": "==",
+                                                            "value_right": ""
+                                                        }
+                                                    ]
+                                                }
+                                            }
+                                        ]
+                                    }
+                                ]
+                            },
+                            {
+                                "caption": "Feature",
+                                "widgets": [
+                                    {
+                                        "attribute_alias": "run_feature__feature_file__CONTENTS",
+                                        "widget_type": "axenox.BDT.InputGherkin",
+                                        "disabled": true,
+                                        "hide_caption": true,
+                                        "width": "100%",
+                                        "height": "100%"
+                                    }
+                                ]
+                            },
+                            {
+                                "caption": "Run history",
+                                "widgets": [
+                                    {
+                                        "widget_type": "DataTableResponsive",
+                                        "object_alias": "axenox.BDT.run",
+                                        "filters": [
+                                            {
+                                                "attribute_alias": "run_feature__filename",
+                                                "value": "=file!",
+                                                "required": true,
+                                                "hidden": true
+                                            },
+                                            {
+                                                "attribute_alias": "run_feature__run_scenario__name",
+                                                "value": "=name!",
+                                                "required": true,
+                                                "hidden": true
+                                            }
+                                        ],
+                                        "columns": [
+                                            {
+                                                "attribute_alias": "UID",
+                                                "hidden": true
+                                            },
+                                            {
+                                                "attribute_alias": "started_on"
+                                            },
+                                            {
+                                                "attribute_alias": "behat_command"
+                                            },
+                                            {
+                                                "attribute_alias": "run_stats__status",
+                                                "caption": "Status"
+                                            }
+                                        ],
+                                        "sorters": [
+                                            {
+                                                "attribute_alias": "started_on",
+                                                "direction": "desc"
+                                            }
+                                        ],
+                                        "buttons": [
+                                            {
+                                                "action_alias": "exface.Core.ShowObjectInfoDialog",
+                                                "bind_to_double_click": true
+                                            }
+                                        ]
                                     }
                                 ]
                             }

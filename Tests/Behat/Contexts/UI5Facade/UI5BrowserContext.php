@@ -3,6 +3,7 @@ namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
+use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\TwigFormatter\Context\BehatFormatterContext;
 use axenox\BDT\Common\Installer\TestDataInstaller;
 use Behat\Behat\Context\Context;
@@ -20,12 +21,14 @@ use exface\Core\Facades\ConsoleFacade;
 use exface\Core\Factories\FormulaFactory;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\WorkbenchInterface;
+use phpOLAPi\Xmla\Metadata\Database;
 use PHPUnit\Framework\Assert;
 use Behat\Behat\Hook\Scope\BeforeScenarioScope;
 use Behat\Behat\Hook\Scope\AfterStepScope;
 use Behat\Behat\Hook\Scope\BeforeStepScope;
 use Behat\Gherkin\Node\TableNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataTableNode;
+use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 
 
 /**
@@ -41,7 +44,6 @@ use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataTableNode;
  */
 class UI5BrowserContext extends BehatFormatterContext implements Context
 {
-    private $stepStarttime = null;
     private $browser;
     private $scenarioName;
 
@@ -248,7 +250,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     /**
      * Captures scenario name before execution and sets up monitoring
-     * 
+     * @BeforeScenario 
      * @param BeforeScenarioScope $scope Behat scenario scope
      */
     public function beforeScenario(BeforeScenarioScope $scope)
@@ -1175,7 +1177,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $currentSession->visit($fullUrl);
 
             // Initialize browser with current session
-            $this->browser = new UI5Browser($this->getWorkbench(), $currentSession, $url, $this->getLocale());
+            $this->browser = new UI5Browser(
+                $this->getWorkbench(), 
+                $currentSession, 
+                $this->getEventDispatcher(),
+                $url, 
+                $this->getLocale()
+            );
             $this->wireBrowserCallbacks();
             // Verify page loaded
             $this->iShouldSeeThePage();
@@ -1817,7 +1825,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     private function navigateToPageAlias(string $pageAlias): void
     {
-        DatabaseFormatter::addTestedPage($pageAlias);
+        $this->getEventDispatcher()->dispatch(new AfterPageVisited($pageAlias));
 
         // Navigate to the page using Mink's path navigation
         $url = $pageAlias . '.html';
@@ -1825,7 +1833,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->logDebug("Debug - New page is loading: {$url}\n");
 
         // Initialize the UI5Browser with the current session and URL
-        $this->browser = new UI5Browser($this->getWorkbench(), $this->getSession(), $url, $this->getLocale());
+        $this->browser = new UI5Browser(
+            $this->getWorkbench(), 
+            $this->getSession(), 
+            $this->getEventDispatcher(), 
+            $url, 
+            $this->getLocale()
+        );
         $this->wireBrowserCallbacks();
     }
 
@@ -1881,5 +1895,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         $logbook = $logbook ?? new MarkdownLogBook($page->getName());
         $facadeNode->itWorksAsExpected($logbook);
+    }
+
+    /**
+     * @return EventDispatcherInterface
+     */
+    protected function getEventDispatcher() : EventDispatcherInterface
+    {
+        return DatabaseFormatter::getEventDispatcher();
     }
 }

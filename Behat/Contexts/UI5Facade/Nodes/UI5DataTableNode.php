@@ -1,6 +1,8 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
+use axenox\BDT\Behat\Events\AfterSubstep;
+use axenox\BDT\Behat\Events\BeforeSubstep;
 use Behat\Gherkin\Node\TableNode;
 use exface\Core\CommonLogic\Model\MetaObject;
 use exface\Core\DataTypes\ComparatorDataType;
@@ -247,30 +249,36 @@ class UI5DataTableNode extends UI5AbstractNode
             $filterAttr = $filter->getAttribute();
             $filterVal = $this->getAnyValue($filterAttr, $filter, $mainObject);
             $filterNode = $this->getBrowser()->getFilterByCaption($filter->getCaption());
-            $logbook->addLine('Filtering`' . $filter->getCaption() . '` with value `' . $filterVal . '`');
+            $substepName = 'Filtering`' . $filter->getCaption() . '` with value `' . $filterVal . '`';
+            $logbook->addLine($substepName);
             $lineNumber++;
             $filterNode->setValue($filterVal);
             if ($filterAttr->isRelation()) {
                 $this->getSession()->wait(1000);
             }
+            $this->getBrowser()->getEventDispatcher()->dispatch(new BeforeSubstep($substepName, 'Filtering'));
             $this->triggerSearch();
-            $columnCaption = $filter->getCaption();
-            // sometimes column captions are not the same as filter captions
-            /*foreach ($widget->getColumns() as $column) {
-                if ($column->isHidden() || !$column->isFilterable()) {
-                    continue;
-                }
-                if($column->getMetaObject() === $filter->getMetaObject()) {
-                    $columnCaption = $column->getCaption();
-                    break;
-                }
-            }*/
+            $this->getBrowser()->getEventDispatcher()->dispatch(new AfterSubstep($substepName, 'Filtering'));
+            
             $logbook->removeLine(null, $lineNumber);
             $logbook->addLine('Filtering`' . $filter->getCaption() . '` with value `' . $filterVal . '` - found `unknown` rows');
             // Verify the first DataTable contains the expected text in the specified column
-            $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
-                ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
-            ]);
+            if ($column = $widget->getColumnByAttributeAlias($filter->getAttributeAlias())) {
+                $columnCaption = $column->getCaption();
+                // sometimes column captions are not the same as filter captions
+                /*foreach ($widget->getColumns() as $column) {
+                    if ($column->isHidden() || !$column->isFilterable()) {
+                        continue;
+                    }
+                    if($column->getMetaObject() === $filter->getMetaObject()) {
+                        $columnCaption = $column->getCaption();
+                        break;
+                    }
+                }*/
+                $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
+                    ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
+                ]);
+            }
             $this->triggerReset();
             $logbook->removeLine(null, $lineNumber);
             $logbook->addLine('Filtering`' . $filter->getCaption() . '` with value `' . $filterVal . '` - found `unknown` rows - resetting configurator');
