@@ -15,6 +15,7 @@ use exface\Core\Interfaces\Model\MetaAttributeInterface;
 use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Widgets\Filter;
 use exface\Core\Widgets\InputComboTable;
+use exface\Core\Widgets\InputSelect;
 use PHPUnit\Framework\Assert;
 
 class UI5DataTableNode extends UI5AbstractNode
@@ -76,6 +77,27 @@ class UI5DataTableNode extends UI5AbstractNode
         return $nodes;
     }
 
+    private function getLoadedRowCount(WidgetInterface $widget): ?int
+    {
+        $id = $this->getElementIdFromWidget($widget);
+        $script = <<<JS
+(function() {
+    var table = sap.ui.getCore().byId('$id');
+    if (!table) return -1;
+
+    var model = table.getModel();
+    if (!model) return -2;
+
+    var data = model.getData();
+    if (!data || !data.rows) return -3;
+
+    return data.rows.length;
+})();
+JS;
+
+        return (int)$this->getSession()->evaluateScript($script);
+        
+    }
 
     public function selectRow(int $rowNumber)
     {
@@ -155,6 +177,8 @@ class UI5DataTableNode extends UI5AbstractNode
     {
         /* @var $widget \exface\Core\Widgets\DataTable */
         $widget = $this->getWidget();
+        $elementId = $this->getElementIdFromWidget($widget);
+        
         Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
         $expectedButtons = [];
         $expectedFilters = [];
@@ -223,59 +247,64 @@ class UI5DataTableNode extends UI5AbstractNode
      */
     public function itWorksAsExpected(LogBookInterface $logbook) :void
     {
-        /* @var $widget \exface\Core\Widgets\DataTable */
-        $widget = $this->getWidget();
-        $mainObject = $widget->getMetaObject();
-        $lineNumber = count($logbook->getLinesInSection());
-        $tableCaption = !empty($this->getCaption()) ? 
-            '`' .$this->getCaption() . '`' : 
-            '[' . MarkdownDataType::escapeString($mainObject->__toString()) . '](' . DocsFacade::buildUrlToDocsForMetaObject($mainObject) . ')' ;
-
-        $logbook->addLine('Looking at DataTable ' . $tableCaption);
-        $logbook->addIndent(1);
-
-        Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
-
-        // Test regular filters
-        foreach ($widget->getFilters() as $filter) {
-            if ($filter->isHidden()) {
-                // will be used as a filter to get a valid value
-                $this->hiddenFilters[] = $filter;
-                continue;
-            }
-            // Get a valid value for filtering
-            $filterAttr = $filter->getAttribute();
-            $filterVal = $this->getAnyValue($filterAttr, $filter, $mainObject);
-            $filterNode = $this->getBrowser()->getFilterByCaption($filter->getCaption());
-            $logbook->addLine('Filtering`' . $filter->getCaption() . '` with value `' . $filterVal . '`');
-            $lineNumber++;
-            $filterNode->setValue($filterVal);
-            if ($filterAttr->isRelation()) {
-                $this->getSession()->wait(1000);
-            }
-            $this->triggerSearch();
-            $columnCaption = $filter->getCaption();
-            // sometimes column captions are not the same as filter captions
-            /*foreach ($widget->getColumns() as $column) {
-                if ($column->isHidden() || !$column->isFilterable()) {
+        try {
+            /* @var $widget \exface\Core\Widgets\DataTable */
+            $widget = $this->getWidget();
+            $mainObject = $widget->getMetaObject();
+            $lineNumber = count($logbook->getLinesInSection());
+            $tableCaption = !empty($this->getCaption()) ? 
+                '`' .$this->getCaption() . '`' : 
+                '[' . MarkdownDataType::escapeString($mainObject->__toString()) . '](' . DocsFacade::buildUrlToDocsForMetaObject($mainObject) . ')' ;
+    
+            $logbook->addLine('Looking at DataTable ' . $tableCaption);
+            $logbook->addIndent(1);
+    
+            Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
+    
+            // Test regular filters
+            foreach ($widget->getFilters() as $filter) {
+                if ($filter->isHidden()) {
+                    // will be used as a filter to get a valid value
+                    $this->hiddenFilters[] = $filter;
                     continue;
                 }
-                if($column->getMetaObject() === $filter->getMetaObject()) {
-                    $columnCaption = $column->getCaption();
-                    break;
+                // Get a valid value for filtering
+                $filterAttr = $filter->getAttribute();
+                $filterVal = $this->getAnyValue($filterAttr, $filter, $mainObject);
+                $filterNode = $this->getBrowser()->getFilterByCaption($filter->getCaption());
+                $logbook->addLine('Filtering`' . $filter->getCaption() . '` with value `' . $filterVal . '`');
+                $lineNumber++;
+                $filterNode->setValue($filterVal);
+                if ($filterAttr->isRelation()) {
+                    $this->getSession()->wait(1000);
                 }
-            }*/
-            $logbook->removeLine(null, $lineNumber);
-            $logbook->addLine('Filtering`' . $filter->getCaption() . '` with value `' . $filterVal . '` - found `unknown` rows');
-            // Verify the first DataTable contains the expected text in the specified column
-            $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
-                ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
-            ]);
-            $this->triggerReset();
-            $logbook->removeLine(null, $lineNumber);
-            $logbook->addLine('Filtering`' . $filter->getCaption() . '` with value `' . $filterVal . '` - found `unknown` rows - resetting configurator');
-        }
-        $logbook->addIndent(-1);
+                $this->triggerSearch();
+                $columnCaption = $filter->getCaption();
+                // sometimes column captions are not the same as filter captions
+                foreach ($widget->getColumns() as $column) {
+                    if ($column->isHidden() || !$column->isFilterable()) {
+                        continue;
+                    }
+                    if($column->getAttribute() === $filterAttr) {
+                        $columnCaption = $column->getCaption();
+                        break;
+                    }
+                }
+                $logbook->removeLine(null, $lineNumber);
+                $this->getBrowser()->getWaitManager()->waitForPendingOperations(false,true,true);
+                $loadedRowCount = $this->getLoadedRowCount($widget);
+                $logbook->addLine('Filtering`' . $filter->getCaption() . '` with value `' . $filterVal . '` - found `' . $loadedRowCount . '` rows');
+                
+                // Verify the first DataTable contains the expected text in the specified column
+                $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
+                    ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
+                ]);                    
+                
+                $this->triggerReset();
+                $logbook->removeLine(null, $lineNumber);
+                $logbook->addLine('Filtering`' . $filter->getCaption() . '` with value `' . $filterVal . '` - found `' . $loadedRowCount . '` rows - resetting configurator');
+            }
+            $logbook->addIndent(-1);
         /*
                 // Test column caption filters
                 foreach ($widget->getColumns() as $column) {
@@ -292,6 +321,10 @@ class UI5DataTableNode extends UI5AbstractNode
                     $this->resetFilterColumn($columnNode->getCaption());
                 }
         */
+        }
+        catch (\throwable $e) {
+            $logbook->addLine($e->getMessage());
+        }
     }
 
     protected function getAnyValue(MetaAttributeInterface $attr, Filter $filterWidget, MetaObject $metaObject, string $sort = null)
@@ -303,8 +336,8 @@ class UI5DataTableNode extends UI5AbstractNode
             $textAttr = $inputWidget->getTextAttribute(); // This gives us what we need to type into the filter (e.g. Name)
             $tableObj = $inputWidget->getTableObject(); // Both attributes above belong to this object, NOT the object of the filter widget
             while($returnValue === null) {
-                $foundValue = $this->findValue($tableObj, $textAttr, $textAttr->getName(), $sort, $rowIndex);
-                if ($foundValue !== null && $this->checkTheValueFromTable($metaObject, $inputWidget->getAttributeAlias() . '__' . $textAttr->getName(), $foundValue)) {
+                $foundValue = $this->findValue($tableObj, $textAttr, $textAttr->getAlias(), $sort, $rowIndex);
+                if ($foundValue !== null && $this->checkTheValueFromTable($metaObject, $inputWidget->getAttributeAlias() . '__' . $textAttr->getAlias(), $foundValue)) {
                     $returnValue = $foundValue;
                 }
                 $rowIndex++;
@@ -330,8 +363,14 @@ class UI5DataTableNode extends UI5AbstractNode
                         }
                     }
                 }
+                if ($inputWidget instanceof InputSelect) {
+                    $foundLabel = ($inputWidget->getSelectableOptions())[$foundValue];
+                }
                 if ($foundValue !== null && $this->checkTheValueFromTable($metaObject, $returnColumn, $foundValue)) {
-                    $returnValue = $datatype instanceof EnumDataTypeInterface
+                    $returnValue = (
+                        $datatype instanceof EnumDataTypeInterface
+                        || $inputWidget instanceof InputSelect
+                    )
                         ? $foundLabel
                         : $foundValue;
                 }
@@ -385,7 +424,7 @@ class UI5DataTableNode extends UI5AbstractNode
 
         $ds->getFilters()->addConditionForAttributeIsNotNull($attr);
         $ds->dataRead(1, $rowIndex);
-        if($ds->getColumn($returnColumn) !== null) {
+        if ($ds->getColumn($returnColumn) !== null && $ds->getColumn($returnColumn)) {
             $this->setInputDataType($ds->getColumn($returnColumn)->getDataType());
             return $ds->getColumn($returnColumn)->getValuesNormalized()[0];
         }

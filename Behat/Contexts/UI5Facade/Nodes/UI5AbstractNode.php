@@ -67,13 +67,35 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
     }
 
     public function itWorksAsExpected(LogBookInterface $logbook): void
-    {
+    {        
+        $widgetType = $this->getWidgetType();
+        /*$widgetDomeNode = self::findWidgetNode($this->getNodeElement());
+        $elementId = $widgetDomeNode->getAttribute('id');
+        $widget = $this->getWidgetFromElementId($elementId);
+        $mainObject = $widget->getMetaObject();
+        $tableCaption = !empty($this->getCaption()) ?
+            '`' .$this->getCaption() . '`' :
+           '[' . MarkdownDataType::escapeString($mainObject->__toString()) . '](' . DocsFacade::buildUrlToDocsForMetaObject($mainObject) . ')' ;*/
+        $logbook->addLine( 'Looking at `' . $widgetType . '` ' . $this->getCaption());
         
+        //is this function override
+        $declaring = (new \ReflectionMethod($this, 'itWorksAsExpected'))->getDeclaringClass()->getName();
+        $hasCustom = ($declaring !== self::class);
+        if (!$hasCustom) {
+            $visible = $this->isVisible();
+            if ($visible) {
+                $logbook->addIndent(1);
+                $logbook->addLine('Seeing a ' . $widgetType);
+                $logbook->addIndent(-1);
+            }
+            
+        }
     }
 
     /**
      * @param string $ui5ElementId
-     * @return string
+     * @param UiPageInterface|null $page
+     * @return WidgetInterface
      */
     protected function getWidgetFromElementId(string $ui5ElementId, ?UiPageInterface $page = null) : WidgetInterface
     {
@@ -95,7 +117,7 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
      */
     protected function getElementIdFromWidget(WidgetInterface $widget) : string
     {
-        return $widget->getPage()->getUid() . '__' . $widget->getId();
+        return substr($widget->getPage()->getUid(),1) . '__' . $widget->getId();
     }
     
     public static function findWidgetNode(NodeElement $innerDomNode) : NodeElement
@@ -216,5 +238,10 @@ JS;
         }
         $out .= ")";
         return $out;
+    }
+
+    public function isVisible(): bool
+    {
+        return $this->getNodeElement()->isVisible();
     }
 }

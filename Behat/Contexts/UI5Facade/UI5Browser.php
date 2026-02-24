@@ -793,7 +793,7 @@ JS
             //     $table->getOuterHtml()
             // )
                 sprintf(
-                    "Failed to verify table content"
+                    "Failed to verify table content: " . $e->getMessage()
                 )
             );
         }
