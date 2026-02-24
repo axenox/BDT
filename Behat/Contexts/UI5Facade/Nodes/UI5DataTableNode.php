@@ -17,6 +17,7 @@ use exface\Core\Interfaces\Model\MetaAttributeInterface;
 use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Widgets\Filter;
 use exface\Core\Widgets\InputComboTable;
+use exface\Core\Widgets\InputSelect;
 use PHPUnit\Framework\Assert;
 
 class UI5DataTableNode extends UI5AbstractNode
@@ -78,6 +79,27 @@ class UI5DataTableNode extends UI5AbstractNode
         return $nodes;
     }
 
+    private function getLoadedRowCount(WidgetInterface $widget): ?int
+    {
+        $id = $this->getElementIdFromWidget($widget);
+        $script = <<<JS
+(function() {
+    var table = sap.ui.getCore().byId('$id');
+    if (!table) return -1;
+
+    var model = table.getModel();
+    if (!model) return -2;
+
+    var data = model.getData();
+    if (!data || !data.rows) return -3;
+
+    return data.rows.length;
+})();
+JS;
+
+        return (int)$this->getSession()->evaluateScript($script);
+        
+    }
 
     public function selectRow(int $rowNumber)
     {
@@ -157,6 +179,8 @@ class UI5DataTableNode extends UI5AbstractNode
     {
         /* @var $widget \exface\Core\Widgets\DataTable */
         $widget = $this->getWidget();
+        $elementId = $this->getElementIdFromWidget($widget);
+        
         Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
         $expectedButtons = [];
         $expectedFilters = [];
@@ -258,23 +282,26 @@ class UI5DataTableNode extends UI5AbstractNode
             }
             $this->getBrowser()->getEventDispatcher()->dispatch(new BeforeSubstep($substepName, 'Filtering'));
             $this->triggerSearch();
+            $this->getBrowser()->getWaitManager()->waitForPendingOperations(false,true,true);
+            $loadedRowCount = $this->getLoadedRowCount($widget);
             $this->getBrowser()->getEventDispatcher()->dispatch(new AfterSubstep($substepName, 'Filtering'));
             
             $logbook->removeLine(null, $lineNumber);
-            $logbook->addLine('Filtering`' . $filter->getCaption() . '` with value `' . $filterVal . '` - found `unknown` rows');
+            $logbook->addLine('Filtering`' . $filter->getCaption() . '` with value `' . $filterVal . '` - found `' . $loadedRowCount . '` rows');
+            
             // Verify the first DataTable contains the expected text in the specified column
-            if ($column = $widget->getColumnByAttributeAlias($filter->getAttributeAlias())) {
-                $columnCaption = $column->getCaption();
-                // sometimes column captions are not the same as filter captions
-                /*foreach ($widget->getColumns() as $column) {
-                    if ($column->isHidden() || !$column->isFilterable()) {
-                        continue;
-                    }
-                    if($column->getMetaObject() === $filter->getMetaObject()) {
-                        $columnCaption = $column->getCaption();
-                        break;
-                    }
-                }*/
+            // sometimes column captions are not the same as filter captions
+            $columnCaption = null;
+            foreach ($widget->getColumns() as $column) {
+                if ($column->isHidden() || !$column->isFilterable()) {
+                    continue;
+                }
+                if($column->getAttribute() === $filterAttr) {
+                    $columnCaption = $column->getCaption();
+                    break;
+                }
+            }
+            if ($columnCaption !== null) {
                 $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
                     ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
                 ]);
@@ -311,8 +338,8 @@ class UI5DataTableNode extends UI5AbstractNode
             $textAttr = $inputWidget->getTextAttribute(); // This gives us what we need to type into the filter (e.g. Name)
             $tableObj = $inputWidget->getTableObject(); // Both attributes above belong to this object, NOT the object of the filter widget
             while($returnValue === null) {
-                $foundValue = $this->findValue($tableObj, $textAttr, $textAttr->getName(), $sort, $rowIndex);
-                if ($foundValue !== null && $this->checkTheValueFromTable($metaObject, $inputWidget->getAttributeAlias() . '__' . $textAttr->getName(), $foundValue)) {
+                $foundValue = $this->findValue($tableObj, $textAttr, $textAttr->getAlias(), $sort, $rowIndex);
+                if ($foundValue !== null && $this->checkTheValueFromTable($metaObject, $inputWidget->getAttributeAlias() . '__' . $textAttr->getAlias(), $foundValue)) {
                     $returnValue = $foundValue;
                 }
                 $rowIndex++;
@@ -338,8 +365,14 @@ class UI5DataTableNode extends UI5AbstractNode
                         }
                     }
                 }
+                if ($inputWidget instanceof InputSelect) {
+                    $foundLabel = ($inputWidget->getSelectableOptions())[$foundValue];
+                }
                 if ($foundValue !== null && $this->checkTheValueFromTable($metaObject, $returnColumn, $foundValue)) {
-                    $returnValue = $datatype instanceof EnumDataTypeInterface
+                    $returnValue = (
+                        $datatype instanceof EnumDataTypeInterface
+                        || $inputWidget instanceof InputSelect
+                    )
                         ? $foundLabel
                         : $foundValue;
                 }
@@ -393,7 +426,7 @@ class UI5DataTableNode extends UI5AbstractNode
 
         $ds->getFilters()->addConditionForAttributeIsNotNull($attr);
         $ds->dataRead(1, $rowIndex);
-        if($ds->getColumn($returnColumn) !== null) {
+        if ($ds->getColumn($returnColumn) !== null && $ds->getColumn($returnColumn)) {
             $this->setInputDataType($ds->getColumn($returnColumn)->getDataType());
             return $ds->getColumn($returnColumn)->getValuesNormalized()[0];
         }

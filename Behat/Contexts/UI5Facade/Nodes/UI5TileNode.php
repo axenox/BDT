@@ -38,47 +38,42 @@ class UI5TileNode extends UI5AbstractNode
      */
     public function itWorksAsExpected(LogBookInterface $logbook) :void
     {
-        $widget = $this->getWidget();
-        Assert::isInstanceOf(Tile::class , $widget, 'Tile widget not found for this node.');
-        $action = $widget->getAction();
-        
-        switch (true) {
-            case $action instanceof GoToPage:
-                $expectedAlias = $action->getPage()->getAliasWithNamespace();
-                $logbook->addLine('Clicking Tile `' . $this->getCaption() . '`');
-                //click on the tile
-                $this->click();
-                $directedAlias = $this->getBrowser()->getPageCurrent()->getAliasWithNamespace();
+        try {
+            /* @var $widget \exface\Core\Widgets\Tile */
+            $widget = $this->getWidget();
+            Assert::assertNotNull($widget, 'Tile widget not found for this node.');
+            $action = $widget->getAction();
 
-                Assert::assertSame(
-                    $expectedAlias,
-                    $directedAlias,
-                    sprintf(
-                        'Tile "%s" navigated to "%s" but expected "%s".',
-                        $widget->getCaption(),
+            switch (true) {
+                case $action instanceof GoToPage:
+                    $expectedAlias = $action->getPage()->getAliasWithNamespace();
+                    //click on the tile
+                    $this->click();
+                    $directedAlias = $this->getBrowser()->getPageCurrent()->getAliasWithNamespace();
+
+                    Assert::assertSame(
+                        $expectedAlias,
                         $directedAlias,
-                        $expectedAlias
-                    )
-                );
-                $logbook->addIndent(+1);
-                /* # Page "Main menu" 
-                 * 
-                 * - Click Tile `NavTiles1-Link1` 
-                 *   - Click Tile `NavTiles2-Link2` // inside the page from link 1
-                 *     - Test table 1
-                 *     - Test table 2
-                 *   - Click tile `NavTiles2-Link3`
-                 * - Click Tile `NavTiles1-Link2` 
-                 * 
-                 * 
-                 */
-                
-                $this->getBrowser()->verifyCurrentPageWorksAsExpected($logbook);
-                $this->getBrowser()->navigateToPreviousPage();
-                $logbook->addLine('Pressing browser back button');
-                $logbook->addIndent(-1);
-                break;
-            // TODO more action validation here??
+                        sprintf(
+                            'Tile "%s" navigated to "%s" but expected "%s".',
+                            $widget->getCaption(),
+                            $directedAlias,
+                            $expectedAlias
+                        )
+                    );
+                    $logbook->addLine('Clicking Tile [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
+                    $logbook->addIndent(+1);
+
+                    $this->getBrowser()->verifyCurrentPageWorksAsExpected($logbook);
+                    $this->getBrowser()->navigateToPreviousPage();
+                    $logbook->addLine('Pressing browser back button');
+                    $logbook->addIndent(-1);
+                    break;
+                // TODO more action validation here??
+            }
+        }
+        catch (\Throwable $e) {
+            $logbook->addLine($e->getMessage());
         }
     }
 

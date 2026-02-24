@@ -1772,11 +1772,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * ```
      * Given I log in ...
      * When I look at table 1
-     * Then it works as shown below
+     * Then It works as shown below
      * Column Caption | Filter Caption | Button Caption
      * 
      * ```
-     * @Then it works as shown below
+     * @Then It works as shown below
      * | :Column Caption | :Filter Caption | :Button Caption |
      * 
      * @param TableNode $fields Table with field names and values
@@ -1798,9 +1798,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * ```
      * Given I log in ...
      * When I look at table 1
-     * Then it works as expected
+     * Then It works as expected
      * ```
-     * @Then it works as expected
+     * @Then It works as expected
      * 
      * @return void
      */
