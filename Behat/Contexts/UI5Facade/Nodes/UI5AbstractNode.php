@@ -256,6 +256,7 @@ JS;
             $resultEvent = new AfterSubstep($title, $category);
         } catch (\Throwable $e) {
             $logbook?->addLine('**ERROR:** ' . $e->getMessage());
+            $this->getBrowser()->captureScreenshot();
             $resultEvent = new AfterSubstep($title, $category, $e);
         }
         $dispatcher->dispatch($resultEvent);
