@@ -50,8 +50,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private $workbench = null;
     private $debug = false;
     private string $locale = 'de_DE';
-    /** @var array<string,bool> */
-    private array $validatedAliases = [];
     /** 
      * Initializes and starts the workbench for the test environment
      */
@@ -1810,7 +1808,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $logbook = new MarkdownLogBook($node->getCaption());
         $logbook->setIndentActive(1);
         DatabaseFormatter::addTestLogbook($logbook);
-        $node->itWorksAsExpected($logbook);
+        $node->checkWorksAsExpected($logbook);
     }
 
     /**
@@ -1849,56 +1847,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $this->navigateToPageAlias($pageAlias);
         });
 
-        // Used to start validation on whatever page is currently loaded
-        $this->browser->setVerifyCurrentPage(function (?LogBookInterface $logbook = null): void {
-            $this->verifyCurrentPageWorksAsExpected($logbook);
-        });
-
         $this->browser->setScreenshotFn(function () {
             $this->captureScreenshot();
         });
-    }
-
-    /**
-     * Entry point to validate the currently loaded page.
-     *
-     * Why:
-     * - After UI navigation (e.g., clicking a Tile), we need to start validation from
-     *   the "main widget" on the new page.
-     * - Nodes should validate their own subtree, but choosing the correct starting node
-     *   is orchestration logic and belongs to the context/browser layer.
-     */
-    private function verifyCurrentPageWorksAsExpected(?LogBookInterface $logbook = null): void
-    {
-        $page = $this->getBrowser()->getPageCurrent();
-        $alias = $page->getAliasWithNamespace();
-
-        if ($alias && isset($this->validatedAliases[$alias])) {
-            return;
-        }
-        if ($alias) {
-            $this->validatedAliases[$alias] = true;
-        }
-        
-        $rootWidget = $page->getWidgetRoot();
-        $rootElementId = $this->getBrowser()->getElementIdFromWidget($rootWidget);
-        $rootNode = $this->getSession()->getPage()->findById($rootElementId);
-        // Decide which widget type is the best "root" for the page validation.
-        // $rootNodeElement = $this->findMainWidgetNodeElementForCurrentPage($alias);
-        Assert::assertNotNull($rootNode, 'Cannot determine the main widget for the current page.(' . $alias . '.html)');
-
-        $widgetType = $rootWidget->getWidgetType();
-
-        $facadeNode = UI5FacadeNodeFactory::createFromNodeElement(
-            $widgetType,
-            $rootNode,
-            $this->getSession(),
-            $this->browser
-        );
-
-
-        $logbook = $logbook ?? new MarkdownLogBook($page->getName());
-        $facadeNode->itWorksAsExpected($logbook);
     }
 
     /**

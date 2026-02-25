@@ -4,14 +4,14 @@
     "menu_parent_page_selector": "0x11ef9cade73751fa9cad025041000001",
     "menu_index": 1,
     "menu_visible": true,
-    "name": "Test scenarios",
+    "name": "Scenario files",
     "description": "",
     "intro": "",
     "replaces_page_selector": null,
     "created_by_user_selector": "0x11eca7f5b092f284a7f5005056bea39f",
     "created_on": "2025-10-08 18:22:39",
-    "modified_by_user_selector": "0x11eca7f5b092f284a7f5005056bea39f",
-    "modified_on": "2025-10-08 18:38:10",
+    "modified_by_user_selector": "0x31000000000000000000000000000000",
+    "modified_on": "2026-02-25 16:09:54",
     "contents": {
         "object_alias": "exface.Core.DUMMY",
         "widget_type": "SplitHorizontal",
@@ -135,6 +135,15 @@
                                             },
                                             {
                                                 "attribute_alias": "run_stats__status"
+                                            },
+                                            {
+                                                "attribute_alias": "run_stats__steps_failed"
+                                            },
+                                            {
+                                                "attribute_alias": "run_stats__steps_passed"
+                                            },
+                                            {
+                                                "attribute_alias": "run_stats__steps_total"
                                             }
                                         ],
                                         "sorters": [

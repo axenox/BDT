@@ -63,9 +63,6 @@ class UI5Browser
     private array $pagesVisited = [];
 
     private string $locale;
-
-    /** @var callable|null */
-    private $verifyCurrentPage = null;
     
     /** @var callable|null */
     private $navigator = null;
@@ -118,23 +115,6 @@ class UI5Browser
             throw new \RuntimeException('Navigator callback is not configured on UI5Browser.');
         }
         ($this->navigator)($pageAlias);
-    }
-    
-    public function setVerifyCurrentPage(callable $fn): void
-    {
-        $this->verifyCurrentPage = $fn;
-    }
-
-    /**
-     * Entry point to validate the currently loaded page.
-     * This is orchestration logic implemented in the context, injected as callback.
-     */
-    public function verifyCurrentPageWorksAsExpected(LogBookInterface $logBook): void
-    {
-        if (!$this->verifyCurrentPage) {
-            throw new \RuntimeException('VerifyCurrentPage callback is not configured on UI5Browser.');
-        }
-        ($this->verifyCurrentPage)($logBook);
     }
     
     /**
@@ -638,7 +618,7 @@ JS
     public function getFocusedNode(): FacadeNodeInterface
     {
         if (empty($this->focusStack)) {
-            return new UI5PageNode($this->getPage()->find('css', 'body'), $this->getSession(), $this);
+            return new UI5PageNode($this->getPageAliasFromCurrentUrl(), $this->getSession(), $this);
         }
         $top = end($this->focusStack);
         return $top;

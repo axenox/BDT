@@ -2,6 +2,7 @@
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
+use axenox\BDT\DataTypes\StepStatusDataType;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 
 class UI5ContainerNode extends UI5AbstractNode
@@ -12,9 +13,10 @@ class UI5ContainerNode extends UI5AbstractNode
         return '';
     }
 
-    public function itWorksAsExpected(LogBookInterface $logbook): void
+    public function checkWorksAsExpected(LogBookInterface $logbook) : int
     {
         $childWidgetNodes = $this->getNodeElement()->findAll('css', '.exfw');
+        $result = StepStatusDataType::PASSED;
         foreach ($childWidgetNodes as $childWidgetNode) {
             if($this->getNodeElement()->getAttribute('id')=== $childWidgetNode->getAttribute('id') ) {
                 continue;
@@ -24,8 +26,10 @@ class UI5ContainerNode extends UI5AbstractNode
             }
             $widgetType = $this->getBrowser()->getNodeWidgetType($childWidgetNode);
             $node = UI5FacadeNodeFactory::createFromNodeElement($widgetType, $childWidgetNode, $this->getSession(), $this->getBrowser());
-            $node->itWorksAsExpected($logbook);
+            $childResult = $node->checkWorksAsExpected($logbook);
+            $result = max($result, $childResult);
         }
+        return $result;
     }
 
     /**

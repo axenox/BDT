@@ -87,7 +87,7 @@
         {
             "_EXPORT_SUMMARY": "BDT scenario run [axenox.BDT.run_scenario]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-02-24 17:41:31",
+            "MODIFIED_ON": "2026-02-25 16:58:42",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11f08f0e222d25a48f0e025041000001",
@@ -154,9 +154,12 @@
                                         "widget_type": "Icon"
                                     },
                                     {
-                                        "widget_type": "DataTableResponsive",
                                         "caption": "Steps",
+                                        "widget_type": "DataTree",
                                         "object_alias": "axenox.BDT.run_step",
+                                        "tree_parent_relation_alias": "parent_step",
+                                        "tree_expanded": true,
+                                        "paginate": false,
                                         "hide_header": false,
                                         "width": "max",
                                         "height": "max",
@@ -170,16 +173,10 @@
                                         ],
                                         "columns": [
                                             {
-                                                "attribute_alias": "run_sequence_idx"
-                                            },
-                                            {
-                                                "attribute_alias": "run_step_stats__status"
-                                            },
-                                            {
                                                 "attribute_alias": "name"
                                             },
                                             {
-                                                "attribute_alias": "run_scenario__LABEL"
+                                                "attribute_alias": "run_step_stats__status"
                                             },
                                             {
                                                 "attribute_alias": "duration_ms"

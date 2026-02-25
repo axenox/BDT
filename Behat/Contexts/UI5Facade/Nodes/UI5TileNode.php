@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
+use axenox\BDT\DataTypes\StepStatusDataType;
 use exface\Core\Actions\GoToPage;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\WidgetInterface;
@@ -36,37 +37,50 @@ class UI5TileNode extends UI5AbstractNode
      * @param LogBookInterface $logbook
      * @return void
      */
-    public function itWorksAsExpected(LogBookInterface $logbook) :void
+    public function checkWorksAsExpected(LogBookInterface $logbook) : int
     {
         /* @var $widget \exface\Core\Widgets\Tile */
         $widget = $this->getWidget();
         Assert::assertNotNull($widget, 'Tile widget not found for this node.');
         $action = $widget->getAction();
+        
+        $result = StepStatusDataType::PASSED;
 
         switch (true) {
             case $action instanceof GoToPage:
                 $expectedAlias = $action->getPage()->getAliasWithNamespace();
-                // click on the tile
-                $this->click();
-                $realAlias = $this->getBrowser()->getPageCurrent()->getAliasWithNamespace();
-
-                Assert::assertSame(
-                    $expectedAlias,
-                    $realAlias,
-                    sprintf(
-                        'Tile "%s" navigated to `%s` but expected `%s`.',
-                        $widget->getCaption(),
-                        $realAlias,
-                        $expectedAlias
-                    )
+                
+                // Substep should fail if the page cannot be loaded (shows an error) - otherwise the substep for
+                // the click is passed, and we go on checking the page
+                $this->runAsSubstep(
+                    function() use ($expectedAlias, $widget) { 
+                        $this->click();
+                        $realAlias = $this->getBrowser()->getPageCurrent()->getAliasWithNamespace();
+                        Assert::assertSame(
+                            $expectedAlias,
+                            $realAlias,
+                            sprintf(
+                                'Tile "%s" navigated to `%s` but expected `%s`.',
+                                $widget->getCaption(),
+                                $realAlias,
+                                $expectedAlias
+                            )
+                        );
+                    }, 
+                    'Clicking Tile ' . $this->getCaption(), 
+                    'Pages',
+                    $logbook
                 );
+                
                 $logbook->addLine('Clicking Tile [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
                 $logbook->addIndent(+1);
                 
                 try {
-                    $this->getBrowser()->verifyCurrentPageWorksAsExpected($logbook);
+                    $pageNode = new UI5PageNode($expectedAlias, $this->getSession(), $this->getBrowser());
+                    $pageNode->checkWorksAsExpected($logbook);
                 } catch (\Throwable $e) {
-                    $logbook->addLine('**Failed** to check if page `' . $realAlias . '` works as expected - aborting and continuing. ' . $e->getMessage());
+                    $result = stepStatusDataType::FAILED;
+                    $logbook->addLine('**Failed** to check if page `' . $expectedAlias . '` works as expected - skipping to next widget. ' . $e->getMessage());
                 }
                 $this->getBrowser()->navigateToPreviousPage();
                 $logbook->addLine('Pressing browser back button');
@@ -74,6 +88,8 @@ class UI5TileNode extends UI5AbstractNode
                 break;
             // TODO more action validation here??
         }
+        
+        return $result;
     }
 
     /**

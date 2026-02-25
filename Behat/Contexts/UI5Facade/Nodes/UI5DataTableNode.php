@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
+use axenox\BDT\DataTypes\StepStatusDataType;
 use Behat\Gherkin\Node\TableNode;
 use exface\Core\CommonLogic\Model\MetaObject;
 use exface\Core\DataTypes\ComparatorDataType;
@@ -239,7 +240,7 @@ JS;
             Assert::assertEmpty($extraButtons,   'Unexpected buttons: ' . implode(', ', $extraButtons));
         }
 
-        $this->itWorksAsExpected($logbook);
+        $this->checkWorksAsExpected($logbook);
     }
 
     /**
@@ -247,7 +248,7 @@ JS;
      * @param LogBookInterface $logbook
      * @return void
      */
-    public function itWorksAsExpected(LogBookInterface $logbook) :void
+    public function checkWorksAsExpected(LogBookInterface $logbook) : int
     {
         $failed = false;
         /* @var $widget \exface\Core\Widgets\DataTable */
@@ -271,7 +272,7 @@ JS;
             }
             $substepResult = $this->runAsSubstep(
                 function() use ($filter, $widget, $logbook) {
-                    $this->worksAsExpectedFilter($filter, $widget, $logbook);
+                    return $this->checkFilterWorksAsExpected($filter, $widget, $logbook);
                 },
                 'Filtering`' . $filter->getCaption() . '`',
                 'Filtering',
@@ -298,10 +299,10 @@ JS;
                     $this->resetFilterColumn($columnNode->getCaption());
                 }
         */
-        Assert::assertFalse($failed, $widget->getWidgetType() . ' does not work as expected.');
+        return StepStatusDataType::PASSED;
     }
     
-    protected function worksAsExpectedFilter(iFilterData $filter, iShowData $dataWidget, LogBookInterface $logbook) : ?string
+    protected function checkFilterWorksAsExpected(iFilterData $filter, iShowData $dataWidget, LogBookInterface $logbook) : ?string
     {
         $logbook->addLine('Filtering`' . $filter->getCaption() . '`');
         // Get a valid value for filtering

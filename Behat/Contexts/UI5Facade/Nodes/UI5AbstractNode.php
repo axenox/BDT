@@ -4,6 +4,7 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
+use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Exception\DriverException;
@@ -68,7 +69,7 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
         return true;
     }
 
-    public function itWorksAsExpected(LogBookInterface $logbook): void
+    public function checkWorksAsExpected(LogBookInterface $logbook) : int
     {        
         $widgetType = $this->getWidgetType();
         /*$widgetDomeNode = self::findWidgetNode($this->getNodeElement());
@@ -92,6 +93,7 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
             }
             
         }
+        return StepStatusDataType::PASSED;
     }
 
     /**
@@ -247,7 +249,7 @@ JS;
         return $this->getNodeElement()->isVisible();
     }
     
-    public function runAsSubstep(callable $callable, string $title, ?string $category = null, ?LogBookInterface $logbook) : AfterSubstep
+    public function runAsSubstep(callable $callable, string $title, ?string $category = null, ?LogBookInterface $logbook = null) : AfterSubstep
     {
         $dispatcher = $this->getBrowser()->getEventDispatcher();
         $dispatcher->dispatch(new BeforeSubstep($title, $category));

@@ -81,6 +81,7 @@ class DatabaseFormatter implements Formatter
             AfterOutlineTested::AFTER => 'onAfterScenario',
             BeforeStepTested::BEFORE => 'onBeforeStep',
             AfterStepTested::AFTER => 'onAfterStep',
+            // Custom events
             BeforeSubstep::class => 'onBeforeSubstep',
             AfterSubstep::class => 'onAfterSubstep',
             AfterPageVisited::class => 'onAfterPageVisited',
@@ -311,16 +312,7 @@ class DatabaseFormatter implements Formatter
             $step = $event->getStep();
             $this->stepIdx++;
             $this->stepStart = $this->microtime();
-            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_step');
-            $ds->addRow([
-                'run_scenario' => $this->scenarioDataSheet->getUidColumn()->getValue(0),
-                'run_sequence_idx' => $this->stepIdx,
-                'name' => $step->getText(),
-                'line' => $step->getLine(),
-                'started_on' => DateTimeDataType::now(),
-                'status' => 10
-            ]);
-            $ds->dataCreate(false);
+            $ds = $this->logStepStart($step->getText(), $step->getLine());
             $this->stepDataSheet = $ds;
             $this->provider->setName($ds->getUidColumn()->getValue(0));
         }
@@ -334,7 +326,7 @@ class DatabaseFormatter implements Formatter
         try{
             $result = $event->getTestResult();
             $ds = $this->stepDataSheet->extractSystemColumns();
-            $this->logStepEnd($ds, $this->stepStart, $result->getResultCode(), $result->getException(), $this::$stepLogbooks);
+            $this->logStepEnd($ds, $this->stepStart, $result->getResultCode(), $result->getResultCode() === TestResult::FAILED ? $result->getException() : null, $this::$stepLogbooks);
         }
         catch(\Exception $e){
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
@@ -400,7 +392,7 @@ class DatabaseFormatter implements Formatter
             $ds = $this->logStepStart(
                 $event->getSubstepName(), 
                 $this->stepDataSheet->getCellValue('line', 0),
-                $this->stepDataSheet->getUidColumn()->getValue(0)
+                ($this->substepDataSheet ?? $this->stepDataSheet)->getUidColumn()->getValue(0)
             );
             $this->substepDataSheet = $ds;
             $this->provider->setName($ds->getUidColumn()->getValue(0));
@@ -415,6 +407,7 @@ class DatabaseFormatter implements Formatter
         try {
             $ds = $this->substepDataSheet->extractSystemColumns();
             $this->logStepEnd($ds, $this->substepStart, $event->getResultCode(), $event->getException(), [], $event->getSubstepName());
+            $this->substepDataSheet = null;
         }
         catch(\Exception $e){
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);

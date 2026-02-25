@@ -22,6 +22,8 @@ class StepStatusDataType extends IntegerDataType implements EnumDataTypeInterfac
     CONST SKIPPED = 99;
     CONST PASSED = 100;
     CONST FAILED = 101;
+    CONST PASSED_PREVIOUSLY = 110;
+    CONST FAILED_PREVIOUSLY = 111;
     CONST TIMEOUT = 102;
 
     private $labels = [];
@@ -37,7 +39,7 @@ class StepStatusDataType extends IntegerDataType implements EnumDataTypeInterfac
             $translator = $this->getWorkbench()->getCoreApp()->getTranslator();
             
             foreach (static::getValuesStatic() as $const => $val) {
-                $this->labels[$val] = mb_ucfirst(mb_strtolower($const));
+                $this->labels[$val] = mb_ucfirst(mb_strtolower(str_replace('_', ' ', $const)));
             }
         }
         
