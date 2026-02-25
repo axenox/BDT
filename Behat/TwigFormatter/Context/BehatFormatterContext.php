@@ -60,6 +60,11 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
             return;
         }
 
+        $this->captureScreenshot();
+    }
+    
+    public function captureScreenshot(): void
+    {
         $relativePath = 'data'
             . DIRECTORY_SEPARATOR . 'axenox'
             . DIRECTORY_SEPARATOR . 'BDT'
@@ -77,5 +82,4 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
         $this->saveScreenshot($fileName, $dir);
         $this->provider->setScreenshot($fileName, $relativePath);
     }
-
 }

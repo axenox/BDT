@@ -1853,6 +1853,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->browser->setVerifyCurrentPage(function (?LogBookInterface $logbook = null): void {
             $this->verifyCurrentPageWorksAsExpected($logbook);
         });
+
+        $this->browser->setScreenshotFn(function () {
+            $this->captureScreenshot();
+        });
     }
 
     /**

@@ -70,6 +70,9 @@ class UI5Browser
     /** @var callable|null */
     private $navigator = null;
 
+    /** @var callable|null */
+    private $screenshotFn = null;
+
 
     /**
      * Constructor - initializes the UI5Browser with necessary dependencies
@@ -1848,5 +1851,26 @@ JS
     public function getEventDispatcher() : EventDispatcherInterface
     {
         return $this->eventDispatcher;
+    }
+
+    /**
+     * Inject screenshot function from context.
+     *
+     * @param callable $fn function(string $reason, array $meta): ?ScreenshotInfo
+     */
+    public function setScreenshotFn(callable $fn): void
+    {
+        $this->screenshotFn = $fn;
+    }
+
+    /**
+     * Take a screenshot via injected callback
+     */
+    public function captureScreenshot(): void
+    {
+        if ($this->screenshotFn === null) {
+            return;
+        }
+        ($this->screenshotFn)();
     }
 }
