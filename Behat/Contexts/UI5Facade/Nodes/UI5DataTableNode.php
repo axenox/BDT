@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
+use axenox\BDT\Behat\Events\BeforeSubstep;
 use axenox\BDT\DataTypes\StepStatusDataType;
 use Behat\Gherkin\Node\TableNode;
 use exface\Core\CommonLogic\Model\MetaObject;
@@ -250,18 +251,29 @@ JS;
      */
     public function checkWorksAsExpected(LogBookInterface $logbook) : int
     {
-        $failed = false;
         /* @var $widget \exface\Core\Widgets\DataTable */
         $widget = $this->getWidget();
         $mainObject = $widget->getMetaObject();
-        $tableCaption = !empty($this->getCaption()) ? 
-            '`' .$this->getCaption() . '`' : 
-            '[' . MarkdownDataType::escapeString($mainObject->__toString()) . '](' . DocsFacade::buildUrlToDocsForMetaObject($mainObject) . ')' ;
+        if (! empty($this->getCaption())) {
+            $tableMd = '`' . $this->getCaption() . '`';
+            $tableCaption = $this->getCaption();
+        } else {
+            $tableMd = '[' . MarkdownDataType::escapeString($mainObject->__toString()) . '](' . DocsFacade::buildUrlToDocsForMetaObject($mainObject) . ')';
+            $tableCaption = $mainObject->__toString();
+        }
 
-        $logbook->addLine('Looking at DataTable ' . $tableCaption);
-        $logbook->addIndent(1);
-
+        $logbook->addLine('Looking at ' . $widget->getWidgetType() . ' ' . $tableMd);
         Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
+        
+        $this->runAsSubstep(function() use ($widget, $logbook) {$this->checkTableWorksAsExpected($widget, $logbook);}, 'Looking at ' . $widget->getWidgetType() . ' ' . $tableCaption, null, $logbook);
+        
+        return StepStatusDataType::PASSED;
+    }
+    
+    protected function checkTableWorksAsExpected(iShowData $widget, LogBookInterface $logbook) : int
+    {
+        $failed = false;
+        $logbook->addIndent(1);
 
         // Test regular filters
         foreach ($widget->getFilters() as $filter) {
@@ -284,22 +296,22 @@ JS;
         }
         $logbook->addIndent(-1);
         /*
-                // Test column caption filters
-                foreach ($widget->getColumns() as $column) {
-                    if ($column->isHidden() || !$column->isFilterable()) {
-                        continue;
-                    }
-                    $columnNode = $this->getColumnByCaption($column->getAttribute()->getName());
-                    $columnAttr = $column->getAttribute();
-                    $filterVal = $this->getAnyValue($columnAttr);
-                    $this->filterColumn($columnNode->getCaption(), $filterVal);
-                    $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
-                        ['column' => $columnAttr->getName(), 'value' => $filterVal, 'comparator' => ComparatorDataType::EQUALS]
-                    ]);
-                    $this->resetFilterColumn($columnNode->getCaption());
-                }
+        // Test column caption filters
+        foreach ($widget->getColumns() as $column) {
+            if ($column->isHidden() || !$column->isFilterable()) {
+                continue;
+            }
+            $columnNode = $this->getColumnByCaption($column->getAttribute()->getName());
+            $columnAttr = $column->getAttribute();
+            $filterVal = $this->getAnyValue($columnAttr);
+            $this->filterColumn($columnNode->getCaption(), $filterVal);
+            $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
+                ['column' => $columnAttr->getName(), 'value' => $filterVal, 'comparator' => ComparatorDataType::EQUALS]
+            ]);
+            $this->resetFilterColumn($columnNode->getCaption());
+        }
         */
-        return StepStatusDataType::PASSED;
+        return $failed ? stepStatusDataType::FAILED : stepStatusDataType::PASSED;
     }
     
     protected function checkFilterWorksAsExpected(iFilterData $filter, iShowData $dataWidget, LogBookInterface $logbook) : ?string

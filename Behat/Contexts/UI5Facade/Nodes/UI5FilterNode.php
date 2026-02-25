@@ -50,7 +50,7 @@ class UI5FilterNode extends UI5AbstractNode
         $comboBox = $filterNode->find('css', '.sapMComboBoxBase, .sapMMultiComboBox');
         if ($comboBox) {
             // Handle ComboBox input
-            $this->handleComboBoxInput($comboBox, $value);
+            $this->setValueOfComboBox($comboBox, $value);
             return $this;
         }
 
@@ -58,7 +58,7 @@ class UI5FilterNode extends UI5AbstractNode
         $select = $filterNode->find('css', '.sapMSelect');
         if ($select) {
             // Handle Select input
-            $this->handleSelectInput($select, $value);
+            $this->setValueOfSelect($select, $value);
             return $this;
         }
 
@@ -81,7 +81,7 @@ class UI5FilterNode extends UI5AbstractNode
      * @return void
      * @throws \RuntimeException If ComboBox arrow or option can't be found
      */
-    public function handleComboBoxInput(NodeElement $comboBox, string $value): void
+    public function setValueOfComboBox(NodeElement $comboBox, string $value): void
     {
         // Find the dropdown arrow button
         $arrow = $comboBox->find('css', '.sapMInputBaseIconContainer');
@@ -116,7 +116,7 @@ class UI5FilterNode extends UI5AbstractNode
      * @return void
      * @throws \RuntimeException If option can't be found
      */
-    public function handleSelectInput(NodeElement $select, string $value): void
+    public function setValueOfSelect(NodeElement $select, string $value): void
     {
         // Find the option with matching text
         $item = $this->getPage()->find('css', ".sapMSelectList li:contains('{$value}')");

@@ -51,7 +51,7 @@ class DatabaseFormatter implements Formatter
     private float               $stepStart;
     private int                 $stepIdx = 0;
 
-    private ?DataSheetInterface $substepDataSheet = null;
+    private array $substepDataSheets = [];
     private float               $substepStart;
     
     private static array        $testedPages = [];
@@ -389,12 +389,13 @@ class DatabaseFormatter implements Formatter
         try{
             $this->stepIdx++;
             $this->substepStart = $this->microtime();
+            $parentStepData = (empty($this->substepDataSheets) ? $this->stepDataSheet : $this->substepDataSheets[array_key_last($this->substepDataSheets)]);
             $ds = $this->logStepStart(
                 $event->getSubstepName(), 
                 $this->stepDataSheet->getCellValue('line', 0),
-                ($this->substepDataSheet ?? $this->stepDataSheet)->getUidColumn()->getValue(0)
+                $parentStepData->getUidColumn()->getValue(0)
             );
-            $this->substepDataSheet = $ds;
+            $this->substepDataSheets[] = $ds;
             $this->provider->setName($ds->getUidColumn()->getValue(0));
         }
         catch(\Exception $e){
@@ -405,9 +406,10 @@ class DatabaseFormatter implements Formatter
     public function onAfterSubstep(AfterSubstep $event)
     {
         try {
-            $ds = $this->substepDataSheet->extractSystemColumns();
+            $ds = $this->substepDataSheets[array_key_last($this->substepDataSheets)]->extractSystemColumns();
             $this->logStepEnd($ds, $this->substepStart, $event->getResultCode(), $event->getException(), [], $event->getSubstepName());
-            $this->substepDataSheet = null;
+            // Remove the top-most substep data sheet from the stack
+            array_pop($this->substepDataSheets);
         }
         catch(\Exception $e){
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
