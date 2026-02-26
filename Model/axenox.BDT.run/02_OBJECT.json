@@ -87,9 +87,9 @@
         {
             "_EXPORT_SUMMARY": "BDT test run [axenox.BDT.run]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-02-26 06:52:51",
+            "MODIFIED_ON": "2026-02-26 15:21:59",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x11f08ce4baed19b88ce4005056be9857",
+            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11f08c1d222cd23e8c1d025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
@@ -222,7 +222,7 @@
                                                 "caption": "Skipped"
                                             },
                                             {
-                                                "attribute_alias": "duration_ms"
+                                                "attribute_alias": "duration_time"
                                             },
                                             {
                                                 "hidden": true,

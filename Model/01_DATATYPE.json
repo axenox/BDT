@@ -122,6 +122,81 @@
             },
             "ALIAS": "ScenarioStatus",
             "SHORT_DESCRIPTION": ""
+        },
+        {
+            "_EXPORT_SUMMARY": "Passed counter",
+            "CREATED_ON": "2026-02-26 15:05:17",
+            "MODIFIED_ON": "2026-02-26 15:06:42",
+            "CREATED_BY_USER": "0x31000000000000000000000000000000",
+            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
+            "UID": "0x11f187b62daf664087b6025041000001",
+            "APP": "0x11efa2214f96c8b8a221025041000001",
+            "NAME": "Passed counter",
+            "PROTOTYPE": "exface/core/DataTypes/IntegerDataType.php",
+            "CONFIG_UXON": null,
+            "VALIDATION_ERROR": null,
+            "DEFAULT_DISPLAY_UXON": {
+                "widget_type": "ColorIndicator",
+                "fill": true,
+                "color_only": false,
+                "color_scale": [
+                    "~ERROR",
+                    "~OK"
+                ]
+            },
+            "DEFAULT_EDITOR_UXON": null,
+            "ALIAS": "StatsCountPassed",
+            "SHORT_DESCRIPTION": ""
+        },
+        {
+            "_EXPORT_SUMMARY": "Failed counter",
+            "CREATED_ON": "2026-02-26 15:05:44",
+            "MODIFIED_ON": "2026-02-26 15:05:44",
+            "CREATED_BY_USER": "0x31000000000000000000000000000000",
+            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
+            "UID": "0x11f1b0893de4ad04b089025041000001",
+            "APP": "0x11efa2214f96c8b8a221025041000001",
+            "NAME": "Failed counter",
+            "PROTOTYPE": "exface/core/DataTypes/IntegerDataType.php",
+            "CONFIG_UXON": null,
+            "VALIDATION_ERROR": null,
+            "DEFAULT_DISPLAY_UXON": {
+                "widget_type": "ColorIndicator",
+                "fill": true,
+                "color_only": false,
+                "color_scale": [
+                    "~OK",
+                    "~ERROR"
+                ]
+            },
+            "DEFAULT_EDITOR_UXON": null,
+            "ALIAS": "StatsCountFailed",
+            "SHORT_DESCRIPTION": ""
+        },
+        {
+            "_EXPORT_SUMMARY": "Skipped counter",
+            "CREATED_ON": "2026-02-26 15:07:10",
+            "MODIFIED_ON": "2026-02-26 15:07:10",
+            "CREATED_BY_USER": "0x31000000000000000000000000000000",
+            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
+            "UID": "0x11f1bea671837a28bea6025041000001",
+            "APP": "0x11efa2214f96c8b8a221025041000001",
+            "NAME": "Skipped counter",
+            "PROTOTYPE": "exface/core/DataTypes/IntegerDataType.php",
+            "CONFIG_UXON": null,
+            "VALIDATION_ERROR": null,
+            "DEFAULT_DISPLAY_UXON": {
+                "widget_type": "ColorIndicator",
+                "fill": true,
+                "color_only": false,
+                "color_scale": [
+                    "~OK",
+                    "lightgray"
+                ]
+            },
+            "DEFAULT_EDITOR_UXON": null,
+            "ALIAS": "StatsCountSkipped",
+            "SHORT_DESCRIPTION": ""
         }
     ],
     "totals_rows": [],

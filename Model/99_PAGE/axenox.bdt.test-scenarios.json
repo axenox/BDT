@@ -11,7 +11,7 @@
     "created_by_user_selector": "0x11eca7f5b092f284a7f5005056bea39f",
     "created_on": "2025-10-08 18:22:39",
     "modified_by_user_selector": "0x31000000000000000000000000000000",
-    "modified_on": "2026-02-25 16:09:54",
+    "modified_on": "2026-02-26 15:30:01",
     "contents": {
         "object_alias": "exface.Core.DUMMY",
         "widget_type": "SplitHorizontal",
@@ -131,19 +131,22 @@
                                                 "attribute_alias": "started_on"
                                             },
                                             {
-                                                "attribute_alias": "duration_ms"
+                                                "attribute_alias": "duration_time"
                                             },
                                             {
                                                 "attribute_alias": "run_stats__status"
                                             },
                                             {
-                                                "attribute_alias": "run_stats__steps_failed"
+                                                "attribute_alias": "run_stats__steps_total"
                                             },
                                             {
                                                 "attribute_alias": "run_stats__steps_passed"
                                             },
                                             {
-                                                "attribute_alias": "run_stats__steps_total"
+                                                "attribute_alias": "run_stats__steps_failed"
+                                            },
+                                            {
+                                                "attribute_alias": "run_stats__steps_skipped"
                                             }
                                         ],
                                         "sorters": [
