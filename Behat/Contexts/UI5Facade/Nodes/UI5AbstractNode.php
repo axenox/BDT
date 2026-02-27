@@ -264,4 +264,13 @@ JS;
         $dispatcher->dispatch($resultEvent);
         return $resultEvent;
     }
+
+    public function logSubstep(string $title, int $resultCode, ?string $category = null) : AfterSubstep
+    {
+        $dispatcher = $this->getBrowser()->getEventDispatcher();
+        $dispatcher->dispatch(new BeforeSubstep($title, $category));
+        $resultEvent = new AfterSubstep($title, $category, null, $resultCode);
+        $dispatcher->dispatch($resultEvent);
+        return $resultEvent;
+    }
 }
