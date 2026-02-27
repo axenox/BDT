@@ -4,6 +4,7 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 use axenox\BDT\Behat\Events\BeforeSubstep;
 use axenox\BDT\DataTypes\StepStatusDataType;
 use Behat\Gherkin\Node\TableNode;
+use Behat\Testwork\Tester\Result\TestResult;
 use exface\Core\CommonLogic\Model\MetaObject;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\MarkdownDataType;
@@ -275,23 +276,36 @@ JS;
         $failed = false;
         $logbook->addIndent(1);
 
-        // Test regular filters
-        foreach ($widget->getFilters() as $filter) {
-            if ($filter->isHidden()) {
-                // will be used as a filter to get a valid value
-                $this->hiddenFilters[] = $filter;
-                continue;
+        if (false /* && TODO ! $widget->hasHeader()*/) {
+            $logbook->addLine('Filtering skipped - hidden headers not yet supported');
+            $this->logSubstep('Filtering skipped - hidden headers not yet supported', StepStatusDataType::SKIPPED);
+        } else {
+            $skippedFilters = [];
+            // Test regular filters
+            foreach ($widget->getFilters() as $filter) {
+                if ($filter->isHidden()) {
+                    // will be used as a filter to get a valid value
+                    $this->hiddenFilters[] = $filter;
+                    continue;
+                }
+                if (/* fiter not supported */ false) {
+                    $logbook->addLine('Filtering ' . $filter->getCaption() . ' skipped');
+                    $skippedFilters[] = $filter->getCaption();
+                }
+                $substepResult = $this->runAsSubstep(
+                    function() use ($filter, $widget, $logbook) {
+                        return $this->checkFilterWorksAsExpected($filter, $widget, $logbook);
+                    },
+                    'Filtering `' . $filter->getCaption() . '`',
+                    'Filtering',
+                    $logbook
+                );
+                if ($substepResult->isFailed()) {
+                    $failed = true;
+                }
             }
-            $substepResult = $this->runAsSubstep(
-                function() use ($filter, $widget, $logbook) {
-                    return $this->checkFilterWorksAsExpected($filter, $widget, $logbook);
-                },
-                'Filtering`' . $filter->getCaption() . '`',
-                'Filtering',
-                $logbook
-            );
-            if ($substepResult->isFailed()) {
-                $failed = true;
+            if (! emtpy($skippedFilters)) {
+                $this->logSubstep('Skipped filters: ' . implode(', ', $skippedFilters));
             }
         }
         $logbook->addIndent(-1);
