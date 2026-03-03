@@ -87,9 +87,9 @@
         {
             "_EXPORT_SUMMARY": "BDT test run [axenox.BDT.run]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2025-12-04 13:21:46",
+            "MODIFIED_ON": "2026-02-26 15:21:59",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11f08c1d222cd23e8c1d025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
@@ -202,23 +202,27 @@
                                                 "attribute_alias": "tags"
                                             },
                                             {
-                                                "attribute_alias": "run_scenario_action__page_alias:LIST_DISTINCT",
+                                                "attribute_alias": "run_scenario_action__UID:COUNT",
                                                 "caption": "Pages"
                                             },
                                             {
-                                                "attribute_alias": "run_scenario_stats__steps_total"
+                                                "attribute_alias": "run_scenario_stats__steps_total",
+                                                "caption": "Steps"
                                             },
                                             {
-                                                "attribute_alias": "run_scenario_stats__steps_passed"
+                                                "attribute_alias": "run_scenario_stats__steps_passed",
+                                                "caption": "Passed"
                                             },
                                             {
-                                                "attribute_alias": "run_scenario_stats__steps_failed"
+                                                "attribute_alias": "run_scenario_stats__steps_failed",
+                                                "caption": "Failed"
                                             },
                                             {
-                                                "attribute_alias": "run_scenario_stats__steps_skipped"
+                                                "attribute_alias": "run_scenario_stats__steps_skipped",
+                                                "caption": "Skipped"
                                             },
                                             {
-                                                "attribute_alias": "duration_ms"
+                                                "attribute_alias": "duration_time"
                                             },
                                             {
                                                 "hidden": true,
