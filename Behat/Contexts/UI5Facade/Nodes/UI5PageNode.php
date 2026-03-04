@@ -91,7 +91,7 @@ class UI5PageNode implements FacadeNodeInterface
 
         $logbook = new MarkdownLogBook($this->getCaption());
         $resultCode = $facadeNode->checkWorksAsExpected($logbook);
-        $this->validatedAliases[$alias] = $resultCode;
+        self::$validatedAliases[$alias] = $resultCode;
         return $resultCode;
     }
 

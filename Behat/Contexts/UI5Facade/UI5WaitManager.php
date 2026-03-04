@@ -441,10 +441,14 @@ JS);
                 $errorManager->addError($error, 'JavaScript');
             }
 
+
+
             // If any errors were found, throw an exception with the first error message
-            if ($errorManager->hasErrors()) {
-                $firstError = $errorManager->getFirstError();
-                throw new \RuntimeException($errorManager->formatErrorMessage($firstError));
+            // which is not substep error
+            foreach ($errorManager->getErrors() as $error) {
+                if ($error['source'] !== 'Substep') {
+                    throw new \RuntimeException($errorManager->formatErrorMessage($error));
+                }                    
             }
 
         } catch (\Exception $e) {

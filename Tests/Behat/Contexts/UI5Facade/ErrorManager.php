@@ -1,6 +1,8 @@
 <?php
 namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
+use exface\Core\Exceptions\RuntimeException;
+
 /**
  * ErrorManager class for managing and tracking errors in UI5 tests
  * Implement to ensure a single error manager instance
@@ -190,8 +192,7 @@ class ErrorManager
      *  This function is intended to be used in any part of the application where exceptions need to be tracked
      *  and correlated across different systems or log files. It wraps the given exception in a RuntimeException
      *  (to ensure consistent handling and LogID generation), stores it in the ErrorManager's error list,
-     *  and optionally logs it to an external logger (e.g. the workbench logger). The LogID is echoed to the console
-     *  for easier debugging and tracing.
+     *  and optionally logs it to an external logger (e.g. the workbench logger).
      *
      *  Usage:
      *    try {
@@ -203,14 +204,33 @@ class ErrorManager
      * @param \Exception $e
      * @param string $source
      * @param $workbench
-     * @return mixed
      * @throws \Exception
      */
     public function logExceptionWithId(\Exception $e, string $source = 'Unknown', $workbench = null)
     {
-        $wrappedException = new \RuntimeException(
+        $this->logException($e, $source, $workbench);
+        throw $e;
+    }
+
+    /**
+     *  Logs an exception with additional context and outputs the associated LogID.
+     *
+     *  Usage:
+     *    try {
+     *        // risky operation
+     *    } catch (\Exception $e) {
+     *        ErrorManager::getInstance()->logExceptionWithId($e, 'SomeSource', $this->workbench);
+     *    }
+     *
+     * @param \Exception $e
+     * @param string $source
+     * @param $workbench
+     */
+    public function logException(\Exception $e, string $source = 'Unknown', $workbench = null)
+    {
+        $wrappedException = new RuntimeException(
             $e->getMessage(),
-            0,
+            null,
             $e
         );
 
@@ -230,10 +250,6 @@ class ErrorManager
 
         if ($logId) {
             $this->setLastLogId($logId);
-            echo "[ERROR] LogID: " . $logId . PHP_EOL;
-        } else {
-            echo "[ERROR] " . $e->getMessage() . PHP_EOL;
         }
-        throw $e;
     }
 }

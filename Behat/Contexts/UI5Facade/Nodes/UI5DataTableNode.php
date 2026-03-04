@@ -1,10 +1,9 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
-use axenox\BDT\Behat\Events\BeforeSubstep;
 use axenox\BDT\DataTypes\StepStatusDataType;
 use Behat\Gherkin\Node\TableNode;
-use Behat\Testwork\Tester\Result\TestResult;
+use Behat\Mink\Element\NodeElement;
 use exface\Core\CommonLogic\Model\MetaObject;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\MarkdownDataType;
@@ -139,6 +138,42 @@ JS;
         return $isSelected;
     }
 
+    private function findFilterHeaderContainer(): ?NodeElement
+    {
+        $page = $this->getSession()->getPage();
+        $table = $this->getNodeElement();
+
+        $tableId = $table->getAttribute('id');
+        if (!$tableId) {
+            return null;
+        }
+
+        $stickyId = $tableId . '_DynamicPageWrapper-stickyPlaceholder';
+
+        $header = $page->find('css', '#' . $stickyId . ' header.sapFDynamicPageHeader');
+        if ($header) {
+            $hasFilters = $header->find('css', '.exfw-Filter, .exfw-RangeFilter');
+            return $hasFilters ? $header : null;
+        }
+
+        $prefix = preg_replace('/__[^_]+$/', '', $tableId);
+        if ($prefix) {
+            $fallback = $page->find(
+                'css',
+                'div[id^="' . $prefix . '"][id$="_DynamicPageWrapper-stickyPlaceholder"] header.sapFDynamicPageHeader'
+            );
+            if ($fallback && $fallback->find('css', '.exfw-Filter, .exfw-RangeFilter')) {
+                return $fallback;
+            }
+        }
+
+        return null;
+    }
+
+    private function hasFilterHeader(): bool
+    {
+        return $this->findFilterHeaderContainer() !== null;
+    }
 
     /**
      * Converts ordinal numbers like "1." to zero-based indices
@@ -154,9 +189,15 @@ JS;
         return $number - 1;
     }
 
+    /**
+     * Delegate the find method to the underlying node element
+     * 
+     * @param $selector
+     * @param $locator
+     * @return \Behat\Mink\Element\NodeElement|false|mixed|null
+     */
     public function find($selector, $locator)
     {
-        // Delegate the find method to the underlying node element
         $nodeElement = $this->getNodeElement();
         return $nodeElement->find($selector, $locator);
     }
@@ -266,9 +307,16 @@ JS;
         $logbook->addLine('Looking at ' . $widget->getWidgetType() . ' ' . $tableMd);
         Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
         
-        $this->runAsSubstep(function() use ($widget, $logbook) {$this->checkTableWorksAsExpected($widget, $logbook);}, 'Looking at ' . $widget->getWidgetType() . ' ' . $tableCaption, null, $logbook);
-        
-        return StepStatusDataType::PASSED;
+        $event = $this->runAsSubstep(
+            function() use ($widget, $logbook) {
+                return $this->checkTableWorksAsExpected($widget, $logbook);
+                }, 
+                'Looking at ' . $widget->getWidgetType() . ' ' . $tableCaption, 
+                null, 
+                $logbook
+        );
+
+        return $event->getResultCode();
     }
     
     protected function checkTableWorksAsExpected(iShowData $widget, LogBookInterface $logbook) : int
@@ -276,7 +324,7 @@ JS;
         $failed = false;
         $logbook->addIndent(1);
 
-        if (false /* && TODO ! $widget->hasHeader()*/) {
+        if (!$this->hasFilterHeader()) {
             $logbook->addLine('Filtering skipped - hidden headers not yet supported');
             $this->logSubstep('Filtering skipped - hidden headers not yet supported', StepStatusDataType::SKIPPED);
         } else {
@@ -337,12 +385,11 @@ JS;
         $filterNode = $this->getBrowser()->getFilterByCaption($filter->getCaption());
         $logbook->continueLine(' with value `' . $filterVal . '`');
         $filterNode->setValue($filterVal);
-        // TODO why are we waiting? To wait from the autosuggest? If so, we should call waitForPendingOperations()
-        // in $filterNode->setValue() if getInputWidget() instanceof InputComboTable
-        if ($filterAttr->isRelation()) {
-            $this->getSession()->wait(1000);
-        }
+
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
         $this->triggerSearch();
+
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
         $loadedRowCount = $this->getLoadedRowCount($dataWidget);
 
         $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');
@@ -351,21 +398,31 @@ JS;
         // sometimes column captions are not the same as filter captions
         $columnCaption = null;
         foreach ($dataWidget->getColumns() as $column) {
-            if ($column->isHidden() || !$column->isFilterable()) {
+            if ($column->isHidden()) {
                 continue;
             }
-            if ($column->getAttribute() === $filterAttr) {
+            if ($column->getAttribute()->is($filterAttr)) {
+                $columnCaption = $column->getCaption();
+                break;
+            }
+            if (str_contains($column->getAttributeAlias(), $filter->getAttributeAlias()))
+            {
                 $columnCaption = $column->getCaption();
                 break;
             }
         }
         if ($columnCaption !== null) {
+            $this->getBrowser()->highlightWidget(
+                $filterNode->getNodeElement(),
+                $filter->getWidgetType(),
+                0
+            );
             $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
                 ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
             ]);
+            $this->triggerReset();
+            $logbook->continueLine(' - resetting configurator');
         }
-        $this->triggerReset();
-        $logbook->continueLine(' - resetting configurator');
         return $logbook->getLineActive();
     }
 
