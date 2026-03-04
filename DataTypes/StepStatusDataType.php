@@ -19,7 +19,7 @@ class StepStatusDataType extends IntegerDataType implements EnumDataTypeInterfac
     CONST PENDING = 0;
     CONST STARTED = 10;
     CONST UNDEFINED = 30;
-    CONST SKIPPED = 99;
+    CONST SKIPPED = 98;
     CONST PASSED = 100;
     CONST FAILED = 101;
     CONST PASSED_PREVIOUSLY = 110;
@@ -49,11 +49,25 @@ class StepStatusDataType extends IntegerDataType implements EnumDataTypeInterfac
     public static function convertFromBehatResultCode(int $behatResultCode) : int
     {
         switch ($behatResultCode) {
-            case TestResult::PASSED: $status = self::PASSED; break;
-            case TestResult::SKIPPED: $status = self::SKIPPED; break;
-            case TestResult::PENDING: $status = self::PENDING; break;
-            case TestResult::FAILED: $status = self::FAILED; break;
-            case 30: $status = self::UNDEFINED; break; // for `\Behat\Behat\Tester\Result\UndefinedStepResult`
+            case TestResult::PASSED:
+            case 100:
+                $status = self::PASSED; break;
+            case TestResult::SKIPPED:
+            case 98: 
+                $status = self::SKIPPED; break;
+            case TestResult::PENDING: 
+                $status = self::PENDING; break;
+            case TestResult::FAILED: 
+            case 101:
+                $status = self::FAILED; break;
+            case 30: 
+                $status = self::UNDEFINED; break; // for `\Behat\Behat\Tester\Result\UndefinedStepResult`
+            case 110: 
+                $status = self::PASSED_PREVIOUSLY; break;
+            case 111: 
+                $status = self::FAILED_PREVIOUSLY; break;
+            case 102: 
+                $status = self::TIMEOUT; break;
             default:
                 $status = self::UNDEFINED;
         }
