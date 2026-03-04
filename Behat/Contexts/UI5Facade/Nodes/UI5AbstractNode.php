@@ -255,12 +255,20 @@ JS;
         $dispatcher = $this->getBrowser()->getEventDispatcher();
         $dispatcher->dispatch(new BeforeSubstep($title, $category));
         try {
-            $title = $callable() ?? $title;
-            $resultEvent = new AfterSubstep($title, $category);
+            $returnValue = $callable();
+            if (is_string($returnValue) && $returnValue !== '') {
+                $title = $returnValue;
+            }
+            
+            if (is_int($returnValue)) {
+                $resultCode = $returnValue; // StepStatusDataType::PASSED/FAILED/SKIPPED
+            }
+            
+            $resultEvent = new AfterSubstep($title, $category, null, $resultCode ?? null);
         } catch (\Throwable $e) {
             $logbook?->addLine('**ERROR:** ' . $e->getMessage());
             $this->getBrowser()->captureScreenshot();
-            $resultEvent = new AfterSubstep($title, $category, $e);
+            $resultEvent = new AfterSubstep($title, $category, $e, StepStatusDataType::FAILED);
             ErrorManager::getInstance()->logException($e, 'Substep', $this->getBrowser()->getWorkbench());
         }
         $dispatcher->dispatch($resultEvent);

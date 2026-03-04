@@ -1,7 +1,6 @@
 <?php
 namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
-use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\TwigFormatter\Context\BehatFormatterContext;
@@ -19,9 +18,7 @@ use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Facades\ConsoleFacade;
 use exface\Core\Factories\FormulaFactory;
-use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\WorkbenchInterface;
-use phpOLAPi\Xmla\Metadata\Database;
 use PHPUnit\Framework\Assert;
 use Behat\Behat\Hook\Scope\BeforeScenarioScope;
 use Behat\Behat\Hook\Scope\AfterStepScope;
