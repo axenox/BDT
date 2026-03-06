@@ -360,7 +360,7 @@ class DatabaseFormatter implements Formatter
         if ($updatedTitle !== null) {
             $ds->setCellValue('name', 0, mb_ucfirst($updatedTitle));
         }
-        if ($behatResultCode === TestResult::FAILED) {
+        if ($behatResultCode === TestResult::FAILED || $behatResultCode === StepStatusDataType::FAILED) {
             if($this->provider->isCaptured()) {
                 $screenshotRelativePath = $this->provider->getPath() . DIRECTORY_SEPARATOR . $this->provider->getName();
                 $ds->setCellValue('screenshot_path', 0, $screenshotRelativePath);

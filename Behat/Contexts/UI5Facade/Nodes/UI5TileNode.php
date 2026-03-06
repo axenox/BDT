@@ -77,7 +77,7 @@ class UI5TileNode extends UI5AbstractNode
                 
                 try {
                     $pageNode = new UI5PageNode($expectedAlias, $this->getSession(), $this->getBrowser());
-                    $pageNode->checkWorksAsExpected($logbook);
+                    $result = $pageNode->checkWorksAsExpected($logbook);
                 } catch (\Throwable $e) {
                     $result = stepStatusDataType::FAILED;
                     $logbook->addLine('**Failed** to check if page `' . $expectedAlias . '` works as expected - skipping to next widget. ' . $e->getMessage());
