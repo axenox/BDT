@@ -269,7 +269,7 @@ JS;
             $logbook?->addLine('**ERROR:** ' . $e->getMessage());
             $this->getBrowser()->captureScreenshot();
             $resultEvent = new AfterSubstep($title, $category, $e, StepStatusDataType::FAILED);
-            ErrorManager::getInstance()->logException($e, 'Substep', $this->getBrowser()->getWorkbench());
+            ErrorManager::getInstance()->logException($e, $this->getBrowser()->getWorkbench());
         }
         $dispatcher->dispatch($resultEvent);
         return $resultEvent;

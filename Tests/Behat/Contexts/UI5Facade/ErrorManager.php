@@ -139,20 +139,12 @@ class ErrorManager
         if (isset($error['type']) && $error['type'] === 'BehatException') {
             return $this->formatBehatExceptionMessage($error);
         }
-    
-        // Original formatting for other error types
-        $message = "ERROR DETAILS 1|\n";
-        $message .= "===============\n"; 
-
-        if ($this->lastLogId) {
-            $message .= "LogID: " . $this->lastLogId . "\n";
-            $message .= "===================\n";
-        }
-        $message .= "Type: " . ($error['type'] ?? 'N/A') . "\n";
-        $message .= "Status: " . ($error['status'] ?? 'N/A') . "\n";
+            
+        $message = "Source: " . ($error['source'] ?? 'Unknown') . "\n";
         $message .= "Message: " . ($error['message'] ?? 'No message available') . "\n";
         $message .= "URL: " . ($error['url'] ?? 'N/A') . "\n";
-        $message .= "Source: " . ($error['source'] ?? 'Unknown') . "\n";
+        $message .= "Type: " . ($error['type'] ?? 'N/A') . "\n";
+        $message .= "Status: " . ($error['status'] ?? 'N/A') . "\n";
 
         if (!empty($error['response'])) {
             $message .= "Response: " . $error['response'] . "\n";
@@ -166,18 +158,10 @@ class ErrorManager
      */
     public function formatBehatExceptionMessage(array $error): string
     {
-        $message = "BEHAT ERROR DETAILS 2|\n";
-        $message .= "===================\n";
-
-        if ($this->lastLogId) {
-            $message .= "LogID: " . $this->lastLogId . "\n";
-            $message .= "===================\n";
-        }
-
+        $message = "Source: " . ($error['source'] ?? 'Unknown') . "\n";
+        $message .= "Message: " . ($error['message'] ?? 'No message available') . "\n";
         $message .= "Type: " . ($error['type'] ?? 'N/A') . "\n";
         $message .= "Status: " . ($error['status'] ?? 'N/A') . "\n";
-        $message .= "Message: " . ($error['message'] ?? 'No message available') . "\n";
-        $message .= "Source: " . ($error['source'] ?? 'Unknown') . "\n";
 
         if (!empty($error['stack'])) {
             $message .= "\nStack Trace:\n" . $error['stack'] . "\n";
@@ -209,6 +193,15 @@ class ErrorManager
     public function logExceptionWithId(\Exception $e, string $source = 'Unknown', $workbench = null)
     {
         $this->logException($e, $source, $workbench);
+
+        $this->addError([
+            'type'    => 'Exception',
+            'message' => $e->getMessage(),
+            'status'  => $e->getCode(),
+            'stack'   => $e->getTraceAsString(),
+            'logId'   => $this->getLastLogId(),
+        ], $source);
+        
         throw $e;
     }
 
@@ -223,10 +216,9 @@ class ErrorManager
      *    }
      *
      * @param \Exception $e
-     * @param string $source
      * @param $workbench
      */
-    public function logException(\Exception $e, string $source = 'Unknown', $workbench = null)
+    public function logException(\Exception $e, $workbench = null): void
     {
         $wrappedException = new RuntimeException(
             $e->getMessage(),
@@ -236,20 +228,21 @@ class ErrorManager
 
         $logId = method_exists($wrappedException, 'getId') ? $wrappedException->getId() : null;
 
-        $this->addError([
-            'type'    => 'Exception',
-            'message' => $e->getMessage(),
-            'status'  => $e->getCode(),
-            'stack'   => $e->getTraceAsString(),
-            'logId'   => $logId,
-        ], $source);
-
         if ($workbench && method_exists($workbench, 'getLogger')) {
             $workbench->getLogger()->logException($wrappedException);
         }
 
         if ($logId) {
             $this->setLastLogId($logId);
+        }
+    }
+    
+    public function dropError(array $e): void
+    {
+        $key = array_search($e, $this->errors, true);
+
+        if ($key !== false) {
+            unset($this->errors[$key]);
         }
     }
 }
