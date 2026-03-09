@@ -181,16 +181,16 @@ class ErrorManager
      *  Usage:
      *    try {
      *        // risky operation
-     *    } catch (\Exception $e) {
+     *    } catch (\Throwable $e) {
      *        ErrorManager::getInstance()->logExceptionWithId($e, 'SomeSource', $this->workbench);
      *    }
      * 
-     * @param \Exception $e
+     * @param \Throwable $e
      * @param string $source
      * @param $workbench
-     * @throws \Exception
+     * @throws \Throwable
      */
-    public function logExceptionWithId(\Exception $e, string $source = 'Unknown', $workbench = null)
+    public function logExceptionWithId(\Throwable $e, string $source = 'Unknown', $workbench = null)
     {
         $this->logException($e, $source, $workbench);
 
@@ -211,14 +211,14 @@ class ErrorManager
      *  Usage:
      *    try {
      *        // risky operation
-     *    } catch (\Exception $e) {
+     *    } catch (\Throwable $e) {
      *        ErrorManager::getInstance()->logExceptionWithId($e, 'SomeSource', $this->workbench);
      *    }
      *
-     * @param \Exception $e
+     * @param \Throwable $e
      * @param $workbench
      */
-    public function logException(\Exception $e, $workbench = null): void
+    public function logException(\Throwable $e, $workbench = null): void
     {
         $wrappedException = new RuntimeException(
             $e->getMessage(),
