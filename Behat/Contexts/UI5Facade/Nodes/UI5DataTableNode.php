@@ -148,26 +148,49 @@ JS;
             return null;
         }
 
-        $stickyId = $tableId . '_DynamicPageWrapper-stickyPlaceholder';
-
-        $header = $page->find('css', '#' . $stickyId . ' header.sapFDynamicPageHeader');
-        if ($header) {
-            $hasFilters = $header->find('css', '.exfw-Filter, .exfw-RangeFilter');
-            return $hasFilters ? $header : null;
+        /**
+         * Approach 1: Traverse up to the nearest Dynamic Page Wrapper.
+         * In modern UI5, tables and headers are usually siblings within a 'sapFDynamicPage' article.
+         */
+        $wrapper = $table->find('xpath', "ancestor::article[contains(@class, 'sapFDynamicPage')]");
+        if ($wrapper) {
+            $header = $wrapper->find('css', 'header.sapFDynamicPageTitleWrapper + div section.sapFDynamicPageHeader');
+            if ($header && $this->hasFilters($header)) {
+                return $header;
+            }
         }
 
+        /**
+         * Approach 2: Direct lookup using the sticky placeholder ID convention.
+         * tableId: {prefix}__table -> stickyId: {prefix}__table_DynamicPageWrapper-stickyPlaceholder
+         */
+        $stickyId = $tableId . '_DynamicPageWrapper-stickyPlaceholder';
+        $headerBySticky = $page->find('css', '#' . $stickyId . ' .sapFDynamicPageHeader');
+        if ($headerBySticky && $this->hasFilters($headerBySticky)) {
+            return $headerBySticky;
+        }
+
+        /**
+         * Approach 3: Fallback using ID prefix matching.
+         * Useful when the table ID and wrapper ID share a common prefix but different suffixes.
+         */
         $prefix = preg_replace('/__[^_]+$/', '', $tableId);
         if ($prefix) {
-            $fallback = $page->find(
-                'css',
-                'div[id^="' . $prefix . '"][id$="_DynamicPageWrapper-stickyPlaceholder"] header.sapFDynamicPageHeader'
-            );
-            if ($fallback && $fallback->find('css', '.exfw-Filter, .exfw-RangeFilter')) {
+            $fallback = $page->find('css', "article[id^='$prefix'][id$='_DynamicPageWrapper'] .sapFDynamicPageHeader");
+            if ($fallback && $this->hasFilters($fallback)) {
                 return $fallback;
             }
         }
 
         return null;
+    }
+
+    /**
+     * checks the Header if it has filters
+     */
+    private function hasFilters(NodeElement $container): bool
+    {
+        return $container->find('css', '.exfw-Filter, .exfw-RangeFilter') !== null;
     }
 
     private function hasFilterHeader(): bool
