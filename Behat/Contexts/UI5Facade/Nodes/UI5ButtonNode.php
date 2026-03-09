@@ -9,6 +9,7 @@ use axenox\BDT\Interfaces\FacadeNodeInterface;
 use exface\Core\Actions\GoToPage;
 use exface\Core\Interfaces\Actions\iShowDialog;
 use exface\Core\Interfaces\Debug\LogBookInterface;
+use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Interfaces\Widgets\iTriggerAction;
 use PHPUnit\Framework\Assert;
 
@@ -65,9 +66,15 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
         ');
     }
 
+    public function getWidget() : WidgetInterface
+    {
+        $elementId = $this->getNodeElement()->getAttribute('id');
+        return $this->getWidgetFromElementId($elementId);
+    }
+
     /**
      * @param LogBookInterface $logbook
-     * @return void
+     * @return int
      */
     public function checkWorksAsExpected(LogBookInterface $logbook) : int
     {

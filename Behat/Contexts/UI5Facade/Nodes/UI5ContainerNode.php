@@ -16,7 +16,7 @@ class UI5ContainerNode extends UI5AbstractNode
     public function checkWorksAsExpected(LogBookInterface $logbook) : int
     {
         $childWidgetNodes = $this->getNodeElement()->findAll('css', '.exfw');
-        $result = StepStatusDataType::SKIPPED;
+        $result = StepStatusDataType::STARTED;
         foreach ($childWidgetNodes as $childWidgetNode) {
             if($this->getNodeElement()->getAttribute('id')=== $childWidgetNode->getAttribute('id') ) {
                 continue;

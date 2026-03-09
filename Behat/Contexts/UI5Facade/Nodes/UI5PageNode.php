@@ -3,6 +3,8 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
+use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
+use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Session;
@@ -90,6 +92,7 @@ class UI5PageNode implements FacadeNodeInterface
 
 
         $logbook = new MarkdownLogBook($this->getCaption());
+        DatabaseFormatter::addTestLogbook($logbook);
         $resultCode = $facadeNode->checkWorksAsExpected($logbook);
         self::$validatedAliases[$alias] = $resultCode;
         return $resultCode;

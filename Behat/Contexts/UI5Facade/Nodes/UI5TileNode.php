@@ -23,13 +23,4 @@ class UI5TileNode extends UI5ButtonNode
         // Trim leading and trailing whitespace
         return trim($s);
     }
-
-    /**
-     * @return Tile
-     */
-    public function getWidget() : WidgetInterface
-    {
-        $elementId = $this->getNodeElement()->getAttribute('id');
-        return $this->getWidgetFromElementId($elementId);
-    }
 }
