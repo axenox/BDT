@@ -16,6 +16,7 @@ use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\MetaAttributeInterface;
 use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Interfaces\Widgets\iFilterData;
+use exface\Core\Interfaces\Widgets\iHaveButtons;
 use exface\Core\Interfaces\Widgets\iShowData;
 use exface\Core\Widgets\Filter;
 use exface\Core\Widgets\InputComboTable;
@@ -347,6 +348,7 @@ JS;
         $failed = false;
         $logbook->addIndent(1);
 
+        // Filters
         if (!$this->hasFilterHeader()) {
             $logbook->addLine('Filtering skipped - hidden headers not yet supported');
             $this->logSubstep('Filtering skipped - hidden headers not yet supported', StepStatusDataType::SKIPPED);
@@ -376,6 +378,7 @@ JS;
                 }
             }
             if (! emtpy($skippedFilters)) {
+                // TODO Mark skipped filters with SKIPPED result code to make visible, that something is not good
                 $this->logSubstep('Skipped filters: ' . implode(', ', $skippedFilters));
             }
         }
@@ -396,6 +399,33 @@ JS;
             $this->resetFilterColumn($columnNode->getCaption());
         }
         */
+        
+        // TODO Sorters
+        
+        // Buttons
+        if ($widget instanceof iHaveButtons) {
+            foreach ($widget->getButtons() as $button) {
+                if ($button->isHidden()) {
+                    continue;
+                }
+                $substepResult = $this->runAsSubstep(
+                    function () use ($filter, $widget, $logbook) {
+                        return $this->checkFilterWorksAsExpected($filter, $widget, $logbook);
+                    },
+                    'Filtering `' . $filter->getCaption() . '`',
+                    'Filtering',
+                    $logbook
+                );
+                if ($substepResult->isFailed()) {
+                    $failed = true;
+                }
+            }
+            if (! emtpy($skippedFilters)) {
+                // TODO Mark skipped filters with SKIPPED result code to make visible, that something is not good
+                $this->logSubstep('Skipped filters: ' . implode(', ', $skippedFilters));
+            }
+        }
+        
         return $failed ? stepStatusDataType::FAILED : stepStatusDataType::PASSED;
     }
     

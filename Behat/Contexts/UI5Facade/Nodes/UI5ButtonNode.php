@@ -2,9 +2,15 @@
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
+use axenox\BDT\DataTypes\StepStatusDataType;
 use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Session;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
+use exface\Core\Actions\GoToPage;
+use exface\Core\Interfaces\Actions\iShowDialog;
+use exface\Core\Interfaces\Debug\LogBookInterface;
+use exface\Core\Interfaces\Widgets\iTriggerAction;
+use PHPUnit\Framework\Assert;
 
 class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
 {
@@ -24,8 +30,8 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
 
     public function click(): void
     {
-
         $this->getNodeElement()->click();
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations();
 
         // check exf-dialog-close class for action
         if ($this->isDialogCloseButton()) {
@@ -57,5 +63,111 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
                 window.unfocusDialog();
             }
         ');
+    }
+
+    /**
+     * @param LogBookInterface $logbook
+     * @return void
+     */
+    public function checkWorksAsExpected(LogBookInterface $logbook) : int
+    {
+        /* @var $widget \exface\Core\Widgets\Tile */
+        $widget = $this->getWidget();
+        Assert::assertNotNull($widget, 'Tile widget not found for this node.');
+        $action = $widget->getAction();
+
+        $result = StepStatusDataType::PASSED;
+
+        switch (true) {
+            case $action instanceof GoToPage:
+                $result = $this->checkActionGoToPage($action, $widget, $logbook);
+                break;
+            case $action instanceof iShowDialog:
+                $result = $this->checkActionShowDialog($action, $widget, $logbook);
+                break;
+            // TODO more action validation here??
+        }
+
+        return $result;
+    }
+    
+    protected function checkActionGoToPage(GoToPage $action, iTriggerAction $widget, LogBookInterface $logbook) : int
+    {
+        $expectedAlias = $action->getPage()->getAliasWithNamespace();
+
+        // Substep should fail if the page cannot be loaded (shows an error) - otherwise the substep for
+        // the click is passed, and we go on checking the page
+        $this->runAsSubstep(
+            function() use ($expectedAlias, $widget) {
+                $this->click();
+                $realAlias = $this->getBrowser()->getPageCurrent()->getAliasWithNamespace();
+                Assert::assertSame(
+                    $expectedAlias,
+                    $realAlias,
+                    sprintf(
+                        'Tile "%s" navigated to `%s` but expected `%s`.',
+                        $widget->getCaption(),
+                        $realAlias,
+                        $expectedAlias
+                    )
+                );
+            },
+            'Clicking Tile ' . $this->getCaption(),
+            'Pages',
+            $logbook
+        );
+
+        $logbook->addLine('Clicking Tile [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
+        $logbook->addIndent(+1);
+
+        try {
+            $pageNode = new UI5PageNode($expectedAlias, $this->getSession(), $this->getBrowser());
+            $result = $pageNode->checkWorksAsExpected($logbook);
+        } catch (\Throwable $e) {
+            $result = stepStatusDataType::FAILED;
+            $logbook->addLine('**Failed** to check if page `' . $expectedAlias . '` works as expected - skipping to next widget. ' . $e->getMessage());
+        }
+        $this->getBrowser()->navigateToPreviousPage();
+        $logbook->addLine('Pressing browser back button');
+        $logbook->addIndent(-1);
+        return $result;
+    }
+
+
+
+    protected function checkActionShowDialog(iShowDialog $action, iTriggerAction $widget, LogBookInterface $logbook) : int
+    {
+        $expectedId = $this->getElementIdFromWidget($action->getDialogWidget());
+
+        // Substep should fail if the page cannot be loaded (shows an error) - otherwise the substep for
+        // the click is passed, and we go on checking the page
+        $dialogNode = null;
+        $this->runAsSubstep(
+            function() use ($expectedId, $widget, $dialogNode) {
+                $this->click();
+                $dialogNode = $this->getSession()->getPage()->findById($expectedId);
+                Assert::assertNotNull(
+                    $dialogNode,
+                    'Cannot find dialog with id `' . $expectedId . '` after clicking tile `' . $widget->getCaption() . '`.'
+                );
+            },
+            'Clicking ' . $this->getWidgetType() . ' ' . $this->getCaption(),
+            'Pages',
+            $logbook
+        );
+
+        $logbook->addLine('Clicking Tile [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
+        $logbook->addIndent(+1);
+
+        try {
+            $result = $dialogNode->checkWorksAsExpected($logbook);
+        } catch (\Throwable $e) {
+            $result = stepStatusDataType::FAILED;
+            $logbook->addLine('**Failed** to check if dialog `' . $expectedId . '` works as expected - skipping to next widget. ' . $e->getMessage());
+        }
+        $this->getBrowser()->navigateToPreviousPage();
+        $logbook->addLine('Pressing browser back button');
+        $logbook->addIndent(-1);
+        return $result;
     }
 }

@@ -73,27 +73,7 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
     public function checkWorksAsExpected(LogBookInterface $logbook) : int
     {        
         $widgetType = $this->getWidgetType();
-        /*$widgetDomeNode = self::findWidgetNode($this->getNodeElement());
-        $elementId = $widgetDomeNode->getAttribute('id');
-        $widget = $this->getWidgetFromElementId($elementId);
-        $mainObject = $widget->getMetaObject();
-        $tableCaption = !empty($this->getCaption()) ?
-            '`' .$this->getCaption() . '`' :
-           '[' . MarkdownDataType::escapeString($mainObject->__toString()) . '](' . DocsFacade::buildUrlToDocsForMetaObject($mainObject) . ')' ;*/
-        $logbook->addLine( 'Looking at `' . $widgetType . '` ' . $this->getCaption());
-        
-        //is this function override
-        $declaring = (new \ReflectionMethod($this, 'itWorksAsExpected'))->getDeclaringClass()->getName();
-        $hasCustom = ($declaring !== self::class);
-        if (!$hasCustom) {
-            $visible = $this->isVisible();
-            if ($visible) {
-                $logbook->addIndent(1);
-                $logbook->addLine('Seeing a ' . $widgetType);
-                $logbook->addIndent(-1);
-            }
-            
-        }
+        $logbook->addLine( 'No checks defined at `' . $widgetType . '` ' . $this->getCaption());
         return StepStatusDataType::PASSED;
     }
 

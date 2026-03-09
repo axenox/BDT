@@ -8,7 +8,7 @@ use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Widgets\Tile;
 use PHPUnit\Framework\Assert;
 
-class UI5TileNode extends UI5AbstractNode
+class UI5TileNode extends UI5ButtonNode
 {
     public function getCaption(): string
     {
@@ -31,73 +31,5 @@ class UI5TileNode extends UI5AbstractNode
     {
         $elementId = $this->getNodeElement()->getAttribute('id');
         return $this->getWidgetFromElementId($elementId);
-    }
-
-    /**
-     * @param LogBookInterface $logbook
-     * @return void
-     */
-    public function checkWorksAsExpected(LogBookInterface $logbook) : int
-    {
-        /* @var $widget \exface\Core\Widgets\Tile */
-        $widget = $this->getWidget();
-        Assert::assertNotNull($widget, 'Tile widget not found for this node.');
-        $action = $widget->getAction();
-        
-        $result = StepStatusDataType::PASSED;
-
-        switch (true) {
-            case $action instanceof GoToPage:
-                $expectedAlias = $action->getPage()->getAliasWithNamespace();
-                
-                // Substep should fail if the page cannot be loaded (shows an error) - otherwise the substep for
-                // the click is passed, and we go on checking the page
-                $this->runAsSubstep(
-                    function() use ($expectedAlias, $widget) { 
-                        $this->click();
-                        $realAlias = $this->getBrowser()->getPageCurrent()->getAliasWithNamespace();
-                        Assert::assertSame(
-                            $expectedAlias,
-                            $realAlias,
-                            sprintf(
-                                'Tile "%s" navigated to `%s` but expected `%s`.',
-                                $widget->getCaption(),
-                                $realAlias,
-                                $expectedAlias
-                            )
-                        );
-                    }, 
-                    'Clicking Tile ' . $this->getCaption(), 
-                    'Pages',
-                    $logbook
-                );
-                
-                $logbook->addLine('Clicking Tile [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
-                $logbook->addIndent(+1);
-                
-                try {
-                    $pageNode = new UI5PageNode($expectedAlias, $this->getSession(), $this->getBrowser());
-                    $result = $pageNode->checkWorksAsExpected($logbook);
-                } catch (\Throwable $e) {
-                    $result = stepStatusDataType::FAILED;
-                    $logbook->addLine('**Failed** to check if page `' . $expectedAlias . '` works as expected - skipping to next widget. ' . $e->getMessage());
-                }
-                $this->getBrowser()->navigateToPreviousPage();
-                $logbook->addLine('Pressing browser back button');
-                $logbook->addIndent(-1);
-                break;
-            // TODO more action validation here??
-        }
-        
-        return $result;
-    }
-
-    /**
-     * @return void
-     */
-    public function click() : void
-    {
-        $this->getNodeElement()->click();
-        $this->getBrowser()->getWaitManager()->waitForPendingOperations();
     }
 }
