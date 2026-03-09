@@ -87,33 +87,28 @@ class UI5WaitManager
         }
         // Merge provided timeouts with defaults
 
-        try {
-      
-            // Wait for page load if requested
-            if ($waitForPage) {
-                $this->waitForPageLoad($timeouts['page']);
-            }
-
-            // Wait for busy indicator to disappear if requested
-            if ($waitForBusy) {
-                $this->waitForBusyIndicator($timeouts['busy']);
-            }
-
-            // Wait for AJAX requests to complete if requested
-            if ($waitForAjax) {
-                $this->waitForAjaxRequests($timeouts['ajax']);
-            }
-
-            // Wait for page to load
-            $this->waitForUI5Controls();
- 
-
-            // Check if any errors occurred during the wait operations
-            $this->validateNoErrors();
-           
-        } catch (Exception $e) {
-            throw new Exception("UI5 wait operation failed: " . $e->getMessage());
+        // Wait for page load if requested
+        if ($waitForPage) {
+            $this->waitForPageLoad($timeouts['page']);
         }
+
+        // Wait for busy indicator to disappear if requested
+        if ($waitForBusy) {
+            $this->waitForBusyIndicator($timeouts['busy']);
+        }
+
+        // Wait for AJAX requests to complete if requested
+        if ($waitForAjax) {
+            $this->waitForAjaxRequests($timeouts['ajax']);
+        }
+
+        // Wait for page to load
+        $this->waitForUI5Controls();
+
+
+        // Check if any errors occurred during the wait operations
+        $this->validateNoErrors();
+        
     }
 
     /**
@@ -173,6 +168,7 @@ class UI5WaitManager
                 throw new Exception("UI5 controls failed to load");
             }
 
+            $this->enableJsErrorTracer();
             // Extract application ID from URL and wait for it to be available
             $appId = substr($pageUrl, 0, strpos($pageUrl, '.html')) . '.app';
             $this->waitForAppId($appId);
@@ -251,9 +247,12 @@ class UI5WaitManager
             <<<JS
             (function() {
                 if (typeof jQuery !== 'undefined' && jQuery.active !== 0) return false;
-                if (typeof sap !== 'undefined' && sap.ui && sap.ui.core) {
-                    if (sap.ui.core.BusyIndicator._globalBusyIndicatorCounter > 0) return false;
+                if (typeof sap !== 'undefined' && sap.ui && sap.ui.core && sap.ui.core.BusyIndicator) {
+                var counter = sap.ui.core.BusyIndicator._globalBusyIndicatorCounter;
+                if (typeof counter !== "undefined" && counter > 0) {
+                    return false;
                 }
+            }
                 return true;
             })()
             JS
@@ -267,19 +266,25 @@ class UI5WaitManager
      */
     private function waitForUI5Framework(): bool
     {
-        // Execute JavaScript to check if the UI5 framework and core are available
-
         return $this->session->wait(
             $this->defaultTimeouts['ajax'] * 1000,
             <<<JS
             (function() {
                 if (typeof sap === 'undefined') return false;
-                if (typeof sap.ui === 'undefined') return false;
-                if (typeof sap.ui.getCore === 'undefined') return false;
+                if (!sap.ui) return false;
+
                 var core = sap.ui.getCore();
-                return core && typeof core.getLoadedLibraries === 'function';
+                if (!core || !core.isInitialized()) return false;
+
+                // UI5 rendering queue
+                if (core.getUIDirty && core.getUIDirty()) {
+                    return false;
+                }
+
+                return document.readyState === "complete";
+
             })()
-            JS
+        JS
         );
     }
 
@@ -427,36 +432,22 @@ JS);
             }
 
             // Check for JavaScript errors
-            $jsErrors = $this->getSession()->evaluateScript('
-                if (window.exfXHRLog && window.exfXHRLog.errors) {
-                    return window.exfXHRLog.errors.filter(function(err) {
-                        return err.type === "JSError";
-                    });
-                }
-                return [];
-            ');
+            $jsErrors = $this->getJsErrorsFromTracer();
 
             // Add each JavaScript error to the error manager
             foreach ($jsErrors as $error) {
-                $errorManager->addError($error, 'JavaScript');
+                $errorManager->addError($error, 'Tracer');
             }
-
-
 
             // If any errors were found, throw an exception with the first error message
             // which is not substep error
             foreach ($errorManager->getErrors() as $error) {
-                if ($error['source'] !== 'Substep') {
-                    throw new \RuntimeException($errorManager->formatErrorMessage($error));
-                }                    
+                $errorManager->dropError($error);
+                throw new \RuntimeException($errorManager->formatErrorMessage($error));
             }
 
         } catch (\Exception $e) {
-            // If an exception occurred during validation, add it as an error
-            $errorManager->addError([
-                'type' => 'Validation',
-                'message' => $e->getMessage()
-            ], 'WaitManager');
+            $this->clearJsErrorTracer();
             throw $e;
         }
     }
@@ -674,5 +665,32 @@ if (!extracted && looksLikeUi5ErrorController) {
   }
 })();
 JS);
+    }
+
+    private function enableJsErrorTracer(): void
+    {
+        $this->getSession()->evaluateScript('window.exfLauncher.enableJsTracing();');
+    }
+
+
+    private function disableJsErrorTracer(): void
+    {
+        $this->session->evaluateScript('window.exfLauncher.disableJsTracing();');
+    }
+
+
+    private function clearJsErrorTracer(): void
+    {
+        $this->session->evaluateScript('window.exfLauncher.resetJsErrorLogs();');
+    }
+
+
+    private function getJsErrorsFromTracer(): array
+    {
+        return $this->session->evaluateScript("
+            return window.exfLauncher
+                .getJsErrorLogs()
+                .filter(e => e.level === 'error');
+        ");
     }
 }

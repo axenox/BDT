@@ -1105,36 +1105,43 @@ JS
         // Get the page or use provided parent element as search context
         $page = $this->getPage();
         $input = null;
+        $context = ($parent ?? $page);
 
-        // Find all label BDI elements (UI5 uses BDI for bidirectional text support)
-        $labelBdis = ($parent ?? $page)->findAll('css', 'label.sapMLabel > span > bdi');
+        // Use a descendant selector (space instead of '>') to find 'bdi' anywhere inside the label.
+        // This handles UI5 updates that inject extra wrapper divs like '.sapMLabelInner'.
+        $labelBdis = $context->findAll('css', 'label.sapMLabel bdi');
 
-        // Iterate through found labels to locate matching one
         foreach ($labelBdis as $labelBdi) {
-            if ($labelBdi->getText() === $caption) {
+            // Compare the trimmed text to avoid issues with hidden whitespace or newlines in UI5 labels
+            if (trim($labelBdi->getText()) === $caption) {
                 try {
-                    // Navigate from BDI to actual label element
-                    $sapMLabel = $labelBdi->getParent()->getParent();
-                    $labelFor = $sapMLabel->getAttribute('for');
+                    // Use XPath to climb up the DOM tree and find the nearest 'label' ancestor.
+                    // This is much safer than chained getParent() calls which break on structural changes.
+                    $labelElement = $labelBdi->find('xpath', './ancestor::label');
 
-                    // First attempt: Try to find input directly by ID
-                    $input = ($parent ?? $page)->findById($labelFor);
-
-                    // Second attempt: Look for inner input element
-                    // UI5 often wraps inputs in containers with -inner suffix
-                    if (!$input) {
-                        $input = ($parent ?? $page)->find('css', '#' . $labelFor . '-inner');
+                    if (!$labelElement) {
+                        continue;
                     }
 
-                    // Third attempt: Check for nested input within container
-                    // Some UI5 controls have complex DOM structures
+                    // UI5 labels use the 'for' attribute to point to the input's ID (usually the -inner ID).
+                    $labelFor = $labelElement->getAttribute('for');
+                    if (!$labelFor) {
+                        continue;
+                    }
+
+                    // Attempt 1: Try to find the input directly by the ID provided in the 'for' attribute.
+                    $input = $context->findById($labelFor);
+
+                    // Attempt 2: If not found directly, the 'for' ID might point to a container.
+                    // Look for the actual interactive input element within that container.
                     if (!$input) {
-                        $inputContainer = ($parent ?? $page)->find('css', '#' . $labelFor);
-                        if ($inputContainer) {
-                            $input = $inputContainer->find('css', 'input.sapMInputBaseInner');
+                        $container = $context->findById($labelFor);
+                        if ($container) {
+                            $input = $container->find('css', 'input.sapMInputBaseInner, input');
                         }
                     }
-                    // If input found, break the loop
+
+                    // Break the loop once the correct input is identified
                     if ($input) {
                         break;
                     }
