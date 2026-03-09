@@ -720,39 +720,12 @@ JS
                 Assert::assertNotNull($columnIndex, "Column '$columnName' not found in table");
 
                 // Check table cells
-                $rows = $table->findAll(
-                    'css',
-                    // data scrollers: fixed + scrollable
-                    '.sapUiTableCtrlFixed .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden), ' .
-                    '.sapUiTableCtrl .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden)'
-                );
+                $rows = $this->getTableRows($table);
                 $considered = 0;
                 $matches = 0;
                 $firstFailures = []; // collect first few failures for better error messages
                 foreach ($rows as $row) {
-                    if ($row->getAttribute('aria-hidden') === 'true') {
-                        continue;
-                    }
-
-                    $cells = $row->findAll('css', '.sapUiTableCell, .sapMListTblCell');
-                    if (count($cells) === 0) {
-                        continue; // row has no cells at all
-                    }
-                    if (!isset($cells[$columnIndex])) {
-                        continue;
-                    }
-                   
-                    // Extract visible text from the target cell
-                    $cell = $cells[$columnIndex];
-
-                    $cellText = $this->extractCellText($cell); // see helper below
-
-                    // Skip truly empty rows (no content at all)
-                    if ($cellText === '') {
-                        // If you want empty to be considered a value, remove this continue
-                        continue;
-                    }
-
+                    $cellText = $this->extractCellValueFromRow($row, $columnIndex);
                     $considered++;
 
                     // Strict comparison using your limited operator set
@@ -788,6 +761,55 @@ JS
                 $e
             );
         }
+    }
+
+    /**
+     * returns the rows of the given Datatable
+     * 
+     * @param NodeElement $table
+     * @return array
+     */
+    public function getTableRows(NodeElement $table): array
+    {
+        return $table->findAll(
+            'css',
+            // data scrollers: fixed + scrollable
+            '.sapUiTableCtrlFixed .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden), ' .
+            '.sapUiTableCtrl .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden)'
+        );
+    }
+
+    /**
+     * returns the cell value from requested index of the column and the row 
+     * 
+     * @param NodeElement $row
+     * @param int $columnIndex
+     * @return string|null
+     */
+    public function extractCellValueFromRow(NodeElement $row, int $columnIndex): ?string
+    {
+        if ($row->getAttribute('aria-hidden') === 'true') {
+            return null;
+        }
+
+        $cells = $row->findAll('css', '.sapUiTableCell, .sapMListTblCell');
+        if (count($cells) === 0) {
+            return null; // row has no cells at all
+        }
+        if (!isset($cells[$columnIndex])) {
+            return null;
+        }
+
+        // Extract visible text from the target cell
+        $cell = $cells[$columnIndex];
+
+        $cellText = $this->extractCellText($cell); // see helper below
+
+        // Skip truly empty rows (no content at all)
+        if ($cellText === '') {
+            return null;
+        }
+        return $cellText;
     }
     
     /**

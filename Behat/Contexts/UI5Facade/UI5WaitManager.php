@@ -440,7 +440,6 @@ JS);
             }
 
             // If any errors were found, throw an exception with the first error message
-            // which is not substep error
             foreach ($errorManager->getErrors() as $error) {
                 $errorManager->dropError($error);
                 throw new \RuntimeException($errorManager->formatErrorMessage($error));

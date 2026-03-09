@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
+use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\BDT\DataTypes\StepStatusDataType;
 use Behat\Gherkin\Node\TableNode;
 use Behat\Mink\Element\NodeElement;
@@ -377,7 +378,7 @@ JS;
                     $failed = true;
                 }
             }
-            if (! emtpy($skippedFilters)) {
+            if (! empty($skippedFilters)) {
                 // TODO Mark skipped filters with SKIPPED result code to make visible, that something is not good
                 $this->logSubstep('Skipped filters: ' . implode(', ', $skippedFilters));
             }
@@ -408,21 +409,22 @@ JS;
                 if ($button->isHidden()) {
                     continue;
                 }
-                $substepResult = $this->runAsSubstep(
-                    function () use ($filter, $widget, $logbook) {
-                        return $this->checkFilterWorksAsExpected($filter, $widget, $logbook);
-                    },
-                    'Filtering `' . $filter->getCaption() . '`',
-                    'Filtering',
-                    $logbook
-                );
-                if ($substepResult->isFailed()) {
-                    $failed = true;
+                //find visible button
+                $btn = $this->getBrowser()->findButtonByCaption($button->getCaption(), $this->getNodeElement());
+                if ($btn !== null) {
+                    $substepResult = $this->runAsSubstep(
+                        function () use ($button, $widget, $logbook, $btn) {
+                            $buttonNode = UI5FacadeNodeFactory::createFromNodeElement($button->getWidgetType(), $btn, $this->getSession(), $this->getBrowser());
+                            return $buttonNode->checkWorksAsExpected($logbook);
+                        },
+                        'Clicking button `' . $button->getCaption() . '`',
+                        'Clicking',
+                        $logbook
+                    );
+                    if ($substepResult->isFailed()) {
+                        $failed = true;
+                    }
                 }
-            }
-            if (! emtpy($skippedFilters)) {
-                // TODO Mark skipped filters with SKIPPED result code to make visible, that something is not good
-                $this->logSubstep('Skipped filters: ' . implode(', ', $skippedFilters));
             }
         }
         
@@ -434,7 +436,31 @@ JS;
         $logbook->addLine('Filtering`' . $filter->getCaption() . '`');
         // Get a valid value for filtering
         $filterAttr = $filter->getAttribute();
-        $filterVal = $this->getAnyValue($filterAttr, $filter, $dataWidget->getMetaObject());
+        // Verify the first DataTable contains the expected text in the specified column
+        // sometimes column captions are not the same as filter captions
+        $columnCaption = null;
+        $filterVal = null;
+        foreach ($dataWidget->getColumns() as $i => $column) {
+            if ($column->isHidden()) {
+                continue;
+            }
+            if ($column->getAttribute()->is($filterAttr)) {
+                $columnCaption = $column->getCaption();
+                break;
+            }
+            if (str_contains($column->getAttributeAlias(), $filter->getAttributeAlias()))
+            {
+                $columnCaption = $column->getCaption();
+                $filterVal = $this->getValueFromTable($i);
+                $filterVal = explode(',', $filterVal)[0];
+                $this->setInputDataType($column->getDataType());
+                break;
+            }
+        }
+        
+        if ($filterVal === null || $filterVal === '') {
+            $filterVal = $this->getAnyValue($filterAttr, $filter, $dataWidget->getMetaObject());
+        }
         $filterNode = $this->getBrowser()->getFilterByCaption($filter->getCaption());
         $logbook->continueLine(' with value `' . $filterVal . '`');
         $filterNode->setValue($filterVal);
@@ -447,23 +473,6 @@ JS;
 
         $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');
 
-        // Verify the first DataTable contains the expected text in the specified column
-        // sometimes column captions are not the same as filter captions
-        $columnCaption = null;
-        foreach ($dataWidget->getColumns() as $column) {
-            if ($column->isHidden()) {
-                continue;
-            }
-            if ($column->getAttribute()->is($filterAttr)) {
-                $columnCaption = $column->getCaption();
-                break;
-            }
-            if (str_contains($column->getAttributeAlias(), $filter->getAttributeAlias()))
-            {
-                $columnCaption = $column->getCaption();
-                break;
-            }
-        }
         if ($columnCaption !== null) {
             $this->getBrowser()->highlightWidget(
                 $filterNode->getNodeElement(),
@@ -697,5 +706,18 @@ JS;
     private function setInputDataType(DataTypeInterface $dataType): void
     {
         $this->inputDataType = $dataType;
+    }
+
+    private function getValueFromTable(int $columnIndex): ?string
+    {
+        $rows = $this->getBrowser()->getTableRows($this->getNodeElement());
+        $cellValue = null;
+        foreach ($rows as $row) {
+            $cellValue = $this->getBrowser()->extractCellValueFromRow($row, $columnIndex);
+            if ($cellValue !== null) {
+                break;
+            }
+        }
+        return $cellValue;
     }
 }
