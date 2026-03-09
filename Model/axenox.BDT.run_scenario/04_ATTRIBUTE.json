@@ -729,7 +729,7 @@
         {
             "_EXPORT_SUMMARY": "Duration [duration_time]",
             "CREATED_ON": "2026-02-26 15:19:56",
-            "MODIFIED_ON": "2026-02-26 15:19:56",
+            "MODIFIED_ON": "2026-03-09 13:44:46",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11f1925d3a23178a925d025041000001",
@@ -772,7 +772,9 @@
             "DATA_ADDRESS_PROPS": null,
             "DEFAULT_VALUE": "",
             "FIXED_VALUE": "",
-            "CUSTOM_DATA_TYPE": null
+            "CUSTOM_DATA_TYPE": {
+                "show_seconds": true
+            }
         }
     ],
     "totals_rows": [],
