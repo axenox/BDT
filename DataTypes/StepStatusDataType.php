@@ -50,26 +50,17 @@ class StepStatusDataType extends IntegerDataType implements EnumDataTypeInterfac
     {
         switch ($behatResultCode) {
             case TestResult::PASSED:
-            case 100:
                 $status = self::PASSED; break;
             case TestResult::SKIPPED:
-            case 98: 
                 $status = self::SKIPPED; break;
             case TestResult::PENDING: 
                 $status = self::PENDING; break;
             case TestResult::FAILED: 
-            case 101:
                 $status = self::FAILED; break;
             case 30: 
                 $status = self::UNDEFINED; break; // for `\Behat\Behat\Tester\Result\UndefinedStepResult`
-            case 110: 
-                $status = self::PASSED_PREVIOUSLY; break;
-            case 111: 
-                $status = self::FAILED_PREVIOUSLY; break;
-            case 102: 
-                $status = self::TIMEOUT; break;
             default:
-                $status = self::UNDEFINED;
+                $status = $behatResultCode;
         }
         return $status;
     }

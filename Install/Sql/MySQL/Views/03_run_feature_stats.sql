@@ -6,7 +6,7 @@ SELECT
     COALESCE(COUNT(ss.run_step_oid), 0) AS steps_total,
     COALESCE(SUM(ss.status = 100), 0) AS steps_passed,
     COALESCE(SUM(ss.status IN (101, 102)), 0) AS steps_failed,
-    COALESCE(SUM(ss.status = 99), 0) AS steps_skipped,
+    COALESCE(SUM(ss.status = 98), 0) AS steps_skipped,
 
     -- scenario statistics
     COALESCE(scen.scenarios_total, 0) AS scenarios_total,
@@ -29,7 +29,7 @@ FROM
             COUNT(*) AS scenarios_total,
             SUM(status = 100) AS scenarios_passed,
             SUM(status IN (101, 102)) AS scenarios_failed,
-            SUM(status = 99) AS scenarios_skipped
+            SUM(status = 98) AS scenarios_skipped
         FROM bdt_run_scenario_stats
         GROUP BY run_feature_oid
     ) scen ON scen.run_feature_oid = f.oid
