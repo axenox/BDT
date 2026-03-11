@@ -37,7 +37,7 @@ SELECT
         WHEN tags IS NULL THEN 'not ready'
         WHEN tags NOT LIKE '%Status::Ready%' THEN 'not ready'
         WHEN status IN (101, 102) THEN 'failed'
-        WHEN status = 99 THEN 'skipped'
+        WHEN status = 98 THEN 'skipped'
         WHEN status = 100 THEN 'passed'
         WHEN status = 10 THEN 'started'
         WHEN status = 0 THEN 'pending'

@@ -93,8 +93,14 @@ class UI5PageNode implements FacadeNodeInterface
 
         $logbook = new MarkdownLogBook($this->getCaption());
         DatabaseFormatter::addTestLogbook($logbook);
-        $resultCode = $facadeNode->checkWorksAsExpected($logbook);
-        self::$validatedAliases[$alias] = $resultCode;
+        try {
+            $resultCode = $facadeNode->checkWorksAsExpected($logbook);
+            self::$validatedAliases[$alias] = $resultCode;
+        }
+        catch (\Throwable $e) {
+            self::$validatedAliases[$alias] = StepStatusDataType::FAILED;
+            throw $e;
+        }
         return $resultCode;
     }
 

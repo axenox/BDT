@@ -428,7 +428,7 @@ JS;
             }
         }
         
-        return $failed ? stepStatusDataType::FAILED : stepStatusDataType::PASSED;
+        return $failed ? StepStatusDataType::FAILED : StepStatusDataType::PASSED;
     }
     
     protected function checkFilterWorksAsExpected(iFilterData $filter, iShowData $dataWidget, LogBookInterface $logbook) : ?string
@@ -458,7 +458,7 @@ JS;
             }
         }
         
-        if ($filterVal === null || $filterVal === '') {
+        if (empty(trim($filterVal))) {
             $filterVal = $this->getAnyValue($filterAttr, $filter, $dataWidget->getMetaObject());
         }
         $filterNode = $this->getBrowser()->getFilterByCaption($filter->getCaption());
@@ -620,7 +620,7 @@ JS;
             ->getCoreApp()
             ->getTranslator($this->getBrowser()->getLocale())
             ->translate($caption);
-        $button = $this->findVisibleButtonByCaption($buttonCaption, $this->getNodeElement());
+        $button = $this->findVisibleButtonByCaption($buttonCaption, true, $this->getNodeElement());
 
         Assert::assertNotNull($button, sprintf('Button %s was not found.', $buttonCaption));
         $this->getBrowser()->highlightWidget(

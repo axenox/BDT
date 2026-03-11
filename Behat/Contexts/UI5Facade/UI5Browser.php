@@ -88,8 +88,6 @@ class UI5Browser
         $this->locale = $locale;
         $this->pagesVisited[] = StringDataType::substringBefore($ui5AppUrl, '.html');
 
-        // Initialize XHR monitoring to track AJAX requests
-        $this->initializeXHRMonitoring();
         // Clear error log
         ErrorManager::getInstance()->clearErrors();
         // Initial app load using waitManager to ensure it's fully loaded

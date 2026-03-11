@@ -1,7 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\Events;
 
-use Behat\Testwork\Tester\Result\TestResult;
+use axenox\BDT\DataTypes\StepStatusDataType;
 
 class AfterSubstep extends BeforeSubstep
 {
@@ -11,7 +11,7 @@ class AfterSubstep extends BeforeSubstep
     public function __construct(string $stepName, ?string $category = null, ?\Throwable $exception = null, ?int $resultCode = null)
     {
         parent::__construct($stepName, $category);
-        $this->resultCode = $resultCode ?? ($exception ? TestResult::FAILED : TestResult::PASSED);
+        $this->resultCode = $resultCode ?? ($exception ? StepStatusDataType::FAILED : StepStatusDataType::PASSED);
         $this->exception = $exception;
     }
         
@@ -27,11 +27,11 @@ class AfterSubstep extends BeforeSubstep
     
     public function isPassed() : bool
     {
-        return $this->getResultCode() === TestResult::PASSED;
+        return StepStatusDataType::convertFromBehatResultCode($this->getResultCode()) === StepStatusDataType::PASSED;
     }
 
     public function isFailed() : bool
     {
-        return $this->getResultCode() === TestResult::FAILED;
+        return StepStatusDataType::convertFromBehatResultCode($this->getResultCode()) === StepStatusDataType::FAILED;
     }
 }
