@@ -693,32 +693,20 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             throw new RuntimeException("Button '$caption' not found in the current widget or page");
         }
 
-        if ($button) {
-            // highlight the button with highlightWidget
-            $this->getBrowser()->highlightWidget(
-                $button,
-                'Button',  // Widget type
-                0           // Index (0 for the first button)
-            );
+        // highlight the button with highlightWidget
+        $this->getBrowser()->highlightWidget(
+            $button,
+            'Button',  // Widget type
+            0           // Index (0 for the first button)
+        );
 
-            // button click process
-            try {
-                $button->click();
-            } catch (\Exception $e) {
-                //$this->debugButtonClickContext($button, $caption);
-                throw $e;
-            }
-        }
-
-        // Attempt to click the button
+        // button click process
         try {
             $button->click();
         } catch (\Exception $e) {
-            // If error occurs while clicking
             //$this->debugButtonClickContext($button, $caption);
             throw $e;
         }
-
     }
 
     /**

@@ -168,7 +168,7 @@ class UI5WaitManager
                 throw new Exception("UI5 controls failed to load");
             }
 
-            $this->enableJsErrorTracer();
+            $this->enableJsErrorTracer(); 
             // Extract application ID from URL and wait for it to be available
             $appId = substr($pageUrl, 0, strpos($pageUrl, '.html')) . '.app';
             $this->waitForAppId($appId);
@@ -342,21 +342,15 @@ class UI5WaitManager
     return (window.exfXHRLog && Array.isArray(window.exfXHRLog.errors)) ? window.exfXHRLog.errors : [];
 ');
             foreach ($errors as $error) {
-                if (($error['type'] ?? '') === 'NetworkError') 
-                {
-                    $errorManager->addError($error, 'HTTP');
-                } 
-                elseif (($error['type'] ?? '') === 'JSError') 
-                {
-                    $errorManager->addError($error, 'JavaScript');
-                }
-                elseif (($error['type'] ?? '') === 'AppError')
-                {
-                    $errorManager->addError($error, 'App');
-                } 
-                else {
-                    $errorManager->addError($error, 'XHR');
-                }
+                $type = $error['type'] ?? 'XHR';
+
+                $map = [
+                    'NetworkError' => 'HTTP',
+                    'JSError'      => 'JavaScript',
+                    'AppError'     => 'App'
+                ];
+
+                $errorManager->addError($error, $map[$type] ?? 'XHR');                
             }
             
             // 4) Popup (.exf-error) - primary source
@@ -386,21 +380,21 @@ JS);
             foreach ($popupErrors as $error) {
                 $errorManager->addError($error, 'Popup');
             }
-            
-            // Check for XHR (network) errors
-            $networkErrors = $this->getSession()->evaluateScript('
-                if (window.exfXHRLog && window.exfXHRLog.errors) {
-                    return window.exfXHRLog.errors;
-                }
-                return [];
-            ');
 
-            // echo "\n=== Network Errors ===\n";
-            // var_dump($networkErrors);
+            //check ui errors
+            $uiError = $this->getSession()->evaluateScript("
+                            var d = document.querySelector('.sapMDialog.sapMDialogError.sapMDialogOpen');
+                            if (!d) return null;
+                            
+                            var t = d.querySelector('.sapMText');
+                            return t ? t.innerText : 'UI error dialog';
+            ");
 
-            // Add each network error to the error manager
-            foreach ($networkErrors as $error) {
-                $errorManager->addError($error, 'XHR');
+            if ($uiError) {
+                $errorManager->addError([
+                    'type' => 'UIError',
+                    'message' => $uiError
+                ], 'UIError');
             }
 
             if(!$errorManager->hasErrors()) {

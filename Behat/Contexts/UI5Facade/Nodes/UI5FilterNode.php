@@ -69,6 +69,7 @@ class UI5FilterNode extends UI5AbstractNode
             $targetInput->setValue($value);
             return $this;
         }
+        throw new \RuntimeException("Could not find filter node");        
     }
 
 
@@ -91,14 +92,17 @@ class UI5FilterNode extends UI5AbstractNode
 
         // Click to open the dropdown
         $arrow->click();
-        // TODO for getPage() to work, we probably need to pass the page to the constructor of each FacadeNode
+
+        $lists = $this->getPage()->findAll('css', '.sapMList');
+        if (empty($lists)) {
+            throw new \RuntimeException("Could not find ComboBox dropdown list");
+        }
+
+        // take the last opened one
+        $list = end($lists);
+        
         // Find the option with matching text
-        $item = $this->getPage()->find(
-            'css',
-            ".sapMSelectList li:contains('{$value}'), " .
-            ".sapMComboBoxItem:contains('{$value}'), " .
-            ".sapMMultiComboBoxItem:contains('{$value}')"
-        );
+        $item = $list->find('named', ['content', $value]);
 
         if (!$item) {
             throw new \RuntimeException("Could not find option '{$value}' in ComboBox list");

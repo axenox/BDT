@@ -125,8 +125,16 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
         return $innerDomNode;
     }
     
-    public function findVisibleButtonByCaption(string $translated, ?NodeElement $scope = null): ?NodeElement
+    public function findVisibleButtonByCaption(string $caption, bool $isTranslated, ?NodeElement $scope = null): ?NodeElement
     {
+        if(! $isTranslated) {
+            $caption = $this->getBrowser()
+                ->getWorkbench()
+                ->getCoreApp()
+                ->getTranslator($this->getBrowser()->getLocale())
+                ->translate($caption);
+        }
+        
         // 1) Search scoped first (important in UI5: previous pages stay in DOM but are hidden)
         $contexts = [];
         if ($scope) {
@@ -144,9 +152,9 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
             or normalize-space(@title)=%s
             or normalize-space(@aria-label)=%s
         ]",
-            $this->xpathLiteral($translated),
-            $this->xpathLiteral($translated),
-            $this->xpathLiteral($translated)
+            $this->xpathLiteral($caption),
+            $this->xpathLiteral($caption),
+            $this->xpathLiteral($caption)
         );
 
         foreach ($contexts as $ctx) {
