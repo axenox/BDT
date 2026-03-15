@@ -7,7 +7,7 @@ use exface\Core\DataTypes\FilePathDataType;
 use exface\Core\DataTypes\ServerSoftwareDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\Actions\ActionInputMissingError;
-use exface\Core\Facades\ConsoleFacade\CommandRunner;
+use exface\Core\Facades\ConsoleFacade\CliCommandRunner;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Interfaces\Tasks\CliTaskInterface;
 use exface\Core\Interfaces\Tasks\TaskInterface;
@@ -239,7 +239,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
             $cmd = StringDataType::replacePlaceholders($cmd, [
                 '~workbench_path' => $this->getWorkbench()->getInstallationPath()
             ]);
-            yield from CommandRunner::runCliCommand($cmd);
+            yield from CliCommandRunner::runCliCommand($cmd);
         } else {
             // TODO get the default browser session from BaseConfig.yml
             yield 'No start command find for browser "' . $configKey . '" in app config file . ';
