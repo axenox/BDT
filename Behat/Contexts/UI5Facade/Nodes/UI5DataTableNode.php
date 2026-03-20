@@ -2,13 +2,16 @@
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
+use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
 use axenox\BDT\DataTypes\StepStatusDataType;
+use axenox\BDT\Exceptions\FacadeNodeException;
+use axenox\BDT\Interfaces\FacadeNodeInterface;
+use axenox\BDT\Interfaces\TestResultInterface;
 use Behat\Gherkin\Node\TableNode;
 use Behat\Mink\Element\NodeElement;
 use exface\Core\CommonLogic\Model\MetaObject;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\MarkdownDataType;
-use exface\Core\DataTypes\StringDataType;
 use exface\Core\Facades\DocsFacade;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Interfaces\DataTypes\DataTypeInterface;
@@ -227,16 +230,19 @@ JS;
         return $nodeElement->find($selector, $locator);
     }
 
-    public function getWidget() : ?WidgetInterface
+    public function getElementId() : string
     {
+        // Detect sap.ui.table.Table
         $innerNode = $this->find('css', '.sapUiTable');
         if ($innerNode) {
-            $page = $this->getBrowser()->getPageCurrent();
-            $widgetId = $innerNode->getAttribute('id');
-            $widgetId = StringDataType::substringAfter( $widgetId, ltrim($page->getUid(), '0') . '__');
-            return $page->getWidget($widgetId);
+            return $innerNode->getAttribute('id');
         }
-        return null;
+        // Detect sap.m.Table
+        $innerNode = $this->find('css', '.sapMTable');
+        if ($innerNode) {
+            return $innerNode->getAttribute('id');
+        }
+        throw new FacadeNodeException($this, 'Cannot get find facade element id for widget "' . $this->getWidgetType() . '"');
     }
 
     /**
@@ -316,7 +322,7 @@ JS;
      * @param LogBookInterface $logbook
      * @return void
      */
-    public function checkWorksAsExpected(LogBookInterface $logbook) : int
+    public function checkWorksAsExpected(LogBookInterface $logbook) : TestResultInterface
     {
         /* @var $widget \exface\Core\Widgets\DataTable */
         $widget = $this->getWidget();
@@ -332,19 +338,19 @@ JS;
         $logbook->addLine('Looking at ' . $widget->getWidgetType() . ' ' . $tableMd);
         Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
         
-        $event = $this->runAsSubstep(
-            function() use ($widget, $logbook) {
-                return $this->checkTableWorksAsExpected($widget, $logbook);
-                }, 
-                'Looking at ' . $widget->getWidgetType() . ' ' . $tableCaption, 
-                null, 
-                $logbook
+        $result = $this->runAsSubstep(
+            function(SubstepResult $result) use ($widget) {
+                return $this->checkTableWorksAsExpected($widget, $result->getLogbook());
+            }, 
+            'Looking at ' . $widget->getWidgetType() . ' ' . $tableCaption, 
+            null, 
+            $logbook
         );
 
-        return $event->getResultCode();
+        return $result;
     }
     
-    protected function checkTableWorksAsExpected(iShowData $widget, LogBookInterface $logbook) : int
+    protected function checkTableWorksAsExpected(iShowData $dataWidget, LogBookInterface $logbook) : TestResultInterface
     {
         $failed = false;
         $logbook->addIndent(1);
@@ -356,7 +362,7 @@ JS;
         } else {
             $skippedFilters = [];
             // Test regular filters
-            foreach ($widget->getFilters() as $filter) {
+            foreach ($dataWidget->getFilters() as $filter) {
                 if ($filter->isHidden()) {
                     // will be used as a filter to get a valid value
                     $this->hiddenFilters[] = $filter;
@@ -367,8 +373,8 @@ JS;
                     $skippedFilters[] = $filter->getCaption();
                 }
                 $substepResult = $this->runAsSubstep(
-                    function() use ($filter, $widget, $logbook) {
-                        return $this->checkFilterWorksAsExpected($filter, $widget, $logbook);
+                    function(SubstepResult $result) use ($filter, $dataWidget) {
+                        return $this->checkFilterWorksAsExpected($filter, $dataWidget, $result);
                     },
                     'Filtering `' . $filter->getCaption() . '`',
                     'Filtering',
@@ -383,7 +389,7 @@ JS;
                 $this->logSubstep('Skipped filters: ' . implode(', ', $skippedFilters));
             }
         }
-        $logbook->addIndent(-1);
+        
         /*
         // Test column caption filters
         foreach ($widget->getColumns() as $column) {
@@ -404,36 +410,55 @@ JS;
         // TODO Sorters
         
         // Buttons
-        if ($widget instanceof iHaveButtons) {
-            foreach ($widget->getButtons() as $button) {
-                if ($button->isHidden()) {
+        if ($dataWidget instanceof iHaveButtons) {
+            $skippedButtons = [];
+            foreach ($dataWidget->getButtons() as $buttonWidget) {
+                if ($buttonWidget->isHidden()) {
                     continue;
                 }
                 //find visible button
-                $btn = $this->getBrowser()->findButtonByCaption($button->getCaption(), $this->getNodeElement());
-                if ($btn !== null) {
+                $buttonNodeElement = $this->getBrowser()->findButtonByCaption($buttonWidget->getCaption(), $this->getNodeElement());
+                if ($buttonNodeElement !== null) {
                     $substepResult = $this->runAsSubstep(
-                        function () use ($button, $widget, $logbook, $btn) {
-                            $buttonNode = UI5FacadeNodeFactory::createFromNodeElement($button->getWidgetType(), $btn, $this->getSession(), $this->getBrowser());
-                            return $buttonNode->checkWorksAsExpected($logbook);
+                        function (SubstepResult $result) use ($dataWidget, $buttonWidget, $buttonNodeElement) {
+                            $buttonNode = UI5FacadeNodeFactory::createFromWidgetType($buttonWidget->getWidgetType(), $buttonNodeElement, $this->getSession(), $this->getBrowser());
+                            return $buttonNode->checkWorksAsExpected($result->getLogbook());
                         },
-                        'Clicking button `' . $button->getCaption() . '`',
-                        'Clicking',
+                        'Clicking button `' . $buttonWidget->getCaption() . '`',
+                        'Buttons',
                         $logbook
                     );
                     if ($substepResult->isFailed()) {
                         $failed = true;
                     }
+                } else {
+                    $skippedButtons[] = $buttonWidget->getCaption();
+                    $logbook->addLine('Skipping button `' . $buttonWidget->getCaption() . '` because not visible in UI');
                 }
             }
+            
+            if (! empty($skippedButtons)) {
+                $this->logSubstep('Skipped buttons: ' . implode(', ', $skippedButtons), StepStatusDataType::SKIPPED, 'Buttons');
+            }
         }
-        
-        return $failed ? StepStatusDataType::FAILED : StepStatusDataType::PASSED;
+
+        $logbook->addIndent(-1);
+        return $failed ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
     }
     
-    protected function checkFilterWorksAsExpected(iFilterData $filter, iShowData $dataWidget, LogBookInterface $logbook) : ?string
+    protected function checkFilterWorksAsExpected(iFilterData $filter, iShowData $dataWidget, SubstepResult $result) : SubstepResult
     {
+        $logbook = $result->getLogbook();
         $logbook->addLine('Filtering`' . $filter->getCaption() . '`');
+        
+        // Find and highlight the filter
+        $filterNode = $this->getBrowser()->getFilterByCaption($filter->getCaption());
+        $this->getBrowser()->highlightWidget(
+            $filterNode->getNodeElement(),
+            $filter->getWidgetType(),
+            0
+        );
+        
         // Get a valid value for filtering
         $filterAttr = $filter->getAttribute();
         // Verify the first DataTable contains the expected text in the specified column
@@ -461,7 +486,6 @@ JS;
         if (empty(trim($filterVal))) {
             $filterVal = $this->getAnyValue($filterAttr, $filter, $dataWidget->getMetaObject());
         }
-        $filterNode = $this->getBrowser()->getFilterByCaption($filter->getCaption());
         $logbook->continueLine(' with value `' . $filterVal . '`');
         $filterNode->setValue($filterVal);
 
@@ -474,18 +498,16 @@ JS;
         $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');
 
         if ($columnCaption !== null) {
-            $this->getBrowser()->highlightWidget(
-                $filterNode->getNodeElement(),
-                $filter->getWidgetType(),
-                0
-            );
             $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
                 ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
             ]);
-            $this->triggerReset();
-            $logbook->continueLine(' - resetting configurator');
         }
-        return $logbook->getLineActive();
+        
+        $filterNode->reset();
+        $logbook->continueLine(' - resetting filter');
+        
+        $result->setTitle($logbook->getLineActive() ?? $result->getTitle());
+        return $result;
     }
 
     protected function getAnyValue(MetaAttributeInterface $attr, Filter $filterWidget, MetaObject $metaObject, string $sort = null)
@@ -608,9 +630,10 @@ JS;
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(false,true,true);
     }
 
-    protected function triggerReset(): void
+    public function reset(): FacadeNodeInterface
     {
         $this->clickButtonByCaption('ACTION.RESETWIDGET.NAME');
+        return $this;
     }
 
     protected function clickButtonByCaption(string $caption): void

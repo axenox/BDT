@@ -1381,7 +1381,7 @@ JS
             if (!$nodeEl->isVisible()) {
                 continue;
             }
-            $nodes[] = UI5FacadeNodeFactory::createFromNodeElement($widgetType, $nodeEl, $this->getSession(), $this);
+            $nodes[] = UI5FacadeNodeFactory::createFromWidgetType($widgetType, $nodeEl, $this->getSession(), $this);
         }
 
         return $nodes;

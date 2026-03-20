@@ -4,14 +4,16 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
-use axenox\BDT\DataTypes\StepStatusDataType;
+use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
+use axenox\BDT\Interfaces\TestResultInterface;
 use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Session;
 use exface\Core\CommonLogic\Debugger\LogBooks\MarkdownLogBook;
 use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\UiPageInterface;
+use exface\Core\Interfaces\WidgetInterface;
 use PHPUnit\Framework\Assert;
 
 class UI5PageNode implements FacadeNodeInterface
@@ -67,7 +69,7 @@ class UI5PageNode implements FacadeNodeInterface
         return false;
     }
 
-    public function checkWorksAsExpected(LogBookInterface $logbook) : int
+    public function checkWorksAsExpected(LogBookInterface $logbook) : TestResultInterface
     {
         $alias = $this->pageSelector;
         if (null !== $prevState = (static::$validatedAliases[$alias] ?? null)) {
@@ -83,7 +85,7 @@ class UI5PageNode implements FacadeNodeInterface
 
         $widgetType = $rootWidget->getWidgetType();
 
-        $facadeNode = UI5FacadeNodeFactory::createFromNodeElement(
+        $facadeNode = UI5FacadeNodeFactory::createFromWidgetType(
             $widgetType,
             $rootNode,
             $this->getSession(),
@@ -91,17 +93,17 @@ class UI5PageNode implements FacadeNodeInterface
         );
 
 
-        $logbook = new MarkdownLogBook($this->getCaption());
+        $logbook ??= new MarkdownLogBook($this->getCaption());
         DatabaseFormatter::addTestLogbook($logbook);
         try {
-            $resultCode = $facadeNode->checkWorksAsExpected($logbook);
-            self::$validatedAliases[$alias] = $resultCode;
+            $result = $facadeNode->checkWorksAsExpected($logbook);
+            self::$validatedAliases[$alias] = $result;
         }
         catch (\Throwable $e) {
-            self::$validatedAliases[$alias] = StepStatusDataType::FAILED;
+            self::$validatedAliases[$alias] = SubstepResult::createFailed($e, $logbook);
             throw $e;
         }
-        return $resultCode;
+        return $result;
     }
 
     public static function findWidgetNode(NodeElement $innerDomNode) : NodeElement
@@ -112,5 +114,21 @@ class UI5PageNode implements FacadeNodeInterface
     public function getCaption(): string
     {
         return $this->getUiPage()->getName();
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function getWidget(): WidgetInterface
+    {
+        $this->getUiPage()->getWidgetRoot();
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function reset(): FacadeNodeInterface
+    {
+        $this->getWidget()->reset();
     }
 }

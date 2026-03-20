@@ -4,6 +4,8 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Mink\Element\NodeElement;
+use exface\Core\DataTypes\StringDataType;
+use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Factories\WidgetFactory;
 use exface\Core\Widgets\AbstractWidget;
 use Behat\Mink\Session;
@@ -36,7 +38,7 @@ class UI5FacadeNodeFactory
      * @return FacadeNodeInterface The created node object
      * @throws \Exception If node creation fails
      */
-    public static function createFromNodeElement(string $widgetType, NodeElement $nodeElement, Session $session, UI5Browser $browser): FacadeNodeInterface
+    public static function createFromWidgetType(string $widgetType, NodeElement $nodeElement, Session $session, UI5Browser $browser): FacadeNodeInterface
     {
         try {
             // Resolve the appropriate node class for the widget type
@@ -47,11 +49,41 @@ class UI5FacadeNodeFactory
             return new $class($nodeElement, $session, $browser);
         } catch (\Exception $e) {
             // Detailed Error Info
-            echo "Error in createFromNodeElement: " . $e->getMessage() . "\n";
+            echo "Error in createFromWidgetType: " . $e->getMessage() . "\n";
             echo "Widget Type: " . $widgetType . "\n";
             echo "Class Exists: " . (class_exists(UI5ButtonNode::class) ? 'Yes' : 'No') . "\n";
             throw $e;
         }
+    }
+    
+    public static function createFromNodeElement(NodeElement $nodeElement, Session $session, UI5Browser $browser) : FacadeNodeInterface
+    {
+        $cssClassString = $nodeElement->getAttribute('class');
+        $cssClasses = explode(' ', $cssClassString);
+        if (! in_array('exfw', $cssClasses)) {
+            $widgetNode = self::findParentWithWidgetClass($nodeElement);
+            if ($widgetNode) {
+                return self::createFromNodeElement($widgetNode, $session, $browser);
+            }
+            throw new RuntimeException('Cannot find widget node for DOM element `' . $nodeElement->getXpath() . '`');
+        }
+        foreach ($cssClasses as $cssClass) {
+            if (StringDataType::startsWith($cssClass, 'exfw-')) {
+                $widgetType = StringDataType::substringAfter($cssClass, 'exfw-');
+                return self::createFromWidgetType($widgetType, $nodeElement, $session, $browser);
+            }
+        }
+        throw new RuntimeException('Cannot use DOM element `' . $nodeElement->getXpath() . '` as a widget node: no `exfw-` CSS class found.');
+    }
+    
+    protected static function findParentWithWidgetClass(NodeElement $nodeElement) : ?NodeElement
+    {
+        while ($parent = $nodeElement->getParent()) {
+            if ($parent->hasClass('exfw')) {
+                return $parent;
+            }
+        }
+        return null;
     }
 
     /**

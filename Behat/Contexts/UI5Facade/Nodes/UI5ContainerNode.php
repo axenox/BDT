@@ -2,7 +2,9 @@
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
+use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
 use axenox\BDT\DataTypes\StepStatusDataType;
+use axenox\BDT\Interfaces\TestResultInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 
 class UI5ContainerNode extends UI5AbstractNode
@@ -13,10 +15,10 @@ class UI5ContainerNode extends UI5AbstractNode
         return '';
     }
 
-    public function checkWorksAsExpected(LogBookInterface $logbook) : int
+    public function checkWorksAsExpected(LogBookInterface $logbook) : TestResultInterface
     {
         $childWidgetNodes = $this->getNodeElement()->findAll('css', '.exfw');
-        $result = StepStatusDataType::STARTED;
+        $result = null;
         foreach ($childWidgetNodes as $childWidgetNode) {
             if($this->getNodeElement()->getAttribute('id')=== $childWidgetNode->getAttribute('id') ) {
                 continue;
@@ -25,9 +27,16 @@ class UI5ContainerNode extends UI5AbstractNode
                 continue;
             }
             $widgetType = $this->getBrowser()->getNodeWidgetType($childWidgetNode);
-            $node = UI5FacadeNodeFactory::createFromNodeElement($widgetType, $childWidgetNode, $this->getSession(), $this->getBrowser());
+            $node = UI5FacadeNodeFactory::createFromWidgetType($widgetType, $childWidgetNode, $this->getSession(), $this->getBrowser());
             $childResult = $node->checkWorksAsExpected($logbook);
-            $result = max($result, $childResult);
+            switch (true) {
+                case $childResult->isFailed():
+                    $result = SubstepResult::createFailed($childResult->getException(), $logbook);
+                    break;
+            }
+        }
+        if (! $result) {
+            $result = SubstepResult::createPassed($logbook);
         }
         return $result;
     }

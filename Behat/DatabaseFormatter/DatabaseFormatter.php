@@ -326,7 +326,7 @@ class DatabaseFormatter implements Formatter
         try{
             $result = $event->getTestResult();
             $ds = $this->stepDataSheet->extractSystemColumns();
-            $this->logStepEnd($ds, $this->stepStart, $result->getResultCode(), $result->getResultCode() === TestResult::FAILED ? $result->getException() : null, $this::$stepLogbooks);
+            $this->logStepEnd($ds, $this->stepStart, StepStatusDataType::convertFromBehatResultCode($result->getResultCode()), $result->getResultCode() === TestResult::FAILED ? $result->getException() : null, $this::$stepLogbooks);
         }
         catch(\Exception $e){
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
@@ -352,15 +352,15 @@ class DatabaseFormatter implements Formatter
         return $ds;
     }
     
-    protected function logStepEnd(DataSheetInterface $ds, float $stepStartTime, int $behatResultCode, ?\Throwable $e = null, array $logbooks = [], ?string $updatedTitle = null) : DataSheetInterface
+    protected function logStepEnd(DataSheetInterface $ds, float $stepStartTime, int $stepStatusCode, ?\Throwable $e = null, array $logbooks = [], ?string $updatedTitle = null) : DataSheetInterface
     {
         $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
         $ds->setCellValue('duration_ms', 0, $this->microtime() - $stepStartTime);
-        $ds->setCellValue('status', 0, StepStatusDataType::convertFromBehatResultCode($behatResultCode));
+        $ds->setCellValue('status', 0, $stepStatusCode);
         if ($updatedTitle !== null) {
             $ds->setCellValue('name', 0, mb_ucfirst($updatedTitle));
         }
-        if ($behatResultCode === TestResult::FAILED || $behatResultCode === StepStatusDataType::FAILED) {
+        if ($stepStatusCode === StepStatusDataType::FAILED) {
             if($this->provider->isCaptured()) {
                 $screenshotRelativePath = $this->provider->getPath() . DIRECTORY_SEPARATOR . $this->provider->getName();
                 $ds->setCellValue('screenshot_path', 0, $screenshotRelativePath);
