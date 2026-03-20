@@ -1,11 +1,11 @@
 {
     "BROWSERS.CHROME_DEBUG_API": {
-        "START_ON_WINDOWS": "\"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromePortable\\GoogleChromePortable.exe\" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --user-data-dir=\"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromeUserData\" --disable-gpu --no-sandbox --disable-dev-shm-usage --start-maximized --window-size=1920,1080 --auto-open-devtools-for-tabs",
+        "START_ON_WINDOWS": "start \"\" /b \"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromePortable\\GoogleChromePortable.exe\" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --user-data-dir=\"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromeUserData\" --disable-gpu --no-sandbox --disable-dev-shm-usage --start-maximized --window-size=1920,1080 --auto-open-devtools-for-tabs",
         "START_ON_UNIX": "",
         "OPTIONS": {}
     },
     "BROWSERS.CHROME_HEADLESS": {
-        "START_ON_WINDOWS": "\"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromePortable\\GoogleChromePortable.exe\" --headless --disable-extensions --no-sandbox --disable-gpu --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --user-data-dir=\"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromeUserData\"",
+        "START_ON_WINDOWS": "start \"\" /b \"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromePortable\\GoogleChromePortable.exe\" --headless --disable-extensions --no-sandbox --disable-gpu --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --user-data-dir=\"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromeUserData\"",
         "START_ON_UNIX": "",
         "OPTIONS": {}
     },
@@ -13,5 +13,5 @@
     "TEST_USER.PASSWORD": "BDT!test54321",
     "TEST_USER.FIRST_NAME": "BDT",
     "TEST_USER.LAST_NAME": "Test User",
-    "TEST_DOWNLOADS.DIRECTORY_WINDOWS": "C:\\Users\\ibrahim.karayilan\\Downloads"
+    "TEST_DOWNLOADS.DIRECTORY_WINDOWS": "%USERPROFILE%\\Downloads"
 }
