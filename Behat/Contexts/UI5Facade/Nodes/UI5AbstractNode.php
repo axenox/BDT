@@ -4,8 +4,10 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
+use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
 use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
+use axenox\BDT\Interfaces\TestResultInterface;
 use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Exception\DriverException;
@@ -23,6 +25,8 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
 
     /** @var UI5Browser|null */
     protected $browser;
+    
+    private ?WidgetInterface $widget = null;
 
     public function __construct(NodeElement $nodeElement, Session $session, UI5Browser $browser)
     {
@@ -70,11 +74,11 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
         return true;
     }
 
-    public function checkWorksAsExpected(LogBookInterface $logbook) : int
+    public function checkWorksAsExpected(LogBookInterface $logbook) : TestResultInterface
     {        
         $widgetType = $this->getWidgetType();
         $logbook->addLine( 'No checks defined at `' . $widgetType . '` ' . $this->getCaption());
-        return StepStatusDataType::PASSED;
+        return SubstepResult::createPassed($logbook);
     }
 
     /**
@@ -237,38 +241,82 @@ JS;
     {
         return $this->getNodeElement()->isVisible();
     }
-    
-    public function runAsSubstep(callable $callable, string $title, ?string $category = null, ?LogBookInterface $logbook = null) : AfterSubstep
+
+    /**
+     * Runs test substep defined by the given callable and returns the corresponding result object
+     * 
+     * The $callable will receive the default result object as argument and may modify it or return
+     * a new one. If the callable does not return anything, it will not fail - the default result
+     * will be used. If the callable throws an exception, a failed result will be created automatically
+     * 
+     * @param callable $callable
+     * @param string $title
+     * @param string|null $category
+     * @param LogBookInterface|null $logbook
+     * @return SubstepResult
+     */
+    public function runAsSubstep(callable $callable, string $title, ?string $category = null, ?LogBookInterface $logbook = null) : SubstepResult
     {
         $dispatcher = $this->getBrowser()->getEventDispatcher();
         $dispatcher->dispatch(new BeforeSubstep($title, $category));
         try {
-            $returnValue = $callable();
-            if (is_string($returnValue) && $returnValue !== '') {
-                $title = $returnValue;
+            $substepResult = SubstepResult::createPassed($logbook);
+            $substepResult->setTitle($title);
+            $returnValue = $callable($substepResult);
+            if ($returnValue instanceof SubstepResult) {
+                $substepResult = $returnValue;
             }
-            
-            if (is_int($returnValue)) {
-                $resultCode = $returnValue; // StepStatusDataType::PASSED/FAILED/SKIPPED
-            }
-            
-            $resultEvent = new AfterSubstep($title, $category, null, $resultCode ?? null);
         } catch (\Throwable $e) {
             $logbook?->addLine('**ERROR:** ' . $e->getMessage());
             $this->getBrowser()->captureScreenshot();
-            $resultEvent = new AfterSubstep($title, $category, $e, StepStatusDataType::FAILED);
+            $substepResult = SubstepResult::createFailed($e, $logbook);
             ErrorManager::getInstance()->logException($e, $this->getBrowser()->getWorkbench());
+            // IMPORTANT: reset the node to make sure subsequent tests find it in the same state as it
+            // would be if no error happened!
+            $logbook->continueLine(' - resetting ' . $this->getWidgetType());
+            $this->reset();
         }
+        $resultEvent = new AfterSubstep($substepResult, $substepResult->getTitle() ?? $title, $category);
         $dispatcher->dispatch($resultEvent);
-        return $resultEvent;
+        return $substepResult;
     }
 
     public function logSubstep(string $title, int $resultCode, ?string $category = null) : AfterSubstep
     {
         $dispatcher = $this->getBrowser()->getEventDispatcher();
         $dispatcher->dispatch(new BeforeSubstep($title, $category));
-        $resultEvent = new AfterSubstep($title, $category, null, $resultCode);
+        $result = new SubstepResult($resultCode);
+        $resultEvent = new AfterSubstep($result, $title, $category);
         $dispatcher->dispatch($resultEvent);
         return $resultEvent;
+    }
+
+    /**
+     * @return string
+     */
+    public function getElementId() : string
+    {
+        return $this->getNodeElement()->getAttribute('id');
+    }
+
+    /**
+     * @return WidgetInterface#
+     */
+    public function getWidget() : WidgetInterface
+    {
+        if ($this->widget === null) {
+            $elementId = $this->getElementId();
+            $this->widget = $this->getWidgetFromElementId($elementId);
+        }
+        return $this->widget;
+    }
+
+    /**
+     * {@inheritDoc}
+     * @see FacadeNodeInterface::reset()
+     */
+    public function reset() : FacadeNodeInterface
+    {
+        return $this;
     }
 }

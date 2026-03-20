@@ -3,6 +3,7 @@ namespace axenox\BDT\Interfaces;
 
 use Behat\Mink\Element\NodeElement;
 use exface\Core\Interfaces\Debug\LogBookInterface;
+use exface\Core\Interfaces\WidgetInterface;
 
 interface FacadeNodeInterface
 {
@@ -25,6 +26,11 @@ interface FacadeNodeInterface
     public function getWidgetType(): ?string;
 
     /**
+     * @return WidgetInterface#
+     */
+    public function getWidget() : WidgetInterface;
+
+    /**
      * Checks if the UI node can capture  focus
      * @return bool
      */
@@ -35,7 +41,7 @@ interface FacadeNodeInterface
      * @param LogBookInterface $logbook
      * @return int
      */
-    public function checkWorksAsExpected(LogBookInterface $logbook) : int;
+    public function checkWorksAsExpected(LogBookInterface $logbook) : TestResultInterface;
 
     /**
      * Returns the (outer) DOM node, that contains the entire widget, searching from the given inner node upwards
@@ -44,4 +50,9 @@ interface FacadeNodeInterface
      * @return NodeElement
      */
     public static function findWidgetNode(NodeElement $innerDomNode) : NodeElement;
+
+    /**
+     * @return FacadeNodeInterface
+     */
+    public function reset() : FacadeNodeInterface;
 }

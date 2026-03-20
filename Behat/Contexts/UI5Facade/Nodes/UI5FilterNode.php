@@ -1,8 +1,13 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
+use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
+use axenox\BDT\Exceptions\FacadeNodeException;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Mink\Element\NodeElement;
+use exface\Core\Exceptions\RuntimeException;
+use exface\Core\Widgets\Filter;
+use exface\UI5Facade\Facades\Elements\UI5Input;
 
 /**
  * Represents a UI5 Filter Node for handling various types of filter inputs
@@ -18,6 +23,8 @@ use Behat\Mink\Element\NodeElement;
  */
 class UI5FilterNode extends UI5AbstractNode
 {
+    private $inputNode = null;
+    
     /**
      * Retrieves the caption (label) of the filter node
      * 
@@ -45,91 +52,8 @@ class UI5FilterNode extends UI5AbstractNode
      */
     public function setValue(string $value): FacadeNodeInterface
     {
-        $filterNode = $this->getNodeElement();
-        // Check for ComboBox or MultiComboBox input
-        $comboBox = $filterNode->find('css', '.sapMComboBoxBase, .sapMMultiComboBox');
-        if ($comboBox) {
-            // Handle ComboBox input
-            $this->setValueOfComboBox($comboBox, $value);
-            return $this;
-        }
-
-        // Check for Select input
-        $select = $filterNode->find('css', '.sapMSelect');
-        if ($select) {
-            // Handle Select input
-            $this->setValueOfSelect($select, $value);
-            return $this;
-        }
-
-        // Check for standard input field
-        $targetInput = $filterNode->find('css', 'input.sapMInputBaseInner');
-        if ($targetInput) {
-            // Set the value for standard input
-            $targetInput->setValue($value);
-            return $this;
-        }
-        throw new \RuntimeException("Could not find filter node");        
-    }
-
-
-    /**
-     * Handles input into a ComboBox control
-     * Clicks the dropdown arrow and selects the option with matching text
-     * 
-     * @param NodeElement $comboBox The ComboBox control
-     * @param string $value The value to select from dropdown
-     * @return void
-     * @throws \RuntimeException If ComboBox arrow or option can't be found
-     */
-    public function setValueOfComboBox(NodeElement $comboBox, string $value): void
-    {
-        // Find the dropdown arrow button
-        $arrow = $comboBox->find('css', '.sapMInputBaseIconContainer');
-        if (!$arrow) {
-            throw new \RuntimeException("Could not find ComboBox dropdown arrow");
-        }
-
-        // Click to open the dropdown
-        $arrow->click();
-
-        $lists = $this->getPage()->findAll('css', '.sapMList');
-        if (empty($lists)) {
-            throw new \RuntimeException("Could not find ComboBox dropdown list");
-        }
-
-        // take the last opened one
-        $list = end($lists);
-        
-        // Find the option with matching text
-        $item = $list->find('named', ['content', $value]);
-
-        if (!$item) {
-            throw new \RuntimeException("Could not find option '{$value}' in ComboBox list");
-        }
-
-        $item->click();
-    }
-
-    /**
-     * Handles input into a Select control
-     * Selects the option with matching text from dropdown
-     * 
-     * @param NodeElement $select The Select control
-     * @param string $value The value to select
-     * @return void
-     * @throws \RuntimeException If option can't be found
-     */
-    public function setValueOfSelect(NodeElement $select, string $value): void
-    {
-        // Find the option with matching text
-        $item = $this->getPage()->find('css', ".sapMSelectList li:contains('{$value}')");
-
-        if (!$item) {
-            throw new \RuntimeException("Could not find option '{$value}' in Select list");
-        }
-
-        $item->click();
+        $this->getInputNode()->setValue($value);  
+        return $this;
     }
 
     /**
@@ -141,5 +65,45 @@ class UI5FilterNode extends UI5AbstractNode
     {
         // Directly get the page with session
         return $this->getSession()->getPage();
+    }
+
+    public function setValueEmpty()
+    {
+        $this->getInputNode()->setValueEmpty();
+        return $this;
+    }
+
+    /**
+     * {@inheritDoc}
+     * @see UI5AbstractNode::reset()
+     */
+    public function reset() : FacadeNodeInterface
+    {
+        return $this->setValueEmpty();
+    }
+    
+    public function getInputNode() : UI5InputNode
+    {
+        if ($this->inputNode === null) {
+            $inputEl = $this->getNodeElement()->find('css', "#{$this->getNodeElement()->getAttribute('id')} .exfw");
+            $this->inputNode = UI5FacadeNodeFactory::createFromNodeElement($inputEl, $this->getSession(), $this->getBrowser());
+
+            /*
+            $filterNode = $this->getNodeElement();
+            switch (true) {
+                // Check for Select and ComboBox or MultiComboBox input
+                case $node = $filterNode->find('css', '.sapMComboBoxBase, .sapMMultiComboBox'):
+                case $node = $filterNode->find('css', '.sapMSelect'):
+                    $this->inputNode = new UI5InputSelectNode($node, $this->getSession(), $this->getBrowser());
+                    break;
+                // Check for standard input field
+                case $node = $filterNode->find('css', '.sapMInput'):
+                    $this->inputNode = new UI5InputNode($node, $this->getSession(), $this->getBrowser());
+                    break;
+                default:
+                    throw new FacadeNodeException($this, "Could not find filter input node");
+            }*/
+        }
+        return $this->inputNode;
     }
 }
