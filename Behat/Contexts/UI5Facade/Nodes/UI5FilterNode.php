@@ -40,6 +40,14 @@ class UI5FilterNode extends UI5AbstractNode
     }
 
     /**
+     * @return array|bool|string|null
+     */
+    public function getValueVisible()
+    {
+        return $this->getInputNode()->getValueVisible();
+    }
+
+    /**
      * Sets the value for a filter input based on its control type
      * 
      * @param string $value

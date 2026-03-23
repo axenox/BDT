@@ -22,6 +22,7 @@ use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Interfaces\Widgets\iFilterData;
 use exface\Core\Interfaces\Widgets\iHaveButtons;
 use exface\Core\Interfaces\Widgets\iShowData;
+use exface\Core\Interfaces\Widgets\iSupportLazyLoading;
 use exface\Core\Widgets\Filter;
 use exface\Core\Widgets\InputComboTable;
 use exface\Core\Widgets\InputSelect;
@@ -29,6 +30,8 @@ use PHPUnit\Framework\Assert;
 
 class UI5DataTableNode extends UI5AbstractNode
 {
+    const CATEGORY_FILTERING = 'Filtering';
+    const CATEGORY_BUTTONS = 'Buttons';
 
     /* @var $hiddenFilters \exface\Core\Widgets\Filter[] */
     private array $hiddenFilters = [];
@@ -356,11 +359,13 @@ JS;
         $logbook->addIndent(1);
 
         // Filters
+        $skippedFilters = [];
         if (!$this->hasFilterHeader()) {
             $logbook->addLine('Filtering skipped - hidden headers not yet supported');
-            $this->logSubstep('Filtering skipped - hidden headers not yet supported', StepStatusDataType::SKIPPED);
+            foreach ($dataWidget->getFilters() as $filter) {
+                $skippedFilters['Hidden headers not yet supported'] = $filter->getCaption();
+            }
         } else {
-            $skippedFilters = [];
             // Test regular filters
             foreach ($dataWidget->getFilters() as $filter) {
                 if ($filter->isHidden()) {
@@ -377,17 +382,18 @@ JS;
                         return $this->checkFilterWorksAsExpected($filter, $dataWidget, $result);
                     },
                     'Filtering `' . $filter->getCaption() . '`',
-                    'Filtering',
+                    static::CATEGORY_FILTERING,
                     $logbook
                 );
                 if ($substepResult->isFailed()) {
                     $failed = true;
                 }
             }
-            if (! empty($skippedFilters)) {
-                // TODO Mark skipped filters with SKIPPED result code to make visible, that something is not good
-                $this->logSubstep('Skipped filters: ' . implode(', ', $skippedFilters));
-            }
+        }
+        
+        foreach ($skippedFilters as $reason => $captions) {
+            // TODO Mark skipped filters with SKIPPED result code to make visible, that something is not good
+            $this->logSubstep('Skipped filters: ' . implode(', ', $captions), StepStatusDataType::SKIPPED, $reason, static::CATEGORY_FILTERING);
         }
         
         /*
@@ -416,29 +422,48 @@ JS;
                 if ($buttonWidget->isHidden()) {
                     continue;
                 }
-                //find visible button
+                
+                // Make sure, the button is visible
                 $buttonNodeElement = $this->getBrowser()->findButtonByCaption($buttonWidget->getCaption(), $this->getNodeElement());
-                if ($buttonNodeElement !== null) {
-                    $substepResult = $this->runAsSubstep(
-                        function (SubstepResult $result) use ($dataWidget, $buttonWidget, $buttonNodeElement) {
-                            $buttonNode = UI5FacadeNodeFactory::createFromWidgetType($buttonWidget->getWidgetType(), $buttonNodeElement, $this->getSession(), $this->getBrowser());
-                            return $buttonNode->checkWorksAsExpected($result->getLogbook());
-                        },
-                        'Clicking button `' . $buttonWidget->getCaption() . '`',
-                        'Buttons',
-                        $logbook
-                    );
-                    if ($substepResult->isFailed()) {
-                        $failed = true;
-                    }
-                } else {
-                    $skippedButtons[] = $buttonWidget->getCaption();
+                if ($buttonNodeElement === null) {
+                    $skippedButtons['Button not visible'][] = $buttonWidget->getCaption();
                     $logbook->addLine('Skipping button `' . $buttonWidget->getCaption() . '` because not visible in UI');
+                    continue;
+                }
+                
+                // Make sure the action has everything it needs from the data widget
+                $action = $buttonWidget->getAction();
+                switch (true) {
+                    case $action === null:
+                        $skippedButtons['Button has no action'][] = $buttonWidget->getCaption();
+                        $logbook->addLine('Skipping button ' . $this->getCaption() . ' because it has no action');
+                        continue 2;
+                    case $action->getInputRowsMin() > 0:
+                        $skippedButtons['Button requires input data'][] = $buttonWidget->getCaption();
+                        $logbook->addLine('Skipping button ' . $this->getCaption() . ' because it requires ' . $action->getInputRowsMin() . ' lines of input');
+                        continue 2;
+                }
+                
+                // Press the button in a substep
+                $substepResult = $this->runAsSubstep(
+                    function (SubstepResult $result) use ($dataWidget, $buttonWidget, $buttonNodeElement) {
+                        $buttonNode = UI5FacadeNodeFactory::createFromWidgetType($buttonWidget->getWidgetType(), $buttonNodeElement, $this->getSession(), $this->getBrowser());
+                        return $buttonNode->checkWorksAsExpected($result->getLogbook());
+                    },
+                    'Clicking button `' . $buttonWidget->getCaption() . '`',
+                    static::CATEGORY_BUTTONS,
+                    $logbook
+                );
+                
+                // Say the buttons test is failed if at least one button fails
+                if ($substepResult->isFailed()) {
+                    $failed = true;
                 }
             }
             
-            if (! empty($skippedButtons)) {
-                $this->logSubstep('Skipped buttons: ' . implode(', ', $skippedButtons), StepStatusDataType::SKIPPED, 'Buttons');
+            // Log a SKIPPED substep for every reason to skip buttons
+            foreach ($skippedButtons as $reason => $buttons) {
+                $this->logSubstep('Skipped buttons: ' . implode(', ', $buttons), StepStatusDataType::SKIPPED, $reason, static::CATEGORY_BUTTONS);
             }
         }
 
@@ -477,25 +502,61 @@ JS;
             {
                 $columnCaption = $column->getCaption();
                 $filterVal = $this->getValueFromTable($i);
-                $filterVal = explode(',', $filterVal)[0];
+                if ($column->hasAggregator() && $column->getAggregator()->isList()) {
+                    $aggr = $column->getAggregator();
+                    $delimiter = $aggr->getArguments()[0] ?? null;
+                    if ($delimiter === null) {
+                        if ($column->isBoundToAttribute()) {
+                            $delimiter = $column->getAttribute()->getValueListDelimiter();
+                        } else {
+                            $delimiter = EXF_LIST_SEPARATOR;
+                        }
+                    }
+                    $filterVal = explode($delimiter, $filterVal)[0];
+                }
                 $this->setInputDataType($column->getDataType());
+                $logbook->continueLine(' with value `' . $filterVal . '` found in table column `' . $columnCaption . '`');
                 break;
             }
         }
         
-        if (empty(trim($filterVal))) {
+        // If no filter value found yet, search the data source
+        if (trim($filterVal ?? '') === '') {
             $filterVal = $this->getAnyValue($filterAttr, $filter, $dataWidget->getMetaObject());
+            if ($filterVal !== null) {
+                $logbook->continueLine(' with value `' . $filterVal . '` found in data source');
+            }
         }
-        $logbook->continueLine(' with value `' . $filterVal . '`');
+
+        if (trim($filterVal ?? '') === '') {
+            return SubstepResult::createSkipped('No value found for filter `' . $filter->getCaption() . '`', $logbook);
+            $logbook->continueLine(' no value found!');
+        }
         
-        $filterNode->setValueVisible($filterVal);
+        // Set the filter value
+        try {
+            $filterNode->setValueVisible($filterVal);
+        } catch (FacadeNodeException $e) {
+            $currentVal = $filterNode->getValueVisible();
+            if (($filter instanceof Filter) && $filter->getInputWidget() instanceof iSupportLazyLoading) {
+                if (stripos($currentVal, $filterVal) !== false) {
+                    $filterVal = $currentVal;
+                } 
+            } 
+            if ($filterVal !== $currentVal) {
+                throw new FacadeNodeException($this, 'Failed to set filter value for filter `' . $filter->getCaption() . '`. Tried value: `' . $filterVal . '`. Current value after setting: `' . $currentVal . '`', null, $e);
+            }
+        }
+        
+        
+        
         $this->triggerSearch();
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
-        
         $loadedRowCount = $this->getLoadedRowCount($dataWidget);
 
         $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');
 
+        // See if our 
         if ($columnCaption !== null) {
             $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
                 ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]

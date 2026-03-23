@@ -100,10 +100,6 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
         }
         
         switch (true) {
-            case $action->getInputRowsMin() > 0:
-                $result = SubstepResult::createSkipped($logbook);
-                $logbook->addLine('Skipping button ' . $this->getCaption() . ' because it requires ' . $action->getInputRowsMin() . ' lines of input');
-                break;
             case $action instanceof GoToPage:
                 $result = $this->checkActionGoToPage($action, $widget, $logbook);
                 break;
@@ -114,7 +110,7 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
                 $result = SubstepResult::createPassed($logbook);
                 break;
             default:
-                $result = SubstepResult::createSkipped($logbook);
+                $result = SubstepResult::createSkipped('Action ' . $action->getAliasOfPrototype() . ' not yet supprted', $logbook);
                 $logbook->addLine('Skipping button ' . $this->getCaption() . ' because action ' . $action->getAliasOfPrototype() . ' not supported yet');
             // TODO more action validation here??
         }

@@ -25,9 +25,11 @@ class SubstepResult implements TestResultInterface
         return new self(StepStatusDataType::PASSED, $logbook);
     }
 
-    public static function createSkipped(?LogBookInterface $logbook = null) : self
+    public static function createSkipped(string $reason, ?LogBookInterface $logbook = null) : self
     {
-        return new self(StepStatusDataType::SKIPPED, $logbook);
+        $result = new self(StepStatusDataType::SKIPPED, $logbook);
+        $result->setReason($reason);
+        return $result;
     }
 
     public static function createFailed(?\Throwable $exception = null, ?LogBookInterface $logbook = null) : self
@@ -95,6 +97,16 @@ class SubstepResult implements TestResultInterface
     {
         $this->title = $title;
         return $this;
+    }
+    
+    public function getReason() : ?string
+    {
+        if ($this->reason === null) {
+            if ($this->exception !== null) {
+                return $this->exception->getMessage();
+            }
+        }
+        return $this->reason;
     }
     
     public function setReason(string $reason) : SubstepResult

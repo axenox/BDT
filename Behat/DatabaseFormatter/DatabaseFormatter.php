@@ -352,11 +352,14 @@ class DatabaseFormatter implements Formatter
         return $ds;
     }
     
-    protected function logStepEnd(DataSheetInterface $ds, float $stepStartTime, int $stepStatusCode, ?\Throwable $e = null, array $logbooks = [], ?string $updatedTitle = null) : DataSheetInterface
+    protected function logStepEnd(DataSheetInterface $ds, float $stepStartTime, int $stepStatusCode, ?\Throwable $e = null, array $logbooks = [], ?string $updatedTitle = null, ?string $reason = null) : DataSheetInterface
     {
         $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
         $ds->setCellValue('duration_ms', 0, $this->microtime() - $stepStartTime);
         $ds->setCellValue('status', 0, $stepStatusCode);
+        if ($reason !== null) {
+            $ds->setCellValue('error_message', 0, $reason);
+        }
         if ($updatedTitle !== null) {
             $ds->setCellValue('name', 0, mb_ucfirst($updatedTitle));
         }
@@ -407,7 +410,7 @@ class DatabaseFormatter implements Formatter
     {
         try {
             $ds = $this->substepDataSheets[array_key_last($this->substepDataSheets)]->extractSystemColumns();
-            $this->logStepEnd($ds, $this->substepStart, $event->getResultCode(), $event->getException(), [], $event->getSubstepName());
+            $this->logStepEnd($ds, $this->substepStart, $event->getResultCode(), $event->getException(), [], $event->getSubstepName(), $event->getResult()->getReason());
             // Remove the top-most substep data sheet from the stack
             array_pop($this->substepDataSheets);
         }
