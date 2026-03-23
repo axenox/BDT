@@ -87,7 +87,7 @@
         {
             "_EXPORT_SUMMARY": "BDT step run [axenox.BDT.run_step]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-02-24 17:42:33",
+            "MODIFIED_ON": "2026-03-23 14:18:12",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11f0ac35222d57aeac35025041000001",
@@ -104,6 +104,7 @@
             "DATA_ADDRESS_PROPS": null,
             "DEFAULT_EDITOR_UXON": {
                 "widget_type": "Dialog",
+                "width": 3,
                 "widgets": [
                     {
                         "readonly": true,
@@ -141,14 +142,11 @@
                                                 "attribute_alias": "duration_ms"
                                             },
                                             {
-                                                "attribute_alias": "run_scenario"
+                                                "attribute_alias": "run_scenario__LABEL"
                                             },
                                             {
                                                 "attribute_alias": "line",
                                                 "id": "line"
-                                            },
-                                            {
-                                                "attribute_alias": "run_sequence_idx"
                                             },
                                             {
                                                 "attribute_alias": "status"
@@ -163,6 +161,7 @@
                                             },
                                             {
                                                 "attribute_alias": "error_message",
+                                                "widget_type": "Text",
                                                 "width": 2
                                             }
                                         ]
