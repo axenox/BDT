@@ -7,7 +7,7 @@ use Behat\Mink\Element\NodeElement;
 
 class UI5InputSelectNode extends UI5InputNode
 {
-    public function setValue($value) : FacadeNodeInterface
+    public function setValueVisible($value, bool $validate = true) : FacadeNodeInterface
     {
         $node = $this->getNodeElement();
         if ($node->hasClass('.sapMComboBoxBase')) {

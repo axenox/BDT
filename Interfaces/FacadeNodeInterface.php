@@ -4,8 +4,9 @@ namespace axenox\BDT\Interfaces;
 use Behat\Mink\Element\NodeElement;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\WidgetInterface;
+use exface\Core\Interfaces\WorkbenchDependantInterface;
 
-interface FacadeNodeInterface
+interface FacadeNodeInterface extends WorkbenchDependantInterface
 {
     /**
      * Retrieves the underlying Mink NodeElement for the current UI node

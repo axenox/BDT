@@ -42,17 +42,13 @@ class UI5FilterNode extends UI5AbstractNode
     /**
      * Sets the value for a filter input based on its control type
      * 
-     * Dynamically detects and handles different UI5 input control types:
-     * - ComboBox/MultiComboBox
-     * - Select
-     * - Standard Input
-     * 
-     * @param string $value The value to set in the filter
-     * @return FacadeNodeInterface The current filter node instance 
+     * @param string $value
+     * @param bool $validate
+     * @return FacadeNodeInterface
      */
-    public function setValue(string $value): FacadeNodeInterface
+    public function setValueVisible(string $value, bool $validate = true): FacadeNodeInterface
     {
-        $this->getInputNode()->setValue($value);  
+        $this->getInputNode()->setValueVisible($value, $validate);  
         return $this;
     }
 
@@ -67,9 +63,13 @@ class UI5FilterNode extends UI5AbstractNode
         return $this->getSession()->getPage();
     }
 
-    public function setValueEmpty()
+    /**
+     * @param bool $validate
+     * @return FacadeNodeInterface
+     */
+    public function setValueEmpty(bool $validate = true): FacadeNodeInterface
     {
-        $this->getInputNode()->setValueEmpty();
+        $this->getInputNode()->setValueEmpty($validate);
         return $this;
     }
 
@@ -85,24 +85,11 @@ class UI5FilterNode extends UI5AbstractNode
     public function getInputNode() : UI5InputNode
     {
         if ($this->inputNode === null) {
+            // Find the first widget inside the filter DOM node.
+            // Note, just calling `find()` will return the filter node itself because it has the `.exfw` class and
+            // also is a widget.
             $inputEl = $this->getNodeElement()->find('css', "#{$this->getNodeElement()->getAttribute('id')} .exfw");
             $this->inputNode = UI5FacadeNodeFactory::createFromNodeElement($inputEl, $this->getSession(), $this->getBrowser());
-
-            /*
-            $filterNode = $this->getNodeElement();
-            switch (true) {
-                // Check for Select and ComboBox or MultiComboBox input
-                case $node = $filterNode->find('css', '.sapMComboBoxBase, .sapMMultiComboBox'):
-                case $node = $filterNode->find('css', '.sapMSelect'):
-                    $this->inputNode = new UI5InputSelectNode($node, $this->getSession(), $this->getBrowser());
-                    break;
-                // Check for standard input field
-                case $node = $filterNode->find('css', '.sapMInput'):
-                    $this->inputNode = new UI5InputNode($node, $this->getSession(), $this->getBrowser());
-                    break;
-                default:
-                    throw new FacadeNodeException($this, "Could not find filter input node");
-            }*/
         }
         return $this->inputNode;
     }

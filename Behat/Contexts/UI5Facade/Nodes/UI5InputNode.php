@@ -3,7 +3,12 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Mink\Element\NodeElement;
+use PHPUnit\Framework\Assert;
 
+/**
+ *
+ * @method \exface\Core\Widgets\Input getWidget()
+ */
 class UI5InputNode extends UI5AbstractNode
 {
     public function getCaption() : string
@@ -11,17 +16,42 @@ class UI5InputNode extends UI5AbstractNode
         return '';
     }
     
-    public function setValue($value) : FacadeNodeInterface
+    public function getValueVisible()
     {
-        if ($inputEl = $this->findNativeDomElement()) {
-            $inputEl->setValue($value);
+        $val = null;
+        if ($inputDomNode = $this->findNativeDomNode()) {
+            $val = $inputDomNode->getValue();
+        }
+        return $val;
+    }
+    
+    public function setValueVisible($value, bool $validate = true) : FacadeNodeInterface
+    {
+        if ($inputDomNode = $this->findNativeDomNode()) {
+            $inputDomNode->setValue($value);
+        }
+        
+        if ($validate) {
+            $this->checkValueEquals($value);
         }
         return $this;
     }
 
-    public function setValueEmpty() : FacadeNodeInterface
+    public function setValueEmpty(bool $validate = true) : FacadeNodeInterface
     {
-        return $this->setValue('');
+        return $this->setValueVisible('', $validate);
+    }
+    
+    public function checkValueEquals($expectedValue) : FacadeNodeInterface
+    {
+        $newVal = $this->getValueVisible() ?? '';
+        Assert::assertEquals($expectedValue, $newVal, "Expected value `$expectedValue` does not match actual value `$newVal` in InputComboTable '{$this->getCaption()}'");
+        return $this;
+    }
+    
+    public function checkValueEmpty() : FacadeNodeInterface
+    {
+        return $this->checkValueEquals('');
     }
 
     /**
@@ -32,8 +62,15 @@ class UI5InputNode extends UI5AbstractNode
     {
         return $this->setValueEmpty();
     }
-    
-    protected function findNativeDomElement() : ?NodeElement
+
+    /**
+     * Returns a Mink NodeElement for the native HTML form element - e.g. <input>, <checkbox>, <textarea> or similar.
+     * 
+     * Returns NULL if this node does not have a native HTML form element.
+     * 
+     * @return NodeElement|null
+     */
+    protected function findNativeDomNode() : ?NodeElement
     {
         $widgetNodeElement = $this->getNodeElement();
         switch (true) {

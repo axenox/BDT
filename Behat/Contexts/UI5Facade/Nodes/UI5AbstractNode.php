@@ -6,6 +6,7 @@ use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
 use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
 use axenox\BDT\DataTypes\StepStatusDataType;
+use axenox\BDT\Exceptions\FacadeNodeScriptException;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use axenox\BDT\Interfaces\TestResultInterface;
 use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
@@ -17,6 +18,7 @@ use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\UiPageInterface;
 use exface\Core\Interfaces\WidgetInterface;
+use exface\Core\Interfaces\WorkbenchDependantInterface;
 
 abstract class UI5AbstractNode implements FacadeNodeInterface
 {
@@ -318,5 +320,43 @@ JS;
     public function reset() : FacadeNodeInterface
     {
         return $this;
+    }
+
+    /**
+     * Returns the result of the given JavaScript snippet
+     * 
+     * The script must evaluate to a scalar value. It is a good idea to wrap the script in an iife:
+     * 
+     * ```
+     *  (function(oInput, sDelim){
+     *      var aTokens = oInput.getTokens();
+     *      var sVal = '';
+     *      aTokens.forEach(function(oToken) {
+     *          sVal += (sVal === '' ? '' : sDelim) + oToken.getText();
+     *      });
+     *      return sVal;
+     *  })(sap.ui.getCore().byId('{$this->getElementId()}'), '{$this->getWidget()->getMultiSelectTextDelimiter()}')
+     * 
+     * ```
+     * 
+     * @param string $script
+     * @return mixed
+     */
+    protected function getFromJavascript(string $script)
+    {
+        try {
+            return $this->getSession()->evaluateScript($script);
+        } catch (\Throwable $e) {
+            throw new FacadeNodeScriptException($this, $script, $e->getCode(), null, $e);
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     * @see WorkbenchDependantInterface::getWorkbench()
+     */
+    public function getWorkbench()
+    {
+        return $this->getBrowser()->getWorkbench();
     }
 }

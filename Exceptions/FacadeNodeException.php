@@ -3,6 +3,8 @@ namespace axenox\BDT\Exceptions;
 
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use exface\Core\CommonLogic\UxonObject;
+use exface\Core\DataTypes\HtmlDataType;
+use exface\Core\DataTypes\MarkdownDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Factories\WidgetFactory;
 use exface\Core\Widgets\DebugMessage;
@@ -22,11 +24,15 @@ class FacadeNodeException extends RuntimeException
         return $this->node;
     }
 
-    //Creates a debug widget with the given DebugMessage and exception
+    /**
+     * {@inheritDoc}
+     * @see RuntimeException::createDebugWidget()
+     */
     public function createDebugWidget(DebugMessage $debugMessage)
     {
+        $debugMessage = parent::createDebugWidget($debugMessage);
         $tab = $debugMessage->createTab();
-        $tab->setCaption('Behat');
+        $tab->setCaption('DOM node');
         $tab->addWidget(WidgetFactory::createFromUxonInParent($tab, new UxonObject([
             'widget_type' => 'Markdown',
             'height' => '100%',
@@ -40,14 +46,20 @@ class FacadeNodeException extends RuntimeException
     
     protected function toMarkdown() : string
     {
+        $html = $this->getFacadeNode()->getNodeElement()->getOuterHtml();
+        try {
+            $html = HtmlDataType::prettify($html);
+        } catch (\Exception $e) {
+            $this->getFacadeNode()->getWorkbench()->getLogger()->logException($e->getMessage());
+        }
+        $html = MarkdownDataType::escapeCodeBlock($html, 'html');
         return <<<MD
 
 - Widget type: {$this->getFacadeNode()->getWidgetType()}
 - Caption: {$this->getFacadeNode()->getCaption()}
 
-```
-{$this->getFacadeNode()->getNodeElement()->getOuterHtml()}
-```
+{$html}
+
 MD;
 
     }

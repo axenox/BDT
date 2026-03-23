@@ -487,12 +487,11 @@ JS;
             $filterVal = $this->getAnyValue($filterAttr, $filter, $dataWidget->getMetaObject());
         }
         $logbook->continueLine(' with value `' . $filterVal . '`');
-        $filterNode->setValue($filterVal);
-
-        $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
+        
+        $filterNode->setValueVisible($filterVal);
         $this->triggerSearch();
-
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
+        
         $loadedRowCount = $this->getLoadedRowCount($dataWidget);
 
         $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');
