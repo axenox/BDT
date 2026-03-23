@@ -283,11 +283,14 @@ JS;
         return $substepResult;
     }
 
-    public function logSubstep(string $title, int $resultCode, ?string $category = null) : AfterSubstep
+    public function logSubstep(string $title, int $resultCode, ?string $reason, ?string $category = null) : AfterSubstep
     {
         $dispatcher = $this->getBrowser()->getEventDispatcher();
         $dispatcher->dispatch(new BeforeSubstep($title, $category));
         $result = new SubstepResult($resultCode);
+        if ($reason !== null) {
+            $result->setReason($reason);
+        }
         $resultEvent = new AfterSubstep($result, $title, $category);
         $dispatcher->dispatch($resultEvent);
         return $resultEvent;
