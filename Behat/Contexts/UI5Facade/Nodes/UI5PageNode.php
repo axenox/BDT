@@ -131,4 +131,13 @@ class UI5PageNode implements FacadeNodeInterface
     {
         $this->getWidget()->reset();
     }
+
+    /**
+     * {@inheritDoc}
+     * @see WorkbenchDependantInterface::getWorkbench()
+     */
+    public function getWorkbench()
+    {
+        return $this->getBrowser()->getWorkbench();
+    }
 }
