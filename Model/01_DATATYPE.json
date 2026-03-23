@@ -67,9 +67,9 @@
         {
             "_EXPORT_SUMMARY": "Test step status",
             "CREATED_ON": "2025-07-08 18:30:37",
-            "MODIFIED_ON": "2026-03-10 12:14:08",
+            "MODIFIED_ON": "2025-07-08 18:35:44",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11f0bdf2e0ed235cbdf2025041000001",
             "APP": "0x11efa2214f96c8b8a221025041000001",
             "NAME": "Test step status",
@@ -82,7 +82,7 @@
                 "color_only": false,
                 "color_scale": {
                     "10": "~WARNING",
-                    "98": "lightgray",
+                    "99": "lightgray",
                     "100": "~OK",
                     "101": "~ERROR"
                 }

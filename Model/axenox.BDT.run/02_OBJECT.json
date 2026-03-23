@@ -87,7 +87,7 @@
         {
             "_EXPORT_SUMMARY": "BDT test run [axenox.BDT.run]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-02-26 15:21:59",
+            "MODIFIED_ON": "2026-03-20 21:33:59",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11f08c1d222cd23e8c1d025041000001",
@@ -121,8 +121,39 @@
                                         "widget_type": "SplitHorizontal",
                                         "panels": [
                                             {
-                                                "caption": "Failed scenarios",
+                                                "caption": "Steps run",
                                                 "width": "50%",
+                                                "widgets": [
+                                                    {
+                                                        "widget_type": "Chart",
+                                                        "object_alias": "axenox.BDT.run_step_stats",
+                                                        "data": {
+                                                            "filters": [
+                                                                {
+                                                                    "attribute_alias": "run",
+                                                                    "hidden": true,
+                                                                    "required": true,
+                                                                    "value": "=run_uid_field",
+                                                                    "comparator": "=="
+                                                                }
+                                                            ],
+                                                            "aggregate_by_attribute_alias": [
+                                                                "run_scenario__LABEL",
+                                                                "status"
+                                                            ]
+                                                        },
+                                                        "series": [
+                                                            {
+                                                                "type": "bar",
+                                                                "x_attribute_alias": "run_step:COUNT",
+                                                                "y_attribute_alias": "status"
+                                                            }
+                                                        ]
+                                                    }
+                                                ]
+                                            },
+                                            {
+                                                "caption": "Scenarios run",
                                                 "widgets": [
                                                     {
                                                         "widget_type": "Chart",
@@ -151,9 +182,6 @@
                                                         ]
                                                     }
                                                 ]
-                                            },
-                                            {
-                                                "caption": "Something else"
                                             }
                                         ]
                                     }

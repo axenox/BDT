@@ -87,7 +87,7 @@
         {
             "_EXPORT_SUMMARY": "BDT scenario run [axenox.BDT.run_scenario]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-02-26 15:20:45",
+            "MODIFIED_ON": "2026-03-23 14:24:35",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11f08f0e222d25a48f0e025041000001",
@@ -104,6 +104,7 @@
             "DATA_ADDRESS_PROPS": null,
             "DEFAULT_EDITOR_UXON": {
                 "widget_type": "Dialog",
+                "width": 3,
                 "widgets": [
                     {
                         "widget_type": "Tabs",
@@ -173,13 +174,20 @@
                                         ],
                                         "columns": [
                                             {
-                                                "attribute_alias": "name"
+                                                "attribute_alias": "name",
+                                                "width": "550px"
                                             },
                                             {
                                                 "attribute_alias": "run_step_stats__status"
                                             },
                                             {
+                                                "attribute_alias": "details_flag"
+                                            },
+                                            {
                                                 "attribute_alias": "duration_time"
+                                            },
+                                            {
+                                                "attribute_alias": "error_message"
                                             },
                                             {
                                                 "attribute_alias": "error_log_id"
