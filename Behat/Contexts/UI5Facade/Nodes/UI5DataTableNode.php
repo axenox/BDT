@@ -201,7 +201,7 @@ JS;
         return $container->find('css', '.exfw-Filter, .exfw-RangeFilter') !== null;
     }
 
-    private function hasFilterHeader(): bool
+    private function hasHeader(): bool
     {
         return $this->findFilterHeaderContainer() !== null;
     }
@@ -360,10 +360,10 @@ JS;
 
         // Filters
         $skippedFilters = [];
-        if (!$this->hasFilterHeader()) {
+        if (! $this->hasHeader()) {
             $logbook->addLine('Filtering skipped - hidden headers not yet supported');
             foreach ($dataWidget->getFilters() as $filter) {
-                $skippedFilters['Hidden headers not yet supported'] = $filter->getCaption();
+                $skippedFilters['Hidden headers not yet supported'][] = $filter->getCaption();
             }
         } else {
             // Test regular filters
@@ -375,7 +375,7 @@ JS;
                 }
                 if (/* fiter not supported */ false) {
                     $logbook->addLine('Filtering ' . $filter->getCaption() . ' skipped');
-                    $skippedFilters[] = $filter->getCaption();
+                    $skippedFilters['Filter not supported'][] = $filter->getCaption();
                 }
                 $substepResult = $this->runAsSubstep(
                     function(SubstepResult $result) use ($filter, $dataWidget) {
@@ -544,7 +544,7 @@ JS;
                 } 
             } 
             if ($filterVal !== $currentVal) {
-                throw new FacadeNodeException($this, 'Failed to set filter value for filter `' . $filter->getCaption() . '`. Tried value: `' . $filterVal . '`. Current value after setting: `' . $currentVal . '`', null, $e);
+                throw new FacadeNodeException($this, 'Failed to set filter value for filter `' . $filter->getCaption() . '`. Tried value: `' . $filterVal . '` - got `' . $currentVal . '` when validating.', null, $e);
             }
         }
         
@@ -692,7 +692,11 @@ JS;
 
     public function reset(): FacadeNodeInterface
     {
-        $this->clickButtonByCaption('ACTION.RESETWIDGET.NAME');
+        if ($this->hasHeader()) {
+            $this->clickButtonByCaption('ACTION.RESETWIDGET.NAME');
+        } else {
+            $this->logSubstep('Skipped resetting ' . $this->getWidgetType(), StepStatusDataType::SKIPPED, 'Hidden headers not supported yet');
+        }
         return $this;
     }
 
@@ -730,7 +734,7 @@ JS;
                 return $node;
             }
         }
-        throw new \RuntimeException("Column '$caption' not found (visible header).");
+        throw new FacadeNodeException($this, "Column '$caption' not found (visible header).");
     }
 
     /**
@@ -802,5 +806,17 @@ JS;
             }
         }
         return $cellValue;
+    }
+
+    public function getWidgetType() : ?string
+    {
+        if (null !== $thisElementClass = UI5FacadeNodeFactory::findWidgetType($this->getNodeElement())) {
+            return $thisElementClass;
+        }
+        $panel = UI5FacadeNodeFactory::findParentWithWidgetClass($this->getNodeElement());
+        if ($panel !== null) {
+            return UI5FacadeNodeFactory::findWidgetType($panel);
+        }
+        throw new FacadeNodeException($this, 'Cannot find widget inside of DOM node "' . $this->getNodeElement()->getXpath() . '"');
     }
 }

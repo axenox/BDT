@@ -2,17 +2,17 @@
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
+use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
 use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
-use axenox\BDT\DataTypes\StepStatusDataType;
+use axenox\BDT\Exceptions\FacadeNodeException;
 use axenox\BDT\Exceptions\FacadeNodeScriptException;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use axenox\BDT\Interfaces\TestResultInterface;
 use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Exception\DriverException;
-use exface\Core\DataTypes\StringDataType;
 use Behat\Mink\Session;
 use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\Debug\LogBookInterface;
@@ -57,17 +57,14 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
     
     public function getWidgetType() : ?string
     {
-        $firstWidgetChild = $this->getNodeElement()->find('css', '.exfw');
-        $cssClasses = explode(' ', $firstWidgetChild->getAttribute('class'));
-        foreach ($cssClasses as $class) {
-            if ($class === '.exfw') {
-                continue;
-            }
-            if (StringDataType::startsWith($class, 'exfw-')) {
-                $widgetType = StringDataType::substringAfter($class, 'exfw-');
-                break;
-            }
+        if (null !== $thisElementClass = UI5FacadeNodeFactory::findWidgetType($this->getNodeElement())) {
+            return $thisElementClass;
         }
+        $firstWidgetChild = $this->getNodeElement()->find('css', '.exfw');
+        if (! $firstWidgetChild) {
+            throw new FacadeNodeException($this, 'Cannot find widget inside of DOM node "' . $this->getNodeElement()->getXpath() . '"');
+        }
+        $widgetType = UI5FacadeNodeFactory::findWidgetType($firstWidgetChild);
         return $widgetType;
     }
 
@@ -292,6 +289,15 @@ JS;
             $result->setReason($reason);
         }
         $resultEvent = new AfterSubstep($result, $title, $category);
+        $dispatcher->dispatch($resultEvent);
+        return $resultEvent;
+    }
+    
+    protected function logSubstepResult(SubstepResult $result, ?string $category = null) : AfterSubstep
+    {
+        $dispatcher = $this->getBrowser()->getEventDispatcher();
+        $dispatcher->dispatch(new BeforeSubstep($result->getTitle(), $category));
+        $resultEvent = new AfterSubstep($result, $result->getTitle(), $category);
         $dispatcher->dispatch($resultEvent);
         return $resultEvent;
     }
