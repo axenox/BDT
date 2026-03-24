@@ -121,7 +121,7 @@ class UI5PageNode implements FacadeNodeInterface
      */
     public function getWidget(): WidgetInterface
     {
-        $this->getUiPage()->getWidgetRoot();
+        return $this->getUiPage()->getWidgetRoot();
     }
 
     /**
@@ -130,6 +130,7 @@ class UI5PageNode implements FacadeNodeInterface
     public function reset(): FacadeNodeInterface
     {
         $this->getWidget()->reset();
+        return $this;
     }
 
     /**
@@ -139,5 +140,10 @@ class UI5PageNode implements FacadeNodeInterface
     public function getWorkbench()
     {
         return $this->getBrowser()->getWorkbench();
+    }
+
+    public function checkDisabled(): bool
+    {
+       return false;
     }
 }
