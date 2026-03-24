@@ -140,7 +140,7 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
                     )
                 );
 
-                $logbook->addLine('Clicking Tile [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
+                $logbook->addLine('Clicking ' . $this->getWidgetType() . ' [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
                 $logbook->addIndent(+1);
 
                 try {
@@ -156,14 +156,17 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
                 
                 return $result;
             },
-            'Clicking ' . $this->getWidgetType() . ' ' . $this->getCaption(),
+            $this->buildMessageClicking(false),
             'Pages',
             $logbook
         );
         return $result;
     }
 
-
+    protected function buildMessageClicking(bool $markdown) : string
+    {
+        return 'Clicking ' . $this->getWidgetType() . ' "' . $this->getCaption() . '"';
+    }
 
     protected function checkActionShowDialog(iShowDialog $action, iTriggerAction $widget, LogBookInterface $logbook) : SubstepResult
     {
@@ -182,7 +185,7 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
                     'Cannot find dialog with id `' . $expectedId . '` after clicking tile `' . $widget->getCaption() . '`.'
                 );
             },
-            'Clicking ' . $this->getWidgetType() . ' ' . $this->getCaption(),
+            $this->buildMessageClicking(false),
             'Pages',
             $logbook
         );

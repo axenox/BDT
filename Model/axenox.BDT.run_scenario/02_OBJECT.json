@@ -87,7 +87,7 @@
         {
             "_EXPORT_SUMMARY": "BDT scenario run [axenox.BDT.run_scenario]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-03-23 14:24:35",
+            "MODIFIED_ON": "2026-03-24 15:59:07",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11f08f0e222d25a48f0e025041000001",
@@ -181,7 +181,8 @@
                                                 "attribute_alias": "run_step_stats__status"
                                             },
                                             {
-                                                "attribute_alias": "details_flag"
+                                                "attribute_alias": "details_flag",
+                                                "caption": "Log"
                                             },
                                             {
                                                 "attribute_alias": "duration_time"
