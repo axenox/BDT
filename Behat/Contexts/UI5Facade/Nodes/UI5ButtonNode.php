@@ -37,7 +37,7 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
     public function click(): void
     {
         $this->getNodeElement()->click();
-        $this->getBrowser()->getWaitManager()->waitForPendingOperations();
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
 
         // check exf-dialog-close class for action
         if ($this->isDialogCloseButton()) {
@@ -110,7 +110,7 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
                 $result = SubstepResult::createPassed($logbook);
                 break;
             default:
-                $result = SubstepResult::createSkipped('Action ' . $action->getAliasOfPrototype() . ' not yet supprted', $logbook);
+                $result = SubstepResult::createSkipped('Action ' . $action->getAliasOfPrototype() . ' not yet supported', $logbook);
                 $logbook->addLine('Skipping button ' . $this->getCaption() . ' because action ' . $action->getAliasOfPrototype() . ' not supported yet');
             // TODO more action validation here??
         }
@@ -126,8 +126,8 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
 
         // Substep should fail if the page cannot be loaded (shows an error) - otherwise the substep for
         // the click is passed, and we go on checking the page
-        $this->runAsSubstep(
-            function(SubstepResult $result) use ($expectedAlias, $widget) {
+        $result = $this->runAsSubstep(
+            function(SubstepResult $result) use ($expectedAlias, $widget, $logbook) {
                 $this->click();
                 $realAlias = $this->getBrowser()->getPageCurrent()->getAliasWithNamespace();
                 Assert::assertSame(
@@ -140,25 +140,27 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
                         $expectedAlias
                     )
                 );
+
+                $logbook->addLine('Clicking Tile [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
+                $logbook->addIndent(+1);
+
+                try {
+                    $pageNode = new UI5PageNode($expectedAlias, $this->getSession(), $this->getBrowser());
+                    $result = $pageNode->checkWorksAsExpected($logbook);
+                } catch (\Throwable $e) {
+                    $result = substepResult::createFailed($e, $logbook);
+                    $logbook->addLine('**Failed** to check if page `' . $expectedAlias . '` works as expected - skipping to next widget. ' . CliOutputPrinter::printExceptionMessage($e));
+                }
+                $this->getBrowser()->navigateToPreviousPage();
+                $logbook->addLine('Pressing browser back button');
+                $logbook->addIndent(-1);
+                
+                return $result;
             },
-            'Clicking Tile ' . $this->getCaption(),
+            'Clicking ' . $this->getWidgetType() . ' ' . $this->getCaption(),
             'Pages',
             $logbook
         );
-
-        $logbook->addLine('Clicking Tile [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
-        $logbook->addIndent(+1);
-
-        try {
-            $pageNode = new UI5PageNode($expectedAlias, $this->getSession(), $this->getBrowser());
-            $result = $pageNode->checkWorksAsExpected($logbook);
-        } catch (\Throwable $e) {
-            $result = substepResult::createFailed($e, $logbook);
-            $logbook->addLine('**Failed** to check if page `' . $expectedAlias . '` works as expected - skipping to next widget. ' . CliOutputPrinter::printExceptionMessage($e));
-        }
-        $this->getBrowser()->navigateToPreviousPage();
-        $logbook->addLine('Pressing browser back button');
-        $logbook->addIndent(-1);
         return $result;
     }
 
@@ -204,7 +206,7 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
         } catch (\Throwable $e) {
             $result = SubstepResult::createFailed($e, $logbook);
             $this->closeErrorDialog();
-            $logbook->addLine('**Failed** to check if dialog `' . $expectedId . '` works as expected - skipping to next widget. ' . $e->getMessage());
+            $logbook->addLine('**Failed** to check if dialog `' . $expectedId . '` works as expected - skipping to next widget. ' . CliOutputPrinter::printExceptionMessage($e->getMessage()));
         }
         return $result;
     }
