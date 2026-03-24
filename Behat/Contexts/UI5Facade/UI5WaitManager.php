@@ -383,7 +383,7 @@ JS);
 
             //check ui errors
             $uiError = $this->getSession()->evaluateScript("
-                            var d = document.querySelector('.sapMDialog.sapMDialogError.sapMDialogOpen');
+                            var d = document.querySelector('.sapMDialogError');
                             if (!d) return null;
                             
                             var t = d.querySelector('.sapMText');
