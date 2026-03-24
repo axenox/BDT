@@ -36,17 +36,28 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
         $this->session = $session;
         $this->browser = $browser;
     }
-    
+
+    /**
+     * @return Session
+     */
     public function getSession() : Session
     {
         return $this->session;
-    }  
+    }
 
+    /**
+     * Returns the Mink DOM node element representing the widget.
+     * 
+     * @return NodeElement
+     */
     public function getNodeElement() : NodeElement
     {
         return $this->domNode;
     }
 
+    /**
+     * @return UI5Browser
+     */
     public function getBrowser(): UI5Browser
     {
         if ($this->browser === null) {
@@ -54,7 +65,16 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
         }
         return $this->browser;
     }
-    
+
+    /**
+     * {@inheritDoc}
+     * @see FacadeNodeInterface::getCaption()
+     */
+    public function getCaption(): string
+    {
+        return strstr($this->getNodeElement()->getAttribute('aria-label'), "\n", true);
+    }
+
     public function getWidgetType() : ?string
     {
         if (null !== $thisElementClass = UI5FacadeNodeFactory::findWidgetType($this->getNodeElement())) {

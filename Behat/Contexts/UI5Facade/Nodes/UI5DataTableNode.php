@@ -27,7 +27,11 @@ use exface\Core\Widgets\Filter;
 use exface\Core\Widgets\InputComboTable;
 use exface\Core\Widgets\InputSelect;
 use PHPUnit\Framework\Assert;
+use PHPUnit\Framework\ExpectationFailedException;
 
+/**
+ * @method \exface\Core\Widgets\DataTable getWidget()
+ */
 class UI5DataTableNode extends UI5AbstractNode
 {
     const CATEGORY_FILTERING = 'Filtering';
@@ -240,7 +244,6 @@ class UI5DataTableNode extends UI5AbstractNode
     {
         /* @var $widget \exface\Core\Widgets\DataTable */
         $widget = $this->getWidget();
-        $elementId = $this->getElementIdFromWidget($widget);
         
         Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
         $expectedButtons = [];
@@ -310,25 +313,15 @@ class UI5DataTableNode extends UI5AbstractNode
      */
     public function checkWorksAsExpected(LogBookInterface $logbook) : TestResultInterface
     {
-        /* @var $widget \exface\Core\Widgets\DataTable */
         $widget = $this->getWidget();
-        $mainObject = $widget->getMetaObject();
-        if (! empty($this->getCaption())) {
-            $tableMd = '`' . $this->getCaption() . '`';
-            $tableCaption = $this->getCaption();
-        } else {
-            $tableMd = '[' . MarkdownDataType::escapeString($mainObject->__toString()) . '](' . DocsFacade::buildUrlToDocsForMetaObject($mainObject) . ')';
-            $tableCaption = $mainObject->__toString();
-        }
-
-        $logbook->addLine('Looking at ' . $widget->getWidgetType() . ' ' . $tableMd);
+        $logbook->addLine($this->buildMessageLookingAt(true));
         Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
         
         $result = $this->runAsSubstep(
             function(SubstepResult $result) use ($widget) {
                 return $this->checkTableWorksAsExpected($widget, $result->getLogbook());
             }, 
-            'Looking at ' . $widget->getWidgetType() . ' ' . $tableCaption, 
+            $this->buildMessageLookingAt(false), 
             null, 
             $logbook
         );
@@ -343,35 +336,36 @@ class UI5DataTableNode extends UI5AbstractNode
 
         // Filters
         $skippedFilters = [];
-        if (! $this->hasHeader()) {
-            $logbook->addLine('Filtering skipped - hidden headers not yet supported');
-            foreach ($dataWidget->getFilters() as $filter) {
-                $skippedFilters['Hidden headers not yet supported'][] = $filter->getCaption();
+        $hasHeader = $this->hasHeader();
+        foreach ($dataWidget->getFilters() as $filter) {
+            if ($filter->isHidden()) {
+                // will be used as a filter to get a valid value
+                $this->hiddenFilters[] = $filter;
+                continue;
             }
-        } else {
-            // Test regular filters
-            foreach ($dataWidget->getFilters() as $filter) {
-                if ($filter->isHidden()) {
-                    // will be used as a filter to get a valid value
-                    $this->hiddenFilters[] = $filter;
-                    continue;
-                }
-                if (/* fiter not supported */ false) {
-                    $logbook->addLine('Filtering ' . $filter->getCaption() . ' skipped');
-                    $skippedFilters['Filter not supported'][] = $filter->getCaption();
-                }
-                $substepResult = $this->runAsSubstep(
-                    function (SubstepResult $result) use ($filter, $dataWidget) {
-                        return $this->checkFilterWorksAsExpected($filter, $dataWidget, $result);
-                    },
-                    'Filtering `' . $filter->getCaption() . '`',
-                    static::CATEGORY_FILTERING,
-                    $logbook
-                );
-                $this->getBrowser()->clearWidgetHighlights();
-                if ($substepResult->isFailed()) {
-                    $failed = true;
-                }
+
+            // TODO how need to test filter in the configurator dialog too!
+            if (! $hasHeader) {
+                $logbook->addLine('Skipping filter ' . $filter->getCaption() . ' - hidden headers not yet supported');
+                $skippedFilters['Hidden headers not yet supported'][] = $filter->getCaption();
+                continue;
+            }
+            
+            if (/* fiter not supported */ false) {
+                $logbook->addLine('Filtering ' . $filter->getCaption() . ' skipped');
+                $skippedFilters['Filter not supported'][] = $filter->getCaption();
+            }
+            $substepResult = $this->runAsSubstep(
+                function (SubstepResult $result) use ($filter, $dataWidget) {
+                    return $this->checkFilterWorksAsExpected($filter, $dataWidget, $result);
+                },
+                'Filtering `' . $filter->getCaption() . '`',
+                static::CATEGORY_FILTERING,
+                $logbook
+            );
+            $this->getBrowser()->clearWidgetHighlights();
+            if ($substepResult->isFailed()) {
+                $failed = true;
             }
         }
         
@@ -529,11 +523,12 @@ class UI5DataTableNode extends UI5AbstractNode
         // Set the filter value
         try {
             $filterNode->setValueVisible($filterVal);
-        } catch (FacadeNodeException $e) {
+        } catch (FacadeNodeException|ExpectationFailedException $e) {
             $currentVal = $filterNode->getValueVisible();
             if (($filter instanceof Filter) && $filter->getInputWidget() instanceof iSupportLazyLoading) {
                 if (stripos($currentVal, $filterVal) !== false) {
                     $filterVal = $currentVal;
+                    $logbook->continueLine(' (changed to `' . $filterVal . '` because it was autosuggested)');
                 } 
             } 
             if ($filterVal !== $currentVal) {
@@ -557,7 +552,7 @@ class UI5DataTableNode extends UI5AbstractNode
         $filterNode->reset();
         $logbook->continueLine(' - resetting filter');
         
-        $result->setTitle($logbook->getLineActive() ?? $result->getTitle());
+        $result->setTitle($result->getTitle() . ' with value "' . $filterVal . '"');
         return $result;
     }
 
@@ -833,5 +828,25 @@ class UI5DataTableNode extends UI5AbstractNode
         }
 
         return str_ends_with($text, $suffix);
+    }
+    
+    protected function buildMessageLookingAt(bool $markdown) : string
+    {
+        $widget = $this->getWidget();
+        $mainObject = $widget->getMetaObject();
+        if (! empty($this->getCaption())) {
+            if ($markdown) {
+                $msg = '`' . $this->getCaption() . '`';
+            } else {
+                $msg = '"' . $this->getCaption() . '"';
+            } 
+        } else {
+            if ($markdown) {
+                $msg = '[' . MarkdownDataType::escapeString($mainObject->__toString()) . '](' . DocsFacade::buildUrlToDocsForMetaObject($mainObject) . ')';
+            } else {
+                $msg = $mainObject->__toString();
+            }
+        }
+        return 'Looking at ' . $widget->getWidgetType() . ' ' . $msg;
     }
 }
