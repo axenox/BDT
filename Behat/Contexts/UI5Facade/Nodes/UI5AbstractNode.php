@@ -362,4 +362,9 @@ JS;
     {
         return $this->getBrowser()->getWorkbench();
     }
+    
+    public function checkDisabled(): bool
+    {
+        return false;
+    }
 }
