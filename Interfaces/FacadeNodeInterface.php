@@ -56,4 +56,6 @@ interface FacadeNodeInterface extends WorkbenchDependantInterface
      * @return FacadeNodeInterface
      */
     public function reset() : FacadeNodeInterface;
+    
+    public function checkDisabled(): bool;
 }

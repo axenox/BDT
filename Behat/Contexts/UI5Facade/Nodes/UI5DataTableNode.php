@@ -89,26 +89,9 @@ class UI5DataTableNode extends UI5AbstractNode
         return $nodes;
     }
 
-    private function getLoadedRowCount(WidgetInterface $widget): ?int
+    private function getLoadedRowCount(): ?int
     {
-        $id = $this->getElementIdFromWidget($widget);
-        $script = <<<JS
-(function() {
-    var table = sap.ui.getCore().byId('$id');
-    if (!table) return -1;
-
-    var model = table.getModel();
-    if (!model) return -2;
-
-    var data = model.getData();
-    if (!data || !data.rows) return -3;
-
-    return data.rows.length;
-})();
-JS;
-
-        return (int)$this->getSession()->evaluateScript($script);
-        
+       return count($this->getBrowser()->getTableRows($this->getNodeElement()));        
     }
 
     public function selectRow(int $rowNumber)
@@ -378,13 +361,14 @@ JS;
                     $skippedFilters[] = $filter->getCaption();
                 }
                 $substepResult = $this->runAsSubstep(
-                    function(SubstepResult $result) use ($filter, $dataWidget) {
+                    function (SubstepResult $result) use ($filter, $dataWidget) {
                         return $this->checkFilterWorksAsExpected($filter, $dataWidget, $result);
                     },
                     'Filtering `' . $filter->getCaption() . '`',
                     static::CATEGORY_FILTERING,
                     $logbook
                 );
+                $this->getBrowser()->clearWidgetHighlights();
                 if ($substepResult->isFailed()) {
                     $failed = true;
                 }
@@ -395,7 +379,8 @@ JS;
             // TODO Mark skipped filters with SKIPPED result code to make visible, that something is not good
             $this->logSubstep('Skipped filters: ' . implode(', ', $captions), StepStatusDataType::SKIPPED, $reason, static::CATEGORY_FILTERING);
         }
-        
+        $this->reset();
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
         /*
         // Test column caption filters
         foreach ($widget->getColumns() as $column) {
@@ -433,31 +418,44 @@ JS;
                 
                 // Make sure the action has everything it needs from the data widget
                 $action = $buttonWidget->getAction();
+                $rowNumber = 1;
                 switch (true) {
                     case $action === null:
                         $skippedButtons['Button has no action'][] = $buttonWidget->getCaption();
                         $logbook->addLine('Skipping button ' . $this->getCaption() . ' because it has no action');
                         continue 2;
                     case $action->getInputRowsMin() > 0:
-                        $skippedButtons['Button requires input data'][] = $buttonWidget->getCaption();
-                        $logbook->addLine('Skipping button ' . $this->getCaption() . ' because it requires ' . $action->getInputRowsMin() . ' lines of input');
+                        if(! $this->isRowSelected($rowNumber)) {
+                            $this->selectRow($rowNumber);
+                        }
+                        break;
+                    default:
                         continue 2;
                 }
                 
-                // Press the button in a substep
-                $substepResult = $this->runAsSubstep(
-                    function (SubstepResult $result) use ($dataWidget, $buttonWidget, $buttonNodeElement) {
-                        $buttonNode = UI5FacadeNodeFactory::createFromWidgetType($buttonWidget->getWidgetType(), $buttonNodeElement, $this->getSession(), $this->getBrowser());
-                        return $buttonNode->checkWorksAsExpected($result->getLogbook());
-                    },
-                    'Clicking button `' . $buttonWidget->getCaption() . '`',
-                    static::CATEGORY_BUTTONS,
-                    $logbook
-                );
-                
-                // Say the buttons test is failed if at least one button fails
-                if ($substepResult->isFailed()) {
-                    $failed = true;
+                $buttonNodeElement = $this->getBrowser()->findButtonByCaption($buttonWidget->getCaption(), $this->getNodeElement());
+                if ($buttonNodeElement !== null) {
+                    $buttonNode = UI5FacadeNodeFactory::createFromWidgetType($buttonWidget->getWidgetType(), $buttonNodeElement, $this->getSession(), $this->getBrowser());
+
+                    while ($buttonNode->checkDisabled() && $rowNumber <= $this->getLoadedRowCount()) {
+                        $this->selectRow($rowNumber);
+                        $this->selectRow(++$rowNumber);
+                    }
+                    
+                    // Press the button in a substep
+                    $substepResult = $this->runAsSubstep(
+                        function (SubstepResult $result) use ($dataWidget, $buttonWidget, $buttonNodeElement, $buttonNode) {
+                            return $buttonNode->checkWorksAsExpected($result->getLogbook());
+                        },
+                        'Clicking button `' . $buttonWidget->getCaption() . '`',
+                        static::CATEGORY_BUTTONS,
+                        $logbook
+                    );
+                    
+                    // Say the buttons test is failed if at least one button fails
+                    if ($substepResult->isFailed()) {
+                        $failed = true;
+                    }
                 }
             }
             
@@ -494,14 +492,10 @@ JS;
             if ($column->isHidden()) {
                 continue;
             }
-            if ($column->getAttribute()->is($filterAttr)) {
-                $columnCaption = $column->getCaption();
-                break;
-            }
-            if (str_contains($column->getAttributeAlias(), $filter->getAttributeAlias()))
-            {
+            if ($column->getAttribute()->is($filterAttr) || $this->endsWith($column->getAttributeAlias(), $filter->getAttributeAlias())) {
                 $columnCaption = $column->getCaption();
                 $filterVal = $this->getValueFromTable($i);
+                $this->setInputDataType($column->getDataType());
                 if ($column->hasAggregator() && $column->getAggregator()->isList()) {
                     $aggr = $column->getAggregator();
                     $delimiter = $aggr->getArguments()[0] ?? null;
@@ -513,10 +507,9 @@ JS;
                         }
                     }
                     $filterVal = explode($delimiter, $filterVal)[0];
+                    $logbook->continueLine(' with value `' . $filterVal . '` found in table column `' . $columnCaption . '`');
+                    break;
                 }
-                $this->setInputDataType($column->getDataType());
-                $logbook->continueLine(' with value `' . $filterVal . '` found in table column `' . $columnCaption . '`');
-                break;
             }
         }
         
@@ -529,8 +522,8 @@ JS;
         }
 
         if (trim($filterVal ?? '') === '') {
-            return SubstepResult::createSkipped('No value found for filter `' . $filter->getCaption() . '`', $logbook);
             $logbook->continueLine(' no value found!');
+            return SubstepResult::createSkipped('No value found for filter `' . $filter->getCaption() . '`', $logbook);
         }
         
         // Set the filter value
@@ -548,11 +541,9 @@ JS;
             }
         }
         
-        
-        
         $this->triggerSearch();
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
-        $loadedRowCount = $this->getLoadedRowCount($dataWidget);
+        $loadedRowCount = $this->getLoadedRowCount();
 
         $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');
 
@@ -802,5 +793,29 @@ JS;
             }
         }
         return $cellValue;
+    }
+
+    /**
+     * check if the text ends with suffix 
+     * if the text ends with __LABEL first cut this part and checks the rest
+     * 
+     * @param string $text
+     * @param string $suffix
+     * @return bool
+     */
+    function endsWith(string $text, string $suffix): bool
+    {
+        if (str_contains($text, ':')) {
+            $text = strstr($text, ':', true);
+        }
+        
+        if (str_ends_with($text, '__LABEL')) {
+            $text = substr($text, 0, -strlen('__LABEL'));
+        }
+        else if (str_ends_with(strtolower($text), '__name')) {
+            $text = substr($text, 0, -strlen('__name'));
+        }
+
+        return str_ends_with($text, $suffix);
     }
 }
