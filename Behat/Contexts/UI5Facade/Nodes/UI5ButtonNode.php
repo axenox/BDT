@@ -2,9 +2,8 @@
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
+use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
-use axenox\BDT\DataTypes\StepStatusDataType;
-use axenox\BDT\Exceptions\FacadeNodeException;
 use axenox\BDT\Interfaces\TestResultInterface;
 use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Session;
@@ -172,14 +171,14 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
 
         // Substep should fail if the page cannot be loaded (shows an error) - otherwise the substep for
         // the click is passed, and we go on checking the page
-        $dialogNode = null;
+        $dialogNodeElement = null;
         $this->runAsSubstep(
-            function(SubstepResult $result) use ($expectedId, $widget, $dialogNode) {
+            function(SubstepResult $result) use ($expectedId, $widget, &$dialogNodeElement) {
                 $this->click();
-                $this->getBrowser()->getWaitManager()->waitForPendingOperations();
-                $dialogNode = $this->getSession()->getPage()->findById($expectedId);
+                $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+                $dialogNodeElement = $this->getSession()->getPage()->findById($expectedId);
                 Assert::assertNotNull(
-                    $dialogNode,
+                    $dialogNodeElement,
                     'Cannot find dialog with id `' . $expectedId . '` after clicking tile `' . $widget->getCaption() . '`.'
                 );
             },
@@ -192,21 +191,15 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
         $logbook->addIndent(+1);
 
         try {
-            if ($dialogNode) {
-                $result = $dialogNode->checkWorksAsExpected($logbook);
-                $closeBtn = $this->findVisibleButtonByCaption('WIDGET.DIALOG.CLOSE_BUTTON_CAPTION', false);
-                $closeBtn->click();
-            } else {
-                $this->closeErrorDialog();
-                $result = SubstepResult::createFailed(null, $logbook);
-            }
-            $this->getBrowser()->getWaitManager()->waitForPendingOperations();
-            $logbook->addLine('Pressing close button of the dialog');
-            $logbook->addIndent(-1);
-        } catch (\Throwable $e) {
+            $dialogNode = UI5FacadeNodeFactory::createFromNodeElement($dialogNodeElement, $this->getSession(), $this->getBrowser());
+            $result = $dialogNode->checkWorksAsExpected($logbook);
+        } 
+        catch (\Throwable $e) {
             $result = SubstepResult::createFailed($e, $logbook);
+            $logbook->addLine('**Failed** to check if dialog `' . $expectedId . '` works as expected - skipping to next widget. ' . CliOutputPrinter::printExceptionMessage($e));
+        } 
+        finally {
             $this->closeErrorDialog();
-            $logbook->addLine('**Failed** to check if dialog `' . $expectedId . '` works as expected - skipping to next widget. ' . CliOutputPrinter::printExceptionMessage($e->getMessage()));
         }
         return $result;
     }
@@ -214,11 +207,18 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
     public function closeErrorDialog(): void
     {
         $this->getSession()->executeScript("
-                var dialog = sap.ui.getCore().byId(
-              document.querySelector('.sapMDialog').id
-            );
-            
-            dialog.close();
+            var dialogEl = document.querySelector('.sapMDialog');
+            if (dialogEl) {
+                var dialog = sap.ui.getCore().byId(dialogEl.id);
+                if (dialog) {
+                    dialog.close();
+                }
+            }
         ");
+    }
+    
+    public function checkDisabled(): bool
+    {
+        return $this->getNodeElement()->hasAttribute('disabled');
     }
 }
