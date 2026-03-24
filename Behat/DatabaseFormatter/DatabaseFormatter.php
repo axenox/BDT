@@ -51,6 +51,7 @@ class DatabaseFormatter implements Formatter
     private float               $stepStart;
     private int                 $stepIdx = 0;
 
+    /* @var \exface\Core\Interfaces\DataSheets\DataSheetInterface $substepDataSheets */
     private array $substepDataSheets = [];
     private float               $substepStart;
     
@@ -326,7 +327,51 @@ class DatabaseFormatter implements Formatter
         try{
             $result = $event->getTestResult();
             $ds = $this->stepDataSheet->extractSystemColumns();
-            $this->logStepEnd($ds, $this->stepStart, StepStatusDataType::convertFromBehatResultCode($result->getResultCode()), $result->getResultCode() === TestResult::FAILED ? $result->getException() : null, $this::$stepLogbooks);
+            $stepStatusCode = StepStatusDataType::convertFromBehatResultCode($result->getResultCode());
+            $this->logStepEnd($ds, $this->stepStart, $stepStatusCode, $result->getResultCode() === TestResult::FAILED ? $result->getException() : null, $this::$stepLogbooks);
+            
+            // Make sure to end ALL substeps. Substeps can only exist inside a step, so if the step ends, all
+            // of them MUST end too. Give the substeps the status code of the step
+            /* @var \exface\Core\Interfaces\DataSheets\DataSheetInterface $ds */
+            foreach ($this->substepDataSheets as $ds) {
+                $startTime = $ds->getCellValue('started_on', 0);
+                $ds = $ds->extractSystemColumns();
+                $this->logStepEnd($ds, $startTime, $stepStatusCode, null, [], null, 'Step finished');
+            }
+            $this->substepDataSheets = [];
+        } catch(\Exception $e){
+            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+        }
+    }
+
+    public function onBeforeSubstep(BeforeSubstep $event)
+    {
+        try{
+            $this->stepIdx++;
+            $this->substepStart = $this->microtime();
+            $parentStepData = (empty($this->substepDataSheets) ? $this->stepDataSheet : $this->substepDataSheets[array_key_last($this->substepDataSheets)]);
+            $ds = $this->logStepStart(
+                $event->getSubstepName(),
+                $this->stepDataSheet->getCellValue('line', 0),
+                $parentStepData->getUidColumn()->getValue(0)
+            );
+            $this->substepDataSheets[] = $ds;
+            $this->provider->setName($ds->getUidColumn()->getValue(0));
+        }
+        catch(\Exception $e){
+            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+        }
+    }
+
+    public function onAfterSubstep(AfterSubstep $event)
+    {
+        try {
+            $ds = $this->substepDataSheets[array_key_last($this->substepDataSheets)];
+            $startTime = $ds->getCellValue('started_on', 0);
+            $ds->extractSystemColumns();
+            $this->logStepEnd($ds, $startTime, $event->getResultCode(), $event->getException(), [], $event->getSubstepName(), $event->getResult()->getReason());
+            // Remove the top-most substep data sheet from the stack
+            array_pop($this->substepDataSheets);
         }
         catch(\Exception $e){
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
@@ -385,38 +430,6 @@ class DatabaseFormatter implements Formatter
         }
         $ds->dataUpdate();
         return $ds;
-    }
-
-    public function onBeforeSubstep(BeforeSubstep $event)
-    {
-        try{
-            $this->stepIdx++;
-            $this->substepStart = $this->microtime();
-            $parentStepData = (empty($this->substepDataSheets) ? $this->stepDataSheet : $this->substepDataSheets[array_key_last($this->substepDataSheets)]);
-            $ds = $this->logStepStart(
-                $event->getSubstepName(), 
-                $this->stepDataSheet->getCellValue('line', 0),
-                $parentStepData->getUidColumn()->getValue(0)
-            );
-            $this->substepDataSheets[] = $ds;
-            $this->provider->setName($ds->getUidColumn()->getValue(0));
-        }
-        catch(\Exception $e){
-            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
-        }
-    }
-
-    public function onAfterSubstep(AfterSubstep $event)
-    {
-        try {
-            $ds = $this->substepDataSheets[array_key_last($this->substepDataSheets)]->extractSystemColumns();
-            $this->logStepEnd($ds, $this->substepStart, $event->getResultCode(), $event->getException(), [], $event->getSubstepName(), $event->getResult()->getReason());
-            // Remove the top-most substep data sheet from the stack
-            array_pop($this->substepDataSheets);
-        }
-        catch(\Exception $e){
-            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
-        }
     }
 
     public static function addTestLogbook(LogBookInterface $logbook): void
