@@ -556,7 +556,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iEnterInFilter(string $value, string $filterName): void
     {
-        $this->getBrowser()->getFilterByCaption($filterName)->setValue($value);
+        $this->getBrowser()->getFilterByCaption($filterName)->setValueVisible($value);
     }
 
 
