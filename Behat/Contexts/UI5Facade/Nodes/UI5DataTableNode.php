@@ -21,8 +21,10 @@ use exface\Core\Interfaces\Model\MetaAttributeInterface;
 use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Interfaces\Widgets\iFilterData;
 use exface\Core\Interfaces\Widgets\iHaveButtons;
+use exface\Core\Interfaces\Widgets\iHaveColumns;
 use exface\Core\Interfaces\Widgets\iShowData;
 use exface\Core\Interfaces\Widgets\iSupportLazyLoading;
+use exface\Core\Widgets\DataColumn;
 use exface\Core\Widgets\Filter;
 use exface\Core\Widgets\InputComboTable;
 use exface\Core\Widgets\InputSelect;
@@ -32,15 +34,9 @@ use PHPUnit\Framework\ExpectationFailedException;
 /**
  * @method \exface\Core\Widgets\DataTable getWidget()
  */
-class UI5DataTableNode extends UI5AbstractNode
+class UI5DataTableNode extends UI5DataNode
 {
-    const CATEGORY_FILTERING = 'Filtering';
-    const CATEGORY_BUTTONS = 'Buttons';
-
-    /* @var $hiddenFilters \exface\Core\Widgets\Filter[] */
-    private array $hiddenFilters = [];
-    private DataTypeInterface $inputDataType;
-
+    
     public function getCaption(): string
     {
         return strstr($this->getNodeElement()->getAttribute('aria-label'), "\n", true);
@@ -93,11 +89,6 @@ class UI5DataTableNode extends UI5AbstractNode
         return $nodes;
     }
 
-    private function getLoadedRowCount(): ?int
-    {
-       return count($this->getBrowser()->getTableRows($this->getNodeElement()));        
-    }
-
     public function selectRow(int $rowNumber)
     {
         $rowIndex = $this->convertOrdinalToIndex($rowNumber);
@@ -131,93 +122,6 @@ class UI5DataTableNode extends UI5AbstractNode
             "return jQuery('#{$tableId} .sapUiTableTr, #{$tableId} .sapMListTblRow').eq({$rowIndex}).hasClass('sapUiTableRowSel');"
         );
         return $isSelected;
-    }
-
-    private function findFilterHeaderContainer(): ?NodeElement
-    {
-        $page = $this->getSession()->getPage();
-        $table = $this->getNodeElement();
-
-        $tableId = $table->getAttribute('id');
-        if (!$tableId) {
-            return null;
-        }
-
-        /**
-         * Approach 1: Traverse up to the nearest Dynamic Page Wrapper.
-         * In modern UI5, tables and headers are usually siblings within a 'sapFDynamicPage' article.
-         */
-        $wrapper = $table->find('xpath', "ancestor::article[contains(@class, 'sapFDynamicPage')]");
-        if ($wrapper) {
-            $header = $wrapper->find('css', 'header.sapFDynamicPageTitleWrapper + div section.sapFDynamicPageHeader');
-            if ($header && $this->hasFilters($header)) {
-                return $header;
-            }
-        }
-
-        /**
-         * Approach 2: Direct lookup using the sticky placeholder ID convention.
-         * tableId: {prefix}__table -> stickyId: {prefix}__table_DynamicPageWrapper-stickyPlaceholder
-         */
-        $stickyId = $tableId . '_DynamicPageWrapper-stickyPlaceholder';
-        $headerBySticky = $page->find('css', '#' . $stickyId . ' .sapFDynamicPageHeader');
-        if ($headerBySticky && $this->hasFilters($headerBySticky)) {
-            return $headerBySticky;
-        }
-
-        /**
-         * Approach 3: Fallback using ID prefix matching.
-         * Useful when the table ID and wrapper ID share a common prefix but different suffixes.
-         */
-        $prefix = preg_replace('/__[^_]+$/', '', $tableId);
-        if ($prefix) {
-            $fallback = $page->find('css', "article[id^='$prefix'][id$='_DynamicPageWrapper'] .sapFDynamicPageHeader");
-            if ($fallback && $this->hasFilters($fallback)) {
-                return $fallback;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * checks the Header if it has filters
-     */
-    private function hasFilters(NodeElement $container): bool
-    {
-        return $container->find('css', '.exfw-Filter, .exfw-RangeFilter') !== null;
-    }
-
-    private function hasHeader(): bool
-    {
-        return $this->findFilterHeaderContainer() !== null;
-    }
-
-    /**
-     * Converts ordinal numbers like "1." to zero-based indices
-     * 
-     * @param string $ordinal The ordinal number (e.g., "1.", "2.")
-     * @return int Zero-based index
-     */
-    public function convertOrdinalToIndex(string $ordinal): int
-    {
-        // Remove any trailing period and convert to integer
-        $number = (int) str_replace('.', '', $ordinal);
-        // Convert to zero-based index
-        return $number - 1;
-    }
-
-    /**
-     * Delegate the find method to the underlying node element
-     * 
-     * @param $selector
-     * @param $locator
-     * @return \Behat\Mink\Element\NodeElement|false|mixed|null
-     */
-    public function find($selector, $locator)
-    {
-        $nodeElement = $this->getNodeElement();
-        return $nodeElement->find($selector, $locator);
     }
 
     public function getElementId() : string
@@ -306,75 +210,14 @@ class UI5DataTableNode extends UI5AbstractNode
         $this->checkWorksAsExpected($logbook);
     }
 
-    /**
-     *
-     * @param LogBookInterface $logbook
-     * @return void
-     */
-    public function checkWorksAsExpected(LogBookInterface $logbook) : TestResultInterface
-    {
-        $widget = $this->getWidget();
-        $logbook->addLine($this->buildMessageLookingAt(true));
-        Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
-        
-        $result = $this->runAsSubstep(
-            function(SubstepResult $result) use ($widget) {
-                return $this->checkTableWorksAsExpected($widget, $result->getLogbook());
-            }, 
-            $this->buildMessageLookingAt(false), 
-            null, 
-            $logbook
-        );
-
-        return $result;
-    }
     
     protected function checkTableWorksAsExpected(iShowData $dataWidget, LogBookInterface $logbook) : TestResultInterface
     {
+        $parentResult = parent::checkTableWorksAsExpected($dataWidget, $logbook);
+        
         $failed = false;
         $logbook->addIndent(1);
 
-        // Filters
-        $skippedFilters = [];
-        $hasHeader = $this->hasHeader();
-        foreach ($dataWidget->getFilters() as $filter) {
-            if ($filter->isHidden()) {
-                // will be used as a filter to get a valid value
-                $this->hiddenFilters[] = $filter;
-                continue;
-            }
-
-            // TODO how need to test filter in the configurator dialog too!
-            if (! $hasHeader) {
-                $logbook->addLine('Skipping filter ' . $filter->getCaption() . ' - hidden headers not yet supported');
-                $skippedFilters['Hidden headers not yet supported'][] = $filter->getCaption();
-                continue;
-            }
-            
-            if (/* fiter not supported */ false) {
-                $logbook->addLine('Filtering ' . $filter->getCaption() . ' skipped');
-                $skippedFilters['Filter not supported'][] = $filter->getCaption();
-            }
-            $substepResult = $this->runAsSubstep(
-                function (SubstepResult $result) use ($filter, $dataWidget) {
-                    return $this->checkFilterWorksAsExpected($filter, $dataWidget, $result);
-                },
-                'Filtering `' . $filter->getCaption() . '`',
-                static::CATEGORY_FILTERING,
-                $logbook
-            );
-            $this->getBrowser()->clearWidgetHighlights();
-            if ($substepResult->isFailed()) {
-                $failed = true;
-            }
-        }
-        
-        foreach ($skippedFilters as $reason => $captions) {
-            // TODO Mark skipped filters with SKIPPED result code to make visible, that something is not good
-            $this->logSubstep('Skipped filters: ' . implode(', ', $captions), StepStatusDataType::SKIPPED, $reason, static::CATEGORY_FILTERING);
-        }
-        $this->reset();
-        $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
         /*
         // Test column caption filters
         foreach ($widget->getColumns() as $column) {
@@ -391,73 +234,6 @@ class UI5DataTableNode extends UI5AbstractNode
             $this->resetFilterColumn($columnNode->getCaption());
         }
         */
-        
-        // TODO Sorters
-        
-        // Buttons
-        if ($dataWidget instanceof iHaveButtons) {
-            $skippedButtons = [];
-            foreach ($dataWidget->getButtons() as $buttonWidget) {
-                if ($buttonWidget->isHidden()) {
-                    continue;
-                }
-                
-                // Make sure, the button is visible
-                $buttonNodeElement = $this->getBrowser()->findButtonByCaption($buttonWidget->getCaption(), $this->getNodeElement());
-                if ($buttonNodeElement === null) {
-                    $skippedButtons['Button not visible'][] = $buttonWidget->getCaption();
-                    $logbook->addLine('Skipping button `' . $buttonWidget->getCaption() . '` because not visible in UI');
-                    continue;
-                }
-                
-                // Make sure the action has everything it needs from the data widget
-                $action = $buttonWidget->getAction();
-                $rowNumber = 1;
-                switch (true) {
-                    case $action === null:
-                        $skippedButtons['Button has no action'][] = $buttonWidget->getCaption();
-                        $logbook->addLine('Skipping button ' . $this->getCaption() . ' because it has no action');
-                        continue 2;
-                    case $action->getInputRowsMin() > 0:
-                        if(! $this->isRowSelected($rowNumber)) {
-                            $this->selectRow($rowNumber);
-                        }
-                        break;
-                    default:
-                        continue 2;
-                }
-                
-                $buttonNodeElement = $this->getBrowser()->findButtonByCaption($buttonWidget->getCaption(), $this->getNodeElement());
-                if ($buttonNodeElement !== null) {
-                    $buttonNode = UI5FacadeNodeFactory::createFromWidgetType($buttonWidget->getWidgetType(), $buttonNodeElement, $this->getSession(), $this->getBrowser());
-
-                    while ($buttonNode->checkDisabled() && $rowNumber <= $this->getLoadedRowCount()) {
-                        $this->selectRow($rowNumber);
-                        $this->selectRow(++$rowNumber);
-                    }
-                    
-                    // Press the button in a substep
-                    $substepResult = $this->runAsSubstep(
-                        function (SubstepResult $result) use ($dataWidget, $buttonWidget, $buttonNodeElement, $buttonNode) {
-                            return $buttonNode->checkWorksAsExpected($result->getLogbook());
-                        },
-                        'Clicking button `' . $buttonWidget->getCaption() . '`',
-                        static::CATEGORY_BUTTONS,
-                        $logbook
-                    );
-                    
-                    // Say the buttons test is failed if at least one button fails
-                    if ($substepResult->isFailed()) {
-                        $failed = true;
-                    }
-                }
-            }
-            
-            // Log a SKIPPED substep for every reason to skip buttons
-            foreach ($skippedButtons as $reason => $buttons) {
-                $this->logSubstep('Skipped buttons: ' . implode(', ', $buttons), StepStatusDataType::SKIPPED, $reason, static::CATEGORY_BUTTONS);
-            }
-        }
 
         $logbook->addIndent(-1);
         return $failed ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
@@ -478,38 +254,21 @@ class UI5DataTableNode extends UI5AbstractNode
         
         // Get a valid value for filtering
         $filterAttr = $filter->getAttribute();
+        
+        
+        // Look for a value it the table
         // Verify the first DataTable contains the expected text in the specified column
         // sometimes column captions are not the same as filter captions
         $columnCaption = null;
-        $filterVal = null;
-        foreach ($dataWidget->getColumns() as $i => $column) {
-            if ($column->isHidden()) {
-                continue;
-            }
-            if ($column->getAttribute()->is($filterAttr) || $this->endsWith($column->getAttributeAlias(), $filter->getAttributeAlias())) {
-                $columnCaption = $column->getCaption();
-                $filterVal = $this->getValueFromTable($i);
-                $this->setInputDataType($column->getDataType());
-                if ($column->hasAggregator() && $column->getAggregator()->isList()) {
-                    $aggr = $column->getAggregator();
-                    $delimiter = $aggr->getArguments()[0] ?? null;
-                    if ($delimiter === null) {
-                        if ($column->isBoundToAttribute()) {
-                            $delimiter = $column->getAttribute()->getValueListDelimiter();
-                        } else {
-                            $delimiter = EXF_LIST_SEPARATOR;
-                        }
-                    }
-                    $filterVal = explode($delimiter, $filterVal)[0];
-                    $logbook->continueLine(' with value `' . $filterVal . '` found in table column `' . $columnCaption . '`');
-                    break;
-                }
-            }
+        $column = $this->findColumnWithAttribute($dataWidget, $filterAttr, $logbook);
+        if ($column !== null) {
+            $filterVal = $this->findValueInColumn($column, $logbook);
+            $columnCaption = $column->getCaption();
         }
         
-        // If no filter value found yet, search the data source
+        // Look for a value in the data source
         if (trim($filterVal ?? '') === '') {
-            $filterVal = $this->getAnyValue($filterAttr, $filter, $dataWidget->getMetaObject());
+            $filterVal = $this->findValueInDataSource($filterAttr, $filter, $dataWidget->getMetaObject());
             if ($filterVal !== null) {
                 $logbook->continueLine(' with value `' . $filterVal . '` found in data source');
             }
@@ -556,157 +315,13 @@ class UI5DataTableNode extends UI5AbstractNode
         return $result;
     }
 
-    protected function getAnyValue(MetaAttributeInterface $attr, Filter $filterWidget, MetaObject $metaObject, string $sort = null)
-    {
-        $inputWidget = $filterWidget->getInputWidget();
-        $returnValue = null;
-        $rowIndex = 0;
-        if ($inputWidget instanceof InputComboTable) {
-            $textAttr = $inputWidget->getTextAttribute(); // This gives us what we need to type into the filter (e.g. Name)
-            $tableObj = $inputWidget->getTableObject(); // Both attributes above belong to this object, NOT the object of the filter widget
-            while($returnValue === null) {
-                $foundValue = $this->findValue($tableObj, $textAttr, $textAttr->getAlias(), $sort, $rowIndex);
-                if ($foundValue !== null && $this->checkTheValueFromTable($metaObject, $inputWidget->getAttributeAlias() . '__' . $textAttr->getAlias(), $foundValue)) {
-                    $returnValue = $foundValue;
-                }
-                $rowIndex++;
-                if ($rowIndex > 100){
-                    break;
-                }
-            }
-            return $returnValue;
-        }
-        
-        // if it is not relation return the value that is found
-        if (!$attr->isRelation()) {
-            $returnColumn = $attr->getAlias();
-            while($returnValue === null) {
-                $foundValue = $this->findValue($inputWidget->getMetaObject(), $attr, $returnColumn, $sort, $rowIndex);
-                $datatype = $attr->getDataType();
-                // if the datatype is EnumDataType return its label
-                if ($datatype instanceof EnumDataTypeInterface) {
-                    foreach ($datatype->getLabels() as $key => $label) {
-                        if ($key === (int)$foundValue) {
-                            $foundLabel = $label;
-                            break;
-                        }
-                    }
-                }
-                if ($inputWidget instanceof InputSelect) {
-                    $foundLabel = ($inputWidget->getSelectableOptions())[$foundValue];
-                }
-                if ($foundValue !== null && $this->checkTheValueFromTable($metaObject, $returnColumn, $foundValue)) {
-                    $returnValue = (
-                        $datatype instanceof EnumDataTypeInterface
-                        || $inputWidget instanceof InputSelect
-                    )
-                        ? $foundLabel
-                        : $foundValue;
-                }
-                $rowIndex++;
-                if ($rowIndex > 100){
-                    break;
-                }
-            }
-            return $returnValue;
-        }
-        
-        // if it is a relation find the label of the found uid
-        $rel = $attr->getRelation();
-        $rightObj = $rel->getRightObject();
-        $returnColumn = $attr->getName() . '__' . $rightObj->getLabelAttribute()->getName();
-        while($returnValue === null)
-        {
-            $foundValue =  $this->findValue($attr->getObject(), $attr, $returnColumn , $sort, $rowIndex);
-            if ($foundValue !== null && $this->checkTheValueFromTable($metaObject, $returnColumn, $foundValue)) {
-                $returnValue = $foundValue;
-            }
-            $rowIndex++;
-            if ($rowIndex > 100){
-                break;
-            }
-        }
-        return $returnValue;
-
-    }
-
-    private function findValue(MetaObject $metaObject, MetaAttributeInterface $attr, string $returnColumn = null, string $sort = null, $rowIndex = 0)
-    {
-        $ds = DataSheetFactory::createFromObject($metaObject);
-        $ds->getColumns()->addFromAttribute($attr);
-        foreach ($this->hiddenFilters as $hiddenFilter) {
-            if($hiddenFilter->getMetaObject()->isExactly($ds->getMetaObject())) {
-                $ds->getFilters()->addConditionFromString(
-                    $hiddenFilter->getAttributeAlias(),
-                    $hiddenFilter->getValue(),
-                    $hiddenFilter->getComparator()
-                );
-            }
-        }
-        if ($returnColumn !== null) {
-            $ds->getColumns()->addFromExpression($returnColumn);
-        }
-
-        if ($sort !== null) {
-            $ds->getSorters()->addFromString($attr->getAlias(), $sort);
-        }
-
-        $ds->getFilters()->addConditionForAttributeIsNotNull($attr);
-        $ds->dataRead(1, $rowIndex);
-        if ($ds->getColumn($returnColumn) !== null && $ds->getColumn($returnColumn)) {
-            $this->setInputDataType($ds->getColumn($returnColumn)->getDataType());
-            return $ds->getColumn($returnColumn)->getValuesNormalized()[0];
-        }
-        $this->setInputDataType($ds->getColumn($attr->getAlias())->getDataType());
-        return $ds->getColumn($attr->getAlias())->getValuesNormalized()[0];
-    }
-
-    private function checkTheValueFromTable(MetaObject $metaObject, string $returnColumn, string $returnValue): bool
+    protected function checkTheValueFromTable(MetaObject $metaObject, string $returnColumn, string $returnValue): bool
     {
         $ds = DataSheetFactory::createFromObject($metaObject);
         $ds->getFilters()->addConditionFromString($returnColumn, $returnValue, ComparatorDataType::EQUALS);
         $ds->dataRead(1, 1);
         return $ds->dataCount() > 0;
 
-    }
-
-    protected function triggerSearch(): void
-    {
-        $this->clickButtonByCaption('ACTION.READDATA.SEARCH');
-        $this->getBrowser()->getWaitManager()->waitForPendingOperations(false,true,true);
-    }
-
-    public function reset(): FacadeNodeInterface
-    {
-        if ($this->hasHeader()) {
-            $this->clickButtonByCaption('ACTION.RESETWIDGET.NAME');
-        } else {
-            $this->logSubstep('Skipped resetting ' . $this->getWidgetType(), StepStatusDataType::SKIPPED, 'Hidden headers not supported yet');
-        }
-        return $this;
-    }
-
-    protected function clickButtonByCaption(string $caption): void
-    {
-        $buttonCaption = $this->getBrowser()
-            ->getWorkbench()
-            ->getCoreApp()
-            ->getTranslator($this->getBrowser()->getLocale())
-            ->translate($caption);
-        $button = $this->findVisibleButtonByCaption($buttonCaption, true, $this->getNodeElement());
-
-        Assert::assertNotNull($button, sprintf('Button %s was not found.', $buttonCaption));
-        $this->getBrowser()->highlightWidget(
-            $button,
-            'Button',
-            0
-        );
-        try {
-            $button->click();
-            $this->getBrowser()->clearWidgetHighlights();
-        } catch (\Exception $e) {
-            throw $e;
-        }
     }
 
     /**
@@ -766,44 +381,41 @@ class UI5DataTableNode extends UI5AbstractNode
         $this->getSession()->wait(1000, 'true');
     }
 
-    private function resetFilterColumn(string $caption) :void
+    protected function resetFilterColumn(string $caption) :void
     {
         $this->filterColumn($caption, "");
     }
-
-    private function getInputDataType()
+    
+    protected function findValueInColumn(DataColumn $column, LogBookInterface $logbook)
     {
-        return $this->inputDataType;
-    }
+        $columnCaption = $column->getCaption();
+        $i = $this->getVisibibleColumnIndex($column);
 
-    private function setInputDataType(DataTypeInterface $dataType): void
-    {
-        $this->inputDataType = $dataType;
-    }
-
-    private function getValueFromTable(int $columnIndex): ?string
-    {
         $rows = $this->getBrowser()->getTableRows($this->getNodeElement());
         $cellValue = null;
         foreach ($rows as $row) {
-            $cellValue = $this->getBrowser()->extractCellValueFromRow($row, $columnIndex);
+            $cellValue = $this->getBrowser()->extractCellValueFromRow($row, $i);
             if ($cellValue !== null) {
                 break;
             }
         }
-        return $cellValue;
-    }
+        $filterVal = $cellValue;
 
-    public function getWidgetType() : ?string
-    {
-        if (null !== $thisElementClass = UI5FacadeNodeFactory::findWidgetType($this->getNodeElement())) {
-            return $thisElementClass;
+        $this->setInputDataType($column->getDataType());
+        if ($column->hasAggregator() && $column->getAggregator()->isList()) {
+            $aggr = $column->getAggregator();
+            $delimiter = $aggr->getArguments()[0] ?? null;
+            if ($delimiter === null) {
+                if ($column->isBoundToAttribute()) {
+                    $delimiter = $column->getAttribute()->getValueListDelimiter();
+                } else {
+                    $delimiter = EXF_LIST_SEPARATOR;
+                }
+            }
+            $filterVal = explode($delimiter, $filterVal)[0];
+            $logbook->continueLine(' with value `' . $filterVal . '` found in table column `' . $columnCaption . '`');
         }
-        $panel = UI5FacadeNodeFactory::findParentWithWidgetClass($this->getNodeElement());
-        if ($panel !== null) {
-            return UI5FacadeNodeFactory::findWidgetType($panel);
-        }
-        throw new FacadeNodeException($this, 'Cannot find widget inside of DOM node "' . $this->getNodeElement()->getXpath() . '"');
+        return $filterVal;
     }
 
     /**
@@ -828,25 +440,5 @@ class UI5DataTableNode extends UI5AbstractNode
         }
 
         return str_ends_with($text, $suffix);
-    }
-    
-    protected function buildMessageLookingAt(bool $markdown) : string
-    {
-        $widget = $this->getWidget();
-        $mainObject = $widget->getMetaObject();
-        if (! empty($this->getCaption())) {
-            if ($markdown) {
-                $msg = '`' . $this->getCaption() . '`';
-            } else {
-                $msg = '"' . $this->getCaption() . '"';
-            } 
-        } else {
-            if ($markdown) {
-                $msg = '[' . MarkdownDataType::escapeString($mainObject->__toString()) . '](' . DocsFacade::buildUrlToDocsForMetaObject($mainObject) . ')';
-            } else {
-                $msg = $mainObject->__toString();
-            }
-        }
-        return 'Looking at ' . $widget->getWidgetType() . ' ' . $msg;
     }
 }
