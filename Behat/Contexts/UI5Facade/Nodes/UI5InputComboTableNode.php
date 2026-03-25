@@ -81,7 +81,7 @@ JS
                 }
                 return sap.ui.getCore().byId('{$this->getElementId()}').isBusy();
             })()
-JS
+            JS
         );
         return $this;
     }
