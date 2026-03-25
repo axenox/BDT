@@ -35,13 +35,13 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
 
     public function click(): void
     {
-        $this->getNodeElement()->click();
-        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
-
         // check exf-dialog-close class for action
         if ($this->isDialogCloseButton()) {
             $this->unfocusAfterClose();
         }
+        
+        $this->getNodeElement()->click();
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
     }
 
     /**
@@ -129,6 +129,9 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
         // the click is passed, and we go on checking the page
         $result = $this->runAsSubstep(
             function(SubstepResult $result) use ($expectedAlias, $widget, $logbook) {
+                $logbook->addLine('Clicking ' . $this->getWidgetType() . ' [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
+                $logbook->addIndent(+1);
+                
                 $this->click();
                 $realAlias = $this->getBrowser()->getPageCurrent()->getAliasWithNamespace();
                 Assert::assertSame(
@@ -141,9 +144,6 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
                         $expectedAlias
                     )
                 );
-
-                $logbook->addLine('Clicking ' . $this->getWidgetType() . ' [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
-                $logbook->addIndent(+1);
 
                 try {
                     $pageNode = new UI5PageNode($expectedAlias, $this->getSession(), $this->getBrowser());
