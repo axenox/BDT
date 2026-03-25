@@ -19,11 +19,11 @@ class StepStatusDataType extends IntegerDataType implements EnumDataTypeInterfac
     CONST PENDING = 0;
     CONST STARTED = 10;
     CONST UNDEFINED = 30;
+    CONST PASSED_PREVIOUSLY = 90;
+    CONST FAILED_PREVIOUSLY = 91;
     CONST SKIPPED = 98;
     CONST PASSED = 100;
     CONST FAILED = 101;
-    CONST PASSED_PREVIOUSLY = 110;
-    CONST FAILED_PREVIOUSLY = 111;
     CONST TIMEOUT = 102;
 
     private $labels = [];

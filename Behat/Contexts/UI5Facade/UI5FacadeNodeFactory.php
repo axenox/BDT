@@ -2,6 +2,7 @@
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
+use axenox\BDT\Exceptions\WidgetNodeNotFoundException;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Mink\Element\NodeElement;
 use exface\Core\DataTypes\StringDataType;
@@ -55,7 +56,14 @@ class UI5FacadeNodeFactory
             throw $e;
         }
     }
-    
+
+    /**
+     * @param NodeElement $nodeElement
+     * @param Session $session
+     * @param UI5Browser $browser
+     * @return FacadeNodeInterface
+     * @throws WidgetNodeNotFoundException
+     */
     public static function createFromNodeElement(NodeElement $nodeElement, Session $session, UI5Browser $browser) : FacadeNodeInterface
     {
         $cssClassString = $nodeElement->getAttribute('class');
@@ -65,7 +73,7 @@ class UI5FacadeNodeFactory
             if ($widgetNode) {
                 return self::createFromNodeElement($widgetNode, $session, $browser);
             }
-            throw new RuntimeException('Cannot find widget node for DOM element `' . $nodeElement->getXpath() . '`');
+            throw new WidgetNodeNotFoundException($nodeElement, 'Cannot find widget node for DOM element `' . $nodeElement->getXpath() . '`');
         }
         foreach ($cssClasses as $cssClass) {
             if (StringDataType::startsWith($cssClass, 'exfw-')) {
@@ -73,14 +81,44 @@ class UI5FacadeNodeFactory
                 return self::createFromWidgetType($widgetType, $nodeElement, $session, $browser);
             }
         }
-        throw new RuntimeException('Cannot use DOM element `' . $nodeElement->getXpath() . '` as a widget node: no `exfw-` CSS class found.');
+        throw new WidgetNodeNotFoundException($nodeElement, 'Cannot use DOM element `' . $nodeElement->getXpath() . '` as a widget node: no `exfw-` CSS class found.');
     }
-    
-    protected static function findParentWithWidgetClass(NodeElement $nodeElement) : ?NodeElement
+
+    /**
+     * Extracts the widget type from the .exfw-<WidgetType> CSS class the given DOM element
+     * 
+     * @param NodeElement $nodeElement
+     * @return string|null
+     */
+    public static function findWidgetType(NodeElement $nodeElement) : ?string
+    {
+        $cssClassString = $nodeElement->getAttribute('class');
+        $cssClasses = explode(' ', $cssClassString);
+        if (! in_array('exfw', $cssClasses)) {
+            return null;
+        }
+        foreach ($cssClasses as $cssClass) {
+            if (StringDataType::startsWith($cssClass, 'exfw-')) {
+                return StringDataType::substringAfter($cssClass, 'exfw-');
+            }
+        }
+        return null;
+    }
+
+
+    /**
+     * Returns the closest parent DOM element, that has the .exfw CSS class
+     *
+     * @param NodeElement $nodeElement
+     * @return string|null
+     */
+    public static function findParentWithWidgetClass(NodeElement $nodeElement) : ?NodeElement
     {
         while ($parent = $nodeElement->getParent()) {
             if ($parent->hasClass('exfw')) {
                 return $parent;
+            } else {
+                $nodeElement = $parent;
             }
         }
         return null;

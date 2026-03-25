@@ -35,13 +35,13 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
 
     public function click(): void
     {
-        $this->getNodeElement()->click();
-        $this->getBrowser()->getWaitManager()->waitForPendingOperations();
-
         // check exf-dialog-close class for action
         if ($this->isDialogCloseButton()) {
             $this->unfocusAfterClose();
         }
+        
+        $this->getNodeElement()->click();
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
     }
 
     /**
@@ -85,6 +85,8 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
         /* @var $widget \exface\Core\Widgets\Tile */
         $widget = $this->getWidget();
         Assert::assertNotNull($widget, 'Tile widget not found for this node.');
+        $this->checkCaptionMatchesWidget();
+        
         $action = $widget->getAction();
         
         // Check if the very same action was already tested
@@ -109,7 +111,7 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
                 $result = SubstepResult::createPassed($logbook);
                 break;
             default:
-                $result = SubstepResult::createSkipped('Action ' . $action->getAliasOfPrototype() . ' not yet supprted', $logbook);
+                $result = SubstepResult::createSkipped('Action ' . $action->getAliasOfPrototype() . ' not yet supported', $logbook);
                 $logbook->addLine('Skipping button ' . $this->getCaption() . ' because action ' . $action->getAliasOfPrototype() . ' not supported yet');
             // TODO more action validation here??
         }
@@ -125,8 +127,11 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
 
         // Substep should fail if the page cannot be loaded (shows an error) - otherwise the substep for
         // the click is passed, and we go on checking the page
-        $this->runAsSubstep(
-            function(SubstepResult $result) use ($expectedAlias, $widget) {
+        $result = $this->runAsSubstep(
+            function(SubstepResult $result) use ($expectedAlias, $widget, $logbook) {
+                $logbook->addLine('Clicking ' . $this->getWidgetType() . ' [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
+                $logbook->addIndent(+1);
+                
                 $this->click();
                 $realAlias = $this->getBrowser()->getPageCurrent()->getAliasWithNamespace();
                 Assert::assertSame(
@@ -139,29 +144,31 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
                         $expectedAlias
                     )
                 );
+
+                try {
+                    $pageNode = new UI5PageNode($expectedAlias, $this->getSession(), $this->getBrowser());
+                    $result = $pageNode->checkWorksAsExpected($logbook);
+                } catch (\Throwable $e) {
+                    $result = substepResult::createFailed($e, $logbook);
+                    $logbook->addLine('**Failed** to check if page `' . $expectedAlias . '` works as expected - skipping to next widget. ' . CliOutputPrinter::printExceptionMessage($e));
+                }
+                $this->getBrowser()->navigateToPreviousPage();
+                $logbook->addLine('Pressing browser back button');
+                $logbook->addIndent(-1);
+                
+                return $result;
             },
-            'Clicking Tile ' . $this->getCaption(),
+            $this->buildMessageClicking(false),
             'Pages',
             $logbook
         );
-
-        $logbook->addLine('Clicking Tile [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
-        $logbook->addIndent(+1);
-
-        try {
-            $pageNode = new UI5PageNode($expectedAlias, $this->getSession(), $this->getBrowser());
-            $result = $pageNode->checkWorksAsExpected($logbook);
-        } catch (\Throwable $e) {
-            $result = substepResult::createFailed($e, $logbook);
-            $logbook->addLine('**Failed** to check if page `' . $expectedAlias . '` works as expected - skipping to next widget. ' . CliOutputPrinter::printExceptionMessage($e));
-        }
-        $this->getBrowser()->navigateToPreviousPage();
-        $logbook->addLine('Pressing browser back button');
-        $logbook->addIndent(-1);
         return $result;
     }
 
-
+    protected function buildMessageClicking(bool $markdown) : string
+    {
+        return 'Clicking ' . $this->getWidgetType() . ' "' . $this->getCaption() . '"';
+    }
 
     protected function checkActionShowDialog(iShowDialog $action, iTriggerAction $widget, LogBookInterface $logbook) : SubstepResult
     {
@@ -180,7 +187,7 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
                     'Cannot find dialog with id `' . $expectedId . '` after clicking tile `' . $widget->getCaption() . '`.'
                 );
             },
-            'Clicking ' . $this->getWidgetType() . ' ' . $this->getCaption(),
+            $this->buildMessageClicking(false),
             'Pages',
             $logbook
         );
@@ -194,7 +201,7 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
         } 
         catch (\Throwable $e) {
             $result = SubstepResult::createFailed($e, $logbook);
-            $logbook->addLine('**Failed** to check if dialog `' . $expectedId . '` works as expected - skipping to next widget. ' . $e->getMessage());
+            $logbook->addLine('**Failed** to check if dialog `' . $expectedId . '` works as expected - skipping to next widget. ' . CliOutputPrinter::printExceptionMessage($e));
         } 
         finally {
             $this->closeErrorDialog();

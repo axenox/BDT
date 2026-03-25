@@ -3,10 +3,13 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
-use axenox\BDT\DataTypes\StepStatusDataType;
+use axenox\BDT\Exceptions\FacadeNodeException;
 use axenox\BDT\Interfaces\TestResultInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 
+/**
+ * @method \exface\Core\Widgets\Container getWidget()
+ */
 class UI5ContainerNode extends UI5AbstractNode
 {
     public function getCaption(): string
@@ -17,22 +20,20 @@ class UI5ContainerNode extends UI5AbstractNode
 
     public function checkWorksAsExpected(LogBookInterface $logbook) : TestResultInterface
     {
-        $childWidgetNodes = $this->getNodeElement()->findAll('css', '.exfw');
+        $childWidgets = $this->getWidget()->getWidgets();
         $result = null;
-        foreach ($childWidgetNodes as $childWidgetNode) {
-            if($this->getNodeElement()->getAttribute('id')=== $childWidgetNode->getAttribute('id') ) {
+        foreach ($childWidgets as $childWidget) {
+            if ($childWidget->isHidden()) {
                 continue;
             }
-            if ($this->isNodeInsideAnotherWidget($childWidgetNode)) {
-                continue;
+            $childWidgetElement = $this->getNodeElement()->find('css', '#' . $this->getElementIdFromWidget($childWidget));
+            if ($childWidgetElement === null) {
+                throw new FacadeNodeException($this, 'Cannot find DOM element for ' . $childWidget->getWidgetType() . ' "' . $childWidget->getCaption() . '"');
             }
-            $widgetType = $this->getBrowser()->getNodeWidgetType($childWidgetNode);
-            $node = UI5FacadeNodeFactory::createFromWidgetType($widgetType, $childWidgetNode, $this->getSession(), $this->getBrowser());
+            $node = UI5FacadeNodeFactory::createFromWidgetType($childWidget->getWidgetType(), $childWidgetElement, $this->getSession(), $this->getBrowser());
             $childResult = $node->checkWorksAsExpected($logbook);
-            switch (true) {
-                case $childResult->isFailed():
-                    $result = SubstepResult::createFailed($childResult->getException(), $logbook);
-                    break;
+            if ($childResult->isFailed()) {
+                $result = $childResult;
             }
         }
         if (! $result) {
