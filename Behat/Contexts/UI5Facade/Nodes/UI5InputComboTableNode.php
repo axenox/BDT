@@ -39,7 +39,7 @@ JS
     public function setValueVisible($value, bool $validate = true): FacadeNodeInterface
     {
         parent::setValueVisible($value, false);
-        $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
+        $this->waitWhileBusy();
         
         if ($dropdownFirstRowNode = $this->getBrowser()->getPage()->find('css', "#{$this->getElementId()}-popup-table tbody tr:first-of-type")) {
             $dropdownFirstRowNode->click();
@@ -67,6 +67,23 @@ JS
             $this->checkValueEquals('');
         }
         
+        return $this;
+    }
+
+    public function waitWhileBusy(int|float $timeoutSeconds = 10) : FacadeNodeInterface
+    {
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, false, true);
+        $this->getSession()->wait(
+            $timeoutSeconds * 1000,
+            <<<JS
+            (function() {
+                if (sap.ui.getCore().byId('{$this->getElementId()}') === undefined) {
+                    return false;
+                }
+                return sap.ui.getCore().byId('{$this->getElementId()}').isBusy() === false;
+            })()
+JS
+        );
         return $this;
     }
 }

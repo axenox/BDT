@@ -67,7 +67,7 @@
         {
             "_EXPORT_SUMMARY": "Test step status",
             "CREATED_ON": "2025-07-08 18:30:37",
-            "MODIFIED_ON": "2025-07-08 18:35:44",
+            "MODIFIED_ON": "2026-03-24 19:31:23",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
             "UID": "0x11f0bdf2e0ed235cbdf2025041000001",
@@ -82,7 +82,9 @@
                 "color_only": false,
                 "color_scale": {
                     "10": "~WARNING",
-                    "99": "lightgray",
+                    "90": "~OK",
+                    "91": "~ERROR",
+                    "98": "lightgray",
                     "100": "~OK",
                     "101": "~ERROR"
                 }

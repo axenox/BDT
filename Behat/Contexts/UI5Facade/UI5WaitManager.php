@@ -218,7 +218,8 @@ class UI5WaitManager
             <<<JS
             (function() {
                 if (document.readyState !== "complete") return false;
-                if (typeof $ !== 'undefined' && $.active !== 0) return false;
+                if (typeof $ === 'undefined') return false;
+                if ($.active !== 0) return false;
                 if (typeof exfLauncher === 'undefined') return false;
                 return exfLauncher.isBusy() === false;
             })()
