@@ -28,7 +28,7 @@ class UI5ContainerNode extends UI5AbstractNode
             }
             $childWidgetElement = $this->getNodeElement()->find('css', '#' . $this->getElementIdFromWidget($childWidget));
             if ($childWidgetElement === null) {
-                throw new FacadeNodeException('BLA');
+                throw new FacadeNodeException($this, 'Cannot find DOM element for ' . $childWidget->getWidgetType() . ' "' . $childWidget->getCaption() . '"');
             }
             $node = UI5FacadeNodeFactory::createFromWidgetType($childWidget->getWidgetType(), $childWidgetElement, $this->getSession(), $this->getBrowser());
             $childResult = $node->checkWorksAsExpected($logbook);
