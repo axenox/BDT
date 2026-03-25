@@ -393,4 +393,9 @@ JS;
     {
         return false;
     }
+
+    public function waitWhileBusy(int|float $timeoutSeconds = 30) : FacadeNodeInterface
+    {  
+        return $this;
+    }
 }
