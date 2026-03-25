@@ -70,18 +70,19 @@ JS
         return $this;
     }
 
-    public function waitWhileBusy(int|float $timeoutSeconds = 30) : FacadeNodeInterface
+    public function waitWhileBusy(int|float $timeoutSeconds = 10) : FacadeNodeInterface
     {
-        return $this->getSession()->wait(
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, false, true);
+        $this->getSession()->wait(
             $timeoutSeconds * 1000,
             <<<JS
             (function() {
                 if (sap.ui.getCore().byId('{$this->getElementId()}') === undefined) {
                     return false;
                 }
-                return sap.ui.getCore().byId('{$this->getElementId()}').isBusy();
+                return sap.ui.getCore().byId('{$this->getElementId()}').isBusy() === false;
             })()
-            JS
+JS
         );
         return $this;
     }

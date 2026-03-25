@@ -85,6 +85,8 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
         /* @var $widget \exface\Core\Widgets\Tile */
         $widget = $this->getWidget();
         Assert::assertNotNull($widget, 'Tile widget not found for this node.');
+        $this->checkCaptionMatchesWidget();
+        
         $action = $widget->getAction();
         
         // Check if the very same action was already tested

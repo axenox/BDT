@@ -67,7 +67,7 @@ class UI5HeaderColumnNode extends UI5AbstractNode
 
         for ($i = 0; $i < $retries; $i++) {
             $this->clickHeader();
-            $this->getBrowser()->getWaitManager()->waitForPendingOperations();
+            $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
 
             if ($this->isSorted($direction)) {
                 return;

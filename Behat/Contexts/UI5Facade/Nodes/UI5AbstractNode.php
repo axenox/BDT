@@ -19,6 +19,7 @@ use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\UiPageInterface;
 use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Interfaces\WorkbenchDependantInterface;
+use PHPUnit\Framework\Assert;
 
 abstract class UI5AbstractNode implements FacadeNodeInterface
 {
@@ -396,6 +397,14 @@ JS;
 
     public function waitWhileBusy(int|float $timeoutSeconds = 30) : FacadeNodeInterface
     {  
+        return $this;
+    }
+    
+    protected function checkCaptionMatchesWidget() : FacadeNodeInterface
+    {
+        $widgetCaption = $this->getWidget()->getCaption();
+        $nodeCaption = $this->getCaption();
+        Assert::assertEquals($widgetCaption, $nodeCaption, 'Widget caption "' . $widgetCaption . '" does not match renderd caption "' . $nodeCaption . '"');
         return $this;
     }
 }
