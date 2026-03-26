@@ -243,13 +243,12 @@ class UI5DataTableNode extends UI5DataNode
         return $parentResult->isFailed() ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
     }
     
-    protected function checkFilterWorksAsExpected(iFilterData $filter, iShowData $dataWidget, SubstepResult $result) : SubstepResult
+    protected function checkFilterWorksAsExpected(iFilterData $filter, iShowData $dataWidget, UI5FilterNode $filterNode, SubstepResult $result) : SubstepResult
     {
         $logbook = $result->getLogbook();
         $logbook->addLine('Filtering`' . $filter->getCaption() . '`');
         
         // Find and highlight the filter
-        $filterNode = $this->getBrowser()->getFilterByCaption($filter->getCaption());
         $this->getBrowser()->highlightWidget(
             $filterNode->getNodeElement(),
             $filter->getWidgetType(),
@@ -312,7 +311,6 @@ class UI5DataTableNode extends UI5DataNode
             ]);
         }
         
-        $filterNode->reset();
         $logbook->continueLine(' - resetting filter');
         
         $result->setTitle($result->getTitle() . ' with value "' . $filterVal . '"');
