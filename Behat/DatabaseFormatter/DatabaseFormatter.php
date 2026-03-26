@@ -5,6 +5,7 @@ use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
 use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
+use axenox\BDT\Common\Selectors\BdtMetricSelector;
 use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Interfaces\TestRunObserverInterface;
 use axenox\BDT\Tests\Metrics\UiPageCoverage;
@@ -26,7 +27,9 @@ use exface\Core\CommonLogic\UxonObject;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\DateTimeDataType;
 use exface\Core\DataTypes\FilePathDataType;
+use exface\Core\DataTypes\PhpFilePathDataType;
 use exface\Core\DataTypes\StringDataType;
+use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\DataSheets\DataSheetInterface;
@@ -466,6 +469,10 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         }
     }
 
+    /**
+     * {@inheritDoc}
+     * @see TestRunObserverInterface::getEventDispatcher()
+     */
     public static function getEventDispatcher(): EventDispatcherInterface
     {
         return self::$eventDispatcher;
@@ -474,16 +481,31 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     protected function registerMetrics() : array
     {
         if ($this->metrics === null) {
-            // TODO read table bdt_metric and instantiate metrics properly
-            $this->metrics = [
-                new UiPageCoverage($this->workbench, $this, new UxonObject(['uid' => '0x11f1881e2069034e881e025041000001']))
-            ];
+            $sheet = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.metric');
+            $sheet->getFilters()->addConditionFromString('enabled_flag', true, ComparatorDataType::EQUALS);
+            $sheet->getColumns()->addMultiple([
+                'UID',
+                'name',
+                'prototype_path',
+                'config_uxon'
+            ]);
+            $sheet->dataRead();
+            foreach ($sheet->getRows() as $row) {
+                $class = PhpFilePathDataType::findClassInFile($this->workbench->filemanager()->getPathToVendorFolder() . DIRECTORY_SEPARATOR . $row['prototype_path']);
+                if ($class === null) {
+                    throw new RuntimeException('Cannot register BDT metric ' . $row['name'] . ': prototype "' . $row['prototype_path'] . '" cannot be loaded!');
+                }
+                $uxon = UxonObject::fromJson($row['config_uxon']);
+                $uxon->setProperty('uid', $row['UID']);
+                $this->metrics[] = new $class($this->workbench, $this, $uxon);
+            }
         }
         return $this->metrics;
     }
 
     /**
-     * @return string|null
+     * {@inheritDoc}
+     * @see TestRunObserverInterface::getCurrentRunUid()
      */
     public function getCurrentRunUid() : ?string
     {
