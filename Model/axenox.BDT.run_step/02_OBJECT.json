@@ -87,9 +87,9 @@
         {
             "_EXPORT_SUMMARY": "BDT step run [axenox.BDT.run_step]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-03-23 14:18:12",
+            "MODIFIED_ON": "2026-03-25 18:40:05",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
+            "MODIFIED_BY_USER": "0x11f08ce4baed19b88ce4005056be9857",
             "UID": "0x11f0ac35222d57aeac35025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
@@ -133,23 +133,22 @@
                                                 "id": "name"
                                             },
                                             {
-                                                "attribute_alias": "started_on"
-                                            },
-                                            {
-                                                "attribute_alias": "finished_on"
-                                            },
-                                            {
-                                                "attribute_alias": "duration_ms"
+                                                "caption": "Run time",
+                                                "widget_type": "Display",
+                                                "calculation": "=Concatenate(Format(started_on, 'exface.Core.DateTime'), ' - ', Format(finished_on, 'exface.Core.DateTime'))"
                                             },
                                             {
                                                 "attribute_alias": "run_scenario__LABEL"
                                             },
                                             {
-                                                "attribute_alias": "line",
-                                                "id": "line"
+                                                "attribute_alias": "duration_ms"
                                             },
                                             {
                                                 "attribute_alias": "status"
+                                            },
+                                            {
+                                                "attribute_alias": "line",
+                                                "id": "line"
                                             },
                                             {
                                                 "attribute_alias": "monitor_error",
@@ -158,6 +157,10 @@
                                             {
                                                 "attribute_alias": "error_log_id",
                                                 "id": "ERROR_ID"
+                                            },
+                                            {
+                                                "attribute_alias": "UID",
+                                                "caption": "Step run ID"
                                             },
                                             {
                                                 "attribute_alias": "error_message",
