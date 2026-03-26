@@ -89,11 +89,6 @@ class UI5DataTableNode extends UI5DataNode
         return $nodes;
     }
 
-    private function getLoadedRowCount(): ?int
-    {
-       return count($this->getBrowser()->getTableRows($this->getNodeElement()));        
-    }
-
     public function selectRow(int $rowNumber)
     {
         $rowIndex = $this->convertOrdinalToIndex($rowNumber);
@@ -421,30 +416,6 @@ class UI5DataTableNode extends UI5DataNode
             $logbook->continueLine(' with value `' . $filterVal . '` found in table column `' . $columnCaption . '`');
         }
         return $filterVal;
-    }
-
-    /**
-     * check if the text ends with suffix 
-     * if the text ends with __LABEL first cut this part and checks the rest
-     * 
-     * @param string $text
-     * @param string $suffix
-     * @return bool
-     */
-    function endsWith(string $text, string $suffix): bool
-    {
-        if (str_contains($text, ':')) {
-            $text = strstr($text, ':', true);
-        }
-        
-        if (str_ends_with($text, '__LABEL')) {
-            $text = substr($text, 0, -strlen('__LABEL'));
-        }
-        else if (str_ends_with(strtolower($text), '__name')) {
-            $text = substr($text, 0, -strlen('__name'));
-        }
-
-        return str_ends_with($text, $suffix);
     }
 
     /**
