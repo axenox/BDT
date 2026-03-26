@@ -5,8 +5,11 @@ use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5FilterNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5PageNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5TileNode;
+use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatterExtension;
 use axenox\BDT\Behat\Events\AfterPageVisited;
+use axenox\BDT\Behat\Events\AfterUserLoggedIn;
+use axenox\BDT\Behat\Events\BeforeUserLoggedIn;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 use Behat\Mink\Element\NodeElement;
@@ -1683,6 +1686,15 @@ JS
                 break;
             }
         }
+
+        // Fire an on-before-login event to publish the roles
+        if ($roleAliasCol !== null) {
+            $roleAliasArray = $roleAliasCol->getValues();
+        } else {
+            $roleAliasArray = [];
+        }
+        DatabaseFormatter::getEventDispatcher()->dispatch(new BeforeUserLoggedIn($testRunnerUsername, $roleAliasArray));
+        
         return $loginFields;
     }
     
