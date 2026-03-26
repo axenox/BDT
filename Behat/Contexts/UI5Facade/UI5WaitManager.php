@@ -1,10 +1,14 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
+use axenox\BDT\Exceptions\AjaxException;
+use axenox\BDT\Exceptions\FetchApiException;
 use Behat\Mink\Session;
 use Exception;
 use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 use exface\Core\Exceptions\InvalidArgumentException;
+use GuzzleHttp\Psr7\Request;
+use GuzzleHttp\Psr7\Response;
 
 
 /**
@@ -338,20 +342,64 @@ class UI5WaitManager
         // Get the error manager instance
         $errorManager = ErrorManager::getInstance();
 
+        // window.exfXHRLog.errors
         try {
             $errors = $this->getSession()->evaluateScript('
     return (window.exfXHRLog && Array.isArray(window.exfXHRLog.errors)) ? window.exfXHRLog.errors : [];
 ');
+            $exception = null;
             foreach ($errors as $error) {
                 $type = $error['type'] ?? 'XHR';
 
-                $map = [
-                    'NetworkError' => 'HTTP',
-                    'JSError'      => 'JavaScript',
-                    'AppError'     => 'App'
-                ];
-
-                $errorManager->addError($error, $map[$type] ?? 'XHR');                
+                if ($type === 'NetworkError' || $type === 'Network' || $type === null) {
+                    /*
+                     * {
+                                type: 'Network',
+                                status: request.status,
+                                url: request.url,
+                                message: request.statusText,
+                                request: {
+                                    url: jqXHR.responseURL || options.url,
+                                    method: options.type || 'GET',
+                                    status: jqXHR.status,
+                                    statusText: jqXHR.statusText,
+                                    body, // see below
+                                    response: jqXHR.responseText,
+                                    duration: Date.now() - startTime
+                                },
+                                response: request.response,
+                                timestamp: request.timestamp,
+                            }
+                     */
+                    $request = new Request(
+                        $error['request']['method'] ?? 'GET', // method
+                        $error['url'],
+                        [],
+                        $error['request']['body'] ?? '',
+                    );
+                    $response = new Response(
+                        $error['status'],
+                        [],
+                        $error['response']
+                    );
+                    if ($error['source'] === 'XHR') {
+                        $exception = new AjaxException($request, $response, $error['message']);
+                    } else {
+                        $exception = new FetchApiException($request, $response, $error['message']);
+                    }
+                } else {
+                    $map = [
+                        'NetworkError' => 'HTTP',
+                        'JSError'      => 'JavaScript',
+                        'AppError'     => 'App'
+                    ];
+                    $errorManager->addError($error, $map[$type] ?? 'XHR');
+                }
+            }
+            // Reset JS errors - otherwise they will cause the next step to fail too
+            $this->getSession()->executeScript('if (window.exfXHRLog && window.exfXHRLog) { window.exfXHRLog.errors = [] }');
+            if ($exception !== null) {
+                throw $exception;
             }
             
             // 4) Popup (.exf-error) - primary source
@@ -511,7 +559,7 @@ JS);
     return origOpen.apply(this, arguments);
   };
 
-  XMLHttpRequest.prototype.send = function() {
+  XMLHttpRequest.prototype.send = function(requestBody) {
     var xhr = this;
     function done() {
       try {
@@ -530,7 +578,10 @@ JS);
             method: xhr.__exfMethod || '',
             url: url,
             message: (st + ' ' + (xhr.statusText || '')).trim(),
-            responseSnippet: body.slice(0, 1200)
+            response: body,
+            request: {
+                body: requestBody
+            }
           });
           return;
         }
@@ -584,7 +635,7 @@ if (!extracted && looksLikeUi5ErrorController) {
         method: xhr.__exfMethod || '',
         url: url,
         message: txt,
-        responseSnippet: body.slice(0, 1200)
+        respone: body
       });
     } catch (e) {}
   }, 0);
@@ -594,7 +645,7 @@ if (!extracted && looksLikeUi5ErrorController) {
 
   // 3) Fallback (safe): short, non-code message
   if (!extracted) {
-    extracted = 'Application error detected (see responseSnippet)';
+    extracted = 'Application error detected (see response)';
   }
 
   pushError({
@@ -605,7 +656,7 @@ if (!extracted && looksLikeUi5ErrorController) {
     method: xhr.__exfMethod || '',
     url: url,
     message: extracted,
-    responseSnippet: body.slice(0, 1200)
+    response: body
   });
 }
 
@@ -637,7 +688,7 @@ if (!extracted && looksLikeUi5ErrorController) {
                 method: method,
                 url: url,
                 message: (res.status + ' ' + (res.statusText || '')).trim(),
-                responseSnippet: (t || '').slice(0, 1200)
+                response: t
               });
             }).catch(function(){
               pushError({
@@ -648,7 +699,7 @@ if (!extracted && looksLikeUi5ErrorController) {
                 method: method,
                 url: url,
                 message: (res.status + ' ' + (res.statusText || '')).trim(),
-                responseSnippet: ''
+                response: ''
               });
             });
           }
