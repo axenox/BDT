@@ -176,28 +176,28 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
 
         // Substep should fail if the page cannot be loaded (shows an error) - otherwise the substep for
         // the click is passed, and we go on checking the page
-        $dialogNodeElement = null;
-        $this->runAsSubstep(
-            function(SubstepResult $result) use ($expectedId, $widget, &$dialogNodeElement) {
-                $this->click();
-                $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
-                $dialogNodeElement = $this->getSession()->getPage()->findById($expectedId);
-                Assert::assertNotNull(
-                    $dialogNodeElement,
-                    'Cannot find dialog with id `' . $expectedId . '` after clicking tile `' . $widget->getCaption() . '`.'
-                );
-            },
-            $this->buildMessageClicking(false),
-            'Pages',
-            $logbook
+       
+        $this->click();
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+        $dialogNodeElement = $this->getSession()->getPage()->findById($expectedId);
+        Assert::assertNotNull(
+            $dialogNodeElement,
+            'Cannot find dialog with id `' . $expectedId . '` after clicking button `' . $widget->getCaption() . '`.'
         );
 
-        $logbook->addLine('Clicking Tile [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
+        $logbook->addLine('Clicking Button [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
         $logbook->addIndent(+1);
 
         try {
-            $dialogNode = UI5FacadeNodeFactory::createFromNodeElement($dialogNodeElement, $this->getSession(), $this->getBrowser());
-            $result = $dialogNode->checkWorksAsExpected($logbook);
+            $result = $this->runAsSubstep(
+                function(SubstepResult $result) use ($logbook, $widget, $dialogNodeElement) {
+                    $dialogNode = UI5FacadeNodeFactory::createFromNodeElement($dialogNodeElement, $this->getSession(), $this->getBrowser());
+                    return $dialogNode->checkWorksAsExpected($logbook);
+                    },
+                    'Seeing ' . $this->getBrowser()->getNodeWidgetType($dialogNodeElement),
+                    'Dialogs',
+                $logbook
+            );
         } 
         catch (\Throwable $e) {
             $result = SubstepResult::createFailed($e, $logbook);

@@ -89,6 +89,11 @@ class UI5DataTableNode extends UI5DataNode
         return $nodes;
     }
 
+    protected function getLoadedRowCount(): ?int
+    {
+       return count($this->getBrowser()->getTableRows($this->getNodeElement()));        
+    }
+
     public function selectRow(int $rowNumber)
     {
         $rowIndex = $this->convertOrdinalToIndex($rowNumber);
@@ -215,7 +220,6 @@ class UI5DataTableNode extends UI5DataNode
     {
         $parentResult = parent::checkTableWorksAsExpected($dataWidget, $logbook);
         
-        $failed = false;
         $logbook->addIndent(1);
 
         /*
@@ -236,7 +240,7 @@ class UI5DataTableNode extends UI5DataNode
         */
 
         $logbook->addIndent(-1);
-        return $failed ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
+        return $parentResult->isFailed() ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
     }
     
     protected function checkFilterWorksAsExpected(iFilterData $filter, iShowData $dataWidget, SubstepResult $result) : SubstepResult
@@ -324,6 +328,80 @@ class UI5DataTableNode extends UI5DataNode
 
     }
 
+    protected function checkButtonsWorkAsExpected(iHaveButtons $dataWidget, LogBookInterface $logbook) : TestResultInterface
+    {
+        $skippedButtons = [];
+        $failed = false;
+        foreach ($dataWidget->getButtons() as $buttonWidget) {
+            if ($buttonWidget->isHidden()) {
+                continue;
+            }
+
+            // Make sure, the button is visible
+            $buttonNodeElement = $this->getBrowser()->findButtonByCaption($buttonWidget->getCaption(), $this->getNodeElement());
+            if ($buttonNodeElement === null) {
+                $skippedButtons['Button not visible'][] = $buttonWidget->getCaption();
+                $logbook->addLine('Skipping button `' . $buttonWidget->getCaption() . '` because not visible in UI');
+                continue;
+            }
+
+            // Make sure the action has everything it needs from the data widget
+            $action = $buttonWidget->getAction();
+            $rowNumber = 1;
+            switch (true) {
+                case $action === null:
+                    $skippedButtons['Button has no action'][] = $buttonWidget->getCaption();
+                    $logbook->addLine('Skipping button ' . $this->getCaption() . ' because it has no action');
+                    continue 2;
+                case $action->getInputRowsMin() > 0:
+                    if(! $this->isRowSelected($rowNumber)) {
+                        $this->selectRow($rowNumber);
+                    }
+                    break;
+                default:
+                    continue 2;
+            }
+
+            $buttonNodeElement = $this->getBrowser()->findButtonByCaption($buttonWidget->getCaption(), $this->getNodeElement());
+            if ($buttonNodeElement !== null) {
+                $buttonNode = UI5FacadeNodeFactory::createFromWidgetType($buttonWidget->getWidgetType(), $buttonNodeElement, $this->getSession(), $this->getBrowser());
+
+                while ($buttonNode->checkDisabled() && $rowNumber < $this->getLoadedRowCount()) {
+                    $this->selectRow($rowNumber);
+                    $this->selectRow(++$rowNumber);
+                }
+
+                if (!$buttonNode->checkDisabled()) {
+                    // Press the button in a substep
+                    $substepResult = $this->runAsSubstep(
+                        function() use ($buttonNode, $logbook) {
+                            return $buttonNode->checkWorksAsExpected($logbook);
+                        },
+                        'Clicking ' . $buttonWidget->getCaption(),
+                        'Dialogs',
+                        $logbook
+                    );
+
+                    // Say the buttons test is failed if at least one button fails
+                    if ($substepResult->isFailed()) {
+                        $failed = true;
+                    }
+                }
+                else {
+                    $skippedButtons['Button cannot be enabled'][] = $buttonWidget->getCaption();
+                    $logbook->addLine('Skipping button ' . $this->getCaption() . ' because there is no row to enable it');
+                }
+            }
+            $this->selectRow($rowNumber);
+        }
+
+        // Log a SKIPPED substep for every reason to skip buttons
+        foreach ($skippedButtons as $reason => $buttons) {
+            $this->logSubstep('Skipped buttons: ' . implode(', ', $buttons), StepStatusDataType::SKIPPED, $reason, static::CATEGORY_BUTTONS);
+        }
+        return $failed ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
+    }
+    
     /**
      * @param string $caption
      * @return UI5HeaderColumnNode
@@ -386,10 +464,10 @@ class UI5DataTableNode extends UI5DataNode
         $this->filterColumn($caption, "");
     }
     
-    protected function findValueInColumn(DataColumn $column, LogBookInterface $logbook)
+    protected function findValueInColumn(DataColumn $column, LogBookInterface $logbook): ?string
     {
         $columnCaption = $column->getCaption();
-        $i = $this->getVisibibleColumnIndex($column);
+        $i = $this->getVisibleColumnIndex($column);
 
         $rows = $this->getBrowser()->getTableRows($this->getNodeElement());
         $cellValue = null;
