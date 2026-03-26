@@ -26,13 +26,6 @@ class UI5InputSelectNode extends UI5InputNode
      */
     protected function setValueOfComboBox(string $value): FacadeNodeInterface
     {
-        //if value is empty reset the filter
-        if (empty($value)) {
-            if ($this->getNodeElement()->hasClass('sapMMultiComboBox')) {
-                return $this->resetMultiComboBox();
-            }
-            return $this->resetComboBox();
-        }
         
         // Find the dropdown arrow button
         $arrow = $this->getNodeElement()->find('css', '.sapMInputBaseIconContainer');
@@ -42,24 +35,42 @@ class UI5InputSelectNode extends UI5InputNode
 
         // Click to open the dropdown
         $arrow->click();
-
+        $this->waitWhileBusy(5);
+        
         $lists = $this->getBrowser()->getPage()->findAll('css', '.sapMList');
         if (empty($lists)) {
             throw new FacadeNodeException($this, "Could not find ComboBox dropdown list");
         }
 
         // take the last opened one
-        $list = end($lists);
+        $visibleList = null;
+        foreach ($lists as $list) {
+            if ($list->isVisible()) {
+                $visibleList = $list;
+                break;
+            }
+        }
 
         // Find the option with matching text
-        $item = $list->find('named', ['content', $value]);
+        $item = $visibleList->find('named', ['content', $value]);
 
         if (!$item) {
             throw new FacadeNodeException($this, "Could not find option '{$value}' in ComboBox list");
         }
 
         $item->click();
+        $this->waitWhileBusy(5);
         return $this;
+    }
+    
+    public function setValueEmpty(bool $validate = true) : FacadeNodeInterface
+    {
+        $node = $this->getNodeElement();
+        if ($node->hasClass('sapMComboBoxBase')) {
+            return $this->resetMultiComboBox();
+        } else {
+            return $this->resetComboBox();
+        }
     }
     
     protected function resetMultiComboBox(): FacadeNodeInterface
@@ -68,6 +79,7 @@ class UI5InputSelectNode extends UI5InputNode
 
         foreach ($tokens as $deleteButton) {
             $deleteButton->click();
+            $this->waitWhileBusy(5);
         }
 
         return $this;
