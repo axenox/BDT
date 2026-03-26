@@ -57,8 +57,9 @@ class UI5Browser
     private $session;
     private $workbench = null;
     private $facade = null;
-    private $objectAlias = null;
     private UI5WaitManager $waitManager;
+
+    private $objectAlias = null;
     private array $focusStack = [];
     private array $pagesVisited = [];
 
@@ -231,12 +232,13 @@ class UI5Browser
     {
         $this->getSession()->evaluateScript(
             <<<JS
-            window.exfXHRLog = {
-                requests: [],
-                lastRequest: null,
-                errors: []
-            };
-            JS
+
+            if (window.exfXHRLog) {
+                window.exfXHRLog.requests = [];
+                window.exfXHRLog.lastRequest = [];
+                window.exfXHRLog.errors = [];
+            }
+JS
         );
     }
 
@@ -998,13 +1000,19 @@ JS
                                 status: request.status,
                                 url: request.url,
                                 message: request.statusText,
+                                request: request,
                                 response: request.response,
                                 timestamp: request.timestamp
                             };
                             
-                            window.exfErrorManager.addError(error);
                             this.errors.push(error);
                         }
+                    },
+                    resetErrors: function() {
+                        this.errors = [];
+                    },
+                    resetRequests: function() {
+                        this.requests = [];
                     }
                 };
 
@@ -1018,7 +1026,7 @@ JS
                         options.complete = function(jqXHR, textStatus) {
                             try {
                                 const request = {
-                                    url: options.url,
+                                    url: jqXHR.responseURL || options.url,
                                     method: options.type || 'GET',
                                     status: jqXHR.status,
                                     statusText: jqXHR.statusText,
@@ -1091,7 +1099,7 @@ JS
 
                 console.log('Enhanced XHR monitoring initialized successfully');
             })();
-            JS
+JS
         );
 
         // Verify initialization
@@ -1676,6 +1684,11 @@ JS
             }
         }
         return $loginFields;
+    }
+    
+    public function getTestingUsername() : string
+    {
+        return $this->getWorkbench()->getOption('TEST_USER.USERNAME');
     }
 
     public static function resetUser(WorkbenchInterface $workbench): void
