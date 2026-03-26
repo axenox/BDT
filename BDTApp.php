@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT;
 
+use axenox\BDT\Common\Installer\BDTConfigInstaller;
 use exface\Core\Interfaces\InstallerInterface;
 use exface\Core\CommonLogic\Model\App;
 use exface\Core\CommonLogic\AppInstallers\AbstractSqlDatabaseInstaller;
@@ -32,6 +33,10 @@ class BDTApp extends App
         } else {
             $this->getWorkbench()->getLogger()->error('Cannot initialize DB installer for app "' . $this->getSelector()->toString() . '": the core model loader installer must be compatible with AbstractSqlDatabaseInstaller!');
         }
+        
+        // BDT Config
+        $bdtInstaller = new BDTConfigInstaller($this->getSelector());
+        $installer->addInstaller($bdtInstaller);
         
         return $installer;
     }
