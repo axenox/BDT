@@ -85,67 +85,29 @@
     ],
     "rows": [
         {
-            "_EXPORT_SUMMARY": "BDT metric [axenox.BDT.metric]",
-            "CREATED_ON": "2026-03-26 10:21:58",
-            "MODIFIED_ON": "2026-03-26 15:22:02",
+            "_EXPORT_SUMMARY": "BDT metric prototype [axenox.BDT.metric_prototype]",
+            "CREATED_ON": "2026-03-26 15:16:59",
+            "MODIFIED_ON": "2026-03-26 15:16:59",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
-            "UID": "0x11f18cc93d35fd9c8cc9025041000001",
+            "UID": "0x11f181ff744f40da81ff025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
             "COMMENTS": "",
             "DOCS": "",
-            "NAME": "BDT metric",
+            "NAME": "BDT metric prototype",
             "INHERIT_DATA_SOURCE_BASE_OBJECT": 1,
-            "DATA_SOURCE": "0x11f0aee48b2814e8aee4025041000001",
+            "DATA_SOURCE": "0x11e6afd8d2fa47e78943e4b318306b9a",
             "APP": "0x11efa2214f96c8b8a221025041000001",
             "SHORT_DESCRIPTION": "",
             "PARENT_OBJECT": null,
-            "DATA_ADDRESS_PROPS": null,
-            "DEFAULT_EDITOR_UXON": {
-                "widget_type": "Dialog",
-                "widgets": [
-                    {
-                        "attribute_alias": "name"
-                    },
-                    {
-                        "attribute_alias": "description",
-                        "height": 4
-                    },
-                    {
-                        "attribute_alias": "subject_object"
-                    },
-                    {
-                        "attribute_alias": "app"
-                    },
-                    {
-                        "attribute_alias": "enabled_flag"
-                    },
-                    {
-                        "widget_type": "WidgetGroup",
-                        "caption": "Metric prototype and configuration",
-                        "width": 2,
-                        "height": "max",
-                        "widgets": [
-                            {
-                                "attribute_alias": "prototype_path",
-                                "id": "prototype_field",
-                                "width": 2
-                            },
-                            {
-                                "attribute_alias": "config_uxon",
-                                "widget_type": "InputUxon",
-                                "root_prototype": "=prototype_field",
-                                "hide_caption": true,
-                                "width": 2,
-                                "height": "max"
-                            }
-                        ]
-                    }
-                ]
+            "DATA_ADDRESS_PROPS": {
+                "folder_depth": 0,
+                "delete_empty_folders": true
             },
-            "ALIAS": "metric",
-            "DATA_ADDRESS": "bdt_metric"
+            "DEFAULT_EDITOR_UXON": null,
+            "ALIAS": "metric_prototype",
+            "DATA_ADDRESS": "*/*/Tests/Metrics/"
         }
     ],
     "totals_rows": [],
