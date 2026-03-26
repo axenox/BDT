@@ -6,6 +6,8 @@ use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
 use axenox\BDT\DataTypes\StepStatusDataType;
+use axenox\BDT\Interfaces\TestRunObserverInterface;
+use axenox\BDT\Tests\Metrics\UiPageCoverage;
 use Behat\Testwork\Output\Formatter;
 use Behat\Testwork\Tester\Result\TestResult;
 use Behat\Testwork\EventDispatcher\Event\AfterSuiteTested;
@@ -20,6 +22,7 @@ use Behat\Behat\EventDispatcher\Event\AfterScenarioTested;
 use Behat\Behat\EventDispatcher\Event\AfterFeatureTested;
 use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 use exface\Core\CommonLogic\Debugger\LogBooks\MarkdownLogBook;
+use exface\Core\CommonLogic\UxonObject;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\DateTimeDataType;
 use exface\Core\DataTypes\FilePathDataType;
@@ -31,11 +34,13 @@ use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\WorkbenchInterface;
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 
-class DatabaseFormatter implements Formatter
+class DatabaseFormatter implements Formatter, TestRunObserverInterface
 {    
     private static $eventDispatcher;
     
     private WorkbenchInterface  $workbench;
+    private ?array $metrics = null;
+    
     private ?DataSheetInterface $runDataSheet = null;
     private float               $runStart;
     
@@ -138,7 +143,9 @@ class DatabaseFormatter implements Formatter
                 'behat_command' => $command
             ]);
             $ds->dataCreate(false);
-            $this->runDataSheet = $ds;            
+            $this->runDataSheet = $ds;        
+            
+            $this->registerMetrics();
         }
         catch(\Exception $e){
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
@@ -462,5 +469,27 @@ class DatabaseFormatter implements Formatter
     public static function getEventDispatcher(): EventDispatcherInterface
     {
         return self::$eventDispatcher;
+    }
+
+    protected function registerMetrics() : array
+    {
+        if ($this->metrics === null) {
+            // TODO read table bdt_metric and instantiate metrics properly
+            $this->metrics = [
+                new UiPageCoverage($this->workbench, $this, new UxonObject(['uid' => '0x11f1881e2069034e881e025041000001']))
+            ];
+        }
+        return $this->metrics;
+    }
+
+    /**
+     * @return string|null
+     */
+    public function getCurrentRunUid() : ?string
+    {
+        if ($this->runDataSheet === null) {
+            return null;
+        }
+        return $this->runDataSheet->getUidColumn()->getValue(0);
     }
 }

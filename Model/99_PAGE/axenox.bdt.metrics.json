@@ -1,0 +1,123 @@
+{
+    "uid": "0x11f19d65d67c275c9d65025041000001",
+    "alias_with_namespace": "axenox.bdt.metrics",
+    "menu_parent_page_selector": "0x11ef9cade73751fa9cad025041000001",
+    "menu_index": 7,
+    "menu_visible": true,
+    "name": "Metrics",
+    "description": "",
+    "intro": "",
+    "replaces_page_selector": null,
+    "created_by_user_selector": "0x31000000000000000000000000000000",
+    "created_on": "2026-03-26 12:42:15",
+    "modified_by_user_selector": "0x31000000000000000000000000000000",
+    "modified_on": "2026-03-26 13:30:10",
+    "contents": {
+        "widget_type": "SplitHorizontal",
+        "object_alias": "axenox.BDT.run_metric_score",
+        "panels": [
+            {
+                "caption": "Test runs",
+                "width": "70%",
+                "widgets": [
+                    {
+                        "widget_type": "DataTable",
+                        "object_alias": "axenox.BDT.run_metric_score",
+                        "aggregate_by_attribute_alias": [
+                            "run",
+                            "run__run_stats__status",
+                            "metric"
+                        ],
+                        "columns": [
+                            {
+                                "attribute_alias": "run",
+                                "hidden": true
+                            },
+                            {
+                                "attribute_alias": "run__started_on"
+                            },
+                            {
+                                "attribute_alias": "run__run_stats__status"
+                            },
+                            {
+                                "attribute_alias": "metric__LABEL"
+                            },
+                            {
+                                "attribute_alias": "score_percentual:AVG"
+                            }
+                        ],
+                        "sorters": [
+                            {
+                                "attribute_alias": "run__started_on",
+                                "direction": "desc"
+                            }
+                        ],
+                        "buttons": [
+                            {
+                                "bind_to_double_click": true,
+                                "action": {
+                                    "alias": "axenox.BDT.RunMetricScoreDetailsDialog",
+                                    "input_mapper": {
+                                        "from_object_alias": "axenox.BDT.run_metric_score",
+                                        "to_object_alias": "axenox.BDT.run_metric_score",
+                                        "inherit_columns": "none",
+                                        "column_to_filter_mappings": [
+                                            {
+                                                "from": "run",
+                                                "to": "run",
+                                                "comparator": "=="
+                                            },
+                                            {
+                                                "from": "metric",
+                                                "to": "metric",
+                                                "comparator": "=="
+                                            },
+                                            {
+                                                "from": "app",
+                                                "to": "app",
+                                                "comparator": "=="
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "caption": "Metrics",
+                "widgets": [
+                    {
+                        "widget_type": "DataTable",
+                        "object_alias": "axenox.BDT.metric",
+                        "columns": [
+                            {
+                                "attribute_group_alias": "~VISIBLE"
+                            }
+                        ],
+                        "buttons": [
+                            {
+                                "action_alias": "exface.Core.ShowDataImportDialog"
+                            },
+                            {
+                                "action_alias": "exface.Core.ShowObjectCreateDialog"
+                            },
+                            {
+                                "action_alias": "exface.Core.ShowObjectEditDialog",
+                                "bind_to_double_click": true
+                            },
+                            {
+                                "action_alias": "exface.Core.ShowObjectCopyDialog"
+                            },
+                            {
+                                "action_alias": "exface.Core.DeleteObject",
+                                "visibility": "optional"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+}
