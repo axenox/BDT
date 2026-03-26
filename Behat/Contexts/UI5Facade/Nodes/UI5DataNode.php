@@ -264,15 +264,16 @@ class UI5DataNode extends UI5AbstractNode
                 $logbook->addLine('Filtering ' . $filter->getCaption() . ' skipped');
                 $skippedFilters['Filter not supported'][] = $filter->getCaption();
             }
+            $filterNode = $this->getBrowser()->getFilterByCaption($filter->getCaption());
             $substepResult = $this->runAsSubstep(
-                function (SubstepResult $result) use ($filter, $dataWidget) {
-                    return $this->checkFilterWorksAsExpected($filter, $dataWidget, $result);
+                function (SubstepResult $result) use ($filter, $dataWidget, $filterNode) {
+                    return $this->checkFilterWorksAsExpected($filter, $dataWidget, $filterNode, $result);
                 },
                 'Filtering `' . $filter->getCaption() . '`',
                 static::CATEGORY_FILTERING,
                 $logbook
             );
-            $this->getBrowser()->getFilterByCaption($filter->getCaption())->reset();
+            $filterNode->reset();
             $this->getBrowser()->clearWidgetHighlights();
             if ($substepResult->isFailed()) {
                 $failed = true;
@@ -338,13 +339,12 @@ class UI5DataNode extends UI5AbstractNode
         return $failed ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
     }
     
-    protected function checkFilterWorksAsExpected(iFilterData $filter, iShowData $dataWidget, SubstepResult $result) : SubstepResult
+    protected function checkFilterWorksAsExpected(iFilterData $filter, iShowData $dataWidget, UI5FilterNode $filterNode, SubstepResult $result) : SubstepResult
     {
         $logbook = $result->getLogbook();
         $logbook->addLine('Filtering`' . $filter->getCaption() . '`');
         
         // Find and highlight the filter
-        $filterNode = $this->getBrowser()->getFilterByCaption($filter->getCaption());
         $this->getBrowser()->highlightWidget(
             $filterNode->getNodeElement(),
             $filter->getWidgetType(),
