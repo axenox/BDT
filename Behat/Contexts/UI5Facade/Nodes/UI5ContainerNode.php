@@ -3,6 +3,7 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
+use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Exceptions\FacadeNodeException;
 use axenox\BDT\Interfaces\TestResultInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
@@ -21,24 +22,30 @@ class UI5ContainerNode extends UI5AbstractNode
     public function checkWorksAsExpected(LogBookInterface $logbook) : TestResultInterface
     {
         $childWidgets = $this->getWidget()->getWidgets();
-        $result = null;
+        $failed = false;
         foreach ($childWidgets as $childWidget) {
             if ($childWidget->isHidden()) {
                 continue;
             }
             $childWidgetElement = $this->getNodeElement()->find('css', '#' . $this->getElementIdFromWidget($childWidget));
             if ($childWidgetElement === null) {
-                throw new FacadeNodeException($this, 'Cannot find DOM element for ' . $childWidget->getWidgetType() . ' "' . $childWidget->getCaption() . '"');
+                $caption = $childWidget->getCaption();
+                if (! $caption) {
+                    $caption = 'with id "' . $childWidget->getId() . '"';
+                } else {
+                    $caption = '"' . $caption . '"';
+                }
+                $this->logSubstep('Looking at ' . $childWidget->getWidgetType() . ' ' . $caption, StepStatusDataType::FAILED, 'Cannot find DOM element');
+                $failed = true;
+                continue;
             }
             $node = UI5FacadeNodeFactory::createFromWidgetType($childWidget->getWidgetType(), $childWidgetElement, $this->getSession(), $this->getBrowser());
             $childResult = $node->checkWorksAsExpected($logbook);
             if ($childResult->isFailed()) {
-                $result = $childResult;
+                $failed = true;
             }
         }
-        if (! $result) {
-            $result = SubstepResult::createPassed($logbook);
-        }
+        $result = $failed ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
         return $result;
     }
 
