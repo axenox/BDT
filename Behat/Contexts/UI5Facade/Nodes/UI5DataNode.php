@@ -206,7 +206,6 @@ class UI5DataNode extends UI5AbstractNode
     
     protected function checkTableWorksAsExpected(iShowData $dataWidget, LogBookInterface $logbook) : TestResultInterface
     {
-        $failed = false;
         $logbook->addIndent(1);
 
         // Filters
@@ -265,14 +264,16 @@ class UI5DataNode extends UI5AbstractNode
                 $logbook->addLine('Filtering ' . $filter->getCaption() . ' skipped');
                 $skippedFilters['Filter not supported'][] = $filter->getCaption();
             }
+            $filterNode = $this->getBrowser()->getFilterByCaption($filter->getCaption());
             $substepResult = $this->runAsSubstep(
-                function (SubstepResult $result) use ($filter, $dataWidget) {
-                    return $this->checkFilterWorksAsExpected($filter, $dataWidget, $result);
+                function (SubstepResult $result) use ($filter, $dataWidget, $filterNode) {
+                    return $this->checkFilterWorksAsExpected($filter, $dataWidget, $filterNode, $result);
                 },
                 'Filtering `' . $filter->getCaption() . '`',
                 static::CATEGORY_FILTERING,
                 $logbook
             );
+            $filterNode->reset();
             $this->getBrowser()->clearWidgetHighlights();
             if ($substepResult->isFailed()) {
                 $failed = true;
@@ -304,38 +305,29 @@ class UI5DataNode extends UI5AbstractNode
                 continue;
             }
 
-            // Make sure the action has everything it needs from the data widget
-            $action = $buttonWidget->getAction();
-            $rowNumber = 1;
-            switch (true) {
-                case $action === null:
-                    $skippedButtons['Button has no action'][] = $buttonWidget->getCaption();
-                    $logbook->addLine('Skipping button ' . $this->getCaption() . ' because it has no action');
-                    continue 2;
-                case $action->getInputRowsMin() > 0:
-                    if(! $this->isRowSelected($rowNumber)) {
-                        $this->selectRow($rowNumber);
-                    }
-                    break;
-                default:
-                    continue 2;
-            }
-
             $buttonNodeElement = $this->getBrowser()->findButtonByCaption($buttonWidget->getCaption(), $this->getNodeElement());
             if ($buttonNodeElement !== null) {
                 $buttonNode = UI5FacadeNodeFactory::createFromWidgetType($buttonWidget->getWidgetType(), $buttonNodeElement, $this->getSession(), $this->getBrowser());
 
-                while ($buttonNode->checkDisabled() && $rowNumber <= $this->getLoadedRowCount()) {
-                    $this->selectRow($rowNumber);
-                    $this->selectRow(++$rowNumber);
+                if (!$buttonNode->checkDisabled()) {
+                    // Press the button in a substep
+                    $substepResult = $this->runAsSubstep(
+                        function() use ($buttonNode, $logbook) {
+                            return $buttonNode->checkWorksAsExpected($logbook);
+                        },
+                        'Clicking ' . $buttonWidget->getCaption(),
+                        'Dialogs',
+                        $logbook
+                    );                    
+
+                    // Say the buttons test is failed if at least one button fails
+                    if ($substepResult->isFailed()) {
+                        $failed = true;
+                    }
                 }
-
-                // Press the button in a substep
-                $substepResult = $buttonNode->checkWorksAsExpected($logbook);
-
-                // Say the buttons test is failed if at least one button fails
-                if ($substepResult->isFailed()) {
-                    $failed = true;
+                else {
+                    $skippedButtons['Button cannot be enabled'][] = $buttonWidget->getCaption();
+                    $logbook->addLine('Skipping button ' . $this->getCaption() . ' because there is no row to enable it');
                 }
             }
         }
@@ -347,13 +339,12 @@ class UI5DataNode extends UI5AbstractNode
         return $failed ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
     }
     
-    protected function checkFilterWorksAsExpected(iFilterData $filter, iShowData $dataWidget, SubstepResult $result) : SubstepResult
+    protected function checkFilterWorksAsExpected(iFilterData $filter, iShowData $dataWidget, UI5FilterNode $filterNode, SubstepResult $result) : SubstepResult
     {
         $logbook = $result->getLogbook();
         $logbook->addLine('Filtering`' . $filter->getCaption() . '`');
         
         // Find and highlight the filter
-        $filterNode = $this->getBrowser()->getFilterByCaption($filter->getCaption());
         $this->getBrowser()->highlightWidget(
             $filterNode->getNodeElement(),
             $filter->getWidgetType(),
@@ -436,16 +427,16 @@ class UI5DataNode extends UI5AbstractNode
         return null;
     }
 
-    protected function findValueInColumn(DataColumn $column, LogBookInterface $logbook)
+    protected function findValueInColumn(DataColumn $column, LogBookInterface $logbook): ?string
     {
         return null;
     }
 
-    protected function getVisibibleColumnIndex(DataColumn $column) : ?int
+    protected function getVisibleColumnIndex(DataColumn $column) : ?int
     {
         $i = 0;
         foreach ($column->getdataWidget()->getColumns() as $col) {
-            if ($column->isHidden()) {
+            if ($col->isHidden()) {
                 continue;
             }
             if ($column === $col) {

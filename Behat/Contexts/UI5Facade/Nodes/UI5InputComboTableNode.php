@@ -43,6 +43,7 @@ JS
         
         if ($dropdownFirstRowNode = $this->getBrowser()->getPage()->find('css', "#{$this->getElementId()}-popup-table tbody tr:first-of-type")) {
             $dropdownFirstRowNode->click();
+            $this->waitWhileBusy(5);
         }
         
         if ($validate) {

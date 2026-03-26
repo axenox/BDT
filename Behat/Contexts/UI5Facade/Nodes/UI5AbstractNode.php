@@ -148,28 +148,17 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
         }
         return $innerDomNode;
     }
-    
+
     public function findVisibleButtonByCaption(string $caption, bool $isTranslated, ?NodeElement $scope = null): ?NodeElement
     {
-        if(! $isTranslated) {
+        if (!$isTranslated) {
             $caption = $this->getBrowser()
                 ->getWorkbench()
                 ->getCoreApp()
                 ->getTranslator($this->getBrowser()->getLocale())
                 ->translate($caption);
         }
-        
-        // 1) Search scoped first (important in UI5: previous pages stay in DOM but are hidden)
-        $contexts = [];
-        if ($scope) {
-            $contexts[] = $scope;
-        }
-        $contexts[] = $this->getSession()->getPage();
 
-        // Prefer robust selectors that match UI5 button structure:
-        // - <button ...>
-        // - inside: <bdi>Caption</bdi>
-        // - OR title/aria-label equals caption (depending on UI5 control)
         $xpath = sprintf(
             ".//button[
             .//bdi[normalize-space(.)=%s]
@@ -181,21 +170,66 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
             $this->xpathLiteral($caption)
         );
 
-        foreach ($contexts as $ctx) {
-            $candidates = $ctx->findAll('xpath', $xpath);
-            if (!$candidates) {
-                continue;
-            }
-
-            // 2) Filter only *actually visible* elements (UI5 keeps hidden duplicates in DOM)
+        // If scope is given, search ONLY within scope — throw if not found there
+        if ($scope !== null) {
+            $scope = $this->getWidgetScope($scope);
+            $candidates = $scope->findAll('xpath', $xpath);
             foreach (array_reverse($candidates) as $el) {
                 if ($this->isElementVisibleInBrowser($el)) {
                     return $el;
                 }
             }
+            return null;
+        }
+
+        // No scope: fall back to full page search
+        $candidates = $this->getSession()->getPage()->findAll('xpath', $xpath);
+        foreach (array_reverse($candidates) as $el) {
+            if ($this->isElementVisibleInBrowser($el)) {
+                return $el;
+            }
         }
 
         return null;
+    }
+    
+    /**
+     * Returns the nearest widget root ancestor that contains both
+     * the toolbar and the content area of a widget.
+     *
+     * Use this to resolve the correct scope before passing it to
+     * findVisibleButtonByCaption() when the button lives outside
+     * the element you have at hand (e.g. toolbar above a sapUiTable).
+     *
+     * Priority:
+     *  1. Open dialog  — never escape a dialog boundary
+     *  2. article|section with data-sap-ui-render — SAP UI5 widget root
+     *  3. Nearest exfw ancestor — ExFace widget container fallback
+     */
+    public function getWidgetScope(NodeElement $inner): NodeElement
+    {
+        // 1. If inside a dialog, the dialog itself is the boundary
+        $dialog = $inner->find('xpath',
+            'ancestor-or-self::*[@role="dialog"][1]'
+        );
+        if ($dialog !== null) {
+            return $dialog;
+        }
+
+        // 2. Nearest SAP UI5 rendered widget root (article or section)
+        $sapRoot = $inner->find('xpath',
+            'ancestor-or-self::*[@data-sap-ui-render and (self::article or self::section)][1]'
+        );
+        if ($sapRoot !== null) {
+            return $sapRoot;
+        }
+
+        // 3. Fallback: nearest ExFace widget container
+        $exfRoot = $inner->find('xpath',
+            'ancestor-or-self::*[contains(concat(" ",normalize-space(@class)," ")," exfw ")][1]'
+        );
+
+        return $exfRoot ?? $inner;
     }
 
     public function isElementVisibleInBrowser(NodeElement $el): bool
@@ -396,7 +430,25 @@ JS;
     }
 
     public function waitWhileBusy(int|float $timeoutSeconds = 30) : FacadeNodeInterface
-    {  
+    {
+        usleep(100);
+        $this->getSession()->wait(
+            $timeoutSeconds * 1000,
+            <<<JS
+            (function() {
+                var element = sap.ui.getCore().byId('{$this->getElementId()}');
+                
+                // Element bulunamazsa geçmeye izin ver
+                if (!element || typeof element.isBusy === "undefined") {
+                    return true;
+                }
+                
+                // Busy DEĞİLSE true dön → beklemeyi bırak
+                // Busy İSE false dön → bekle
+                return element.isBusy() === false;
+            })()
+            JS
+        );
         return $this;
     }
     
