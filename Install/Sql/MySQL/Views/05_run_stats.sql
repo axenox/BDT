@@ -23,8 +23,12 @@ SELECT
          WHEN MAX(r.finished_on) IS NULL AND TIMESTAMPDIFF(MINUTE, MAX(ss.started_on), NOW()) > 5 THEN 102
          WHEN MAX(r.finished_on) IS NULL THEN 10
          ELSE MAX(ss.`status`)
-        END) AS status
-
+        END) AS status,
+    r.started_on,
+    (CASE
+         WHEN r.finished_on IS NULL THEN MAX(ss.started_on)
+         ELSE r.finished_on
+        END) AS finished_on
 FROM
     bdt_run r
         LEFT JOIN bdt_run_feature f ON f.run_oid = r.oid
