@@ -6,9 +6,10 @@ use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5FilterNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5PageNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5TileNode;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
-use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatterExtension;
+use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
 use axenox\BDT\Behat\Events\AfterPageVisited;
-use axenox\BDT\Behat\Events\AfterUserLoggedIn;
+use axenox\BDT\Behat\Events\AfterSubstep;
+use axenox\BDT\Behat\Events\BeforeSubstep;
 use axenox\BDT\Behat\Events\BeforeUserLoggedIn;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
@@ -1897,11 +1898,26 @@ JS
     /**
      * Take a screenshot via injected callback
      */
-    public function captureScreenshot(): void
+    public function captureScreenshot(LogBookInterface $logbook): void
     {
         if ($this->screenshotFn === null) {
             return;
         }
-        ($this->screenshotFn)();
+        $dispatcher = $this->eventDispatcher;
+        $title = 'Taking screenshot';
+
+        $dispatcher->dispatch(new BeforeSubstep($title, 'screenshot'));
+
+        try {
+            ($this->screenshotFn)();
+            $substepResult = SubstepResult::createPassed($logbook);
+            $substepResult->setTitle($title);
+        } catch (\Throwable $e) {
+            $substepResult = SubstepResult::createFailed($e, $logbook);
+            $substepResult->setTitle($title);
+            $substepResult->setReason('Screenshot failed: ' . $e->getMessage());
+            ErrorManager::getInstance()->logException($e, $this->getWorkbench());
+        }
+        $dispatcher->dispatch(new AfterSubstep($substepResult, $title, 'screenshot'));
     }
 }
