@@ -322,7 +322,7 @@ JS;
             }
         } catch (\Throwable $e) {
             $logbook?->addLine('**ERROR:** ' . $e->getMessage());
-            $this->getBrowser()->captureScreenshot();
+            $this->getBrowser()->captureScreenshot($logbook);
             $substepResult = SubstepResult::createFailed($e, $logbook);
             ErrorManager::getInstance()->logException($e, $this->getBrowser()->getWorkbench());
             // IMPORTANT: reset the node to make sure subsequent tests find it in the same state as it
@@ -456,7 +456,7 @@ JS;
     {
         $widgetCaption = $this->getWidget()->getCaption();
         $nodeCaption = $this->getCaption();
-        Assert::assertEquals($widgetCaption, $nodeCaption, 'Widget caption "' . $widgetCaption . '" does not match renderd caption "' . $nodeCaption . '"');
+        Assert::assertEquals($widgetCaption, $nodeCaption, 'Widget caption "' . $widgetCaption . '" does not match rendered caption "' . $nodeCaption . '"');
         return $this;
     }
 }
