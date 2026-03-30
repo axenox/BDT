@@ -24,7 +24,12 @@ SELECT
         WHEN MAX(r.finished_on) IS NULL AND DATEDIFF(MINUTE, MAX(ss.started_on), GETDATE()) > 5 THEN 102
         WHEN MAX(r.finished_on) IS NULL THEN 10
         ELSE MAX(ss.status)
-        END AS status
+        END AS status,
+    r.started_on,
+    CASE
+         WHEN r.finished_on IS NULL THEN MAX(ss.started_on)
+         ELSE r.finished_on
+        END AS finished_on
 
 FROM
     bdt_run r
@@ -67,5 +72,6 @@ FROM
 
 GROUP BY r.oid,
          scen.scenarios_total, scen.scenarios_passed, scen.scenarios_failed, scen.scenarios_skipped,
-         feat.features_total, feat.features_passed, feat.features_failed, feat.features_skipped
+         feat.features_total, feat.features_passed, feat.features_failed, feat.features_skipped,
+         r.started_on, r.finished_on
 ;
