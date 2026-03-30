@@ -4,6 +4,7 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
 use axenox\BDT\Interfaces\TestResultInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
+use PHPUnit\Framework\Assert;
 
 class UI5DialogNode extends UI5AbstractNode
 {
@@ -22,6 +23,7 @@ class UI5DialogNode extends UI5AbstractNode
         $logbook->addLine('Seeing the dialog ' . $this->getCaption());
         $this->waitWhileBusy(5);
         $closeBtn = $this->findVisibleButtonByCaption('ACTION.GENERIC.CLOSE', false);
+        Assert::assertNotNull($closeBtn, 'Close button of the dialog cannot be found');
         $closeBtn->click();
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
         $logbook->addLine('Pressing close button of the dialog');
