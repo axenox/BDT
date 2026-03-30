@@ -7,6 +7,8 @@ use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Exceptions\FacadeNodeException;
 use axenox\BDT\Interfaces\TestResultInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
+use exface\Core\Interfaces\WidgetInterface;
+use exface\Core\Widgets\SplitPanel;
 
 /**
  * @method \exface\Core\Widgets\Container getWidget()
@@ -27,26 +29,32 @@ class UI5ContainerNode extends UI5AbstractNode
             if ($childWidget->isHidden()) {
                 continue;
             }
-            $childWidgetElement = $this->getNodeElement()->find('css', '#' . $this->getElementIdFromWidget($childWidget));
-            if ($childWidgetElement === null) {
-                $caption = $childWidget->getCaption();
-                if (! $caption) {
-                    $caption = 'with id "' . $childWidget->getId() . '"';
-                } else {
-                    $caption = '"' . $caption . '"';
-                }
-                $this->logSubstep('Looking at ' . $childWidget->getWidgetType() . ' ' . $caption, StepStatusDataType::FAILED, 'Cannot find DOM element');
-                $failed = true;
-                continue;
-            }
-            $node = UI5FacadeNodeFactory::createFromWidgetType($childWidget->getWidgetType(), $childWidgetElement, $this->getSession(), $this->getBrowser());
-            $childResult = $node->checkWorksAsExpected($logbook);
+            $childResult = $this->checkChildWorksAsExpected($childWidget, $logbook);
             if ($childResult->isFailed()) {
                 $failed = true;
             }
         }
         $result = $failed ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
         return $result;
+    }
+    
+    protected function checkChildWorksAsExpected(WidgetInterface $childWidget, logBookInterface $logbook) : TestResultInterface
+    {
+        $childWidgetElement = $this->getNodeElement()->find('css', '#' . $this->getElementIdFromWidget($childWidget));
+        if ($childWidgetElement === null) {
+            $caption = $childWidget->getCaption();
+            if (! $caption) {
+                $caption = 'with id "' . $childWidget->getId() . '"';
+            } else {
+                $caption = '"' . $caption . '"';
+            }
+            $resultEvent = $this->logSubstep('Looking at ' . $childWidget->getWidgetType() . ' ' . $caption, StepStatusDataType::FAILED, 'Cannot find DOM element');
+            $childResult = $resultEvent->getResult();
+        } else {
+            $node = UI5FacadeNodeFactory::createFromWidgetType($childWidget->getWidgetType(), $childWidgetElement, $this->getSession(), $this->getBrowser());
+            $childResult = $node->checkWorksAsExpected($logbook);
+        }
+        return $childResult;
     }
 
     /**
