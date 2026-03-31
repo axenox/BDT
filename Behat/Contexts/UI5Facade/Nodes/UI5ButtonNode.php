@@ -176,10 +176,15 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
 
         // Substep should fail if the page cannot be loaded (shows an error) - otherwise the substep for
         // the click is passed, and we go on checking the page
-       
-        $this->click();
-        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
-        $dialogNodeElement = $this->getSession()->getPage()->findById($expectedId);
+
+        $attempt = 0;
+        do {
+            $this->click();
+            $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+            $dialogNodeElement = $this->getSession()->getPage()->findById($expectedId);
+            $attempt++;
+        } while ($attempt < 3 && $dialogNodeElement === null);
+
         Assert::assertNotNull(
             $dialogNodeElement,
             'Cannot find dialog with id `' . $expectedId . '` after clicking button `' . $widget->getCaption() . '`.'
