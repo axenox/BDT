@@ -26,7 +26,7 @@ class UI5PageNode implements FacadeNodeInterface
     protected $browser;
 
 
-    /** @var array<string,bool> */
+    /** @var array<string, TestResultInterface> */
     protected static array $validatedAliases = [];
 
     public function __construct(string $pageSelector, Session $session, UI5Browser $browser)
@@ -72,7 +72,10 @@ class UI5PageNode implements FacadeNodeInterface
     public function checkWorksAsExpected(LogBookInterface $logbook) : TestResultInterface
     {
         $alias = $this->pageSelector;
+        $logbook ??= new MarkdownLogBook($this->getCaption());
+        DatabaseFormatter::addTestLogbook($logbook);
         if (null !== $prevState = (static::$validatedAliases[$alias] ?? null)) {
+            $logbook->addLine('Page already validated — reusing previous result.');
             return $prevState;
         }
 
@@ -93,8 +96,6 @@ class UI5PageNode implements FacadeNodeInterface
         );
 
 
-        $logbook ??= new MarkdownLogBook($this->getCaption());
-        DatabaseFormatter::addTestLogbook($logbook);
         try {
             $result = $facadeNode->checkWorksAsExpected($logbook);
             self::$validatedAliases[$alias] = $result;

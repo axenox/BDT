@@ -21,7 +21,7 @@ class UI5DialogNode extends UI5AbstractNode
     public function checkWorksAsExpected(LogBookInterface $logbook) : TestResultInterface
     {
         $logbook->addLine('Seeing the dialog ' . $this->getCaption());
-        $this->waitWhileBusy(5);
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
         $closeBtn = $this->findVisibleButtonByCaption('ACTION.GENERIC.CLOSE', false);
         Assert::assertNotNull($closeBtn, 'Close button of the dialog cannot be found');
         $closeBtn->click();
