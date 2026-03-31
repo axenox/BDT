@@ -87,9 +87,9 @@
         {
             "_EXPORT_SUMMARY": "BDT test run [axenox.BDT.run]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-03-20 21:33:59",
+            "MODIFIED_ON": "2026-03-31 14:57:24",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
+            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f08c1d222cd23e8c1d025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
@@ -268,6 +268,23 @@
                                             }
                                         ],
                                         "buttons": [
+                                            {
+                                                "caption": "Edit Scenario",
+                                                "action": {
+                                                    "alias": "exface.Core.ShowObjectEditDialog",
+                                                    "object_alias": "axenox.BDT.BEHAT_FEATURE",
+                                                    "input_mapper": {
+                                                        "from_object_alias": "axenox.BDT.run_scenario",
+                                                        "to_object_alias": "axenox.BDT.BEHAT_FEATURE",
+                                                        "column_to_column_mappings": [
+                                                            {
+                                                                "from": "run_feature__filename",
+                                                                "to": "PATHNAME_RELATIVE"
+                                                            }
+                                                        ]
+                                                    }
+                                                }
+                                            },
                                             {
                                                 "action": {
                                                     "disable_buttons": false,

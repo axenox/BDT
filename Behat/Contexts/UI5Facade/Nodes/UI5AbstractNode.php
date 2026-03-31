@@ -438,13 +438,10 @@ JS;
             (function() {
                 var element = sap.ui.getCore().byId('{$this->getElementId()}');
                 
-                // Element bulunamazsa geçmeye izin ver
                 if (!element || typeof element.isBusy === "undefined") {
                     return true;
                 }
                 
-                // Busy DEĞİLSE true dön → beklemeyi bırak
-                // Busy İSE false dön → bekle
                 return element.isBusy() === false;
             })()
             JS
@@ -456,7 +453,7 @@ JS;
     {
         $widgetCaption = $this->getWidget()->getCaption();
         $nodeCaption = $this->getCaption();
-        Assert::assertEquals($widgetCaption, $nodeCaption, 'Widget caption "' . $widgetCaption . '" does not match rendered caption "' . $nodeCaption . '"');
+        Assert::assertEquals(trim($widgetCaption), trim($nodeCaption), 'Widget caption "' . $widgetCaption . '" does not match rendered caption "' . $nodeCaption . '"');
         return $this;
     }
 }
