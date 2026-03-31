@@ -19,10 +19,9 @@ use exface\Core\Actions\Login;
 use exface\Core\CommonLogic\Security\AuthenticationToken\MetamodelUsernamePasswordAuthToken;
 use exface\Core\CommonLogic\Security\Authenticators\MetamodelAuthenticator;
 use exface\Core\CommonLogic\Workbench;
+use exface\Core\DataTypes\BooleanDataType;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\DateDataType;
-use exface\Core\DataTypes\DateTimeDataType;
-use exface\Core\DataTypes\IntegerDataType;
 use exface\Core\DataTypes\NumberDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\InvalidArgumentException;
@@ -705,7 +704,7 @@ JS
                 $columnName = $content['column'];
                 $searchValue = trim($content['value'], '"\'');
                 $rawCmp = $content['comparator'] ?? '[';
-                /** @var class-string<DataTypeInterface> $inputDataType */
+                /** @var DataTypeInterface $inputDataType */
                 $inputDataType = $content['dataType'] ??  new StringDataType(SelectorFactory::createDataTypeSelector($this->getWorkbench(), static::class));
 
                 // First find column headers
@@ -829,24 +828,25 @@ JS
     private function compareCell(?string $cellText, $expected, string $cmp, DataTypeInterface $dataType): bool
     {
         $cellText = (string)$cellText;
-        switch ($dataType) {
-            case NumberDataType::class:
-            case IntegerDataType::class:
+        switch (true) {
+            case $dataType instanceof NumberDataType:
                 $left  = (float)str_replace(',', '.', $cellText);
                 $right = (float)$expected;
                 break;
 
-            case DateDataType::class:
-            case DateTimeDataType::class:
+            case $dataType instanceof DateDataType:
                 $left  = \DateTime::createFromFormat('d.m.Y', $cellText);
                 $right = new \DateTime($expected);
-
                 if (!$left || !$right) {
                     return false;
                 }
-
                 $left  = $left->getTimestamp();
                 $right = $right->getTimestamp();
+                break;
+
+            case $dataType instanceof BooleanDataType:
+                $left  = $this->normalizeBool($cellText);
+                $right = $this->normalizeBool($expected);
                 break;
 
             default:
@@ -879,7 +879,21 @@ JS
                 return stripos((string)$left, (string)$right) !== false;
         }
     }
+    
+    private function normalizeBool(?string $value): ?bool
+    {
+        $v = mb_strtolower(trim((string)$value));
 
+        if (in_array($v, ['1', 'true', 'ja', 'yes', 'evet'], true)) {
+            return true;
+        }
+        if (in_array($v, ['0', 'false', 'nein', 'no', 'hayır', ''], true)) {
+            return false;
+        }
+
+        return null;
+    }
+    
     private function normalizeText(?string $s): string
     {
         $s = (string)$s;
