@@ -4,8 +4,8 @@ SELECT
     sc.oid AS run_scenario_oid,
     f.oid AS run_feature_oid,
     r.oid AS run_oid,
-    (CASE 
-        WHEN s.finished_on IS NULL AND TIMESTAMPDIFF(MINUTE, s.started_on, NOW()) > 5 THEN 102
+    (CASE
+        WHEN s.finished_on IS NULL AND TIMESTAMPDIFF(MINUTE, s.started_on, NOW()) > 10 THEN 102
         ELSE s.`status`
     END) AS `status`,
     s.started_on,
