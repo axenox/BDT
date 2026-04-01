@@ -178,6 +178,7 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
         // the click is passed, and we go on checking the page
 
         $attempt = 0;
+        $logbook->addLine('Clicking Button [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
         do {
             $this->click();
             $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
@@ -190,7 +191,6 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
             'Cannot find dialog with id `' . $expectedId . '` after clicking button `' . $widget->getCaption() . '`.'
         );
 
-        $logbook->addLine('Clicking Button [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
         $logbook->addIndent(+1);
 
         try {
