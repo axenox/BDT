@@ -45,6 +45,15 @@ class UI5InputNode extends UI5AbstractNode
     public function checkValueEquals($expectedValue) : FacadeNodeInterface
     {
         $newVal = $this->getValueVisible() ?? '';
+        if ($this->getNodeElement()->hasClass('exfw-InputDate')){
+            Assert::assertSame(
+                $this->normalizeDateToIso($expectedValue),
+                $this->normalizeDateToIso($newVal),
+                "Expected date `$expectedValue` does not match actual `$newVal` in filter '{$this->getCaption()}'"
+            );
+            return $this;
+        }
+        
         Assert::assertEquals($expectedValue, $newVal, "Expected value `$expectedValue` does not match actual value `$newVal` in InputComboTable '{$this->getCaption()}'");
         return $this;
     }
@@ -80,5 +89,20 @@ class UI5InputNode extends UI5AbstractNode
                 return $node;
         }
         return null;
+    }
+
+    /**
+     * Normalizes various date formats to ISO (Y-m-d) for comparison.
+     * Supported: Y-m-d, d.m.Y, d/m/Y, m/d/Y
+     */
+    private function normalizeDateToIso(string $value): string
+    {
+        foreach (['Y-m-d', 'd.m.Y', 'd/m/Y', 'm/d/Y'] as $format) {
+            $dt = \DateTime::createFromFormat('!' . $format, $value);
+            if ($dt !== false && $dt->format($format) === $value) {
+                return $dt->format('Y-m-d');
+            }
+        }
+        throw new \InvalidArgumentException("Cannot parse date value `$value` in filter '{$this->getCaption()}'");
     }
 }

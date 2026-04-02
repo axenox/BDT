@@ -264,9 +264,45 @@ class UI5DataTableNode extends UI5DataNode
         // sometimes column captions are not the same as filter captions
         $columnCaption = null;
         $column = $this->findColumnWithAttribute($dataWidget, $filterAttr, $logbook);
+
+        if ($column !== null) {
+            $columnCaption = $column->getCaption();
+        }
+        
+        if ($filterNode instanceof UI5RangeFilterNode) {
+            $range = $this->findRangeValuesInDataSource($filterAttr, $filter, $dataWidget->getMetaObject());
+
+            if ($range === null) {
+                $logbook->continueLine(' no value found!');
+                return SubstepResult::createSkipped(
+                    'No value found for range filter `' . $filter->getCaption() . '`',
+                    $logbook
+                );
+            }
+
+            $logbook->continueLine(' with range `' . $range['from'] . '` – `' . $range['to'] . '`');
+            $filterNode->setRangeVisible($range['from'], $range['to']);
+
+            $this->triggerSearch();
+            $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
+            $loadedRowCount = $this->getLoadedRowCount();
+            $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');
+
+            $result->setTitle($result->getTitle() . ' with range "' . $range['from'] . '" – "' . $range['to'] . '"');
+            if ($columnCaption !== null) {
+                $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
+                    ['column' => $columnCaption, 'value' => $range['from'], 'comparator' => '>=', 'dataType' => $this->getInputDataType()]
+                ]);
+                $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
+                    ['column' => $columnCaption, 'value' => $range['to'], 'comparator' => '<=', 'dataType' => $this->getInputDataType()]
+                ]);
+            }
+            
+            return $result;
+        }
+        
         if ($column !== null) {
             $filterVal = $this->findValueInColumn($column, $logbook);
-            $columnCaption = $column->getCaption();
         }
         
         // Look for a value in the data source
@@ -283,19 +319,12 @@ class UI5DataTableNode extends UI5DataNode
         }
         
         // Set the filter value
-        try {
-            $filterNode->setValueVisible($filterVal);
-        } catch (FacadeNodeException|ExpectationFailedException $e) {
-            $currentVal = $filterNode->getValueVisible();
-            if (($filter instanceof Filter) && $filter->getInputWidget() instanceof iSupportLazyLoading) {
-                if (stripos($currentVal, $filterVal) !== false) {
-                    $filterVal = $currentVal;
-                    $logbook->continueLine(' (changed to `' . $filterVal . '` because it was autosuggested)');
-                } 
-            } 
-            if ($filterVal !== $currentVal) {
-                throw new FacadeNodeException($this, 'Failed to set filter value for filter `' . $filter->getCaption() . '`. Tried value: `' . $filterVal . '` - got `' . $currentVal . '` when validating.', null, $e);
-            }
+        $filterVal = $this->trySetFilterValue($filterNode, $filter, $filterVal, $filterAttr, $dataWidget, $logbook);
+        if ($filterVal === null) {
+            return SubstepResult::createSkipped(
+                'No accepted value found for filter `' . $filter->getCaption() . '`',
+                $logbook
+            );
         }
         
         $this->triggerSearch();

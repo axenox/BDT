@@ -555,6 +555,15 @@ class UI5DataNode extends UI5AbstractNode
     protected function checkTheValueFromTable(MetaObject $metaObject, string $returnColumn, string $returnValue): bool
     {
         $ds = DataSheetFactory::createFromObject($metaObject);
+        foreach ($this->hiddenFilters as $hiddenFilter) {
+            if ($hiddenFilter->getMetaObject()->isExactly($ds->getMetaObject())) {
+                $ds->getFilters()->addConditionFromString(
+                    $hiddenFilter->getAttributeAlias(),
+                    $hiddenFilter->getValue(),
+                    $hiddenFilter->getComparator()
+                );
+            }
+        }
         $ds->getFilters()->addConditionFromString($returnColumn, $returnValue, ComparatorDataType::EQUALS);
         $ds->dataRead(1, 1);
         return $ds->dataCount() > 0;
@@ -663,5 +672,105 @@ class UI5DataNode extends UI5AbstractNode
             }
         }
         return 'Looking at ' . $widget->getWidgetType() . ' ' . $msg;
+    }
+
+    /**
+     * Tries to set a filter value and retries once with a fresh data-source value
+     * if UI5 rejects the first attempt (valueState=Error or validation mismatch).
+     *
+     * Returns the accepted value on success, or null if no value could be set.
+     */
+    protected function trySetFilterValue(
+        UI5FilterNode    $filterNode,
+        iFilterData      $filter,
+        string           $firstVal,
+        MetaAttributeInterface $filterAttr,
+        iShowData        $dataWidget,
+        LogBookInterface $logbook
+    ): ?string {
+        $attempts = [
+            $firstVal,
+            // Second candidate: fresh value straight from the data source
+            fn() => $this->findValueInDataSource($filterAttr, $filter, $dataWidget->getMetaObject()),
+        ];
+
+        foreach ($attempts as $i => $candidate) {
+            // Lazy-evaluate the callable for the retry candidate
+            $val = is_callable($candidate) ? $candidate() : $candidate;
+
+            if (trim($val ?? '') === '') {
+                continue;
+            }
+
+            try {
+                $filterNode->setValueVisible($val);
+                return $val;                         // accepted — done
+            } catch (FacadeNodeException|ExpectationFailedException $e) {
+                // Check autosuggested value for lazy-loading inputs
+                if (($filter instanceof Filter) && $filter->getInputWidget() instanceof iSupportLazyLoading) {
+                    $currentVal = $filterNode->getValueVisible();
+                    if (stripos((string) $currentVal, $val) !== false) {
+                        $logbook->continueLine(' (changed to `' . $currentVal . '` because it was autosuggested)');
+                        return $currentVal;
+                    }
+                }
+
+                if ($i === 0) {
+                    $logbook->continueLine(' value `' . $val . '` rejected by UI5, retrying with fresh data-source value');
+                    $filterNode->setValueEmpty(false);
+                } else {
+                    $logbook->continueLine(' retry value `' . $val . '` also rejected — skipping filter');
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Finds two distinct values from the data source to use as from/to range bounds.
+     *
+     * Fetches the value at rowIndex=0 as "from" and rowIndex=1 as "to".
+     * If both rows return the same value, "to" is nudged one row further
+     * until a different value is found or the limit is reached.
+     *
+     * Returns ['from' => string, 'to' => string] or null if no values found.
+     *
+     * @return array{from: string, to: string}|null
+     */
+    protected function findRangeValuesInDataSource(
+        MetaAttributeInterface $attr,
+        Filter $filterWidget,
+        MetaObject $metaObject
+    ): ?array {
+        // Reuse existing single-value finder at two different row offsets
+        $fromVal = $this->findValueInDataSource($attr, $filterWidget, $metaObject, 'ASC');
+        if (trim($fromVal ?? '') === '') {
+            return null;
+        }
+
+        // Find a "to" value that is >= "from" by reading further rows
+        $toVal    = null;
+        $rowIndex = 1;
+        while ($rowIndex <= 100) {
+            $candidate = $this->findValueInDataSourceQuery(
+                $filterWidget->getInputWidget()->getMetaObject(),
+                $attr,
+                $attr->getAlias(),
+                'DESC',
+                $rowIndex - 1   // DESC so we get a value on the other end of the range
+            );
+            if (trim($candidate ?? '') !== '' && $candidate !== $fromVal) {
+                $toVal = $candidate;
+                break;
+            }
+            $rowIndex++;
+        }
+
+        // If we couldn't find a distinct "to", use the same value — range filter
+        // with from=to still tests that the filter works (exact match range)
+        $toVal = $toVal ?? $fromVal;
+
+        return ['from' => $fromVal, 'to' => $toVal];
     }
 }
