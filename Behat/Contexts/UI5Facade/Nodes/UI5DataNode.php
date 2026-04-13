@@ -367,7 +367,7 @@ class UI5DataNode extends UI5AbstractNode
         
         // Look for a value in the data source
         if (trim($filterVal ?? '') === '') {
-            $filterVal = $this->findValueInDataSource($filterAttr, $filter, $dataWidget->getMetaObject());
+            $filterVal = $this->findValuesInDataSource($filterAttr, $filter, $dataWidget->getMetaObject());
             if ($filterVal !== null) {
                 $logbook->continueLine(' with value `' . $filterVal . '` found in data source');
             }
@@ -447,77 +447,79 @@ class UI5DataNode extends UI5AbstractNode
         return null;
     }
 
-    protected function findValueInDataSource(MetaAttributeInterface $attr, Filter $filterWidget, MetaObject $metaObject, string $sort = null)
+    protected function findValuesInDataSource(MetaAttributeInterface $attr, Filter $filterWidget, MetaObject $metaObject, $limit = 3, string $sort = null): array
     {
         $inputWidget = $filterWidget->getInputWidget();
-        $returnValue = null;
+        $values = [];
         $rowIndex = 0;
         if ($inputWidget instanceof InputComboTable) {
             $textAttr = $inputWidget->getTextAttribute(); // This gives us what we need to type into the filter (e.g. Name)
             $tableObj = $inputWidget->getTableObject(); // Both attributes above belong to this object, NOT the object of the filter widget
-            while($returnValue === null) {
-                $foundValue = $this->findValueInDataSourceQuery($tableObj, $textAttr, $textAttr->getAlias(), $sort, $rowIndex);
-                if ($foundValue !== null && $this->checkTheValueFromTable($metaObject, $inputWidget->getAttributeAlias() . '__' . $textAttr->getAlias(), $foundValue)) {
-                    $returnValue = $foundValue;
+            while(count($values) < $limit && $rowIndex < 100) {
+                $val = $this->findValueInDataSourceQuery($tableObj, $textAttr, $textAttr->getAlias(), $sort, $rowIndex);
+                if ($val !== null && !in_array($val, $values, true)) {
+                    if($this->checkTheValueFromTable($metaObject, $inputWidget->getAttributeAlias() . '__' . $textAttr->getAlias(), $val)) {
+                        $values[] = $val;
+                    }
                 }
                 $rowIndex++;
                 if ($rowIndex > 100){
                     break;
                 }
             }
-            return $returnValue;
+            return $values;
         }
         
         // if it is not relation return the value that is found
         if (!$attr->isRelation()) {
             $returnColumn = $attr->getAlias();
-            while($returnValue === null) {
-                $foundValue = $this->findValueInDataSourceQuery($inputWidget->getMetaObject(), $attr, $returnColumn, $sort, $rowIndex);
+            while(empty($values)) {
+                $val = $this->findValueInDataSourceQuery($inputWidget->getMetaObject(), $attr, $returnColumn, $sort, $rowIndex);
                 $datatype = $attr->getDataType();
                 // if the datatype is EnumDataType return its label
                 if ($datatype instanceof EnumDataTypeInterface) {
                     foreach ($datatype->getLabels() as $key => $label) {
-                        if ($key === (int)$foundValue) {
+                        if ($key === (int)$val) {
                             $foundLabel = $label;
                             break;
                         }
                     }
                 }
                 if ($inputWidget instanceof InputSelect) {
-                    $foundLabel = ($inputWidget->getSelectableOptions())[$foundValue];
+                    $foundLabel = ($inputWidget->getSelectableOptions())[$val];
                 }
-                if ($foundValue !== null && $this->checkTheValueFromTable($metaObject, $returnColumn, $foundValue)) {
-                    $returnValue = (
+                if ($val !== null && $this->checkTheValueFromTable($metaObject, $returnColumn, $val)) {
+                    $values[] = (
                         $datatype instanceof EnumDataTypeInterface
                         || $inputWidget instanceof InputSelect
                     )
                         ? $foundLabel
-                        : $foundValue;
+                        : $val;
                 }
                 $rowIndex++;
                 if ($rowIndex > 100){
                     break;
                 }
             }
-            return $returnValue;
+            return $values;
         }
         
         // if it is a relation find the label of the found uid
         $rel = $attr->getRelation();
         $rightObj = $rel->getRightObject();
         $returnColumn = $attr->getName() . '__' . $rightObj->getLabelAttribute()->getName();
-        while($returnValue === null)
+        while(empty($values))
         {
-            $foundValue =  $this->findValueInDataSourceQuery($attr->getObject(), $attr, $returnColumn , $sort, $rowIndex);
-            if ($foundValue !== null && $this->checkTheValueFromTable($metaObject, $returnColumn, $foundValue)) {
-                $returnValue = $foundValue;
+            $val =  $this->findValueInDataSourceQuery($attr->getObject(), $attr, $returnColumn , $sort, $rowIndex);
+            if ($val !== null && $this->checkTheValueFromTable($metaObject, $returnColumn, $val)) {
+                $values[] = $val;
             }
             $rowIndex++;
             if ($rowIndex > 100){
                 break;
             }
         }
-        return $returnValue;
+        return $values;
 
     }
 
@@ -681,46 +683,57 @@ class UI5DataNode extends UI5AbstractNode
      * Returns the accepted value on success, or null if no value could be set.
      */
     protected function trySetFilterValue(
-        UI5FilterNode    $filterNode,
-        iFilterData      $filter,
-        string           $firstVal,
+        UI5FilterNode $filterNode,
+        iFilterData $filter,
         MetaAttributeInterface $filterAttr,
-        iShowData        $dataWidget,
+        iShowData $dataWidget,
         LogBookInterface $logbook
     ): ?string {
-        $attempts = [
-            $firstVal,
-            // Second candidate: fresh value straight from the data source
-            fn() => $this->findValueInDataSource($filterAttr, $filter, $dataWidget->getMetaObject()),
-        ];
+        $candidates = [];
 
-        foreach ($attempts as $i => $candidate) {
-            // Lazy-evaluate the callable for the retry candidate
-            $val = is_callable($candidate) ? $candidate() : $candidate;
-
-            if (trim($val ?? '') === '') {
-                continue;
+        $col = $this->findColumnWithAttribute($dataWidget, $filterAttr, $logbook);
+        if ($col !== null) {
+            $val = $this->findValueInColumn($col, $logbook);
+            if (trim($val ?? '') !== '') {
+                $candidates[] = $val;
             }
+        }
 
+        if ($filter instanceof Filter) {
+            $dbValues = $this->findValuesInDataSource(
+                $filterAttr,
+                $filter,
+                $dataWidget->getMetaObject(),
+                3
+            );
+            foreach ($dbValues as $dbVal) {
+                if (!in_array($dbVal, $candidates, true)) {
+                    $candidates[] = $dbVal;
+                }
+            }
+        }
+
+        foreach ($candidates as $i => $val) {
             try {
+                $filterNode->setValueEmpty(false);
                 $filterNode->setValueVisible($val);
-                return $val;                         // accepted — done
-            } catch (FacadeNodeException|ExpectationFailedException $e) {
-                // Check autosuggested value for lazy-loading inputs
-                if (($filter instanceof Filter) && $filter->getInputWidget() instanceof iSupportLazyLoading) {
+
+                if ($i > 0) {
+                    $logbook->continueLine(' (retry with value `' . $val . '`)');
+                }
+                return $val;
+
+            } catch (\Throwable $e) {
+                if ($filter->getInputWidget() instanceof iSupportLazyLoading) {
                     $currentVal = $filterNode->getValueVisible();
-                    if (stripos((string) $currentVal, $val) !== false) {
-                        $logbook->continueLine(' (changed to `' . $currentVal . '` because it was autosuggested)');
+                    if (!empty($currentVal) && stripos($currentVal, $val) !== false) {
+                        $logbook->continueLine(' (autosuggested to `' . $currentVal . '`)');
                         return $currentVal;
                     }
                 }
 
-                if ($i === 0) {
-                    $logbook->continueLine(' value `' . $val . '` rejected by UI5, retrying with fresh data-source value');
-                    $filterNode->setValueEmpty(false);
-                } else {
-                    $logbook->continueLine(' retry value `' . $val . '` also rejected — skipping filter');
-                }
+                $logbook->continueLine(' value `' . $val . '` rejected');
+                try { $filterNode->setValueEmpty(false); } catch (\Throwable $ignored) {}
             }
         }
 
@@ -744,13 +757,14 @@ class UI5DataNode extends UI5AbstractNode
         MetaObject $metaObject
     ): ?array {
         // Reuse existing single-value finder at two different row offsets
-        $fromVal = $this->findValueInDataSource($attr, $filterWidget, $metaObject, 'ASC');
-        if (trim($fromVal ?? '') === '') {
+        $toVal = $this->findValuesInDataSource($attr, $filterWidget, $metaObject, 'ASC');
+        if (empty($toVal)) {
             return null;
         }
+        $toVal = $toVal[0];
 
         // Find a "to" value that is >= "from" by reading further rows
-        $toVal    = null;
+        $fromVal    = null;
         $rowIndex = 1;
         while ($rowIndex <= 100) {
             $candidate = $this->findValueInDataSourceQuery(
@@ -760,8 +774,8 @@ class UI5DataNode extends UI5AbstractNode
                 'DESC',
                 $rowIndex - 1   // DESC so we get a value on the other end of the range
             );
-            if (trim($candidate ?? '') !== '' && $candidate !== $fromVal) {
-                $toVal = $candidate;
+            if (trim($candidate ?? '') !== '' && $candidate !== $toVal) {
+                $fromVal = $candidate;
                 break;
             }
             $rowIndex++;

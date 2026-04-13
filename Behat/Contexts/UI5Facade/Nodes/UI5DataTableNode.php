@@ -301,13 +301,9 @@ class UI5DataTableNode extends UI5DataNode
             return $result;
         }
         
+        $filterVal = null;
         if ($column !== null) {
-            $filterVal = $this->findValueInColumn($column, $logbook);
-        }
-        
-        // Look for a value in the data source
-        if (trim($filterVal ?? '') === '') {
-            $filterVal = $this->findValueInDataSource($filterAttr, $filter, $dataWidget->getMetaObject());
+            $filterVal = $this->trySetFilterValue($filterNode, $filter, $filterAttr, $dataWidget, $logbook);
             if ($filterVal !== null) {
                 $logbook->continueLine(' with value `' . $filterVal . '` found in data source');
             }
@@ -316,15 +312,6 @@ class UI5DataTableNode extends UI5DataNode
         if (trim($filterVal ?? '') === '') {
             $logbook->continueLine(' no value found!');
             return SubstepResult::createSkipped('No value found for filter `' . $filter->getCaption() . '`', $logbook);
-        }
-        
-        // Set the filter value
-        $filterVal = $this->trySetFilterValue($filterNode, $filter, $filterVal, $filterAttr, $dataWidget, $logbook);
-        if ($filterVal === null) {
-            return SubstepResult::createSkipped(
-                'No accepted value found for filter `' . $filter->getCaption() . '`',
-                $logbook
-            );
         }
         
         $this->triggerSearch();
