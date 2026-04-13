@@ -182,7 +182,7 @@ class UI5WaitManager
             $this->waitForPendingOperations(false, true, true);
           
         } catch (Exception $e) {
-            throw new Exception("Failed to load UI5 application DB: " . $e->getMessage());
+            throw new Exception("Failed to load UI5 application DB: " . $e->getMessage(), null, $e);
         }
     }
 
@@ -488,7 +488,7 @@ JS);
                 throw new \RuntimeException($errorManager->formatErrorMessage($error));
             }
 
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $this->clearJsErrorTracer();
             throw $e;
         }
