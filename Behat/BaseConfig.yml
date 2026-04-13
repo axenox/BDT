@@ -65,9 +65,15 @@ default:
         selenium2:
           wd_host: http://127.0.0.1:4444
           capabilities:
-            browserName: firefox
+            browserName: chrome
             version: "*"
             platform: ANY
+            extra_capabilities:
+              goog:chromeOptions:
+                args:
+                  - "--no-sandbox"
+                  - "--disable-dev-shm-usage"
+                  - "--disable-gpu"
       
       # Browserkit configuration for lightweight testing (experimental)
       # Commented out as it's not fully tested yet

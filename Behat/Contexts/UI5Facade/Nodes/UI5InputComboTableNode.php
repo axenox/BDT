@@ -45,6 +45,9 @@ JS
             $dropdownFirstRowNode->click();
             $this->waitWhileBusy(5);
         }
+
+        // Check if UI5 marked the input as invalid (red border = valueState "Error")
+        $this->checkValueStateNotError();
         
         if ($validate) {
             $this->checkValueEquals($value);
@@ -86,5 +89,35 @@ JS
 JS
         );
         return $this;
+    }
+
+    /**
+     * Asserts that the UI5 control does not have valueState "Error".
+     *
+     * SAP UI5 sets valueState to "Error" when the typed value does not match
+     * any entry in the combo table (red border + tooltip message).
+     *
+     * @throws \PHPUnit\Framework\AssertionFailedError
+     */
+    private function checkValueStateNotError(): void
+    {
+        $elementId = $this->getElementId();
+        $valueState = $this->getFromJavascript(<<<JS
+        (function() {
+            var control = sap.ui.getCore().byId('{$elementId}');
+            return control ? control.getValueState() : null;
+        })()
+    JS);
+        if ($valueState !== 'None')
+        {
+            dump("Error");
+        }
+
+        Assert::assertNotEquals(
+            'Error',
+            $valueState,
+            "Input '{$this->getCaption()}': value was rejected by UI5 (valueState=Error). " .
+            "The typed value does not exist in the combo table list."
+        );
     }
 }
