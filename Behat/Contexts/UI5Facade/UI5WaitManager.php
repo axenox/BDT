@@ -7,6 +7,7 @@ use Behat\Mink\Session;
 use Exception;
 use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 use exface\Core\Exceptions\InvalidArgumentException;
+use exface\Core\Exceptions\RuntimeException;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 
@@ -182,7 +183,7 @@ class UI5WaitManager
             $this->waitForPendingOperations(false, true, true);
           
         } catch (Exception $e) {
-            throw new Exception("Failed to load UI5 application DB: " . $e->getMessage());
+            throw new Exception("Failed to load UI5 application DB: " . $e->getMessage(), null, $e);
         }
     }
 
@@ -485,10 +486,10 @@ JS);
             // If any errors were found, throw an exception with the first error message
             foreach ($errorManager->getErrors() as $error) {
                 $errorManager->dropError($error);
-                throw new \RuntimeException($errorManager->formatErrorMessage($error));
+                throw new RuntimeException($errorManager->formatErrorMessage($error));
             }
 
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $this->clearJsErrorTracer();
             throw $e;
         }
