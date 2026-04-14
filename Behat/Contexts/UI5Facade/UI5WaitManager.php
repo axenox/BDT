@@ -7,6 +7,7 @@ use Behat\Mink\Session;
 use Exception;
 use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 use exface\Core\Exceptions\InvalidArgumentException;
+use exface\Core\Exceptions\RuntimeException;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 
@@ -485,7 +486,7 @@ JS);
             // If any errors were found, throw an exception with the first error message
             foreach ($errorManager->getErrors() as $error) {
                 $errorManager->dropError($error);
-                throw new \RuntimeException($errorManager->formatErrorMessage($error));
+                throw new RuntimeException($errorManager->formatErrorMessage($error));
             }
 
         } catch (\Throwable $e) {
