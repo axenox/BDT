@@ -77,9 +77,19 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
         }
 
         $fileName = $this->provider->getName() . '.png';
-
-        // take screenshot
-        $this->saveScreenshot($fileName, $dir);
-        $this->provider->setScreenshot($fileName, $relativePath);
+        $maxAttempts = 3;
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            try {
+                $this->saveScreenshot($fileName, $dir);
+                $this->provider->setScreenshot($fileName, $relativePath);
+                return;
+            } catch (\Throwable $e) {
+                if ($attempt === $maxAttempts) {
+                    error_log('Screenshot failed after ' . $maxAttempts . ' attempts: ' . $e->getMessage());
+                    throw $e;
+                }
+                sleep(2);
+            }
+        }
     }
 }
