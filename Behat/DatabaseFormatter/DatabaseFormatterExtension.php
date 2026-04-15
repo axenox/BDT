@@ -19,18 +19,7 @@ class DatabaseFormatterExtension implements Extension
 
     public function initialize(ExtensionManager $extensionManager) {}
 
-    public function configure(ArrayNodeDefinition $builder) {
-        $builder
-            ->children()
-            ->arrayNode('chrome')
-            ->children()
-            ->scalarNode('port')->defaultNull()->end()
-            ->scalarNode('executable')->defaultNull()->end()
-            ->scalarNode('user_data_dir')->defaultNull()->end()
-            ->end()
-            ->end()
-            ->end();
-    }
+    public function configure(ArrayNodeDefinition $builder) {}
 
     public function load(ContainerBuilder $container, array $config)
     {
@@ -39,7 +28,6 @@ class DatabaseFormatterExtension implements Extension
             new Reference('database_formatter.workbench'),
             new Reference('screenshot.provider'),
             new Reference(EventDispatcherExtension::DISPATCHER_ID),
-            $config['chrome'] ?? []
         ]);
 
         $definition->addTag('output.formatter');
