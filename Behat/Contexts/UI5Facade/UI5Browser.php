@@ -23,6 +23,7 @@ use exface\Core\DataTypes\BooleanDataType;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\DateDataType;
 use exface\Core\DataTypes\NumberDataType;
+use exface\Core\DataTypes\NumberEnumDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\InvalidArgumentException;
 use exface\Core\Exceptions\RuntimeException;
@@ -829,19 +830,25 @@ JS
     {
         $cellText = (string)$cellText;
         switch (true) {
+            case $dataType instanceof NumberEnumDataType:
+                $left  = $this->normalizeText($cellText);
+                $right = $this->normalizeText((string)$expected);
+                break;
+                
             case $dataType instanceof NumberDataType:
-                $left  = (float)str_replace(',', '.', $cellText);
-                $right = (float)$expected;
+                $left  = $this->parseNumberFlexible($cellText);
+                $right = $this->parseNumberFlexible((string) $expected);
+                if ($left === null || $right === null) {
+                    return false;
+                }
                 break;
 
             case $dataType instanceof DateDataType:
-                $left  = \DateTime::createFromFormat('d.m.Y', $cellText);
-                $right = new \DateTime($expected);
-                if (!$left || !$right) {
+                $left  = $this->parseDateFlexible($cellText);
+                $right = $this->parseDateFlexible((string) $expected);
+                if ($left === null || $right === null) {
                     return false;
                 }
-                $left  = $left->getTimestamp();
-                $right = $right->getTimestamp();
                 break;
 
             case $dataType instanceof BooleanDataType:
@@ -878,6 +885,59 @@ JS
             default:
                 return stripos((string)$left, (string)$right) !== false;
         }
+    }
+
+    /**
+     * Parses German (1.234,56) or Anglo-Saxon (1,234.56) number strings to float.
+     * Returns null if unparseable.
+     */
+    private function parseNumberFlexible(string $value): ?float
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return null;
+        }
+        // German: dot = thousands, comma = decimal
+        if (preg_match('/^\d{1,3}(\.\d{3})*(,\d+)?$/', $value)) {
+            return (float) str_replace(['.', ','], ['', '.'], $value);
+        }
+        // Anglo-Saxon: comma = thousands, dot = decimal
+        if (preg_match('/^\d{1,3}(,\d{3})*(\.\d+)?$/', $value)) {
+            return (float) str_replace(',', '', $value);
+        }
+        // Plain number: "42", "3.14", "-7,5"
+        $plain = str_replace(',', '.', $value);
+        return is_numeric($plain) ? (float) $plain : null;
+    }
+
+    /**
+     * Parses date strings in multiple formats to Unix timestamp (midnight).
+     * Supported: d.m.Y, Y-m-d, d/m/Y, m/d/Y
+     * Returns null if unparseable.
+     */
+    private function parseDateFlexible(string $value): ?int
+    {
+        $value = trim($value);
+        foreach ([
+                     // Datetime formats first — more specific, must come before date-only
+                     'd.m.Y H:i:s',
+                     'd.m.Y H:i',
+                     'Y-m-d H:i:s',
+                     'Y-m-d H:i',
+                     'd/m/Y H:i:s',
+                     'd/m/Y H:i',
+                     // Date-only formats
+                     'd.m.Y',
+                     'Y-m-d',
+                     'd/m/Y',
+                     'm/d/Y',
+                 ] as $format) {
+            $dt = \DateTime::createFromFormat('!' . $format, $value);
+            if ($dt !== false && $dt->format($format) === $value) {
+                return $dt->getTimestamp();
+            }
+        }
+        return null;
     }
     
     private function normalizeBool(?string $value): ?bool
