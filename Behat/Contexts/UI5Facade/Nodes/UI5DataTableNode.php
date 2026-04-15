@@ -320,12 +320,16 @@ class UI5DataTableNode extends UI5DataNode
 
         $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');
 
+        
         // See if our 
-        if ($columnCaption !== null) {
-            $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
-                ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
-            ]);
+        if ($columnCaption === null) {
+            $logbook->continueLine(' - No column found');
+            return SubstepResult::createSkipped('No column found for filter `' . $filter->getCaption() . '`', $logbook);
         }
+        
+        $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
+            ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
+        ]);
         
         $logbook->continueLine(' - resetting filter');
         
