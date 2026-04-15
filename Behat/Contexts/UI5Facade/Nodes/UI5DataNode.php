@@ -781,9 +781,9 @@ class UI5DataNode extends UI5AbstractNode
             $rowIndex++;
         }
 
-        // If we couldn't find a distinct "to", use the same value — range filter
+        // If we couldn't find a distinct "from", use the same value — range filter
         // with from=to still tests that the filter works (exact match range)
-        $toVal = $toVal ?? $fromVal;
+        $fromVal = $fromVal ?? $toVal;
 
         return ['from' => $fromVal, 'to' => $toVal];
     }
