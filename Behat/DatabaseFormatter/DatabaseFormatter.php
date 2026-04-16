@@ -2,13 +2,12 @@
 namespace axenox\BDT\Behat\DatabaseFormatter;
 
 use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
+use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
 use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
-use axenox\BDT\Common\Selectors\BdtMetricSelector;
 use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Interfaces\TestRunObserverInterface;
-use axenox\BDT\Tests\Metrics\UiPageCoverage;
 use Behat\Testwork\Output\Formatter;
 use Behat\Testwork\Tester\Result\TestResult;
 use Behat\Testwork\EventDispatcher\Event\AfterSuiteTested;
@@ -69,11 +68,12 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     /** @var MarkdownLogBook[]  */
     private static array        $stepLogbooks = [];
 
-    public function __construct(WorkbenchInterface $workbench, ScreenshotProviderInterface $provider, EventDispatcherInterface $eventDispatcher)
+    public function __construct(WorkbenchInterface $workbench, ScreenshotProviderInterface $provider, EventDispatcherInterface $eventDispatcher, array $chromeConfig = [])
     {
         self::$eventDispatcher = $eventDispatcher;
         $this->workbench = $workbench;
         $this->provider = $provider;
+        ChromeManager::start($chromeConfig);
     }
 
     public static function getSubscribedEvents(): array
@@ -101,6 +101,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     public function __destruct()
     {
         $this->onAfterExercise();
+        ChromeManager::stop();
     }
 
     public function getName(): string
