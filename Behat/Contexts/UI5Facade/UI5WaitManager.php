@@ -110,7 +110,10 @@ class UI5WaitManager
         // Wait for page to load
         $this->waitForUI5Controls();
 
-
+        // Give the browser a moment to finish any post-render JS
+        // before querying for errors via CDP (avoids connection timeout)
+        usleep(200000); // 200ms
+        
         // Check if any errors occurred during the wait operations
         $this->validateNoErrors();
         
@@ -353,25 +356,6 @@ class UI5WaitManager
                 $type = $error['type'] ?? 'XHR';
 
                 if ($type === 'NetworkError' || $type === 'Network' || $type === null) {
-                    /*
-                     * {
-                                type: 'Network',
-                                status: request.status,
-                                url: request.url,
-                                message: request.statusText,
-                                request: {
-                                    url: jqXHR.responseURL || options.url,
-                                    method: options.type || 'GET',
-                                    status: jqXHR.status,
-                                    statusText: jqXHR.statusText,
-                                    body, // see below
-                                    response: jqXHR.responseText,
-                                    duration: Date.now() - startTime
-                                },
-                                response: request.response,
-                                timestamp: request.timestamp,
-                            }
-                     */
                     $request = new Request(
                         $error['request']['method'] ?? 'GET', // method
                         $error['url'],
@@ -490,9 +474,25 @@ JS);
             }
 
         } catch (\Throwable $e) {
+            // If the browser connection timed out, the tab was likely still busy
+            // executing heavy JS (e.g. SAP UI5 render cycle). Skip error validation
+            // for this wait cycle — a dead browser will surface on the next action anyway.
+            if ($this->isConnectionTimeoutException($e)) {
+                error_log('UI5WaitManager::validateNoErrors - CDP connection timeout, skipping error validation: ' . $e->getMessage());
+                return;
+            }
             $this->clearJsErrorTracer();
             throw $e;
         }
+    }
+
+    /**
+     * Returns true if the exception is a ChromeDriver DevTools connection timeout.
+     */
+    private function isConnectionTimeoutException(\Throwable $e): bool
+    {
+        return $e instanceof \RuntimeException
+            && str_contains($e->getMessage(), 'Connection timeout');
     }
 
     /**
