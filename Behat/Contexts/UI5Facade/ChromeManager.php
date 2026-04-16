@@ -15,12 +15,18 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade;
  *
  *   axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatterExtension:
  *     chrome:
- *       api_url: "http://localhost:9222"
- *       executable: 'C:\...\GoogleChromePortable.exe'
- *       user_data_dir: 'C:\...\ChromeUserData'
+ *       executable: 'data\...\GoogleChromePortable.exe'
+ *       user_data_dir: 'data\...\ChromeUserData'
+ *       port: 9222
  *
- * Each project overrides api_url, executable, and user_data_dir in its own
- * behat.yml so that multiple projects can run simultaneously on the same server.
+ * Each project overrides these values in its own behat.yml so that multiple
+ * projects can run their tests simultaneously on the same server without
+ * interfering with each other.
+ *
+ * Note: The remote-debugging port is configured separately in MinkExtension
+ * (as part of the api_url) and in this config (as "port"). Both must match.
+ * They are kept separate because MinkExtension parameters are not yet available
+ * in the Symfony DI container when DatabaseFormatterExtension is loaded.
  */
 class ChromeManager
 {
@@ -33,21 +39,17 @@ class ChromeManager
     /**
      * Starts a new Chrome process and waits until its debug API is ready.
      *
-     * Uses Symfony Process so Chrome runs in the same user session as the PHP
-     * process — identical to launching Chrome from cmd.exe. This avoids the
-     * Session 0 isolation problem that wmic and PowerShell can introduce.
+     * Chrome is launched via Windows "start /B" — identical to running it from
+     * a bat file. This ensures Chrome runs in the current interactive user
+     * session
      *
      * If a Chrome process was already started by this manager the existing PID
      * is returned immediately without spawning a second instance.
      *
-     * The port is parsed from the api_url config value so there is a single
-     * source of truth — the same URL that dmore/chrome-mink-driver uses.
-     *
      * @param array $config Chrome config array from DatabaseFormatterExtension:
-     *                      ['api_url' => ..., 'executable' => ..., 'user_data_dir' => ...]
-     * @return int           PID of the started Chrome process
-     * @throws \RuntimeException If config is incomplete, the process cannot be started,
-     *                           or the API does not become ready in time
+     *                      ['executable' => ..., 'user_data_dir' => ..., 'port' => ...]
+     * @return int           PID of the started Chrome process, or 0 if PID could not be determined
+     * @throws \RuntimeException If config is incomplete or Chrome does not become ready in time
      */
     public static function start(array $config = []): int
     {
@@ -57,7 +59,7 @@ class ChromeManager
 
         $executable = $config['executable'] ?? null;
         $userDataDir = $config['user_data_dir'] ?? null;
-        $port = $config['port'] ?? '9222';
+        $port = $config['port'] ?? 9222;
 
         if ($executable === null || $userDataDir === null) {
             throw new \RuntimeException(
@@ -66,13 +68,14 @@ class ChromeManager
             );
         }
 
-        // Use "start /B" to launch Chrome in the background — identical to running
-        // it from a bat file. This avoids session isolation issues that Symfony
-        // Process and wmic can cause on Windows.
+        // "start /B" launches Chrome in the background within the current cmd session —
+        // identical to a bat file. The empty "" after "start /B" is the window title
+        // placeholder required by the Windows start command when a path follows.
         $cmd = 'start /B "" '
-            . '"' . $executable . '"'
+            . '"' . getcwd() . DIRECTORY_SEPARATOR . $executable . '"'
+            . " --window-size=1920,1080 --disable-extensions --disable-gpu"
             . ' --remote-debugging-port=' . $port
-            . ' --user-data-dir="' . $userDataDir . '"';
+            . ' --user-data-dir="' . getcwd() . DIRECTORY_SEPARATOR . $userDataDir . '"';
         pclose(popen($cmd, 'r'));
 
         // Block until Chrome's debug API is ready
@@ -90,8 +93,9 @@ class ChromeManager
     /**
      * Stops only the Chrome process that was started by this manager.
      *
-     * Uses the PID captured at start time so other Chrome instances on
-     * different ports are not affected.
+     * Targets the specific PID captured at start time so that other Chrome
+     * instances running on different ports (e.g. belonging to other projects)
+     * are not affected.
      */
     public static function stop(): void
     {
@@ -109,8 +113,11 @@ class ChromeManager
     /**
      * Finds the PID of the process listening on the given TCP port using netstat.
      *
-     * This is used on Windows to get the real Chrome PID after launching it
-     * with "start /B", which does not return a PID directly.
+     * Used to retrieve the Chrome PID after launching it with "start /B",
+     * which does not return a PID directly.
+     *
+     * @param int $port The remote-debugging port Chrome is listening on
+     * @return int|null The PID, or null if no matching LISTENING process was found
      */
     private static function findPidByPort(int $port): ?int
     {
@@ -145,6 +152,10 @@ class ChromeManager
 
     /**
      * Polls Chrome's /json/version endpoint until it responds or the timeout expires.
+     *
+     * Waits for the webSocketDebuggerUrl field to be present, which confirms that
+     * Chrome's remote debugging WebSocket is fully initialised and ready to accept
+     * connections from dmore/chrome-mink-driver.
      *
      * @param int $port           The remote-debugging port to poll
      * @param int $timeoutSeconds Maximum number of seconds to wait
