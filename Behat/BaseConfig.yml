@@ -87,4 +87,9 @@ default:
     showTags: true
     
   # Save test runs to BDT database
-  axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatterExtension: ~
+  axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatterExtension: 
+    chrome:
+      # ChromeManager uses these to start/stop Chrome automatically
+      port: 9222
+      executable: 'data\axenox\BDT\Chrome\GoogleChromePortable\GoogleChromePortable.exe'
+      user_data_dir: 'data\axenox\BDT\ChromeOneLinkUserData'
