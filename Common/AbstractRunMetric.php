@@ -6,13 +6,15 @@ use axenox\BDT\Interfaces\TestRunObserverInterface;
 use exface\Core\CommonLogic\Traits\ICanBeConvertedToUxonTrait;
 use exface\Core\CommonLogic\UxonObject;
 use exface\Core\Events\Workbench\OnBeforeStopEvent;
-use exface\Core\Interfaces\DataSheets\DataSheetInterface;
+use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Interfaces\WorkbenchDependantInterface;
 use exface\Core\Interfaces\WorkbenchInterface;
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 
 /**
+ * Base class for BDT metrics to ease development of new metrics
  * 
+ * @author Andrej Kabachnik
  */
 abstract class AbstractRunMetric implements MetricInterface
 {
@@ -23,6 +25,7 @@ abstract class AbstractRunMetric implements MetricInterface
     private TestRunObserverInterface $formatter;
     
     private ?string $uid = null;
+    private ?string $name = null;
 
     public function __construct(WorkbenchInterface $workbench, TestRunObserverInterface $formatter, ?UxonObject $uxon = null)
     {
@@ -48,7 +51,13 @@ abstract class AbstractRunMetric implements MetricInterface
     
     public function onBeforeStopWorkbenchSaveMetrics(OnBeforeStopEvent $event)
     {
-        $this->saveMetrics();
+        try {
+            $this->saveMetrics();
+        } catch (\Throwable $e) {
+            $this->getTestRunObserver()->logException(
+                new RuntimeException('Cannot save BDT metric ' . $this->getName() . '. ' . $e->getMessage(), null, $e)
+            );
+        }
     }
 
     /**
@@ -65,10 +74,31 @@ abstract class AbstractRunMetric implements MetricInterface
         $this->uid = $uid;
         return $this;
     }
-    
+
+    /**
+     * @return string
+     */
     public function getUid() : string
     {
-        return $this->uid;
+        return $this->uid ?? '';
+    }
+
+    /**
+     * @return string
+     */
+    public function getName() : string
+    {
+        return $this->name ?? '';
+    }
+
+    /**
+     * @param string $val
+     * @return MetricInterface
+     */
+    protected function setName(string $val) : MetricInterface
+    {
+        $this->name = $val;
+        return $this;
     }
     
     protected function getEventDispatcher() : EventDispatcherInterface

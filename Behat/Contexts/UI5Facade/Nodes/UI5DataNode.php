@@ -10,6 +10,7 @@ use axenox\BDT\Interfaces\TestResultInterface;
 use Behat\Gherkin\Node\TableNode;
 use Behat\Mink\Element\NodeElement;
 use exface\Core\CommonLogic\Model\MetaObject;
+use exface\Core\CommonLogic\Model\RelationPath;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\MarkdownDataType;
 use exface\Core\Facades\DocsFacade;
@@ -417,11 +418,13 @@ class UI5DataNode extends UI5AbstractNode
     protected function findColumnWithAttribute(iHaveColumns $dataWidget, MetaAttributeInterface $attribute, LogBookInterface $logbook) : ?DataColumn
     {
         foreach ($dataWidget->getColumns() as $i => $column) {
-            if ($column->isHidden()) {
-                continue;
-            }
-            if ($column->getAttribute()->is($attribute) || $this->endsWith($column->getAttributeAlias(), $attribute->getAliasWithRelationPath())) {
-                return $column;
+            switch (true) {
+                case $column->isHidden():
+                    continue 2;
+                case $column->getAttribute()->is($attribute):
+                // TODO replace endsWith() with proper detection of LABELs
+                case  $this->endsWith($column->getAttributeAlias(), $attribute->getAliasWithRelationPath()):
+                    return $column;
             }
         }
         return null;
@@ -452,13 +455,18 @@ class UI5DataNode extends UI5AbstractNode
         $inputWidget = $filterWidget->getInputWidget();
         $values = [];
         $rowIndex = 0;
-        if ($inputWidget instanceof InputComboTable) {
+        if (($inputWidget instanceof InputComboTable)) {
             $textAttr = $inputWidget->getTextAttribute(); // This gives us what we need to type into the filter (e.g. Name)
-            $tableObj = $inputWidget->getTableObject(); // Both attributes above belong to this object, NOT the object of the filter widget
+            if ($inputWidget->isRelation()) {
+                $textAttrAliasFromFilter = RelationPath::join($inputWidget->getAttributeAlias(), $textAttr->getAliasWithRelationPath());
+            } else {
+                $textAttrAliasFromFilter = $textAttr->getAliasWithRelationPath();
+            }
+            $comboTableObj = $inputWidget->getTableObject(); // Both attributes above belong to this object, NOT the object of the filter widget
             while(count($values) < $limit && $rowIndex < 100) {
-                $val = $this->findValueInDataSourceQuery($tableObj, $textAttr, $textAttr->getAlias(), $sort, $rowIndex);
+                $val = $this->findValueInDataSourceQuery($comboTableObj, $textAttr, $textAttr->getAliasWithRelationPath(), $sort, $rowIndex);
                 if ($val !== null && !in_array($val, $values, true)) {
-                    if($this->checkTheValueFromTable($metaObject, $inputWidget->getAttributeAlias() . '__' . $textAttr->getAlias(), $val)) {
+                    if($this->checkTheValueFromTable($metaObject, $textAttrAliasFromFilter, $val)) {
                         $values[] = $val;
                     }
                 }
@@ -507,7 +515,7 @@ class UI5DataNode extends UI5AbstractNode
         // if it is a relation find the label of the found uid
         $rel = $attr->getRelation();
         $rightObj = $rel->getRightObject();
-        $returnColumn = $attr->getName() . '__' . $rightObj->getLabelAttribute()->getName();
+        $returnColumn = RelationPath::join($attr->getName(),  $rightObj->getLabelAttributeAlias());
         while(empty($values))
         {
             $val =  $this->findValueInDataSourceQuery($attr->getObject(), $attr, $returnColumn , $sort, $rowIndex);
