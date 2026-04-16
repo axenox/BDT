@@ -60,20 +60,29 @@ class ChromeManager
         $executable = $config['executable'] ?? null;
         $userDataDir = $config['user_data_dir'] ?? null;
         $port = $config['port'] ?? 9222;
-
+        
+        // If Chrome is already listening on this port (e.g. a leftover process from a
+        // previous run), skip launching a new instance and use the existing one.
+        $existingPid = self::findPidByPort($port);
+        if ($existingPid !== null) {
+            self::$pid  = $existingPid;
+            self::$port = $port;
+            return $existingPid;
+        }
+        
         if ($executable === null || $userDataDir === null) {
             throw new \RuntimeException(
                 'ChromeManager requires "executable" and "user_data_dir" in the chrome config. '
                 . 'Please set them under DatabaseFormatterExtension > chrome in your behat.yml.'
             );
         }
-
+        
         // "start /B" launches Chrome in the background within the current cmd session —
         // identical to a bat file. The empty "" after "start /B" is the window title
         // placeholder required by the Windows start command when a path follows.
         $cmd = 'start /B "" '
             . '"' . getcwd() . DIRECTORY_SEPARATOR . $executable . '"'
-            . " --window-size=1920,1080 --disable-extensions --disable-gpu"
+            . " --headless --window-size=1920,1080 --disable-extensions --disable-gpu"
             . ' --remote-debugging-port=' . $port
             . ' --user-data-dir="' . getcwd() . DIRECTORY_SEPARATOR . $userDataDir . '"';
         pclose(popen($cmd, 'r'));
@@ -161,7 +170,7 @@ class ChromeManager
      * @param int $timeoutSeconds Maximum number of seconds to wait
      * @throws \RuntimeException  If Chrome does not become ready within the timeout
      */
-    private static function waitUntilReady(int $port, int $timeoutSeconds = 15): void
+    private static function waitUntilReady(int $port, int $timeoutSeconds = 5): void
     {
         $start = time();
         while (time() - $start < $timeoutSeconds) {
@@ -175,7 +184,7 @@ class ChromeManager
                     }
                 }
             }
-            usleep(500_000);
+            usleep(200_000);
         }
 
         throw new \RuntimeException(
