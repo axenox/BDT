@@ -2,13 +2,12 @@
 namespace axenox\BDT\Behat\DatabaseFormatter;
 
 use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
+use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
 use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
-use axenox\BDT\Common\Selectors\BdtMetricSelector;
 use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Interfaces\TestRunObserverInterface;
-use axenox\BDT\Tests\Metrics\UiPageCoverage;
 use Behat\Testwork\Output\Formatter;
 use Behat\Testwork\Tester\Result\TestResult;
 use Behat\Testwork\EventDispatcher\Event\AfterSuiteTested;
@@ -34,6 +33,7 @@ use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\DataSheets\DataSheetInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
+use exface\Core\Interfaces\Exceptions\ExceptionInterface;
 use exface\Core\Interfaces\WorkbenchInterface;
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 
@@ -68,11 +68,12 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     /** @var MarkdownLogBook[]  */
     private static array        $stepLogbooks = [];
 
-    public function __construct(WorkbenchInterface $workbench, ScreenshotProviderInterface $provider, EventDispatcherInterface $eventDispatcher)
+    public function __construct(WorkbenchInterface $workbench, ScreenshotProviderInterface $provider, EventDispatcherInterface $eventDispatcher, array $chromeConfig = [])
     {
         self::$eventDispatcher = $eventDispatcher;
         $this->workbench = $workbench;
         $this->provider = $provider;
+        ChromeManager::start($chromeConfig);
     }
 
     public static function getSubscribedEvents(): array
@@ -100,6 +101,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     public function __destruct()
     {
         $this->onAfterExercise();
+        ChromeManager::stop();
     }
 
     public function getName(): string
@@ -446,6 +448,44 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         return $ds;
     }
 
+    /**
+     * {@inheritDoc}
+     * @see TestRunObserverInterface::logException()
+     */
+    public function logException(\Throwable $e) : DataSheetInterface
+    {
+        return $this->logError($e->getMessage(), $e);
+    }
+
+    /**
+     * {@inheritDoc}
+     * @see TestRunObserverInterface::logError()
+     */
+    public function logError(string $title, ?\Throwable $e = null) : DataSheetInterface
+    {
+        $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_step');
+        $row = [
+            'run_scenario' => $this->scenarioDataSheet->getUidColumn()->getValue(0),
+            'run_sequence_idx' => $this->stepIdx,
+            'name' => mb_ucfirst($title),
+            'line' => 0,
+            'started_on' => DateTimeDataType::now(),
+            'finished_on' => DateTimeDataType::now(),
+            'duration_ms' => 0,
+            'status' => StepStatusDataType::FAILED
+        ];
+        if ($e) {
+            $ds->setCellValue('error_message', 0, $e->getMessage());
+            if($e instanceof ExceptionInterface) {
+                $ds->setCellValue('error_log_id', 0, $e->getLogId());
+            }
+            $this->workbench->getLogger()->logException($e);
+        }
+        $ds->addRow($row);
+        $ds->dataCreate(false);
+        return $ds;
+    }
+
     public static function addTestLogbook(LogBookInterface $logbook): void
     {
         if (!in_array($logbook, static::$stepLogbooks, true)) {
@@ -497,6 +537,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                 }
                 $uxon = UxonObject::fromJson($row['config_uxon']);
                 $uxon->setProperty('uid', $row['UID']);
+                $uxon->setProperty('name', $row['name']);
                 $this->metrics[] = new $class($this->workbench, $this, $uxon);
             }
         }
