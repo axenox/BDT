@@ -87,9 +87,9 @@
         {
             "_EXPORT_SUMMARY": "BDT scenario run [axenox.BDT.run_scenario]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-03-24 15:59:07",
+            "MODIFIED_ON": "2026-04-16 16:55:28",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
+            "MODIFIED_BY_USER": "0x11f08ce4baed19b88ce4005056be9857",
             "UID": "0x11f08f0e222d25a48f0e025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
@@ -170,6 +170,12 @@
                                                 "value": "=UID",
                                                 "required": true,
                                                 "hidden": true
+                                            },
+                                            {
+                                                "attribute_alias": "status"
+                                            },
+                                            {
+                                                "attribute_alias": "error_message"
                                             }
                                         ],
                                         "columns": [

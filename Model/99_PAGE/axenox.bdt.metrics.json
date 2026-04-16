@@ -10,8 +10,8 @@
     "replaces_page_selector": null,
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2026-03-26 12:42:15",
-    "modified_by_user_selector": "0x31000000000000000000000000000000",
-    "modified_on": "2026-03-26 15:36:29",
+    "modified_by_user_selector": "0x11f08ce4baed19b88ce4005056be9857",
+    "modified_on": "2026-04-16 16:24:42",
     "contents": {
         "widget_type": "SplitHorizontal",
         "object_alias": "axenox.BDT.run_metric_score",
@@ -25,7 +25,7 @@
                         "object_alias": "axenox.BDT.run_metric_score",
                         "aggregate_by_attribute_alias": [
                             "run",
-                            "run__run_stats__status",
+                            "app__ALIAS",
                             "metric"
                         ],
                         "columns": [
@@ -33,7 +33,12 @@
                                 "attribute_alias": "run__started_on"
                             },
                             {
-                                "attribute_alias": "run__run_stats__status"
+                                "/*": "",
+                                "attribute_alias": "run__run_stats__status",
+                                "*/": ""
+                            },
+                            {
+                                "attribute_alias": "app__ALIAS"
                             },
                             {
                                 "attribute_alias": "metric__LABEL"

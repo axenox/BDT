@@ -11,7 +11,7 @@
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2025-07-08 18:20:52",
     "modified_by_user_selector": "0x11f08ce4baed19b88ce4005056be9857",
-    "modified_on": "2026-03-25 17:39:42",
+    "modified_on": "2026-04-16 16:50:38",
     "contents": {
         "widget_type": "DataTable",
         "id": "table_runs",
@@ -37,7 +37,7 @@
                 "attribute_alias": "run_stats__status"
             },
             {
-                "attribute_alias": "duration_time"
+                "attribute_alias": "run_stats__duration_s"
             },
             {
                 "caption": "Features",
@@ -82,6 +82,15 @@
                         "caption": "Skipped"
                     }
                 ]
+            },
+            {
+                "attribute_alias": "started_on"
+            },
+            {
+                "attribute_alias": "finished_on"
+            },
+            {
+                "attribute_alias": "CREATED_BY_USER__LABEL"
             }
         ],
         "sorters": [
