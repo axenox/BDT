@@ -1440,6 +1440,7 @@ JS
      * @param string $widgetType
      * @param int $timeoutInSeconds
      * @return FacadeNodeInterface[]
+     * @throws \Exception
      */
     public function findWidgetNodes(string $widgetType, int $timeoutInSeconds = 10): array
     {
@@ -1526,123 +1527,6 @@ JS
         $button = $this->getPage()->find('xpath', $xpath);
 
         return $button;
-    }
-
-    /**
-     * Validates if a DOM element represents a proper UI5 table structure
-     * @param NodeElement $element Element to check
-     * @return bool True if element is a valid dialog
-     */
-    protected function isValidDialog(NodeElement $element): bool
-    {
-        try {
-            // Must be visible
-            // First check: Element must be visible in the DOM
-            // This ensures we're not processing hidden template elements
-            if (!$element->isVisible()) {
-                return false;
-            }
-
-            // Check for essential dialog attributes
-            $role = $element->getAttribute('role');
-            $classes = $element->getAttribute('class');
-
-            // Must have dialog role or specific dialog classes
-            if (
-                $role !== 'dialog' &&
-                !preg_match('/(sapMDialog|sapMMessageDialog|sapMPopover)/', $classes)
-            ) {
-                return false;
-            }
-
-            // Should have either a header or content section
-            $hasHeader = $element->find('css', '.sapMDialogTitle, .sapMIBar-CTX') !== null;
-            $hasContent = $element->find('css', '.sapMDialogSection, .sapMDialogContent') !== null;
-
-            return $hasHeader || $hasContent;
-
-        } catch (\Exception $e) {
-            return false;
-        }
-    }
-
-    /**
-     * Extracts text content from a dialog element
-     * 
-     * @param NodeElement $element Dialog element
-     * @return string Concatenated text content
-     */
-    protected function extractDialogText(NodeElement $element): string
-    {
-        $textParts = [];
-
-        try {
-            // Get header title 
-            $headerTitle = $element->find('css', '.sapMDialogTitle, .sapMIBar-CTX .sapMTitle');
-            if ($headerTitle) {
-                $textParts[] = trim($headerTitle->getText());
-            }
-
-            // Get content text
-            $textElements = $element->findAll('css', '.sapMDialogContent .sapMText, .sapMDialogContent .sapMLabel');
-            foreach ($textElements as $textElement) {
-                $text = trim($textElement->getText());
-                if (!empty($text)) {
-                    $textParts[] = $text;
-                }
-            }
-
-            // Get button texts
-            $buttons = $element->findAll('css', '.sapMDialogFooter .sapMBtn, .sapMBar-CTX .sapMBtn');
-            foreach ($buttons as $button) {
-                $buttonText = $button->find('css', '.sapMBtnContent');
-                if ($buttonText) {
-                    $textParts[] = trim($buttonText->getText());
-                }
-            }
-
-        } catch (\Exception $e) {
-            // If any error occurs, return empty string
-            return '';
-        }
-
-        return implode(' ', array_filter($textParts));
-    }
-
-    /**
-     * Validates if a DOM element represents a proper UI5 table structure
-     *  
-     * 
-     * @param NodeElement $table The element to validate as a table
-     * @return bool True if element is a valid UI5 table, false otherwise
-     */
-    protected function isValidTable(NodeElement $table): bool
-    {
-        try {
-            // First check: Element must be visible in the DOM
-            // This ensures we're not processing hidden template elements
-            if (!$table->isVisible()) {
-                return false;
-            }
-
-            // Second check: Look for table structural elements
-            // Search for both standard table headers (th) and UI5 grid headers (role="columnheader")
-            $hasHeaders = count($table->findAll('css', 'th, [role="columnheader"]')) > 0;
-            // Third check: Look for table cells
-            // Search for both standard cells (td) and UI5 grid cells (role="gridcell")
-            $hasCells = count($table->findAll('css', 'td, [role="gridcell"]')) > 0;
-
-            // A valid table must have either headers or cells
-            // - Headers without cells: Empty table with column definitions
-            // - Cells without headers: Data grid without column labels
-            // - Both headers and cells: Standard populated table
-            return $hasHeaders || $hasCells;
-
-        } catch (\Exception $e) {
-            // If any error occurs during validation (e.g., stale element reference)
-            // consider the table invalid
-            return false;
-        }
     }
 
     /**
@@ -1785,79 +1669,6 @@ JS
         $dataSheet->getFilters()->addConditionFromString('USER__USERNAME', $config->getOption('TEST_USER.USERNAME'), ComparatorDataType::EQUALS);
         $dataSheet->dataDelete();
         return;
-    }
-
-    private function getCurrentUrlInfo(): array
-    {
-
-        return $this->getSession()->evaluateScript('
-        (function() {
-            var baseUrl = window.location.href.split("#")[0];
-            var fullUrl = window.location.href;
-            
-            // UI5 specific routing information
-            var ui5Hash = "";
-            if (typeof sap !== "undefined" && 
-                sap.ui && 
-                sap.ui.core && 
-                sap.ui.core.routing && 
-                sap.ui.core.routing.HashChanger) {
-                
-                try {
-                    // Get the current hash from UI5 router
-                    ui5Hash = sap.ui.core.routing.HashChanger.getInstance().getHash();
-                } catch(e) {
-                    ui5Hash = window.location.hash.replace("#", "");
-                }
-            } else {
-                ui5Hash = window.location.hash.replace("#", "");
-            }
-            
-            return {
-                baseUrl: baseUrl,
-                fullUrl: fullUrl,
-                hash: ui5Hash
-            };
-        })()
-    ');
-    }
-
-    /**
-     * Summary of getFilters
-     * @param int $min
-     * @param ?int $max
-     * @throws \RuntimeException
-     * @return UI5FilterNode[]
-     */
-    public function getFilters(int $min = 1, int $max = null): array
-    {
-        $nodes = $this->findWidgetNodes('Filter', 15);
-        $nodes = array_merge($nodes, $this->findWidgetNodes('RangeFilter', 15));
-
-        switch (true) {
-            case count($nodes) < $min:
-                throw new RuntimeException("Too few filters found: expecting {$min} but found " . count($nodes));
-            case $max !== null && count($nodes) > $max:
-                throw new RuntimeException("Too many filters found: expecting {$max} but found " . count($nodes));
-        }
-        return $nodes;
-    }
-
-    public function getFilterByCaption(string $filterName): UI5FilterNode
-    {
-        $filterNodes = $this->getFilters(0);
-
-        // Iterate through each filter container
-        foreach ($filterNodes as $filterNode) {
-            // Check the label of the filter container
-            $label = $filterNode->getCaption();
-
-            // If label matches the desired filter name
-            if ($label === $filterName) {
-                return $filterNode;
-            }
-        }
-        throw new RuntimeException("Filter `{$filterName}` not found");
     }
 
     /**

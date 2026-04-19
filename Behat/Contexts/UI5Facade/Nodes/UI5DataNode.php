@@ -265,7 +265,7 @@ class UI5DataNode extends UI5AbstractNode
                 $logbook->addLine('Filtering ' . $filter->getCaption() . ' skipped');
                 $skippedFilters['Filter not supported'][] = $filter->getCaption();
             }
-            $filterNode = $this->getBrowser()->getFilterByCaption($filter->getCaption());
+            $filterNode = $this->findFilterByCaption($filter->getCaption());
             $substepResult = $this->runAsSubstep(
                 function (SubstepResult $result) use ($filter, $dataWidget, $filterNode) {
                     return $this->checkFilterWorksAsExpected($filter, $dataWidget, $filterNode, $result);
@@ -794,5 +794,51 @@ class UI5DataNode extends UI5AbstractNode
         $fromVal = $fromVal ?? $toVal;
 
         return ['from' => $fromVal, 'to' => $toVal];
+    }
+
+    public function findFilterByCaption(string $filterCaption): UI5FilterNode
+    {
+        $filterNodes = $this->getFilters();
+        foreach ($filterNodes as $filterNode) {
+            if ($filterNode->getCaption() !== $filterCaption) {
+                continue;
+            }
+            
+            return $filterNode;
+        }
+
+        throw new \RuntimeException('No filter found with caption "' . $filterCaption . '"');
+    }
+
+    public function getFilters(int $min = 1, int $max = null): array
+    {
+        $container = $this->findFilterHeaderContainer();
+        $filterNodes = [];
+
+        if ($container !== null) {
+            foreach (['.exfw-Filter', '.exfw-RangeFilter'] as $cssClass) {
+                // Extract the widget type name from the CSS class (e.g. 'exfw-Filter' -> 'Filter')
+                $widgetType = substr($cssClass, strlen('.exfw-'));
+                foreach ($container->findAll('css', $cssClass) as $el) {
+                    if ($el->isVisible()) {
+                        $filterNodes[] = UI5FacadeNodeFactory::createFromWidgetType(
+                            $widgetType,
+                            $el,
+                            $this->getSession(),
+                            $this->getBrowser()
+                        );
+                    }
+                }
+            }
+        }
+
+        switch (true) {
+            case count($filterNodes) < $min:
+                throw new RuntimeException("Too few filters found: expecting {$min} but found " . count($filterNodes));
+            case $max !== null && count($filterNodes) > $max:
+                throw new RuntimeException("Too many filters found: expecting {$max} but found " . count($filterNodes));
+        }
+
+        return $filterNodes;
     }
 }

@@ -513,8 +513,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Get the currently focused node
         $focusedNode = $this->getBrowser()->getFocusedNode();
         Assert::assertNotNull($focusedNode, 'No widget is currently focused. Call "I look at" first.');
-        
-        $filterNodes = $this->getBrowser()->getFilters();
+
+        /* @var $focusedNode axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataNode */
+        $filterNodes = $focusedNode->getFilters(0);
         $foundFilters = [];
         foreach ($filterNodes as $index => $filterNode) {
             // Find the label for the filter
@@ -556,7 +557,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iEnterInFilter(string $value, string $filterName): void
     {
-        $this->getBrowser()->getFilterByCaption($filterName)->setValueVisible($value);
+        /* @var $focusedNode axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataNode */
+        $focusedNode= $this->getBrowser()->getFocusedNode();
+        $focusedNode->findFilterByCaption($filterName)->setValueVisible($value);
     }
 
 
@@ -614,9 +617,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         $focusedNode = $this->getBrowser()->getFocusedNode();
 
-        // Find all DataTable widgets on the page
-        $dataTables = $this->getBrowser()->findWidgets('DataTable');
-        Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
+        Assert::assertNotEmpty($focusedNode, 'Focus is not on DataTable try I look at table 1');
 
         // Verify the first DataTable contains the expected text in the specified column
         $this->getBrowser()->verifyTableContent($focusedNode->getNodeElement(), [
