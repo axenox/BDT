@@ -91,5 +91,5 @@ default:
     chrome:
       # ChromeManager uses these to start/stop Chrome automatically
       port: 9222
-      executable: 'data\axenox\BDT\Chrome\GoogleChromePortable\GoogleChromePortable.exe'
+      executable: 'data\axenox\BDT\GoogleChromePortable\GoogleChromePortable.exe'
       user_data_dir: 'data\axenox\BDT\ChromeOneLinkUserData'
