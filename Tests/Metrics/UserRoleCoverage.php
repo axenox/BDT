@@ -47,6 +47,7 @@ class UserRoleCoverage extends AbstractRunMetric
      */
     protected function logVisit(array $roleAliases) 
     {
+        $this->setDirty(true);
         foreach ($roleAliases as $roleAlias) {
             if (null === ($this->userRoleStats[$roleAlias] ?? null)) {
                 $appAlias = StringDataType::substringBefore($roleAlias, AliasSelectorInterface::ALIAS_NAMESPACE_DELIMITER, '', false, true);
@@ -67,8 +68,11 @@ class UserRoleCoverage extends AbstractRunMetric
      * {@inheritDoc}
      * @see AbstractRunMetric::saveMetrics()
      */
-    protected function saveMetrics()
+    protected function saveMetrics() : void
     {
+        if ($this->isDirty() === false) {
+            return;
+        } 
         foreach ($this->appScoreSheets as $appAlias => $scoreSheet) {
             foreach ($scoreSheet->getRows() as $i => $row) {
                 $alias = $row['subject_name'];
@@ -78,8 +82,13 @@ class UserRoleCoverage extends AbstractRunMetric
                     $scoreSheet->setCellValue('steps_count', $i, $stats['count']);
                 }
             }
-            $scoreSheet->dataCreate(false);
+            if ($scoreSheet->hasUidColumn(true)) {
+                $scoreSheet->dataUpdate(false);
+            } else {
+                $scoreSheet->dataCreate(false);
+            }
         }
+        $this->setDirty(false);
     }
 
     /**

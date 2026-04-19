@@ -21,14 +21,12 @@ class UiPageCoverage extends AbstractRunMetric
 {
     
     private array $pageAliasStats = [];
-    private array $pageAliasStack = [];
     /** @var \exface\Core\Interfaces\DataSheets\DataSheetInterface[] */
     private array $appScoreSheets = [];
     
     protected function registerEventHandlers()
     {
         $this->getEventDispatcher()->addListener(AfterPageVisited::class, [$this, 'onAfterPageVisitedCount']);
-        //$this->getEventDispatcher()->addListener(AfterScenarioTested::AFTER, [$this, 'onAfterScenarioTested']);
     }
     
     public function onAfterPageVisitedCount(AfterPageVisited $event)
@@ -38,6 +36,7 @@ class UiPageCoverage extends AbstractRunMetric
     
     protected function logVisit(string $pageAlias) 
     {
+        $this->setDirty(true);
         if (null === ($this->pageAliasStats[$pageAlias] ?? null)) {
             $appAlias = StringDataType::substringBefore($pageAlias, AliasSelectorInterface::ALIAS_NAMESPACE_DELIMITER, '', false, true);
             if ($appAlias !== '' && ! array_key_exists($appAlias, $this->appScoreSheets)) {
@@ -52,8 +51,11 @@ class UiPageCoverage extends AbstractRunMetric
         }
     }
     
-    protected function saveMetrics()
+    protected function saveMetrics() : void
     {
+        if ($this->isDirty() === false) {
+            return;
+        }
         foreach ($this->appScoreSheets as $appAlias => $scoreSheet) {
             foreach ($scoreSheet->getRows() as $i => $row) {
                 $pageAlias = $row['subject_name'];
@@ -63,8 +65,13 @@ class UiPageCoverage extends AbstractRunMetric
                     $scoreSheet->setCellValue('steps_count', $i, $stats['count']);
                 }
             }
-            $scoreSheet->dataCreate(false);
+            if ($scoreSheet->hasUidColumn(true)) {
+                $scoreSheet->dataUpdate(false);
+            } else {
+                $scoreSheet->dataCreate(false);
+            }
         }
+        $this->setDirty(false);
     }
     
     protected function loadMetricsForApp(string $appAlias) : DataSheetInterface
