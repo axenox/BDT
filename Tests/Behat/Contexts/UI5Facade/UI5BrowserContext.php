@@ -47,6 +47,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private $workbench = null;
     private $debug = false;
     private string $locale = 'de_DE';
+    
     /** 
      * Initializes and starts the workbench for the test environment
      */
@@ -98,9 +99,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @AfterStep
      * @param AfterStepScope $scope The scope containing step execution result
      */
-    public function logFailedStep(AfterStepScope $scope)
+    public function logFailedStep(AfterStepScope $scope): void
     {
-
         $result = $scope->getTestResult();
 
         // Handle different result types
@@ -144,7 +144,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     }
 
-
     /**
      * Prepares the environment before each test step
      * - Clears XHR logs for fresh monitoring
@@ -155,7 +154,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function prepareBeforeStep(BeforeStepScope $scope): void
     {
-
         // Skip if browser hasn't been initialized yet
         if (!$this->browser) {
             return;
@@ -206,9 +204,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function completeAfterStep(AfterStepScope $scope): void
     {
-        $errorManager = ErrorManager::getInstance();
-
-
         // Skip if step already failed
         if (!$scope->getTestResult()->isPassed()) {
             return;
@@ -272,11 +267,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         // Assert that page content exists and is not empty
         Assert::assertNotNull($page->getContent(), 'Page content is empty');
-
     }
-
-
-
 
     /**
      * Log in to a URL with a specific role and locale
@@ -293,7 +284,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iLogInToPage(string $url, string $userRoles = null, string $userLocale = null)
     {
-
         // Setup the user and get the required login data
         $userRolesArray = $this->splitArgument($userRoles);
         $loginFields = UI5Browser::setupUser($this->getWorkbench(), $userRolesArray, $userLocale);
@@ -354,21 +344,20 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->navigateToPageAlias($pageAlias);
     }
 
-
     /**
      * Verifies presence of a specific number of widgets of a given type
      * Optionally focuses on a specific object alias
      * Highlights matching widgets for visual debugging
-     * 
+     *
      * @Then I see :number widget of type ":widgetType"
      * @Then I see :number widgets of type ":widgetType"
      * @Then I see :number widget of type ":widgetType" with ":objectAlias"
      * @Then I see :number widgets of type ":widgetType" with ":objectAlias"
-     * 
+     *
      * @param int $number Expected number of widgets
      * @param string $widgetType Type of widget to look for
-     * @param string $objectAlias Optional object alias to filter widgets
-     * @throws AssertionFailedError If widget count doesn't match expectation
+     * @param string|null $objectAlias Optional object alias to filter widgets
+     * @throws \Exception
      */
     public function iSeeWidgets(int $number, string $widgetType, string $objectAlias = null): void
     {
@@ -421,8 +410,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             }
         }
     }
-
-
 
     /**
      * Verifies that the currently focused element contains a specified number of widgets
@@ -562,49 +549,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $focusedNode->findFilterByCaption($filterName)->setValueVisible($value);
     }
 
-
-    /**
-     * Handles input for ComboBox and MultiComboBox components
-     * Opens the dropdown and selects the matching option
-     * 
-     * @param NodeElement $comboBox The ComboBox element to interact with
-     * @param string $value The value to select
-     * @throws \RuntimeException if value cannot be selected
-     */
-    private function handleComboBoxInput(NodeElement $comboBox, string $value): void
-    {
-
-        // Find the dropdown arrow element
-        $arrow = $comboBox->find('css', '.sapMInputBaseIconContainer');
-        if (!$arrow) {
-            throw new \RuntimeException("Could not find ComboBox dropdown arrow");
-        }
-
-        // Click to open the dropdown
-        $arrow->click();
-
-        // Find and select the matching item from dropdown list
-        // Uses CSS selectors to find items containing the value text
-        $item = $this->getBrowser()->getPage()->find(
-            'css',
-            ".sapMSelectList li:contains('{$value}'), " .
-            ".sapMComboBoxItem:contains('{$value}'), " .
-            ".sapMMultiComboBoxItem:contains('{$value}')"
-        );
-
-        // Verify the item was found in the dropdown
-        if (!$item) {
-            throw new \RuntimeException("Could not find option '{$value}' in ComboBox list");
-        }
-
-        // Click on the matching item to select it
-        $item->click();
-
-    }
-
-
-
-
     /**
      * Verifies if specific text appears in a named column of a DataTable
      * 
@@ -615,12 +559,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeInColumn(string $text, string $columnName): void
     {
+        /* @var $focusedNode axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataTableNode */
         $focusedNode = $this->getBrowser()->getFocusedNode();
 
         Assert::assertNotEmpty($focusedNode, 'Focus is not on DataTable try I look at table 1');
 
         // Verify the first DataTable contains the expected text in the specified column
-        $this->getBrowser()->verifyTableContent($focusedNode->getNodeElement(), [
+        $focusedNode->verifyTableContent([
             ['column' => $columnName, 'value' => $text]
         ]);
 
@@ -801,29 +746,27 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iTypeIntoWidgetWithCaption(string $value, string $caption): void
     {
-
         // Find the input widget by its caption
         $widget = $this->getBrowser()->findInputByCaption($caption);
         Assert::assertNotNull($widget, 'Cannot find input widget "' . $caption . '"');
         // Set the input value
         $widget->setValue($value);
-
     }
 
     /**
      * Focus a widget of a given type at a specific position
      * Used to establish context for subsequent "it has..." steps
-     * 
+     *
      * @When I look at the first ":widgetType"
      * @When I look at ":widgetType" no. :number
-     * 
+     *
      * @param string $widgetType Type of widget to focus
      * @param int $number Position of the widget (1-based index)
      * @return void
+     * @throws \Exception
      */
     public function iLookAtWidget(string $widgetType, int $number = 1): void
     {
-
         // Find all widgets of the specified type
         $widgetNodes = $this->getBrowser()->findWidgetNodes($widgetType,15);
         // Get the widget at the specified position (1-based index)
@@ -831,7 +774,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         Assert::assertNotNull($node, 'Cannot find "' . $widgetType . '" no. ' . $number . '!');
         // Set focus to this widget
         $this->getBrowser()->focus($node);
-
     }
 
     /**
@@ -863,7 +805,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             // Highlight the button for debugging purposes
             $this->getBrowser()->highlightWidget($button, 'Button', 0);
         }
-
     }
 
     /**
@@ -1012,7 +953,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function itHasColumn(string $caption): void
     {
-
         /**
          * @var \Behat\Mink\Element\NodeElement $tableNode
          */
@@ -1025,9 +965,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             Assert::assertNotNull($col, 'Column "' . $caption . '" not found');
             $this->getBrowser()->highlightWidget($col, 'Column', 0);
         }
-
     }
-
 
     /**
      * Verifies that any DataTable on the page contains the specified text
@@ -1039,7 +977,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function theDataTableContains(string $text): void
     {
-
         // Find all DataTable widgets on the page
         $dataTables = $this->getBrowser()->findWidgets('DataTable');
         Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
@@ -1058,8 +995,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
         // Assert that text was found, throw exception if not
         Assert::assertTrue($found, "Text '$text' not found in DataTable");
-
-
     }
 
     /**
@@ -1070,8 +1005,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeFilteredResultsInDataTable(): void
     {
-
-
         $dataTable = $this->getBrowser()->getFocusedNode();
         Assert::assertNotNull($dataTable, 'No focused node found');
         Assert::assertInstanceOf(UI5DataTableNode::class, $dataTable, 'Focused node is not a data table');
@@ -1132,11 +1065,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             count($rows),
             $hasFilter ? 'present' : 'not present'
         ));
-
     }
-
-
-
+    
     /**
      * @When I visit the following pages:
      */
@@ -1179,7 +1109,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function allPagesShouldLoadSuccessfully(): void
     {
-
         // Verify no errors in current session
         $this->browser->getWaitManager()->validateNoErrors();
 
@@ -1191,9 +1120,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         if (!$isStable) {
             throw new \RuntimeException('UI5 framework is not in stable state after page navigation');
         }
-
     }
-
 
     /** 
      * Focuses on a specific table by index
@@ -1220,7 +1147,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->getBrowser()->focus($table);
     }
 
-
     /**
      * Selects a specific row in a table
      *
@@ -1240,7 +1166,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         Assert::assertTrue($table->isRowSelected($rowNumber), "Failed to select row {$rowNumber}");
     }
-
 
     /**
      * @When I click button :caption on the :tableIndex table
@@ -1297,10 +1222,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             throw new \Exception("Could not click button '$buttonCaption': " . $e->getMessage());
         }
     }
-
-
-
-
+    
     /**
      * Clicks the overflow button on the specified table
      * 
@@ -1406,8 +1328,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->logDebug("✓ Overflow button clicked successfully\n");
     }
 
-
-
     /**
      * @Then an XLSX file should be downloaded
      */
@@ -1439,12 +1359,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         throw new \RuntimeException("XLSX file could not be downloaded or is empty.");
     }
-
-
-
-
-
-
+    
     /**
      * Verify the presence of specific tiles on the page
      * This method checks if all expected tiles are present in the UI
@@ -1639,7 +1554,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     }
 
-
     /**
      * @BeforeScenario
      */
@@ -1707,7 +1621,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $array = array_map('trim', $array);
         return $array;
     }
-
 
     /**
      * Central function for error handling in UI5 Browser context
@@ -1806,6 +1719,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *  3) UI5Browser re-initialization after navigation
      *
      * @param string $pageAlias
+     * @throws \Exception
      */
     private function navigateToPageAlias(string $pageAlias): void
     {

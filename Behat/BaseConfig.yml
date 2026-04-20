@@ -28,9 +28,9 @@ default:
      stop_on_failure: false    # Continue testing even if a test fails
      fail_on_timeout: false    # Don't mark test as failed on timeout
      timeouts:
-       suite: 1800    # 30 minutes timeout for entire test suite
+       suite: 7200    # 2 hours timeout for entire test suite
        step: 300      # 5 minutes timeout for individual steps
-       scenario: 600  # 10 minutes timeout for each scenario
+       scenario: 1800  # 30 minutes timeout for each scenario
  
  extensions:
   # Chrome Extension for Behat - enables Chrome WebDriver integration

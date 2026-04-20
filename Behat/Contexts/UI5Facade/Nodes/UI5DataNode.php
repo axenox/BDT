@@ -7,7 +7,6 @@ use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Exceptions\FacadeNodeException;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use axenox\BDT\Interfaces\TestResultInterface;
-use Behat\Gherkin\Node\TableNode;
 use Behat\Mink\Element\NodeElement;
 use exface\Core\CommonLogic\Model\MetaObject;
 use exface\Core\CommonLogic\Model\RelationPath;
@@ -19,7 +18,6 @@ use exface\Core\Interfaces\DataTypes\DataTypeInterface;
 use exface\Core\Interfaces\DataTypes\EnumDataTypeInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\MetaAttributeInterface;
-use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Interfaces\Widgets\iFilterData;
 use exface\Core\Interfaces\Widgets\iHaveButtons;
 use exface\Core\Interfaces\Widgets\iHaveColumns;
@@ -31,7 +29,7 @@ use exface\Core\Widgets\Filter;
 use exface\Core\Widgets\InputComboTable;
 use exface\Core\Widgets\InputSelect;
 use PHPUnit\Framework\Assert;
-use PHPUnit\Framework\ExpectationFailedException;
+use exface\Core\Exceptions\RuntimeException;
 
 /**
  * @method \exface\Core\Widgets\DataTable getWidget()
@@ -53,46 +51,6 @@ class UI5DataNode extends UI5AbstractNode
     public function capturesFocus(): bool
     {
         return false;
-    }
-
-    protected function getLoadedRowCount(): ?int
-    {
-       return count($this->getBrowser()->getTableRows($this->getNodeElement()));        
-    }
-
-    public function selectRow(int $rowNumber)
-    {
-        $rowIndex = $this->convertOrdinalToIndex($rowNumber);
-
-        // Find the rows
-        $rows = $this->getNodeElement()->findAll('css', '.sapUiTableTr, .sapMListTblRow');
-        Assert::assertNotEmpty($rows, "No rows found in table");
-
-        if (count($rows) < $rowIndex + 1) {
-            throw new \RuntimeException("Row {$rowNumber} not found. Only " . count($rows) . " rows available.");
-        }
-
-        $row = $rows[$rowIndex];
-
-        // Selecting process
-        $rowSelector = $row->find('css', '.sapUiTableRowSelectionCell');
-        if ($rowSelector) {
-            $rowSelector->click();
-        } else {
-            $firstCell = $row->find('css', 'td.sapUiTableCell, .sapMListTblCell');
-            Assert::assertNotNull($firstCell, "Could not find a clickable cell in row {$rowNumber}");
-            $firstCell->click();
-        }
-    }
-
-    public function isRowSelected(int $rowNumber): bool
-    {
-        $rowIndex = $this->convertOrdinalToIndex($rowNumber);
-        $tableId = $this->getNodeElement()->getAttribute('id');
-        $isSelected = $this->getSession()->evaluateScript(
-            "return jQuery('#{$tableId} .sapUiTableTr, #{$tableId} .sapMListTblRow').eq({$rowIndex}).hasClass('sapUiTableRowSel');"
-        );
-        return $isSelected;
     }
 
     protected function findFilterHeaderContainer(): ?NodeElement
@@ -185,7 +143,7 @@ class UI5DataNode extends UI5AbstractNode
     /**
      *
      * @param LogBookInterface $logbook
-     * @return void
+     * @return TestResultInterface
      */
     public function checkWorksAsExpected(LogBookInterface $logbook) : TestResultInterface
     {
@@ -193,7 +151,7 @@ class UI5DataNode extends UI5AbstractNode
         $logbook->addLine($this->buildMessageLookingAt(true));
         Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
         
-        $result = $this->runAsSubstep(
+        return $this->runAsSubstep(
             function(SubstepResult $result) use ($widget) {
                 return $this->checkTableWorksAsExpected($widget, $result->getLogbook());
             }, 
@@ -201,8 +159,6 @@ class UI5DataNode extends UI5AbstractNode
             null, 
             $logbook
         );
-
-        return $result;
     }
     
     protected function checkTableWorksAsExpected(iShowData $dataWidget, LogBookInterface $logbook) : TestResultInterface
@@ -212,25 +168,6 @@ class UI5DataNode extends UI5AbstractNode
         // Filters
         $filterResult = $this->checkHeaderFiltersWorkAsExpected($dataWidget, $logbook);
         $failed = $filterResult->isFailed();
-        
-        /*
-        // Test column caption filters
-        foreach ($widget->getColumns() as $column) {
-            if ($column->isHidden() || !$column->isFilterable()) {
-                continue;
-            }
-            $columnNode = $this->getColumnByCaption($column->getAttribute()->getName());
-            $columnAttr = $column->getAttribute();
-            $filterVal = $this->getAnyValue($columnAttr);
-            $this->filterColumn($columnNode->getCaption(), $filterVal);
-            $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
-                ['column' => $columnAttr->getName(), 'value' => $filterVal, 'comparator' => ComparatorDataType::EQUALS]
-            ]);
-            $this->resetFilterColumn($columnNode->getCaption());
-        }
-        */
-        
-        // TODO Sorters
         
         // Buttons
         if ($dataWidget instanceof iHaveButtons) {
@@ -293,6 +230,7 @@ class UI5DataNode extends UI5AbstractNode
     protected function checkButtonsWorkAsExpected(iHaveButtons $dataWidget, LogBookInterface $logbook) : TestResultInterface
     {
         $skippedButtons = [];
+        $failed = false;
         foreach ($dataWidget->getButtons() as $buttonWidget) {
             if ($buttonWidget->isHidden()) {
                 continue;
@@ -306,31 +244,29 @@ class UI5DataNode extends UI5AbstractNode
                 continue;
             }
 
-            $buttonNodeElement = $this->getBrowser()->findButtonByCaption($buttonWidget->getCaption(), $this->getNodeElement());
-            if ($buttonNodeElement !== null) {
-                $buttonNode = UI5FacadeNodeFactory::createFromWidgetType($buttonWidget->getWidgetType(), $buttonNodeElement, $this->getSession(), $this->getBrowser());
+            $buttonNode = UI5FacadeNodeFactory::createFromWidgetType($buttonWidget->getWidgetType(), $buttonNodeElement, $this->getSession(), $this->getBrowser());
 
-                if (!$buttonNode->checkDisabled()) {
-                    // Press the button in a substep
-                    $substepResult = $this->runAsSubstep(
-                        function() use ($buttonNode, $logbook) {
-                            return $buttonNode->checkWorksAsExpected($logbook);
-                        },
-                        'Clicking ' . $buttonWidget->getCaption(),
-                        'Dialogs',
-                        $logbook
-                    );                    
+            if (!$buttonNode->checkDisabled()) {
+                // Press the button in a substep
+                $substepResult = $this->runAsSubstep(
+                    function() use ($buttonNode, $logbook) {
+                        return $buttonNode->checkWorksAsExpected($logbook);
+                    },
+                    'Clicking ' . $buttonWidget->getCaption(),
+                    'Dialogs',
+                    $logbook
+                );                    
 
-                    // Say the buttons test is failed if at least one button fails
-                    if ($substepResult->isFailed()) {
-                        $failed = true;
-                    }
-                }
-                else {
-                    $skippedButtons['Button cannot be enabled'][] = $buttonWidget->getCaption();
-                    $logbook->addLine('Skipping button ' . $this->getCaption() . ' because there is no row to enable it');
+                // Say the buttons test is failed if at least one button fails
+                if ($substepResult->isFailed()) {
+                    $failed = true;
                 }
             }
+            else {
+                $skippedButtons['Button cannot be enabled'][] = $buttonWidget->getCaption();
+                $logbook->addLine('Skipping button ' . $this->getCaption() . ' because there is no row to enable it');
+            }
+            
         }
 
         // Log a SKIPPED substep for every reason to skip buttons
@@ -343,76 +279,7 @@ class UI5DataNode extends UI5AbstractNode
     protected function checkFilterWorksAsExpected(iFilterData $filter, iShowData $dataWidget, UI5FilterNode $filterNode, SubstepResult $result) : SubstepResult
     {
         $logbook = $result->getLogbook();
-        $logbook->addLine('Filtering`' . $filter->getCaption() . '`');
-        
-        // Find and highlight the filter
-        $this->getBrowser()->highlightWidget(
-            $filterNode->getNodeElement(),
-            $filter->getWidgetType(),
-            0
-        );
-        
-        // Get a valid value for filtering
-        $filterAttr = $filter->getAttribute();
-        
-        
-        // Look for a value it the table
-        // Verify the first DataTable contains the expected text in the specified column
-        // sometimes column captions are not the same as filter captions
-        $columnCaption = null;
-        $column = $this->findColumnWithAttribute($dataWidget, $filterAttr, $logbook);
-        if ($column !== null) {
-            $filterVal = $this->findValueInColumn($column, $logbook);
-            $columnCaption = $column->getCaption();
-        }
-        
-        // Look for a value in the data source
-        if (trim($filterVal ?? '') === '') {
-            $filterVal = $this->findValuesInDataSource($filterAttr, $filter, $dataWidget->getMetaObject());
-            if ($filterVal !== null) {
-                $logbook->continueLine(' with value `' . $filterVal . '` found in data source');
-            }
-        }
-
-        if (trim($filterVal ?? '') === '') {
-            $logbook->continueLine(' no value found!');
-            return SubstepResult::createSkipped('No value found for filter `' . $filter->getCaption() . '`', $logbook);
-        }
-        
-        // Set the filter value
-        try {
-            $filterNode->setValueVisible($filterVal);
-        } catch (FacadeNodeException|ExpectationFailedException $e) {
-            $currentVal = $filterNode->getValueVisible();
-            if (($filter instanceof Filter) && $filter->getInputWidget() instanceof iSupportLazyLoading) {
-                if (stripos($currentVal, $filterVal) !== false) {
-                    $filterVal = $currentVal;
-                    $logbook->continueLine(' (changed to `' . $filterVal . '` because it was autosuggested)');
-                } 
-            } 
-            if ($filterVal !== $currentVal) {
-                throw new FacadeNodeException($this, 'Failed to set filter value for filter `' . $filter->getCaption() . '`. Tried value: `' . $filterVal . '` - got `' . $currentVal . '` when validating.', null, $e);
-            }
-        }
-        
-        $this->triggerSearch();
-        $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
-        $loadedRowCount = $this->getLoadedRowCount();
-
-        $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');
-
-        // See if our 
-        if ($columnCaption !== null) {
-            $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
-                ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
-            ]);
-        }
-        
-        $filterNode->reset();
-        $logbook->continueLine(' - resetting filter');
-        
-        $result->setTitle($result->getTitle() . ' with value "' . $filterVal . '"');
-        return $result;
+        return SubstepResult::createSkipped('No function defined for this widget `' . $this->getWidgetType() . '`', $logbook);
     }
     
     protected function findColumnWithAttribute(iHaveColumns $dataWidget, MetaAttributeInterface $attribute, LogBookInterface $logbook) : ?DataColumn
@@ -613,12 +480,12 @@ class UI5DataNode extends UI5AbstractNode
         try {
             $button->click();
             $this->getBrowser()->clearWidgetHighlights();
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             throw $e;
         }
     }
 
-    protected function getInputDataType()
+    protected function getInputDataType(): DataTypeInterface
     {
         return $this->inputDataType;
     }
@@ -841,4 +708,81 @@ class UI5DataNode extends UI5AbstractNode
 
         return $filterNodes;
     }
+
+
+    /**
+     * Parses German (1.234,56) or Anglo-Saxon (1,234.56) number strings to float.
+     * Returns null if unparseable.
+     */
+    public function parseNumberFlexible(string $value): ?float
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return null;
+        }
+        // German: dot = thousands, comma = decimal
+        if (preg_match('/^\d{1,3}(\.\d{3})*(,\d+)?$/', $value)) {
+            return (float) str_replace(['.', ','], ['', '.'], $value);
+        }
+        // Anglo-Saxon: comma = thousands, dot = decimal
+        if (preg_match('/^\d{1,3}(,\d{3})*(\.\d+)?$/', $value)) {
+            return (float) str_replace(',', '', $value);
+        }
+        // Plain number: "42", "3.14", "-7,5"
+        $plain = str_replace(',', '.', $value);
+        return is_numeric($plain) ? (float) $plain : null;
+    }
+
+    /**
+     * Parses date strings in multiple formats to Unix timestamp (midnight).
+     * Supported: d.m.Y, Y-m-d, d/m/Y, m/d/Y
+     * Returns null if unparseable.
+     */
+    public function parseDateFlexible(string $value): ?int
+    {
+        $value = trim($value);
+        foreach ([
+                     // Datetime formats first — more specific, must come before date-only
+                     'd.m.Y H:i:s',
+                     'd.m.Y H:i',
+                     'Y-m-d H:i:s',
+                     'Y-m-d H:i',
+                     'd/m/Y H:i:s',
+                     'd/m/Y H:i',
+                     // Date-only formats
+                     'd.m.Y',
+                     'Y-m-d',
+                     'd/m/Y',
+                     'm/d/Y',
+                 ] as $format) {
+            $dt = \DateTime::createFromFormat('!' . $format, $value);
+            if ($dt !== false && $dt->format($format) === $value) {
+                return $dt->getTimestamp();
+            }
+        }
+        return null;
+    }
+
+    public function normalizeBool(?string $value): ?bool
+    {
+        $v = mb_strtolower(trim((string)$value));
+
+        if (in_array($v, ['1', 'true', 'ja', 'yes', 'evet'], true)) {
+            return true;
+        }
+        if (in_array($v, ['0', 'false', 'nein', 'no', 'hayır', ''], true)) {
+            return false;
+        }
+
+        return null;
+    }
+
+    public function normalizeText(?string $s): string
+    {
+        $s = (string)$s;
+        $s = trim($s);
+        $s = preg_replace('/\s+/u', ' ', $s);
+        return mb_strtolower($s);
+    }
+
 }
