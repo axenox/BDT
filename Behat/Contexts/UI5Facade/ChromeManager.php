@@ -195,4 +195,26 @@ class ChromeManager
             "Chrome did not become ready on port {$port} within {$timeoutSeconds} seconds."
         );
     }
+
+    /**
+     * Returns the list of open Chrome tabs by querying the /json/list debug endpoint.
+     *
+     * Each entry in the returned array represents one tab and contains fields such as
+     * "id", "type", "url", "title", and "webSocketDebuggerUrl". An empty array
+     * means Chrome has no open tabs, which typically indicates the tab crashed or was
+     * closed unexpectedly. A null return value means Chrome is not reachable at all.
+     *
+     * Useful for diagnostics when a connection error occurs: if the list is empty or
+     * null the root cause is in Chrome itself rather than the WebSocket layer.
+     *
+     * @return array|null Decoded JSON tab list, or null if the endpoint could not be reached
+     */
+    public static function getTabList(): ?array
+    {
+        $response = @file_get_contents("http://localhost:" . self::getPort() . "/json/list");
+        if ($response === false) {
+            return null;
+        }
+        return json_decode($response, true) ?? [];
+    }
 }
