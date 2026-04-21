@@ -27,7 +27,7 @@ interface FacadeNodeInterface extends WorkbenchDependantInterface
     public function getWidgetType(): ?string;
 
     /**
-     * @return WidgetInterface#
+     * @return WidgetInterface
      */
     public function getWidget() : WidgetInterface;
 
@@ -40,7 +40,7 @@ interface FacadeNodeInterface extends WorkbenchDependantInterface
     /**
      * checks the functionality of the node
      * @param LogBookInterface $logbook
-     * @return int
+     * @return TestResultInterface
      */
     public function checkWorksAsExpected(LogBookInterface $logbook) : TestResultInterface;
 
