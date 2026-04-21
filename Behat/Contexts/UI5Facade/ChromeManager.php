@@ -76,13 +76,17 @@ class ChromeManager
                 . 'Please set them under DatabaseFormatterExtension > chrome in your behat.yml.'
             );
         }
-        
+
         // "start /B" launches Chrome in the background within the current cmd session —
         // identical to a bat file. The empty "" after "start /B" is the window title
         // placeholder required by the Windows start command when a path follows.
+        // When running under a debugger, --headless is omitted so the tester can
+        // watch the browser and interact with it during debugging.
+        $isDebugging = extension_loaded('xdebug') && xdebug_is_debugger_active();
         $cmd = 'start /B "" '
             . '"' . getcwd() . DIRECTORY_SEPARATOR . $executable . '"'
-            . " --headless --window-size=1920,1080 --disable-extensions --disable-gpu"
+            . ($isDebugging ? '' : ' --headless')
+            . " --window-size=1920,1080 --disable-extensions --disable-gpu"
             . ' --remote-debugging-port=' . $port
             . ' --user-data-dir="' . getcwd() . DIRECTORY_SEPARATOR . $userDataDir . '"';
         pclose(popen($cmd, 'r'));

@@ -5,31 +5,26 @@ use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
 use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Exceptions\FacadeNodeException;
-use axenox\BDT\Interfaces\FacadeNodeInterface;
 use axenox\BDT\Interfaces\TestResultInterface;
 use Behat\Gherkin\Node\TableNode;
 use Behat\Mink\Element\NodeElement;
 use exface\Core\CommonLogic\Model\MetaObject;
+use exface\Core\DataTypes\BooleanDataType;
 use exface\Core\DataTypes\ComparatorDataType;
-use exface\Core\DataTypes\MarkdownDataType;
-use exface\Core\Facades\DocsFacade;
+use exface\Core\DataTypes\DateDataType;
+use exface\Core\DataTypes\NumberDataType;
+use exface\Core\DataTypes\NumberEnumDataType;
+use exface\Core\DataTypes\StringDataType;
+use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Factories\DataSheetFactory;
+use exface\Core\Factories\SelectorFactory;
 use exface\Core\Interfaces\DataTypes\DataTypeInterface;
-use exface\Core\Interfaces\DataTypes\EnumDataTypeInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
-use exface\Core\Interfaces\Model\MetaAttributeInterface;
-use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Interfaces\Widgets\iFilterData;
 use exface\Core\Interfaces\Widgets\iHaveButtons;
-use exface\Core\Interfaces\Widgets\iHaveColumns;
 use exface\Core\Interfaces\Widgets\iShowData;
-use exface\Core\Interfaces\Widgets\iSupportLazyLoading;
 use exface\Core\Widgets\DataColumn;
-use exface\Core\Widgets\Filter;
-use exface\Core\Widgets\InputComboTable;
-use exface\Core\Widgets\InputSelect;
 use PHPUnit\Framework\Assert;
-use PHPUnit\Framework\ExpectationFailedException;
 
 /**
  * @method \exface\Core\Widgets\DataTable getWidget()
@@ -91,7 +86,7 @@ class UI5DataTableNode extends UI5DataNode
 
     protected function getLoadedRowCount(): ?int
     {
-       return count($this->getBrowser()->getTableRows($this->getNodeElement()));        
+       return count($this->getTableRows());        
     }
 
     public function selectRow(int $rowNumber)
@@ -199,7 +194,7 @@ class UI5DataTableNode extends UI5DataNode
 
         }
 
-        if (!empty($actualColumns)) {
+        if (!empty($expectedButtons)) {
             $actualButtons = array_map(
                 fn($b) => trim($b->getCaption()),
                 array_filter($widget->getButtons(), fn($b) => !$b->isHidden() && !$b->isDisabled())
@@ -219,10 +214,10 @@ class UI5DataTableNode extends UI5DataNode
     protected function checkTableWorksAsExpected(iShowData $dataWidget, LogBookInterface $logbook) : TestResultInterface
     {
         $parentResult = parent::checkTableWorksAsExpected($dataWidget, $logbook);
-        
-        $logbook->addIndent(1);
 
         /*
+        $logbook->addIndent(1);
+
         // Test column caption filters
         foreach ($widget->getColumns() as $column) {
             if ($column->isHidden() || !$column->isFilterable()) {
@@ -237,9 +232,9 @@ class UI5DataTableNode extends UI5DataNode
             ]);
             $this->resetFilterColumn($columnNode->getCaption());
         }
-        */
 
         $logbook->addIndent(-1);
+        */
         return $parentResult->isFailed() ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
     }
     
@@ -272,6 +267,14 @@ class UI5DataTableNode extends UI5DataNode
         if ($filterNode instanceof UI5RangeFilterNode) {
             $range = $this->findRangeValuesInDataSource($filterAttr, $filter, $dataWidget->getMetaObject());
 
+            if ($columnCaption === null) {
+                $logbook->continueLine(' no column found!');
+                return SubstepResult::createSkipped(
+                    'No column found for range filter `' . $filter->getCaption() . '`',
+                    $logbook
+                );
+            }
+            
             if ($range === null) {
                 $logbook->continueLine(' no value found!');
                 return SubstepResult::createSkipped(
@@ -289,14 +292,12 @@ class UI5DataTableNode extends UI5DataNode
             $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');
 
             $result->setTitle($result->getTitle() . ' with range "' . $range['from'] . '" – "' . $range['to'] . '"');
-            if ($columnCaption !== null) {
-                $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
-                    ['column' => $columnCaption, 'value' => $range['from'], 'comparator' => '>=', 'dataType' => $this->getInputDataType()]
-                ]);
-                $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
-                    ['column' => $columnCaption, 'value' => $range['to'], 'comparator' => '<=', 'dataType' => $this->getInputDataType()]
-                ]);
-            }
+            $this->verifyTableContent([
+                ['column' => $columnCaption, 'value' => $range['from'], 'comparator' => '>=', 'dataType' => $this->getInputDataType()]
+            ]);
+            $this->verifyTableContent([
+                ['column' => $columnCaption, 'value' => $range['to'], 'comparator' => '<=', 'dataType' => $this->getInputDataType()]
+            ]);            
             
             return $result;
         }
@@ -308,6 +309,11 @@ class UI5DataTableNode extends UI5DataNode
                 $logbook->continueLine(' with value `' . $filterVal . '` found in data source');
             }
         }
+        
+        if ($columnCaption === null) {
+            $logbook->continueLine(' - No column found');
+            return SubstepResult::createSkipped('No column found for filter `' . $filter->getCaption() . '`', $logbook);
+        }
 
         if (trim($filterVal ?? '') === '') {
             $logbook->continueLine(' no value found!');
@@ -318,16 +324,9 @@ class UI5DataTableNode extends UI5DataNode
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
         $loadedRowCount = $this->getLoadedRowCount();
 
-        $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');
-
+        $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');        
         
-        // See if our 
-        if ($columnCaption === null) {
-            $logbook->continueLine(' - No column found');
-            return SubstepResult::createSkipped('No column found for filter `' . $filter->getCaption() . '`', $logbook);
-        }
-        
-        $this->getBrowser()->verifyTableContent($this->getNodeElement(), [
+        $this->verifyTableContent([
             ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
         ]);
         
@@ -335,15 +334,6 @@ class UI5DataTableNode extends UI5DataNode
         
         $result->setTitle($result->getTitle() . ' with value "' . $filterVal . '"');
         return $result;
-    }
-
-    protected function checkTheValueFromTable(MetaObject $metaObject, string $returnColumn, string $returnValue): bool
-    {
-        $ds = DataSheetFactory::createFromObject($metaObject);
-        $ds->getFilters()->addConditionFromString($returnColumn, $returnValue, ComparatorDataType::EQUALS);
-        $ds->dataRead(1, 1);
-        return $ds->dataCount() > 0;
-
     }
 
     protected function checkButtonsWorkAsExpected(iHaveButtons $dataWidget, LogBookInterface $logbook) : TestResultInterface
@@ -380,38 +370,38 @@ class UI5DataTableNode extends UI5DataNode
                     continue 2;
             }
 
-            $buttonNodeElement = $this->getBrowser()->findButtonByCaption($buttonWidget->getCaption(), $this->getNodeElement());
-            if ($buttonNodeElement !== null) {
-                $buttonNode = UI5FacadeNodeFactory::createFromWidgetType($buttonWidget->getWidgetType(), $buttonNodeElement, $this->getSession(), $this->getBrowser());
+            $buttonNode = UI5FacadeNodeFactory::createFromWidgetType($buttonWidget->getWidgetType(), $buttonNodeElement, $this->getSession(), $this->getBrowser());
 
-                while ($buttonNode->checkDisabled() && $rowNumber < $this->getLoadedRowCount()) {
-                    $this->selectRow($rowNumber);
-                    $this->selectRow(++$rowNumber);
-                }
+            while ($buttonNode->checkDisabled() && $rowNumber < $this->getLoadedRowCount()) {
+                $this->selectRow($rowNumber);
+                $this->selectRow(++$rowNumber);
+            }
 
-                if (!$buttonNode->checkDisabled()) {
-                    // Press the button in a substep
-                    $substepResult = $this->runAsSubstep(
-                        function() use ($buttonNode, $logbook) {
-                            return $buttonNode->checkWorksAsExpected($logbook);
-                        },
-                        'Clicking ' . $buttonWidget->getCaption(),
-                        'Dialogs',
-                        $logbook
-                    );
+            if (!$buttonNode->checkDisabled()) {
+                // Press the button in a substep
+                $substepResult = $this->runAsSubstep(
+                    function() use ($buttonNode, $logbook) {
+                        return $buttonNode->checkWorksAsExpected($logbook);
+                    },
+                    'Clicking ' . $buttonWidget->getCaption(),
+                    'Dialogs',
+                    $logbook
+                );
 
-                    // Say the buttons test is failed if at least one button fails
-                    if ($substepResult->isFailed()) {
-                        $failed = true;
-                    }
-                }
-                else {
-                    $skippedButtons['Button cannot be enabled'][] = $buttonWidget->getCaption();
-                    $logbook->addLine('Skipping button ' . $this->getCaption() . ' because there is no row to enable it');
+                // Say the buttons test is failed if at least one button fails
+                if ($substepResult->isFailed()) {
+                    $failed = true;
                 }
             }
-            $this->selectRow($rowNumber);
+            else {
+                $skippedButtons['Button cannot be enabled'][] = $buttonWidget->getCaption();
+                $logbook->addLine('Skipping button ' . $this->getCaption() . ' because there is no row to enable it');
+            }
         }
+        if($rowNumber !== null) {
+            $this->selectRow($rowNumber);            
+        }
+        
 
         // Log a SKIPPED substep for every reason to skip buttons
         foreach ($skippedButtons as $reason => $buttons) {
@@ -487,10 +477,10 @@ class UI5DataTableNode extends UI5DataNode
         $columnCaption = $column->getCaption();
         $i = $this->getVisibleColumnIndex($column);
 
-        $rows = $this->getBrowser()->getTableRows($this->getNodeElement());
+        $rows = $this->getTableRows();
         $cellValue = null;
         foreach ($rows as $row) {
-            $cellValue = $this->getBrowser()->extractCellValueFromRow($row, $i);
+            $cellValue = $this->extractCellValueFromRow($row, $i);
             if ($cellValue !== null) {
                 break;
             }
@@ -515,26 +505,250 @@ class UI5DataTableNode extends UI5DataNode
     }
 
     /**
-     * check if the text ends with suffix 
-     * if the text ends with __LABEL first cut this part and checks the rest
-     * 
-     * @param string $text
-     * @param string $suffix
-     * @return bool
+     * returns the rows of the Datatable
+     *
+     * @return array
      */
-    function endsWith(string $text, string $suffix): bool
+    public function getTableRows(): array
     {
-        if (str_contains($text, ':')) {
-            $text = strstr($text, ':', true);
+        return $this->getNodeElement()->findAll(
+            'css',
+            '.sapUiTableCtrlFixed .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden):not(.sapUiTableRowFirstFixedBottom), ' .
+            '.sapUiTableCtrl .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden):not(.sapUiTableRowFirstFixedBottom)'
+        );
+    }
+
+    /**
+     * Verifies table content against expected values
+     * Checks if specified column contains expected text
+     *
+     * @param array $expectedContent Array of expected content (column => text pairs)
+     * @return void
+     * @throws RuntimeException If verification fails
+     */
+    public function verifyTableContent(array $expectedContent): void
+    {
+        try {
+            // Check each expected content item
+            foreach ($expectedContent as $content) {
+                $columnName = $content['column'];
+                $searchValue = trim($content['value'], '"\'');
+                $rawCmp = $content['comparator'] ?? '[';
+                /** @var DataTypeInterface $inputDataType */
+                $inputDataType = $content['dataType'] ??  new StringDataType(SelectorFactory::createDataTypeSelector($this->getWorkbench(), static::class));
+
+                // First find column headers
+                $headers = $this->getNodeElement()->findAll('css', '.sapUiTableHeaderDataCell label, .sapMListTblHeader .sapMColumnHeader');
+                $columnIndex = null;
+
+                // Find the column index
+                foreach ($headers as $index => $header) {
+                    $headerText = trim($header->getText());
+                    if ($headerText === $columnName) {
+                        $columnIndex = $index;
+                        break;
+                    }
+                }
+
+                Assert::assertNotNull($columnIndex, "Column '$columnName' not found in table");
+
+                // Check table cells
+                $rows = $this->getTableRows();
+                $considered = 0;
+                $matches = 0;
+                $firstFailures = []; // collect first few failures for better error messages
+                foreach ($rows as $row) {
+                    $cellText = $this->extractCellValueFromRow($row, $columnIndex);
+                    $considered++;
+
+                    // Strict comparison using your limited operator set
+                    $ok = $this->compareCell($cellText, $searchValue, $rawCmp, $inputDataType);
+
+                    if ($ok) {
+                        $matches++;
+                    } else {
+                        if (count($firstFailures) < 3) {
+                            $firstFailures[] = $cellText;
+                        }
+                    }
+                }
+
+                Assert::assertSame(
+                    $considered,
+                    $matches,
+                    "Not all rows of the table fits the column '{$columnName}'. {$matches}/{$considered} matched. First mismatches: " . implode(' | ', $firstFailures)
+                );
+
+            }
+        } catch (\Throwable $e) {
+            throw new RuntimeException(
+                "Failed to verify table content. " . $e->getMessage(),
+                null,
+                $e
+            );
         }
-        
-        if (str_ends_with($text, '__LABEL')) {
-            $text = substr($text, 0, -strlen('__LABEL'));
-        }
-        else if (str_ends_with(strtolower($text), '__name')) {
-            $text = substr($text, 0, -strlen('__name'));
+    }
+
+
+    /**
+     * returns the cell value from requested index of the column and the row
+     *
+     * @param NodeElement $row
+     * @param int $columnIndex
+     * @return string|null
+     */
+    public function extractCellValueFromRow(NodeElement $row, int $columnIndex): ?string
+    {
+        if ($row->getAttribute('aria-hidden') === 'true') {
+            return null;
         }
 
-        return str_ends_with($text, $suffix);
+        $cells = $row->findAll('css', '.sapUiTableCell, .sapMListTblCell');
+        if (count($cells) === 0) {
+            return null; // row has no cells at all
+        }
+        if (!isset($cells[$columnIndex])) {
+            return null;
+        }
+
+        // Extract visible text from the target cell
+        $cell = $cells[$columnIndex];
+
+        $cellText = $this->extractCellText($cell); // see helper below
+
+        // Skip truly empty rows (no content at all)
+        if ($cellText === '') {
+            return null;
+        }
+        return $cellText;
+    }
+
+    /**
+     * Strict comparator :
+     * - == / !=, <>: string comparison only (no numeric/date coercion).
+     * - >, <, >=, <=: strict numeric or strict ISO date compare. If parsing fails, returns false.
+     *
+     * A test failed because for input combo the search text itself contains a comma.
+     * As a result, the system interpreted that single text value as two separate filter values (split at the comma).
+     * That means what we expected to search for (one complete string) did not match what was actually applied
+     * (two partial strings), so the “expected vs. found” comparison failed.
+     *
+     */
+    private function compareCell(?string $cellText, $expected, string $cmp, DataTypeInterface $dataType): bool
+    {
+        $cellText = (string)$cellText;
+        switch (true) {
+            case $dataType instanceof NumberEnumDataType:
+                $left  = $this->normalizeText($cellText);
+                $right = $this->normalizeText((string)$expected);
+                break;
+
+            case $dataType instanceof NumberDataType:
+                $left  = $this->parseNumberFlexible($cellText);
+                $right = $this->parseNumberFlexible((string) $expected);
+                if ($left === null || $right === null) {
+                    return false;
+                }
+                break;
+
+            case $dataType instanceof DateDataType:
+                $left  = $this->parseDateFlexible($cellText);
+                $right = $this->parseDateFlexible((string) $expected);
+                if ($left === null || $right === null) {
+                    return false;
+                }
+                break;
+
+            case $dataType instanceof BooleanDataType:
+                $left  = $this->normalizeBool($cellText);
+                $right = $this->normalizeBool($expected);
+                break;
+
+            default:
+                $left  = $this->normalizeText($cellText);
+                $right = $this->normalizeText((string)$expected);
+        }
+
+        switch ($cmp) {
+            // UNIVERSAL not-like
+            case '!=':
+            case '<>':
+                return $left !== $right;
+
+            case '==':
+                return $left === $right;
+
+            case '>':
+                return $left > $right;
+
+            case '<':
+                return $left < $right;
+
+            case '>=':
+                return $left >= $right;
+
+            case '<=':
+                return $left <= $right;
+            // IN '['
+            default:
+                return stripos((string)$left, (string)$right) !== false;
+        }
+    }
+
+    /**
+     * Extracts robust text from a cell by reading common UI5 text carriers and stripping HTML/nbsp.
+     */
+    private function extractCellText(NodeElement $cell): string
+    {
+        // 1) Special-case: sap.m.ProgressIndicator
+        $pi = $cell->find('css', '[role="progressbar"].sapMPI');
+        if ($pi) {
+            // Prefer aria-valuetext if present (most reliable business text)
+            $vt = trim((string)$pi->getAttribute('aria-valuetext'));
+            if ($vt !== '') {
+                return $vt;
+            }
+            // Fall back to left/right texts
+            $left  = $pi->find('css', '.sapMPITextLeft');
+            $right = $pi->find('css', '.sapMPITextRight');
+            $parts = [];
+            if ($left)  { $t = trim($left->getText());  if ($t !== '') $parts[] = $t; }
+            if ($right) { $t = trim($right->getText()); if ($t !== '') $parts[] = $t; }
+            if (!empty($parts)) {
+                return implode(' ', $parts);
+            }
+            // As a last resort use title (often a descriptive tooltip)
+            $title = trim((string)$pi->getAttribute('title'));
+            if ($title !== '') {
+                return $title;
+            }
+            // If nothing found, return empty
+            return '';
+        }
+
+        // 2) Common UI5 text carriers (labels, text, link, object status, etc.)
+        $candidates = $cell->findAll('css', implode(', ', [
+            '.sapMText', '.sapMLabel', '.sapMLnk', '.sapMLink',
+            '.sapMObjectNumber', '.sapMObjectIdentifierTitle', '.sapMObjectIdentifierText',
+            '.sapMObjStatusText', '.sapMObjStatus .sapMObjStatusText',
+            '.sapMPITextLeft', '.sapMPITextRight',
+            'input', 'textarea', 'select'
+        ]));
+
+        $parts = [];
+        foreach ($candidates as $el) {
+            $t = trim($el->getText());
+            if ($t !== '') { $parts[] = $t; }
+        }
+        if (!empty($parts)) {
+            return trim(implode(' ', $parts));
+        }
+
+        // Fallback: strip inner HTML (helps with &nbsp;)
+        $html = $cell->getHtml();
+        $html = html_entity_decode($html, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $html = str_replace("\xc2\xa0", ' ', $html);
+        $text = trim(preg_replace('/\s+/u', ' ', strip_tags($html)));
+        return $text;
     }
 }

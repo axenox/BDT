@@ -2,14 +2,10 @@
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
-use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5FilterNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5PageNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5TileNode;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
-use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
 use axenox\BDT\Behat\Events\AfterPageVisited;
-use axenox\BDT\Behat\Events\AfterSubstep;
-use axenox\BDT\Behat\Events\BeforeSubstep;
 use axenox\BDT\Behat\Events\BeforeUserLoggedIn;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
@@ -31,7 +27,6 @@ use exface\Core\Factories\ActionFactory;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\FacadeFactory;
 use exface\Core\Factories\MetaObjectFactory;
-use exface\Core\Factories\SelectorFactory;
 use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\DataTypes\DataTypeInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
@@ -301,7 +296,7 @@ JS
      * 
      * @param bool $isAfterStep True if called after a step, false if before
      * @return void
-     * @throws \RuntimeException If wait operation fails
+     * @throws RuntimeException If wait operation fails
      */
     public function handleStepWaitOperations(bool $isAfterStep = true): void
     {
@@ -315,12 +310,12 @@ JS
                 // Before step: Limited wait for UI stabilization
                 $this->waitManager->waitForPendingOperations(false, true, false);
             }
-        } catch (\Exception $e) {
-            throw new \RuntimeException(
+        } catch (\Throwable $e) {
+            throw new RuntimeException(
                 sprintf(
                     "Wait operation failed (%s step): %s",
                     $isAfterStep ? 'after' : 'before',
-                    $e->getMessage()
+                    $e
                 )
             );
         }
@@ -685,338 +680,6 @@ JS
             return baseUrl + (hash || "");
         })();
     ');
-    }
-
-
-    /**
-     * Verifies table content against expected values
-     * Checks if specified column contains expected text
-     * 
-     * @param NodeElement $table The table to verify
-     * @param array $expectedContent Array of expected content (column => text pairs)
-     * @return void
-     * @throws \RuntimeException If verification fails
-     */
-    public function verifyTableContent(NodeElement $table, array $expectedContent): void
-    {
-        try {
-            // Check each expected content item
-            foreach ($expectedContent as $content) {
-                $columnName = $content['column'];
-                $searchValue = trim($content['value'], '"\'');
-                $rawCmp = $content['comparator'] ?? '[';
-                /** @var DataTypeInterface $inputDataType */
-                $inputDataType = $content['dataType'] ??  new StringDataType(SelectorFactory::createDataTypeSelector($this->getWorkbench(), static::class));
-
-                // First find column headers
-                $headers = $table->findAll('css', '.sapUiTableHeaderDataCell label, .sapMListTblHeader .sapMColumnHeader');
-                $columnIndex = null;
-
-                // Find the column index
-                foreach ($headers as $index => $header) {
-                    $headerText = trim($header->getText());
-                    if ($headerText === $columnName) {
-                        $columnIndex = $index;
-                        break;
-                    }
-                }
-
-                Assert::assertNotNull($columnIndex, "Column '$columnName' not found in table");
-
-                // Check table cells
-                $rows = $this->getTableRows($table);
-                $considered = 0;
-                $matches = 0;
-                $firstFailures = []; // collect first few failures for better error messages
-                foreach ($rows as $row) {
-                    $cellText = $this->extractCellValueFromRow($row, $columnIndex);
-                    $considered++;
-
-                    // Strict comparison using your limited operator set
-                    $ok = $this->compareCell($cellText, $searchValue, $rawCmp, $inputDataType);
-
-                    if ($ok) {
-                        $matches++;
-                    } else {
-                        if (count($firstFailures) < 3) {
-                            $firstFailures[] = $cellText;
-                        }
-                    }
-                }
-
-                Assert::assertSame(
-                    $considered,
-                    $matches,
-                    "Not all rows of the table fits the column '{$columnName}'. {$matches}/{$considered} matched. First mismatches: " . implode(' | ', $firstFailures)
-                );
-                
-            }
-        } catch (\Exception $e) {
-            throw new \RuntimeException(
-            // sprintf(
-            //     "Failed to verify table content. Error: %s\nTable structure: %s",
-            //     $e->getMessage(),
-            //     $table->getOuterHtml()
-            // )
-                sprintf(
-                    "Failed to verify table content. " . $e->getMessage()
-                ),
-                null,
-                $e
-            );
-        }
-    }
-
-    /**
-     * returns the rows of the given Datatable
-     * 
-     * @param NodeElement $table
-     * @return array
-     */
-    public function getTableRows(NodeElement $table): array
-    {
-        return $table->findAll(
-            'css',
-            '.sapUiTableCtrlFixed .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden):not(.sapUiTableRowFirstFixedBottom), ' .
-            '.sapUiTableCtrl .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden):not(.sapUiTableRowFirstFixedBottom)'
-        );
-    }
-
-    /**
-     * returns the cell value from requested index of the column and the row 
-     * 
-     * @param NodeElement $row
-     * @param int $columnIndex
-     * @return string|null
-     */
-    public function extractCellValueFromRow(NodeElement $row, int $columnIndex): ?string
-    {
-        if ($row->getAttribute('aria-hidden') === 'true') {
-            return null;
-        }
-
-        $cells = $row->findAll('css', '.sapUiTableCell, .sapMListTblCell');
-        if (count($cells) === 0) {
-            return null; // row has no cells at all
-        }
-        if (!isset($cells[$columnIndex])) {
-            return null;
-        }
-
-        // Extract visible text from the target cell
-        $cell = $cells[$columnIndex];
-
-        $cellText = $this->extractCellText($cell); // see helper below
-
-        // Skip truly empty rows (no content at all)
-        if ($cellText === '') {
-            return null;
-        }
-        return $cellText;
-    }
-    
-    /**
-     * Strict comparator :
-     * - == / !=, <>: string comparison only (no numeric/date coercion).
-     * - >, <, >=, <=: strict numeric or strict ISO date compare. If parsing fails, returns false.
-     * 
-     * A test failed because for input combo the search text itself contains a comma. 
-     * As a result, the system interpreted that single text value as two separate filter values (split at the comma). 
-     * That means what we expected to search for (one complete string) did not match what was actually applied 
-     * (two partial strings), so the “expected vs. found” comparison failed.
-     * 
-     */
-    private function compareCell(?string $cellText, $expected, string $cmp, DataTypeInterface $dataType): bool
-    {
-        $cellText = (string)$cellText;
-        switch (true) {
-            case $dataType instanceof NumberEnumDataType:
-                $left  = $this->normalizeText($cellText);
-                $right = $this->normalizeText((string)$expected);
-                break;
-                
-            case $dataType instanceof NumberDataType:
-                $left  = $this->parseNumberFlexible($cellText);
-                $right = $this->parseNumberFlexible((string) $expected);
-                if ($left === null || $right === null) {
-                    return false;
-                }
-                break;
-
-            case $dataType instanceof DateDataType:
-                $left  = $this->parseDateFlexible($cellText);
-                $right = $this->parseDateFlexible((string) $expected);
-                if ($left === null || $right === null) {
-                    return false;
-                }
-                break;
-
-            case $dataType instanceof BooleanDataType:
-                $left  = $this->normalizeBool($cellText);
-                $right = $this->normalizeBool($expected);
-                break;
-
-            default:
-                $left  = $this->normalizeText($cellText);
-                $right = $this->normalizeText((string)$expected);
-        }
-
-        switch ($cmp) {
-            // UNIVERSAL not-like
-            case '!=':
-            case '<>':
-                return $left !== $right;
-                
-            case '==':
-                return $left === $right;
-
-            case '>':
-                return $left > $right;
-
-            case '<':
-                return $left < $right;
-
-            case '>=':
-                return $left >= $right;
-
-            case '<=':
-                return $left <= $right;
-            // IN '['
-            default:
-                return stripos((string)$left, (string)$right) !== false;
-        }
-    }
-
-    /**
-     * Parses German (1.234,56) or Anglo-Saxon (1,234.56) number strings to float.
-     * Returns null if unparseable.
-     */
-    private function parseNumberFlexible(string $value): ?float
-    {
-        $value = trim($value);
-        if ($value === '') {
-            return null;
-        }
-        // German: dot = thousands, comma = decimal
-        if (preg_match('/^\d{1,3}(\.\d{3})*(,\d+)?$/', $value)) {
-            return (float) str_replace(['.', ','], ['', '.'], $value);
-        }
-        // Anglo-Saxon: comma = thousands, dot = decimal
-        if (preg_match('/^\d{1,3}(,\d{3})*(\.\d+)?$/', $value)) {
-            return (float) str_replace(',', '', $value);
-        }
-        // Plain number: "42", "3.14", "-7,5"
-        $plain = str_replace(',', '.', $value);
-        return is_numeric($plain) ? (float) $plain : null;
-    }
-
-    /**
-     * Parses date strings in multiple formats to Unix timestamp (midnight).
-     * Supported: d.m.Y, Y-m-d, d/m/Y, m/d/Y
-     * Returns null if unparseable.
-     */
-    private function parseDateFlexible(string $value): ?int
-    {
-        $value = trim($value);
-        foreach ([
-                     // Datetime formats first — more specific, must come before date-only
-                     'd.m.Y H:i:s',
-                     'd.m.Y H:i',
-                     'Y-m-d H:i:s',
-                     'Y-m-d H:i',
-                     'd/m/Y H:i:s',
-                     'd/m/Y H:i',
-                     // Date-only formats
-                     'd.m.Y',
-                     'Y-m-d',
-                     'd/m/Y',
-                     'm/d/Y',
-                 ] as $format) {
-            $dt = \DateTime::createFromFormat('!' . $format, $value);
-            if ($dt !== false && $dt->format($format) === $value) {
-                return $dt->getTimestamp();
-            }
-        }
-        return null;
-    }
-    
-    private function normalizeBool(?string $value): ?bool
-    {
-        $v = mb_strtolower(trim((string)$value));
-
-        if (in_array($v, ['1', 'true', 'ja', 'yes', 'evet'], true)) {
-            return true;
-        }
-        if (in_array($v, ['0', 'false', 'nein', 'no', 'hayır', ''], true)) {
-            return false;
-        }
-
-        return null;
-    }
-    
-    private function normalizeText(?string $s): string
-    {
-        $s = (string)$s;
-        $s = trim($s);
-        $s = preg_replace('/\s+/u', ' ', $s);
-        return mb_strtolower($s);
-    }
-    
-    /** 
-     * Extracts robust text from a cell by reading common UI5 text carriers and stripping HTML/nbsp. 
-     */
-    private function extractCellText(NodeElement $cell): string
-    {
-        // 1) Special-case: sap.m.ProgressIndicator
-        $pi = $cell->find('css', '[role="progressbar"].sapMPI');
-        if ($pi) {
-            // Prefer aria-valuetext if present (most reliable business text)
-            $vt = trim((string)$pi->getAttribute('aria-valuetext'));
-            if ($vt !== '') {
-                return $vt;
-            }
-            // Fall back to left/right texts
-            $left  = $pi->find('css', '.sapMPITextLeft');
-            $right = $pi->find('css', '.sapMPITextRight');
-            $parts = [];
-            if ($left)  { $t = trim($left->getText());  if ($t !== '') $parts[] = $t; }
-            if ($right) { $t = trim($right->getText()); if ($t !== '') $parts[] = $t; }
-            if (!empty($parts)) {
-                return implode(' ', $parts);
-            }
-            // As a last resort use title (often a descriptive tooltip)
-            $title = trim((string)$pi->getAttribute('title'));
-            if ($title !== '') {
-                return $title;
-            }
-            // If nothing found, return empty
-            return '';
-        }
-
-        // 2) Common UI5 text carriers (labels, text, link, object status, etc.)
-        $candidates = $cell->findAll('css', implode(', ', [
-            '.sapMText', '.sapMLabel', '.sapMLnk', '.sapMLink',
-            '.sapMObjectNumber', '.sapMObjectIdentifierTitle', '.sapMObjectIdentifierText',
-            '.sapMObjStatusText', '.sapMObjStatus .sapMObjStatusText',
-            '.sapMPITextLeft', '.sapMPITextRight',
-            'input', 'textarea', 'select'
-        ]));
-
-        $parts = [];
-        foreach ($candidates as $el) {
-            $t = trim($el->getText());
-            if ($t !== '') { $parts[] = $t; }
-        }
-        if (!empty($parts)) {
-            return trim(implode(' ', $parts));
-        }
-
-        // Fallback: strip inner HTML (helps with &nbsp;)
-        $html = $cell->getHtml();
-        $html = html_entity_decode($html, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-        $html = str_replace("\xc2\xa0", ' ', $html);
-        $text = trim(preg_replace('/\s+/u', ' ', strip_tags($html)));
-        return $text;
     }
     
     /**
@@ -1440,6 +1103,7 @@ JS
      * @param string $widgetType
      * @param int $timeoutInSeconds
      * @return FacadeNodeInterface[]
+     * @throws \Exception
      */
     public function findWidgetNodes(string $widgetType, int $timeoutInSeconds = 10): array
     {
@@ -1493,157 +1157,6 @@ JS
         return $tiles;
     }
 
-    /**
-     * Find a button within exfw-datatable with exact text match
-     * 
-     * This method searches for buttons inside exfw-datatable divs
-     * with a specific text in the <bdi> element
-     * 
-     * @param string $buttonText The exact text to search for in the button
-     * @param string|null $tableName Optional table/section name to narrow down search
-     * @return NodeElement|null The found button or null if not found
-     */
-    public function findButton(string $buttonText, string $tableName = null): ?NodeElement
-    {
-        // Construct base XPath to find buttons in exfw-datatable with exact <bdi> text
-        $xpath = sprintf(
-            "//div[contains(@class, 'exfw-datatable')]" .  // Find within datatable divs
-            "//button[.//bdi[text()='%s']]",  // Button with <bdi> containing exact text
-            $buttonText
-        );
-
-        // If a specific table/section name is provided, refine the search
-        if ($tableName) {
-            $xpath = sprintf(
-                "//div[contains(@class, 'exfw-datatable') and contains(@id, '%s')]" . // Specific datatable
-                "//button[.//bdi[text()='%s']]",  // Button with exact text
-                $tableName,
-                $buttonText
-            );
-        }
-
-        // Perform the XPath search and return the result
-        $button = $this->getPage()->find('xpath', $xpath);
-
-        return $button;
-    }
-
-    /**
-     * Validates if a DOM element represents a proper UI5 table structure
-     * @param NodeElement $element Element to check
-     * @return bool True if element is a valid dialog
-     */
-    protected function isValidDialog(NodeElement $element): bool
-    {
-        try {
-            // Must be visible
-            // First check: Element must be visible in the DOM
-            // This ensures we're not processing hidden template elements
-            if (!$element->isVisible()) {
-                return false;
-            }
-
-            // Check for essential dialog attributes
-            $role = $element->getAttribute('role');
-            $classes = $element->getAttribute('class');
-
-            // Must have dialog role or specific dialog classes
-            if (
-                $role !== 'dialog' &&
-                !preg_match('/(sapMDialog|sapMMessageDialog|sapMPopover)/', $classes)
-            ) {
-                return false;
-            }
-
-            // Should have either a header or content section
-            $hasHeader = $element->find('css', '.sapMDialogTitle, .sapMIBar-CTX') !== null;
-            $hasContent = $element->find('css', '.sapMDialogSection, .sapMDialogContent') !== null;
-
-            return $hasHeader || $hasContent;
-
-        } catch (\Exception $e) {
-            return false;
-        }
-    }
-
-    /**
-     * Extracts text content from a dialog element
-     * 
-     * @param NodeElement $element Dialog element
-     * @return string Concatenated text content
-     */
-    protected function extractDialogText(NodeElement $element): string
-    {
-        $textParts = [];
-
-        try {
-            // Get header title 
-            $headerTitle = $element->find('css', '.sapMDialogTitle, .sapMIBar-CTX .sapMTitle');
-            if ($headerTitle) {
-                $textParts[] = trim($headerTitle->getText());
-            }
-
-            // Get content text
-            $textElements = $element->findAll('css', '.sapMDialogContent .sapMText, .sapMDialogContent .sapMLabel');
-            foreach ($textElements as $textElement) {
-                $text = trim($textElement->getText());
-                if (!empty($text)) {
-                    $textParts[] = $text;
-                }
-            }
-
-            // Get button texts
-            $buttons = $element->findAll('css', '.sapMDialogFooter .sapMBtn, .sapMBar-CTX .sapMBtn');
-            foreach ($buttons as $button) {
-                $buttonText = $button->find('css', '.sapMBtnContent');
-                if ($buttonText) {
-                    $textParts[] = trim($buttonText->getText());
-                }
-            }
-
-        } catch (\Exception $e) {
-            // If any error occurs, return empty string
-            return '';
-        }
-
-        return implode(' ', array_filter($textParts));
-    }
-
-    /**
-     * Validates if a DOM element represents a proper UI5 table structure
-     *  
-     * 
-     * @param NodeElement $table The element to validate as a table
-     * @return bool True if element is a valid UI5 table, false otherwise
-     */
-    protected function isValidTable(NodeElement $table): bool
-    {
-        try {
-            // First check: Element must be visible in the DOM
-            // This ensures we're not processing hidden template elements
-            if (!$table->isVisible()) {
-                return false;
-            }
-
-            // Second check: Look for table structural elements
-            // Search for both standard table headers (th) and UI5 grid headers (role="columnheader")
-            $hasHeaders = count($table->findAll('css', 'th, [role="columnheader"]')) > 0;
-            // Third check: Look for table cells
-            // Search for both standard cells (td) and UI5 grid cells (role="gridcell")
-            $hasCells = count($table->findAll('css', 'td, [role="gridcell"]')) > 0;
-
-            // A valid table must have either headers or cells
-            // - Headers without cells: Empty table with column definitions
-            // - Cells without headers: Data grid without column labels
-            // - Both headers and cells: Standard populated table
-            return $hasHeaders || $hasCells;
-
-        } catch (\Exception $e) {
-            // If any error occurs during validation (e.g., stale element reference)
-            // consider the table invalid
-            return false;
-        }
-    }
 
     /**
      * Returns the type of the widget, that the given node belongs to
@@ -1787,79 +1300,6 @@ JS
         return;
     }
 
-    private function getCurrentUrlInfo(): array
-    {
-
-        return $this->getSession()->evaluateScript('
-        (function() {
-            var baseUrl = window.location.href.split("#")[0];
-            var fullUrl = window.location.href;
-            
-            // UI5 specific routing information
-            var ui5Hash = "";
-            if (typeof sap !== "undefined" && 
-                sap.ui && 
-                sap.ui.core && 
-                sap.ui.core.routing && 
-                sap.ui.core.routing.HashChanger) {
-                
-                try {
-                    // Get the current hash from UI5 router
-                    ui5Hash = sap.ui.core.routing.HashChanger.getInstance().getHash();
-                } catch(e) {
-                    ui5Hash = window.location.hash.replace("#", "");
-                }
-            } else {
-                ui5Hash = window.location.hash.replace("#", "");
-            }
-            
-            return {
-                baseUrl: baseUrl,
-                fullUrl: fullUrl,
-                hash: ui5Hash
-            };
-        })()
-    ');
-    }
-
-    /**
-     * Summary of getFilters
-     * @param int $min
-     * @param ?int $max
-     * @throws \RuntimeException
-     * @return UI5FilterNode[]
-     */
-    public function getFilters(int $min = 1, int $max = null): array
-    {
-        $nodes = $this->findWidgetNodes('Filter', 15);
-        $nodes = array_merge($nodes, $this->findWidgetNodes('RangeFilter', 15));
-
-        switch (true) {
-            case count($nodes) < $min:
-                throw new RuntimeException("Too few filters found: expecting {$min} but found " . count($nodes));
-            case $max !== null && count($nodes) > $max:
-                throw new RuntimeException("Too many filters found: expecting {$max} but found " . count($nodes));
-        }
-        return $nodes;
-    }
-
-    public function getFilterByCaption(string $filterName): UI5FilterNode
-    {
-        $filterNodes = $this->getFilters(0);
-
-        // Iterate through each filter container
-        foreach ($filterNodes as $filterNode) {
-            // Check the label of the filter container
-            $label = $filterNode->getCaption();
-
-            // If label matches the desired filter name
-            if ($label === $filterName) {
-                return $filterNode;
-            }
-        }
-        throw new RuntimeException("Filter `{$filterName}` not found");
-    }
-
     /**
      *
      * $this->getElementIdFromWidget($page->getWidgetRoot())
@@ -1977,21 +1417,11 @@ JS
         if ($this->screenshotFn === null) {
             return;
         }
-        $dispatcher = $this->eventDispatcher;
-        $title = 'Taking screenshot';
-
-        $dispatcher->dispatch(new BeforeSubstep($title, 'screenshot'));
 
         try {
             ($this->screenshotFn)();
-            $substepResult = SubstepResult::createPassed($logbook);
-            $substepResult->setTitle($title);
         } catch (\Throwable $e) {
-            $substepResult = SubstepResult::createFailed($e, $logbook);
-            $substepResult->setTitle($title);
-            $substepResult->setReason('Screenshot failed: ' . $e->getMessage());
             ErrorManager::getInstance()->logException($e, $this->getWorkbench());
         }
-        $dispatcher->dispatch(new AfterSubstep($substepResult, $title, 'screenshot'));
     }
 }
