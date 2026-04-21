@@ -267,6 +267,14 @@ class UI5DataTableNode extends UI5DataNode
         if ($filterNode instanceof UI5RangeFilterNode) {
             $range = $this->findRangeValuesInDataSource($filterAttr, $filter, $dataWidget->getMetaObject());
 
+            if ($columnCaption === null) {
+                $logbook->continueLine(' no column found!');
+                return SubstepResult::createSkipped(
+                    'No column found for range filter `' . $filter->getCaption() . '`',
+                    $logbook
+                );
+            }
+            
             if ($range === null) {
                 $logbook->continueLine(' no value found!');
                 return SubstepResult::createSkipped(
@@ -284,14 +292,12 @@ class UI5DataTableNode extends UI5DataNode
             $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');
 
             $result->setTitle($result->getTitle() . ' with range "' . $range['from'] . '" – "' . $range['to'] . '"');
-            if ($columnCaption !== null) {
-                $this->verifyTableContent([
-                    ['column' => $columnCaption, 'value' => $range['from'], 'comparator' => '>=', 'dataType' => $this->getInputDataType()]
-                ]);
-                $this->verifyTableContent([
-                    ['column' => $columnCaption, 'value' => $range['to'], 'comparator' => '<=', 'dataType' => $this->getInputDataType()]
-                ]);
-            }
+            $this->verifyTableContent([
+                ['column' => $columnCaption, 'value' => $range['from'], 'comparator' => '>=', 'dataType' => $this->getInputDataType()]
+            ]);
+            $this->verifyTableContent([
+                ['column' => $columnCaption, 'value' => $range['to'], 'comparator' => '<=', 'dataType' => $this->getInputDataType()]
+            ]);            
             
             return $result;
         }
@@ -303,6 +309,11 @@ class UI5DataTableNode extends UI5DataNode
                 $logbook->continueLine(' with value `' . $filterVal . '` found in data source');
             }
         }
+        
+        if ($columnCaption === null) {
+            $logbook->continueLine(' - No column found');
+            return SubstepResult::createSkipped('No column found for filter `' . $filter->getCaption() . '`', $logbook);
+        }
 
         if (trim($filterVal ?? '') === '') {
             $logbook->continueLine(' no value found!');
@@ -313,14 +324,7 @@ class UI5DataTableNode extends UI5DataNode
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
         $loadedRowCount = $this->getLoadedRowCount();
 
-        $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');
-
-        
-        // See if our 
-        if ($columnCaption === null) {
-            $logbook->continueLine(' - No column found');
-            return SubstepResult::createSkipped('No column found for filter `' . $filter->getCaption() . '`', $logbook);
-        }
+        $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');        
         
         $this->verifyTableContent([
             ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
@@ -394,7 +398,9 @@ class UI5DataTableNode extends UI5DataNode
                 $logbook->addLine('Skipping button ' . $this->getCaption() . ' because there is no row to enable it');
             }
         }
-        $this->selectRow($rowNumber);
+        if($rowNumber !== null) {
+            $this->selectRow($rowNumber);            
+        }
         
 
         // Log a SKIPPED substep for every reason to skip buttons
