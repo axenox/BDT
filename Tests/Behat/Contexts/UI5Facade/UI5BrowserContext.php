@@ -5,6 +5,7 @@ use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\TwigFormatter\Context\BehatFormatterContext;
 use axenox\BDT\Common\Installer\TestDataInstaller;
+use axenox\BDT\Exceptions\BrowserDriverException;
 use Behat\Behat\Context\Context;
 use Behat\Behat\Tester\Result\UndefinedStepResult;
 use Behat\Mink\Element\NodeElement;
@@ -652,7 +653,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $button->click();
         } catch (\Exception $e) {
             //$this->debugButtonClickContext($button, $caption);
-            throw $e;
+            throw new BrowserDriverException($this->getSession(), 'Cannot click button "' . $caption . '". ' . $e->getMessage(), null, $e, $this->browser);
         }
     }
 
@@ -1788,7 +1789,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 return;
             } catch (\Throwable $e) {
                 if (++$attempt >= $maxAttempts) {
-                    throw $e;
+                    throw new BrowserDriverException($this->getSession(), 'Cannot open path "' . $path . '" in browser after ' . $attempt . ' attempts.', null, $e, $this->browser);
                 }
                 // Chrome WebSocket dropped during navigation — wait and retry
                 sleep(3);

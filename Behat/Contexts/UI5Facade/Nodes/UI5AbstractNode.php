@@ -320,7 +320,10 @@ JS;
             if ($returnValue instanceof SubstepResult) {
                 $substepResult = $returnValue;
             }
-        } catch (\Throwable $e) {
+        } /*catch (BrowserDriverException $e) {
+            usleep(500);
+            $this->runAsSubstep($callable, $title, $category, $logbook);
+        } */catch (\Throwable $e) {
             $logbook?->addLine('**ERROR:** ' . $e->getMessage());
             $this->getBrowser()->captureScreenshot($logbook);
             $substepResult = SubstepResult::createFailed($e, $logbook);
