@@ -325,11 +325,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     /**
      * Navigate to a specific page URL
      * Initializes the UI5Browser with the current session
-     * 
+     *
      * @Given I visit page :url
-     * 
+     *
      * @param string $url URL to navigate to (will be appended to base URL)
      * @return void
+     * @throws \Exception
      */
     public function iVisitPage(string $url): void
     {
@@ -1724,7 +1725,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private function navigateToPageAlias(string $pageAlias): void
     {
         $this->getEventDispatcher()->dispatch(new AfterPageVisited($pageAlias));
-
+        
         // Navigate to the page using Mink's path navigation
         $url = $pageAlias . '.html';
         $this->visitPath('/' . $url);
@@ -1758,5 +1759,40 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     protected function getEventDispatcher() : EventDispatcherInterface
     {
         return DatabaseFormatter::getEventDispatcher();
+    }
+
+    /**
+     * Overrides Mink's visitPath to add retry logic for transient Chrome WebSocket
+     * disconnections that can occur when the server is slow or Chrome's render
+     * process is under heavy load during page navigation.
+     *
+     * Any caller within the framework automatically benefits from this retry
+     * without needing to implement it themselves — visitPath is the single
+     * point of navigation for all page transitions.
+     *
+     * @param string $path The relative path to visit
+     * @throws \Throwable  The last exception if all attempts fail
+     */
+    public function visitPath($path, $sessionName = null, int $maxAttempts = 2): void
+    {
+        $attempt = 0;
+        while (true) {
+            try {
+                // Wait for any pending operations before navigating to ensure the
+                // browser is in a clean state. Skipped on the first visit because
+                // the browser is not yet initialised at that point.
+                if ($this->browser !== null) {
+                    $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+                }
+                parent::visitPath($path);
+                return;
+            } catch (\Throwable $e) {
+                if (++$attempt >= $maxAttempts) {
+                    throw $e;
+                }
+                // Chrome WebSocket dropped during navigation — wait and retry
+                sleep(3);
+            }
+        }
     }
 }
