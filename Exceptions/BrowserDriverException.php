@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Exceptions;
 
+use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
 use Behat\Mink\Session;
 use exface\Core\CommonLogic\UxonObject;
 use exface\Core\Exceptions\RuntimeException;
@@ -12,11 +13,14 @@ class BrowserDriverException extends RuntimeException
 {
     private $session;
     private $browser;
+    private $occurredAt;
     
     public function __construct(Session $minkSession, $message, $alias = null, $previous = null, UI5Browser $browser = null)
     {
         $this->session = $minkSession;
         $this->browser = $browser;
+        $this->occurredAt = date('Y-m-d H:i:s', (int) microtime(true))
+            . '.' . substr((string) fmod(microtime(true), 1), 2, 3);
         parent::__construct($message, $alias, $previous);
     }
 
@@ -51,10 +55,16 @@ class BrowserDriverException extends RuntimeException
         return 'Chrome';
     }
 
-    protected function getBrowserProcessId() : string
+    protected function getBrowserProcessId() : ?int
     {
         // TODO get browser name from the inner exception once we use other browser than chrome
-        return 'unknown';
+        return ChromeManager::getPid();
+    }
+    
+    //to check if the tab is still open
+    protected function getDriverTabList() : array
+    {
+        return ChromeManager::getTabList();
     }
 
     protected function toMarkdown() : string
@@ -66,6 +76,9 @@ class BrowserDriverException extends RuntimeException
 
 - OS process id: `{$this->getBrowserProcessId()}`
 - Driver class: `{$driverClass}`
+- Driver tab List: `{$this->getDriverTabList()}`
+- Current Url: `{$this->browser->getPageCurrent()}`
+- Occurred at: `{$this->occurredAt}`
 MD;
     }
 }
