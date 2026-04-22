@@ -300,6 +300,8 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                 try {
                     $page = UiPageFactory::createFromModel($this->workbench, $pageAlias);
                     $pageUid = $page->getUid();
+                    //not to reach memory limit
+                    unset($page);
                 } catch (\Throwable $e) {
                     $pageUid = null;
                 }
@@ -316,6 +318,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         catch(\Exception $e){
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
         }
+        gc_collect_cycles();
     }
 
     public function onBeforeStep(BeforeStepTested $event) 
