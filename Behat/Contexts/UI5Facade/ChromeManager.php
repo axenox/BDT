@@ -2,6 +2,9 @@
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
 
+use axenox\BDT\Exceptions\ConfigException;
+use exface\Core\Exceptions\RuntimeException;
+
 /**
  * Manages the lifecycle of a Chrome instance used for UI testing.
  *
@@ -48,32 +51,39 @@ class ChromeManager
      *
      * @param array $config Chrome config array from DatabaseFormatterExtension:
      *                      ['executable' => ..., 'user_data_dir' => ..., 'port' => ...]
-     * @return int           PID of the started Chrome process, or 0 if PID could not be determined
-     * @throws \RuntimeException If config is incomplete or Chrome does not become ready in time
+     * @return ChromeStartResult Metadata about the started or reused Chrome process
+     * @throws ConfigException If config is incomplete or Chrome does not become ready in time
      */
-    public static function start(array $config = []): int
+    public static function start(array $config = []): ChromeStartResult
     {
         if (self::$pid !== null) {
-            return self::$pid;
+            return new ChromeStartResult(
+                port:      self::$port,
+                pid:       self::$pid,
+                startupMs: 0.0
+            );
         }
 
+        $startTime   = microtime(true);
         $executable = $config['executable'] ?? null;
-        $userDataDir = $config['user_data_dir'] ?? null;
+        $userDataDir = getcwd() . DIRECTORY_SEPARATOR . $config['user_data_dir'] ?? null;
         $port = $config['port'] ?? 9222;
-        
+
         // If Chrome is already listening on this port (e.g. a leftover process from a
-        // previous run), skip launching a new instance and use the existing one.
+        // previous run), kill it and start fresh to avoid inheriting stale state.
         $existingPid = self::findPidByPort($port);
         if ($existingPid !== null) {
-            self::$pid  = $existingPid;
-            self::$port = $port;
-            return $existingPid;
+            self::$pid = $existingPid;
+            self::stop();
+            usleep(500_000); // wait for the process to fully exit before launching a new one
         }
         
         if ($executable === null || $userDataDir === null) {
-            throw new \RuntimeException(
+            throw new ConfigException(
                 'ChromeManager requires "executable" and "user_data_dir" in the chrome config. '
-                . 'Please set them under DatabaseFormatterExtension > chrome in your behat.yml.'
+                . 'Please set them under DatabaseFormatterExtension > chrome in your behat.yml.',
+                null,
+                null
             );
         }
 
@@ -85,10 +95,16 @@ class ChromeManager
         $isDebugging = extension_loaded('xdebug') && xdebug_is_debugger_active();
         $cmd = 'start /B "" '
             . '"' . getcwd() . DIRECTORY_SEPARATOR . $executable . '"'
-            . ($isDebugging ? '' : ' --headless')
+            . ($isDebugging ? '' : ' --headless --no-sandbox')
             . " --window-size=1920,1080 --disable-extensions --disable-gpu"
+            . ' --disable-dev-shm-usage'
             . ' --remote-debugging-port=' . $port
-            . ' --user-data-dir="' . getcwd() . DIRECTORY_SEPARATOR . $userDataDir . '"';
+            . " --remote-debugging-address=127.0.0.1"
+            . ' --hide-crash-restore-bubble'
+            . ' --no-first-run'
+            . ' --no-default-browser-check'
+            . ' --user-data-dir="' . $userDataDir . '"';
+        
         pclose(popen($cmd, 'r'));
 
         // Block until Chrome's debug API is ready
@@ -100,7 +116,11 @@ class ChromeManager
         self::$pid     = $pid;
         self::$port    = $port;
 
-        return $pid ?? 0;
+        return new ChromeStartResult(
+            port:      $port,
+            pid:       $pid,
+            startupMs: microtime(true) - $startTime
+        );
     }
 
     /**
@@ -167,12 +187,12 @@ class ChromeManager
      * Polls Chrome's /json/version endpoint until it responds or the timeout expires.
      *
      * Waits for the webSocketDebuggerUrl field to be present, which confirms that
-     * Chrome's remote debugging WebSocket is fully initialised and ready to accept
+     * Chrome's remote debugging WebSocket is fully initialized and ready to accept
      * connections from dmore/chrome-mink-driver.
      *
      * @param int $port           The remote-debugging port to poll
      * @param int $timeoutSeconds Maximum number of seconds to wait
-     * @throws \RuntimeException  If Chrome does not become ready within the timeout
+     * @throws RuntimeException  If Chrome does not become ready within the timeout
      */
     private static function waitUntilReady(int $port, int $timeoutSeconds = 5): void
     {
@@ -191,7 +211,7 @@ class ChromeManager
             usleep(200_000);
         }
 
-        throw new \RuntimeException(
+        throw new RuntimeException(
             "Chrome did not become ready on port {$port} within {$timeoutSeconds} seconds."
         );
     }
