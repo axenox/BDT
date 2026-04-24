@@ -108,10 +108,6 @@ JS
             return control ? control.getValueState() : null;
         })()
     JS);
-        if ($valueState !== 'None')
-        {
-            dump("Error");
-        }
 
         Assert::assertNotEquals(
             'Error',

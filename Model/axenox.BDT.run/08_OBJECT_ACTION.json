@@ -211,6 +211,47 @@
             "APP": "0x11efa2214f96c8b8a221025041000001",
             "USE_IN_OBJECT_BASKET_FLAG": 0,
             "DOCS": ""
+        },
+        {
+            "_EXPORT_SUMMARY": "BDT test run: Chrome Info [ChromeInfoDialog]",
+            "CREATED_ON": "2026-04-23 20:31:52",
+            "MODIFIED_ON": "2026-04-23 20:41:29",
+            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "UID": "0x11f18611b2815c148611025041000001",
+            "OBJECT": "0x11f08c1d222cd23e8c1d025041000001",
+            "ACTION_PROTOTYPE": "exface/core/Actions/ShowDialog.php",
+            "ALIAS": "ChromeInfoDialog",
+            "NAME": "Chrome Info",
+            "SHORT_DESCRIPTION": "",
+            "CONFIG_UXON": {
+                "input_rows_min": 1,
+                "input_rows_max": 1,
+                "input_object_alias": "axenox.BDT.run",
+                "icon": "globe",
+                "dialog": {
+                    "width": 1,
+                    "height": "auto",
+                    "columns_in_grid": 1,
+                    "widgets": [
+                        {
+                            "widget_type": "WidgetGroup",
+                            "caption": "Chrome Info",
+                            "widgets": [
+                                {
+                                    "data_column_name": "chrome_info",
+                                    "widget_type": "InputJson",
+                                    "readonly": true,
+                                    "hide_caption": false
+                                }
+                            ]
+                        }
+                    ]
+                }
+            },
+            "APP": "0x11efa2214f96c8b8a221025041000001",
+            "USE_IN_OBJECT_BASKET_FLAG": 0,
+            "DOCS": ""
         }
     ],
     "totals_rows": [],
