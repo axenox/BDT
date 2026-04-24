@@ -3,6 +3,7 @@ namespace axenox\BDT\Behat\DatabaseFormatter;
 
 use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
 use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
+use axenox\BDT\Behat\Contexts\UI5Facade\ChromeStartResult;
 use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
@@ -30,6 +31,7 @@ use exface\Core\DataTypes\PhpFilePathDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Factories\DataSheetFactory;
+use exface\Core\Factories\FormulaFactory;
 use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\DataSheets\DataSheetInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
@@ -67,13 +69,15 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private ScreenshotProviderInterface $provider;
     /** @var MarkdownLogBook[]  */
     private static array        $stepLogbooks = [];
+    
+    private ChromeStartResult $chromeStartResult;
 
     public function __construct(WorkbenchInterface $workbench, ScreenshotProviderInterface $provider, EventDispatcherInterface $eventDispatcher, array $chromeConfig = [])
     {
         self::$eventDispatcher = $eventDispatcher;
         $this->workbench = $workbench;
         $this->provider = $provider;
-        ChromeManager::start($chromeConfig);
+        $this->chromeStartResult = ChromeManager::start($chromeConfig);
     }
 
     public static function getSubscribedEvents(): array
@@ -138,14 +142,15 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         $command = null;
         if (! empty($cliArgs)) {
             // First item is the file called - remove that
-            $filepath = array_shift($cliArgs);
+            array_shift($cliArgs);
             $command = implode(' ', $cliArgs);
         }
         try{
             $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run');
             $ds->addRow([
                 'started_on' => DateTimeDataType::now(),
-                'behat_command' => $command
+                'behat_command' => $command,
+                'chrome_info'   => $this->buildChromeInfo(),
             ]);
             $ds->dataCreate(false);
             $this->runDataSheet = $ds;        
@@ -238,6 +243,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
             $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->featureStart);
             $ds->dataUpdate();
+            $this->featureDataSheet = null;
         }
         catch(\Exception $e){
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
@@ -293,7 +299,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
             $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->scenarioStart);
             $ds->dataUpdate();
-            $cenarioUid = $ds->getUidColumn()->getValue(0);
+            $scenarioUid = $ds->getUidColumn()->getValue(0);
     
             $dsActions = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_scenario_action');
             foreach (static::$scenarioPages as $pageAlias) {
@@ -306,7 +312,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                     $pageUid = null;
                 }
                 $dsActions->addRow([
-                    'run_scenario' => $cenarioUid,
+                    'run_scenario' => $scenarioUid,
                     'page_alias' => $pageAlias,
                     'page' => $pageUid
                 ]);
@@ -557,5 +563,20 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             return null;
         }
         return $this->runDataSheet->getUidColumn()->getValue(0);
+    }
+
+    private function buildChromeInfo(array $extra = []): string
+    {
+        $formula = FormulaFactory::createFromString(
+            $this->workbench,
+            '=TimeFromSeconds(' . $this->chromeStartResult?->startupMs . ')'
+        );
+        $duration = $formula->evaluate();
+        $data = [
+            'port'              => $this->chromeStartResult?->port,
+            'pid'               => $this->chromeStartResult?->pid,
+            'startup_duration'  => $duration
+        ];
+        return json_encode(array_merge($data, $extra));
     }
 }
