@@ -3,6 +3,7 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Exceptions\AjaxException;
 use axenox\BDT\Exceptions\FetchApiException;
+use axenox\BDT\Exceptions\MessagePageException;
 use axenox\BDT\Exceptions\TracerException;
 use axenox\BDT\Exceptions\UIException;
 use Behat\Mink\Session;
@@ -339,155 +340,23 @@ class UI5WaitManager
      * 3. JavaScript errors
      * 4. Popup (.exf-error)
      * 
-     * @throws \RuntimeException If any errors are found
+     * @throws \RuntimeException|\Throwable If any errors are found
      */
     public function validateNoErrors(): void
     {
-        // window.exfXHRLog.errors
         try {
-            $errors = $this->getSession()->evaluateScript('
-    return (window.exfXHRLog && Array.isArray(window.exfXHRLog.errors)) ? window.exfXHRLog.errors : [];
-');
-            $exception = null;
-            foreach ($errors as $error) {
-                $type = $error['type'] ?? 'XHR';
-
-                if ($type === 'NetworkError' || $type === 'Network' || $type === null) {
-                    $request = new Request(
-                        $error['request']['method'] ?? 'GET', // method
-                        $error['url'],
-                        [],
-                        $error['request']['body'] ?? '',
-                    );
-                    $response = new Response(
-                        $error['status'],
-                        [],
-                        $error['response']
-                    );
-                    if ($error['source'] === 'XHR') {
-                        $exception = new AjaxException($request, $response, $error['message']);
-                    } else {
-                        $exception = new FetchApiException($request, $response, $error['message']);
-                    }
-                } else {
-                    $map = [
-                        'NetworkError' => 'HTTP',
-                        'JSError'      => 'JavaScript',
-                        'AppError'     => 'App'
-                    ];
-                    $exception = new UIException(
-                        $error['message'],
-                        null,
-                        null,
-                        ['Source' => 'UI5WaitManager', 'Type' => $map[$type], 'Details' => $error]
-                    );
-                }
-            }
-            // Reset JS errors - otherwise they will cause the next step to fail too
-            $this->getSession()->executeScript('if (window.exfXHRLog && window.exfXHRLog) { window.exfXHRLog.errors = [] }');
-            if ($exception !== null) {
-                throw $exception;
-            }
+            $this->checkMessagePageErrors();
             
-            // 4) Popup (.exf-error) - primary source
-            $popupErrors = $this->getSession()->evaluateScript(<<<'JS'
-(function () {
-    function isVisible(el) {
-        return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
-    }
+            $this->checkNetworkErrors();
+            
+            $this->checkPopupErrors();
 
-    var nodes = Array.prototype.slice.call(document.querySelectorAll('.exf-error'));
-    var visible = nodes.filter(isVisible);
+            $this->checkUiErrors();
 
-    return visible.map(function (el) {
-        var text = (el.innerText || el.textContent || '').trim();
-        if (!text) text = (el.getAttribute('aria-label') || '').trim();
+            $this->checkMessageManagerErrors();
 
-        return {
-            type: 'Popup',
-            message: text || 'Error popup detected (.exf-error) but no text found',
-            details: (el.getAttribute('data-exf-error-details') || '').trim(),
-            id: el.id || ''
-        };
-    });
-})();
-JS);
-
-            foreach ($popupErrors as $error) {
-                throw new UIException(
-                    $error['message'],
-                    null,
-                    null,
-                    ['Source' => 'UI5WaitManager', 'Type' => 'Popup Error', 'ID' => $error['id']]
-                );
-            }
-
-            //check ui errors
-            $uiError = $this->getSession()->evaluateScript("
-                var d = document.querySelector('.sapMDialogError');
-                if (!d) return null;
-                var selectors = [
-                    '.sapMDialogScrollCont .sapMText',
-                    '.sapMText',
-                    '.sapMDialogSection .sapMText'
-                ];
-                for (var i = 0; i < selectors.length; i++) {
-                    var el = d.querySelector(selectors[i]);
-                    if (el) {
-                        var t = (el.innerText || el.textContent || '').trim();
-                        if (t) return t;
-                    }
-                }
-                return 'UI error dialog (no message text found)';
-            ");
-
-            if ($uiError) {
-                throw new UIException($uiError,null,null, ["Source" => "UI5WaitManager", "Type" => "UI Dialog Error"]);
-            }
-
-            // Check for UI5 MessageManager errors (Error or Fatal type)
-            $ui5Errors = $this->getSession()->evaluateScript('
-                if (typeof sap !== "undefined" && sap.ui && sap.ui.getCore()) {
-                    var messageManager = sap.ui.getCore().getMessageManager();
-                    if (messageManager && messageManager.getMessageModel) {
-                        return messageManager.getMessageModel().getData()
-                            .filter(function(msg) {
-                                return msg.type === "Error" || msg.type === "Fatal";
-                            })
-                            .map(function(msg) {
-                                return {
-                                    type: "UI5",
-                                    message: msg.message,
-                                    details: msg.description || ""
-                                };
-                            });
-                    }
-                }
-                return [];
-            ');
-
-            // Add each UI5 error to the error manager
-            foreach ($ui5Errors as $error) {
-                throw new UIException(
-                    $error['message'],
-                    null,
-                    null,
-                    ['Source' => 'UI5WaitManager', 'Type' => 'Message Manager', 'Details' => $error['details']]
-                );
-            }
-
-            // Check for JavaScript errors
-            $jsErrors = $this->getJsErrorsFromTracer();
-
-            // Add each JavaScript error to the error manager
-            foreach ($jsErrors as $error) {
-                throw new TracerException(
-                    $error['message'] ?? null,
-                    null,
-                    null,
-                    ['Source' => 'UI5WaitManager', 'Type' => 'Tracer', 'Details' => $error]
-                );
-            }
+            $this->checkTracerErrors();
+            
         } catch (\Throwable $e) {
             // If the browser connection timed out, the tab was likely still busy
             // executing heavy JS (e.g. SAP UI5 render cycle). Skip error validation
@@ -753,5 +622,218 @@ JS);
                 .getJsErrorLogs()
                 .filter(e => e.level === 'error');
         ");
+    }
+
+    private function checkTracerErrors()
+    {
+        // Check for JavaScript errors
+        $jsErrors = $this->getJsErrorsFromTracer();
+
+        // Add each JavaScript error to the error manager
+        foreach ($jsErrors as $error) {
+            throw new TracerException(
+                $error['message'] ?? null,
+                null,
+                null,
+                ['Source' => 'UI5WaitManager', 'Type' => 'Tracer', 'Details' => $error]
+            );
+        }
+    }
+
+    private function checkNetworkErrors()
+    {
+        $errors = $this->getSession()->evaluateScript('
+    return (window.exfXHRLog && Array.isArray(window.exfXHRLog.errors)) ? window.exfXHRLog.errors : [];
+');
+        $exception = null;
+        foreach ($errors as $error) {
+            $type = $error['type'] ?? 'XHR';
+
+            if ($type === 'NetworkError' || $type === 'Network' || $type === null) {
+                $request = new Request(
+                    $error['request']['method'] ?? 'GET', // method
+                    $error['url'],
+                    [],
+                    $error['request']['body'] ?? '',
+                );
+                $response = new Response(
+                    $error['status'],
+                    [],
+                    $error['response']
+                );
+                if ($error['source'] === 'XHR') {
+                    $exception = new AjaxException($request, $response, $error['message']);
+                } else {
+                    $exception = new FetchApiException($request, $response, $error['message']);
+                }
+            } else {
+                $map = [
+                    'NetworkError' => 'HTTP',
+                    'JSError'      => 'JavaScript',
+                    'AppError'     => 'App'
+                ];
+                $exception = new UIException(
+                    $error['message'],
+                    null,
+                    null,
+                    ['Source' => 'UI5WaitManager', 'Type' => $map[$type], 'Details' => $error]
+                );
+            }
+        }
+        // Reset JS errors - otherwise they will cause the next step to fail too
+        $this->getSession()->executeScript('if (window.exfXHRLog && window.exfXHRLog) { window.exfXHRLog.errors = [] }');
+        if ($exception !== null) {
+            throw $exception;
+        }
+    }
+
+    private function checkPopupErrors()
+    {
+        // 4) Popup (.exf-error) - primary source
+        $popupErrors = $this->getSession()->evaluateScript(<<<'JS'
+(function () {
+    function isVisible(el) {
+        return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+    }
+
+    var nodes = Array.prototype.slice.call(document.querySelectorAll('.exf-error'));
+    var visible = nodes.filter(isVisible);
+
+    return visible.map(function (el) {
+        var text = (el.innerText || el.textContent || '').trim();
+        if (!text) text = (el.getAttribute('aria-label') || '').trim();
+
+        return {
+            type: 'Popup',
+            message: text || 'Error popup detected (.exf-error) but no text found',
+            details: (el.getAttribute('data-exf-error-details') || '').trim(),
+            id: el.id || ''
+        };
+    });
+})();
+JS);
+
+        foreach ($popupErrors as $error) {
+            throw new UIException(
+                $error['message'],
+                null,
+                null,
+                ['Source' => 'UI5WaitManager', 'Type' => 'Popup Error', 'ID' => $error['id']]
+            );
+        }
+    }
+
+    private function checkUiErrors()
+    {
+        //check ui errors
+        $uiError = $this->getSession()->evaluateScript("
+                var d = document.querySelector('.sapMDialogError');
+                if (!d) return null;
+                var selectors = [
+                    '.sapMDialogScrollCont .sapMText',
+                    '.sapMText',
+                    '.sapMDialogSection .sapMText'
+                ];
+                for (var i = 0; i < selectors.length; i++) {
+                    var el = d.querySelector(selectors[i]);
+                    if (el) {
+                        var t = (el.innerText || el.textContent || '').trim();
+                        if (t) return t;
+                    }
+                }
+                return 'UI error dialog (no message text found)';
+            ");
+
+        if ($uiError) {
+            throw new UIException($uiError,null,null, ["Source" => "UI5WaitManager", "Type" => "UI Dialog Error"]);
+        }
+    }
+
+    private function checkMessageManagerErrors()
+    {
+        // Check for UI5 MessageManager errors (Error or Fatal type)
+        $ui5Errors = $this->getSession()->evaluateScript('
+                if (typeof sap !== "undefined" && sap.ui && sap.ui.getCore()) {
+                    var messageManager = sap.ui.getCore().getMessageManager();
+                    if (messageManager && messageManager.getMessageModel) {
+                        return messageManager.getMessageModel().getData()
+                            .filter(function(msg) {
+                                return msg.type === "Error" || msg.type === "Fatal";
+                            })
+                            .map(function(msg) {
+                                return {
+                                    type: "UI5",
+                                    message: msg.message,
+                                    details: msg.description || ""
+                                };
+                            });
+                    }
+                }
+                return [];
+            ');
+
+        // Add each UI5 error to the error manager
+        foreach ($ui5Errors as $error) {
+            throw new UIException(
+                $error['message'],
+                null,
+                null,
+                ['Source' => 'UI5WaitManager', 'Type' => 'Message Manager', 'Details' => $error['details']]
+            );
+        }
+    }
+    
+    private function checkMessagePageErrors()
+    {
+        // Check for UI5 MessagePage errors (full-page error views like "Server error: Log ID ...")
+        $messagePageErrors = $this->getSession()->evaluateScript(<<<'JS'
+(function () {
+    function isVisible(el) {
+        return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+    }
+    function text(el, sel) {
+        var node = el ? el.querySelector(sel) : null;
+        return node ? (node.innerText || node.textContent || '').trim() : '';
+    }
+ 
+    var pages = Array.prototype.slice.call(document.querySelectorAll('.sapMMessagePage'));
+    var results = [];
+    pages.forEach(function (page) {
+        if (!isVisible(page)) return;
+        // Only treat it as an error if an error icon is present
+        var icon = page.querySelector('.sapMMessagePageIcon');
+        if (!icon) return;
+        var label = (icon.getAttribute('aria-label') || '').toLowerCase();
+        if (label !== 'error' && label !== 'fehler') return;
+ 
+        // Prefer the page header title, fall back to the MessagePage main text
+        var header = page.closest('[data-sap-ui-render]')
+            ? page.closest('[data-sap-ui-render]').querySelector('[id$="-title-inner"]')
+            : null;
+        var title       = header ? (header.innerText || header.textContent || '').trim() : '';
+        var mainText    = text(page, '.sapMMessagePageMainText');
+        var description = text(page, '.sapMMessagePageDescription');
+ 
+        var message = title || mainText;
+        if (description) message += ' — ' + description;
+ 
+        results.push({
+            type:    'MessagePage',
+            message: message || 'UI5 error page shown',
+            details: description
+        });
+    });
+    return results;
+})();
+JS);
+
+        foreach ($messagePageErrors as $error) {
+            throw new MessagePageException(
+                $error['message'],
+                null,
+                null,
+                ['Source' => 'UI5WaitManager', 'Type' => $error['type'], 'Details' => $error['details']]
+            );
+        }
     }
 }

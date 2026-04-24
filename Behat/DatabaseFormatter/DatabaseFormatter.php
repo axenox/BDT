@@ -173,7 +173,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $ds->setCellValue('duration_ms', 0,$this->microtime() - $this->runStart);
             $ds->dataUpdate();
         }
-        catch(\Exception $e){
+        catch(\Throwable $e){
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
         }
     }
