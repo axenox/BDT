@@ -6,6 +6,7 @@ use axenox\BDT\Exceptions\FetchApiException;
 use axenox\BDT\Exceptions\MessagePageException;
 use axenox\BDT\Exceptions\TracerException;
 use axenox\BDT\Exceptions\UIException;
+use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 use Behat\Mink\Session;
 use Exception;
 use exface\Core\Exceptions\InvalidArgumentException;
@@ -362,7 +363,7 @@ class UI5WaitManager
             // executing heavy JS (e.g. SAP UI5 render cycle). Skip error validation
             // for this wait cycle — a dead browser will surface on the next action anyway.
             if ($this->isConnectionTimeoutException($e)) {
-                error_log('UI5WaitManager::validateNoErrors - CDP connection timeout, skipping error validation: ' . $e->getMessage());
+                ErrorManager::getInstance()->logException($e);
                 return;
             }
             $this->clearJsErrorTracer();
@@ -599,29 +600,46 @@ JS);
 
     private function enableJsErrorTracer(): void
     {
+        try {
         $this->getSession()->evaluateScript('window.exfLauncher.enableJsTracing();');
+        } catch (\Throwable $e) {
+            ErrorManager::getInstance()->logException($e);
+        }
     }
 
 
     private function disableJsErrorTracer(): void
     {
-        $this->session->evaluateScript('window.exfLauncher.disableJsTracing();');
+        try {
+            $this->session->evaluateScript('window.exfLauncher.disableJsTracing();');
+        } catch (\Throwable $e) {
+            ErrorManager::getInstance()->logException($e);
+        }
     }
 
 
     private function clearJsErrorTracer(): void
     {
-        $this->session->evaluateScript('window.exfLauncher.resetJsErrorLogs();');
+        try {
+            $this->session->evaluateScript('window.exfLauncher.resetJsErrorLogs();');
+        } catch (\Throwable $e) {
+            ErrorManager::getInstance()->logException($e);
+        }
     }
 
 
     private function getJsErrorsFromTracer(): array
     {
-        return $this->session->evaluateScript("
-            return window.exfLauncher
-                .getJsErrorLogs()
-                .filter(e => e.level === 'error');
-        ");
+        try {
+            return $this->session->evaluateScript("
+                return window.exfLauncher
+                    .getJsErrorLogs()
+                    .filter(e => e.level === 'error');
+            ");
+        } catch (\Throwable $e) {
+            ErrorManager::getInstance()->logException($e);
+            return [];
+        }
     }
 
     private function checkTracerErrors()
