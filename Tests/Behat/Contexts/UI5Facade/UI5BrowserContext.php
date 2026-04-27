@@ -128,8 +128,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             // Set Error Id for reference
             ErrorManager::getInstance()->setLastLogId($wrappedException->getId());
 
-
-
             // Add to ErrorManager as a Behat exception
             ErrorManager::getInstance()->addError([
                 'type' => 'BehatException',
@@ -296,15 +294,23 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         unset($loginFields['_tab']);
         $btnCaption = $loginFields['_button'];
         unset($loginFields['_button']);
-        
+
         $this->setLocale($userLocale);
-        
+
         // Go to the page
         $this->iVisitPage($url);
-
-        // Find the correct authenticator tab. Keep retrying for 5
-        $this->getBrowser()->goToTab($tabCaption, null, 5);
-
+        
+        // If a stale session is active, the login form won't appear — we land directly
+        // on the requested page instead. Detect this with a short retry and log out first.
+        try {
+            // Find the correct authenticator tab. Keep retrying for 5
+            $this->getBrowser()->goToTab($tabCaption, null, 5);
+        } catch (\Exception $e) {
+            $this->getBrowser()->logOutIfAlreadyLoggedIn($this->getMinkParameter('base_url'));
+            $this->browser = null;
+            $this->iVisitPage($url);
+            $this->getBrowser()->goToTab($tabCaption, null, 5);
+        }
         // Fill out the login form
         foreach ($loginFields as $caption => $value) {
             $input = $this->getBrowser()->findInputByCaption($caption);
@@ -319,7 +325,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $loginButton = $this->getBrowser()->findButtonByCaption($btnCaption);
         Assert::assertNotNull($loginButton, 'Cannot find login button "' . $btnCaption . '"');
         $loginButton->click();
-        
+
         $this->getBrowser()->getWaitManager()->waitForAppLoaded($url);
     }
 

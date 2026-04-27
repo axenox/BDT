@@ -1424,4 +1424,30 @@ JS
             ErrorManager::getInstance()->logException($e, $this->getWorkbench());
         }
     }
+    
+    /**
+     * Logs out the current browser session by calling the ExFace Logout action via
+     * synchronous XHR from within the browser. This ensures the HttpOnly session
+     * cookie is sent automatically without any page navigation.
+     */
+    public function logOutIfAlreadyLoggedIn($baseUrl): void
+    {
+        $webapp = $this->findAppFromUrl($this->getSession()->getCurrentUrl());
+        $apiUrl = rtrim($baseUrl, '/') . '/api/ui5';
+        $this->getSession()->evaluateScript(<<<JS
+        (function() {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', '$apiUrl', false);
+            xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+            xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+            xhr.send('action=exface.Core.Logout&resource=$webapp&webapp=$webapp');
+        })();
+    JS);
+    }
+    
+    public function findAppFromUrl(string $currentUrl): string
+    {
+        $pagePath = basename(parse_url($currentUrl, PHP_URL_PATH));
+        return preg_replace('/\.html$/', '', $pagePath);
+    }
 }
