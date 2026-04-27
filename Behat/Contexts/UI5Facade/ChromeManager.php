@@ -155,10 +155,9 @@ class ChromeManager
     private static function findPidByPort(int $port): ?int
     {
         $output = [];
-        // netstat -ano lists all connections with PIDs; findstr filters by port
-        exec('netstat -ano | findstr :' . $port, $output);
+        // Single process — no pipe, no cmd.exe accumulation
+        exec('netstat -ano -p TCP', $output);
         foreach ($output as $line) {
-            // Match lines where Chrome is the listener: 0.0.0.0:9222 or 127.0.0.1:9222
             if (preg_match('/(?:0\.0\.0\.0|127\.0\.0\.1):' . $port . '\s+.*LISTENING\s+(\d+)/', $line, $matches)) {
                 return (int) $matches[1];
             }
