@@ -12,7 +12,6 @@ use axenox\BDT\Interfaces\TestRunObserverInterface;
 use Behat\Testwork\Output\Formatter;
 use Behat\Testwork\Tester\Result\TestResult;
 use Behat\Testwork\EventDispatcher\Event\AfterSuiteTested;
-use Behat\Testwork\EventDispatcher\Event\BeforeExerciseCompleted;
 use Behat\Behat\EventDispatcher\Event\AfterOutlineTested;
 use Behat\Behat\EventDispatcher\Event\BeforeOutlineTested;
 use Behat\Behat\EventDispatcher\Event\BeforeFeatureTested;
@@ -71,19 +70,28 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private static array        $stepLogbooks = [];
     
     private ChromeStartResult $chromeStartResult;
+    private bool $exerciseFinished = false;
+
+    // Do not create a run record for dry-run executions.
+    // Dry-run is used as a pre-flight syntax check and must not pollute the test results DB.
+    private bool $isDryRun = false;
 
     public function __construct(WorkbenchInterface $workbench, ScreenshotProviderInterface $provider, EventDispatcherInterface $eventDispatcher, array $chromeConfig = [])
     {
         self::$eventDispatcher = $eventDispatcher;
         $this->workbench = $workbench;
         $this->provider = $provider;
-        $this->chromeStartResult = ChromeManager::start($chromeConfig);
+        $this->isDryRun = in_array('--dry-run', $_SERVER['argv'] ?? [], true);
+        if (!$this->isDryRun) {
+            $this->chromeStartResult = ChromeManager::start($chromeConfig);
+            $this->startRun();
+        }
     }
 
     public static function getSubscribedEvents(): array
     {
         return [
-            BeforeExerciseCompleted::BEFORE => 'onBeforeExercise',
+            // BeforeExerciseCompleted::BEFORE => 'onBeforeExercise',
             // Use __destruct() to finish the log on inner errors too
             // AfterExerciseCompleted::AFTER => 'onAfterExercise',
             AfterSuiteTested::AFTER => 'onAfterSuite',
@@ -104,8 +112,15 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     
     public function __destruct()
     {
-        $this->onAfterExercise();
-        ChromeManager::stop();
+        if ($this->isDryRun) {
+            return;
+        }
+        // onShutdown() via register_shutdown_function is the primary shutdown handler.
+        // This is a last-resort fallback in case the shutdown function was somehow not registered.
+        if (! $this->exerciseFinished) {
+            $this->onAfterExercise();
+            ChromeManager::stop();
+        }
     }
 
     public function getName(): string
@@ -133,45 +148,21 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     {
         return microtime(true);
     }
-    
-    public function onBeforeExercise(): void
-    {
-        $this->runStart = $this->microtime();
-
-        $cliArgs = $_SERVER['argv'] ?? [];
-        $command = null;
-        if (! empty($cliArgs)) {
-            // First item is the file called - remove that
-            array_shift($cliArgs);
-            $command = implode(' ', $cliArgs);
-        }
-        try{
-            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run');
-            $ds->addRow([
-                'started_on' => DateTimeDataType::now(),
-                'behat_command' => $command,
-                'chrome_info'   => $this->buildChromeInfo(),
-            ]);
-            $ds->dataCreate(false);
-            $this->runDataSheet = $ds;        
-            
-            $this->registerMetrics();
-        }
-        catch(\Exception $e){
-            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
-        }
-    }
 
     public function onAfterExercise(): void
     {
         try{
-            if ($this->runDataSheet === null) {
-                $this->onBeforeExercise();
+            if ($this->isDryRun || $this->runDataSheet === null) {
+                return;
             }
+            
             $ds = $this->runDataSheet->extractSystemColumns();
             $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
             $ds->setCellValue('duration_ms', 0,$this->microtime() - $this->runStart);
             $ds->dataUpdate();
+            
+            // Mark as finished so that onShutdown() does not call this method a second time
+            $this->exerciseFinished = true;
         }
         catch(\Throwable $e){
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
@@ -181,6 +172,9 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     public function onAfterSuite(AfterSuiteTested $event) : void
     {
         try{
+            if ($this->isDryRun) {
+                return;
+            }
             if (!empty(self::$scenarioPages)) {
                 $suite = $event->getSuite();
                 $suiteName = $suite->getName();
@@ -208,6 +202,9 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
 
     public function onBeforeFeature(BeforeFeatureTested $event) 
     {
+        if ($this->isDryRun) {
+            return;
+        }
         try{
             $feature = $event->getFeature();
             $suite = $event->getSuite();
@@ -238,6 +235,9 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
 
     public function onAfterFeature(AfterFeatureTested $event) 
     {
+        if ($this->isDryRun) {
+            return;
+        }
         try{
             $ds = $this->featureDataSheet->extractSystemColumns();
             $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
@@ -250,7 +250,11 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         }
     }
 
-    public function onBeforeScenario(BeforeScenarioTested $event) {
+    public function onBeforeScenario(BeforeScenarioTested $event) 
+    {
+        if ($this->isDryRun) {
+            return;
+        }
         static::$scenarioPages = [];
         try{
             $scenario = $event->getScenario();
@@ -271,7 +275,11 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         }
     }
 
-    public function onBeforeOutline(BeforeOutlineTested $event) {
+    public function onBeforeOutline(BeforeOutlineTested $event) 
+    {
+        if ($this->isDryRun) {
+            return;
+        }
         static::$scenarioPages = [];
         try{
             $outline = $event->getOutline();
@@ -294,6 +302,9 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
 
     public function onAfterScenario(AfterScenarioTested|AfterOutlineTested $event) 
     {
+        if ($this->isDryRun) {
+            return;
+        }
         try{
             $ds = $this->scenarioDataSheet->extractSystemColumns();
             $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
@@ -329,6 +340,9 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
 
     public function onBeforeStep(BeforeStepTested $event) 
     {
+        if ($this->isDryRun) {
+            return;
+        }
         static::$stepLogbooks = [];
         try{
             $step = $event->getStep();
@@ -346,6 +360,9 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     public function onAfterStep(AfterStepTested $event) 
     {
         try{
+            if ($this->isDryRun) {
+                return;
+            }
             $result = $event->getTestResult();
             $ds = $this->stepDataSheet->extractSystemColumns();
             $stepStatusCode = StepStatusDataType::convertFromBehatResultCode($result->getResultCode());
@@ -369,6 +386,9 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     public function onBeforeSubstep(BeforeSubstep $event)
     {
         try{
+            if ($this->isDryRun) {
+                return;
+            }
             $this->stepIdx++;
             $startTime = $this->microtime();
             $parentStepData = (empty($this->substepDataSheets) ? $this->stepDataSheet : $this->substepDataSheets[array_key_last($this->substepDataSheets)]);
@@ -391,6 +411,9 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     public function onAfterSubstep(AfterSubstep $event)
     {
         try {
+            if ($this->isDryRun) {
+                return;
+            }
             $currentSubstepIdx = array_key_last($this->substepDataSheets);
             $ds = $this->substepDataSheets[$currentSubstepIdx]->extractSystemColumns();
             $this->logStepEnd($ds, $this->substepStarts[$currentSubstepIdx], $event->getResultCode(), $event->getException(), [], $event->getSubstepName(), $event->getResult()->getReason());
@@ -578,5 +601,79 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             'startup_duration'  => $duration
         ];
         return json_encode(array_merge($data, $extra));
+    }
+
+    /**
+     * Registered via register_shutdown_function in onBeforeExercise().
+     * Guaranteed to run even on fatal PHP errors and uncaught exceptions.
+     *
+     * Responsibilities:
+     *  - Write finished_on to the run record if normal flow did not already do so (question 1)
+     *  - Log any PHP error that caused the crash (question 2)
+     */
+    private function onShutdown(): void
+    {
+        // Log the PHP error that caused the crash, if any (question 2)
+        $error = error_get_last();
+        $fatalErrorTypes = [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR];
+        if ($error !== null && in_array($error['type'], $fatalErrorTypes, true)) {
+            $message = sprintf(
+                'PHP fatal error caused Behat to crash: [%d] %s in %s on line %d',
+                $error['type'],
+                $error['message'],
+                $error['file'],
+                $error['line']
+            );
+            ErrorManager::getInstance()->logExceptionWithId(
+                new RuntimeException($message),
+                'DatabaseFormatter::onShutdown',
+                $this->workbench
+            );
+        }
+
+        // Write finished_on only if normal flow (onAfterExercise) did not already do so (question 1)
+        if (! $this->exerciseFinished) {
+            $this->onAfterExercise();
+        }
+
+        ChromeManager::stop();
+    }
+    private function startRun(): void
+    {
+        if ($this->isDryRun) {
+            return;
+        }
+        
+        $this->runStart = $this->microtime();
+
+        $cliArgs = $_SERVER['argv'] ?? [];
+        $command = null;
+        if (! empty($cliArgs)) {
+            // First item is the file called - remove that
+            array_shift($cliArgs);
+            $command = implode(' ', $cliArgs);
+        }
+        try{
+            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run');
+            $ds->addRow([
+                'started_on' => DateTimeDataType::now(),
+                'behat_command' => $command,
+                'chrome_info'   => $this->buildChromeInfo(),
+            ]);
+            $ds->dataCreate(false);
+            $this->runDataSheet = $ds;
+
+            $this->registerMetrics();
+        }
+        catch(\Exception $e){
+            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+        }
+        // Register a shutdown function so that finished_on is always written,
+        // even if Behat crashes with a fatal error or an uncaught exception.
+        // __destruct() is NOT guaranteed to run in those cases, but shutdown functions are.
+        register_shutdown_function(function () {
+            $this->onShutdown();
+        });
+        
     }
 }
