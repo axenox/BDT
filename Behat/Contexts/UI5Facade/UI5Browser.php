@@ -1263,10 +1263,14 @@ JS
         $workbench->getSecurity()->authenticate($testRunnerToken);
 
         $loginFields = [];
+        // Make sure to get login form field names the way an anonymous user would see them
+        $localeOfTestRunner = $workbench->getContext()->getScopeSession()->getSessionLocale();
+        $localeOfAnonymous = $workbench->getConfig()->getOption('SERVER.DEFAULT_LOCALE');
+        $workbench->getContext()->getScopeSession()->setSessionLocale($localeOfAnonymous);
         foreach ($workbench->getConfig()->getOption('SECURITY.AUTHENTICATORS') as $authUxon) {
             if ($authUxon->getProperty('class') === '\\' . MetamodelAuthenticator::class) {
                 $loginDataObj = MetaObjectFactory::createFromString($workbench, 'exface.Core.LOGIN_DATA');
-                $loginFields['_tab'] = $authUxon->getProperty('name') ?? $workbench->getCoreApp()->getTranslator()->translate('SECURITY.SIGN_IN');
+                $loginFields['_tab'] = $authUxon->getProperty('name') ?? $workbench->getCoreApp()->getTranslator($localeOfAnonymous)->translate('SECURITY.SIGN_IN');
                 $loginFields[$loginDataObj->getAttribute('USERNAME')->getName()] = $config->getOption('TEST_USER.USERNAME');
                 $loginFields[$loginDataObj->getAttribute('PASSWORD')->getName()] = $config->getOption('TEST_USER.PASSWORD');
                 $loginAction = ActionFactory::createFromString($workbench, Login::class);
@@ -1274,6 +1278,7 @@ JS
                 break;
             }
         }
+        $workbench->getContext()->getScopeSession()->setSessionLocale($localeOfTestRunner);
 
         // Fire an on-before-login event to publish the roles
         if ($roleAliasCol !== null) {
