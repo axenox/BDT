@@ -508,7 +508,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Get the currently focused node
         $focusedNode = $this->getBrowser()->getFocusedNode();
         Assert::assertNotNull($focusedNode, 'No widget is currently focused. Call "I look at" first.');
-
+        Assert::assertInstanceOf(
+            \axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataNode::class,
+            $focusedNode,
+            'Focused widget does not support filters. Ensure you have focused on a compatible widget.'
+        );
         /* @var $focusedNode axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataNode */
         $filterNodes = $focusedNode->getFilters(0);
         $foundFilters = [];
