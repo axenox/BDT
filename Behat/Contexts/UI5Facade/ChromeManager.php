@@ -4,6 +4,7 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Exceptions\ConfigException;
 use exface\Core\Exceptions\RuntimeException;
+use GuzzleHttp\Client;
 
 /**
  * Manages the lifecycle of a Chrome instance used for UI testing.
@@ -197,9 +198,16 @@ class ChromeManager
     {
         $start = time();
         while (time() - $start < $timeoutSeconds) {
-            $response = @file_get_contents("http://localhost:{$port}/json/list");
-            if ($response !== false) {
-                $pages = json_decode($response, true) ?? [];
+            
+            /* @var $client \GuzzleHttp\Client */
+            $client = new Client();
+            $response = $client->request(
+                'GET',
+                "http://localhost:{$port}/json/list"
+            );
+            
+            if ($response->getStatusCode() === 200) {
+                $pages = json_decode($response->getBody()->__toString(), true) ?? [];
                 foreach ($pages as $page) {
                     // Wait until there is at least one navigatable page with a ws:// URL
                     if (($page['type'] ?? '') === 'page' && !empty($page['webSocketDebuggerUrl'])) {
