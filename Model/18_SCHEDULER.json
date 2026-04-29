@@ -63,13 +63,13 @@
         {
             "_EXPORT_SUMMARY": "Nightly automated BDT test run",
             "CREATED_ON": "2025-08-18 10:09:48",
-            "MODIFIED_ON": "2025-09-10 15:53:42",
+            "MODIFIED_ON": "2026-04-29 14:45:06",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
+            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f0a1a9b58bba36a1a9025041000001",
             "ACTION_UXON": null,
             "QUEUE_TOPICS": "behat",
-            "SCHEDULE": "30 23 * * *",
+            "SCHEDULE": "30 2 * * *",
             "APP": "0x11efa2214f96c8b8a221025041000001",
             "DESCRIPTION": "This will run all test scenarios marked with tag Status::Ready at night",
             "NAME": "Nightly automated BDT test run",
@@ -77,7 +77,7 @@
                 "cmd": "vendor\\bin\\action axenox.BDT:Behat init & vendor\\bin\\Behat --tags=Status::Ready",
                 "timeout": 10800
             },
-            "FIRST_RUN": "2025-08-18 10:06:21"
+            "FIRST_RUN": "2026-04-29 14:45:00"
         }
     ],
     "totals_rows": [],
