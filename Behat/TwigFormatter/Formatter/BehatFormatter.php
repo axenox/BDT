@@ -193,6 +193,7 @@ class BehatFormatter implements Formatter
     private ScreenshotProviderInterface $provider;
 
     private Timer $timerFeature;
+    private bool $isDryRun = false;
 
     //</editor-fold>
 
@@ -227,6 +228,7 @@ class BehatFormatter implements Formatter
         ScreenshotProviderInterface $provider
     )
     {
+        $this->isDryRun = in_array('--dry-run', $_SERVER['argv'] ?? [], true);
         $this->projectName = $projectName;
         $this->projectImage = $projectImage;
         $this->projectDescription = $projectDescription;
@@ -247,9 +249,12 @@ class BehatFormatter implements Formatter
         $exceptionPresenter = new \Behat\Testwork\Exception\ExceptionPresenter();
         $this->exceptionListener = new \axenox\BDT\Behat\Listeners\GlobalExceptionListener($exceptionPresenter);
     }
-    
+
     public function __destruct()
     {
+        if ($this->isDryRun) { 
+            return;
+        }
         // whenever the formatter object is about to be destroyed
         // (i.e. at the very end of the test run, even on error), flush the report:
         $this->timer->stop();
