@@ -48,12 +48,17 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private $workbench = null;
     private $debug = false;
     private string $locale = 'de_DE';
+    private bool $isDryRun = false;
     
     /** 
      * Initializes and starts the workbench for the test environment
      */
     public function __construct(bool $debug = false) // Update constructor
     {
+        $this->isDryRun = in_array('--dry-run', $_SERVER['argv'] ?? [], true);
+        if ($this->isDryRun) {
+            return;
+        }
         $this->workbench = new Workbench();
         $this->workbench->start();
         // Authenticated with the default CLI user if called from CLI. The authenticated
@@ -1580,6 +1585,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     public function __destruct()
     {
+        if ($this->isDryRun) {
+            return;
+        }
+        
         UI5Browser::resetUser($this->workbench);
         $this->workbench->stop();
     }
