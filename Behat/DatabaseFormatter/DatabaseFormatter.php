@@ -604,7 +604,6 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     }
 
     /**
-     * Registered via register_shutdown_function in onBeforeExercise().
      * Guaranteed to run even on fatal PHP errors and uncaught exceptions.
      *
      * Responsibilities:
