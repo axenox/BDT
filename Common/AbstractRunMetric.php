@@ -49,7 +49,7 @@ abstract class AbstractRunMetric implements MetricInterface
     protected function registerEventHandlersToSaveMetrics()
     {
         // $this->getWorkbench()->eventManager()->addListener(OnBeforeStopEvent::getEventName(), [$this, 'onBeforeStopWorkbenchSaveMetrics']);
-        $this->getWorkbench()->eventManager()->addListener(AfterFeatureTested::getEventName(), [$this, 'onAfterFeatureSaveMetrics']);
+        $this->getEventDispatcher()->addListener(AfterFeatureTested::AFTER, [$this, 'onAfterFeatureSaveMetrics']);
     }
 
     public function onAfterFeatureSaveMetrics(AfterFeatureTested $event) : void
