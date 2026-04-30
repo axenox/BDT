@@ -87,7 +87,7 @@
         {
             "_EXPORT_SUMMARY": "BDT test run [axenox.BDT.run]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-04-16 13:07:46",
+            "MODIFIED_ON": "2026-04-30 00:12:12",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x11f08ce4baed19b88ce4005056be9857",
             "UID": "0x11f08c1d222cd23e8c1d025041000001",
@@ -115,18 +115,20 @@
                         "widget_type": "SplitVertical",
                         "panels": [
                             {
-                                "height": "50%",
+                                "height": "33%",
                                 "widgets": [
                                     {
                                         "widget_type": "SplitHorizontal",
                                         "panels": [
                                             {
                                                 "caption": "Steps run",
-                                                "width": "50%",
+                                                "width": "30%",
                                                 "widgets": [
                                                     {
                                                         "widget_type": "Chart",
                                                         "object_alias": "axenox.BDT.run_step_stats",
+                                                        "hide_header": true,
+                                                        "hide_caption": true,
                                                         "data": {
                                                             "filters": [
                                                                 {
@@ -159,6 +161,8 @@
                                                         "widget_type": "Chart",
                                                         "id": "failed_scenarios_chart",
                                                         "object_alias": "axenox.BDT.run_scenario_stats",
+                                                        "hide_header": true,
+                                                        "hide_caption": true,
                                                         "data": {
                                                             "filters": [
                                                                 {
@@ -182,6 +186,74 @@
                                                         ]
                                                     }
                                                 ]
+                                            },
+                                            {
+                                                "width": "45%",
+                                                "caption": "Metrics",
+                                                "widgets": [
+                                                    {
+                                                        "widget_type": "DataMatrix",
+                                                        "object_alias": "axenox.BDT.run_metric_score",
+                                                        "hide_caption": true,
+                                                        "hide_header": true,
+                                                        "aggregate_by_attribute_alias": [
+                                                            "run",
+                                                            "app__ALIAS",
+                                                            "metric"
+                                                        ],
+                                                        "filters": [
+                                                            {
+                                                                "attribute_alias": "run__UID",
+                                                                "value": "=run_uid_field",
+                                                                "required": true,
+                                                                "comparator": "==",
+                                                                "hidden": true
+                                                            }
+                                                        ],
+                                                        "columns": [
+                                                            {
+                                                                "attribute_alias": "app__ALIAS"
+                                                            },
+                                                            {
+                                                                "attribute_alias": "metric__LABEL"
+                                                            },
+                                                            {
+                                                                "attribute_alias": "score_percentual:AVG",
+                                                                "widget_type": "DataColumnTransposed",
+                                                                "label_attribute_alias": "metric__LABEL"
+                                                            },
+                                                            {
+                                                                "attribute_alias": "run"
+                                                            }
+                                                        ],
+                                                        "sorters": [
+                                                            {
+                                                                "attribute_alias": "metric__name",
+                                                                "direction": "asc"
+                                                            }
+                                                        ],
+                                                        "buttons": [
+                                                            {
+                                                                "bind_to_double_click": true,
+                                                                "action": {
+                                                                    "alias": "axenox.BDT.RunMetricScoreDetailsDialog",
+                                                                    "input_mapper": {
+                                                                        "from_object_alias": "axenox.BDT.run_metric_score",
+                                                                        "to_object_alias": "axenox.BDT.run_metric_score",
+                                                                        "inherit_columns": "none",
+                                                                        "column_to_filter_mappings": [
+                                                                            {
+                                                                                "from": "run",
+                                                                                "to": "run",
+                                                                                "comparator": "=="
+                                                                            }
+                                                                        ]
+                                                                    }
+                                                                }
+                                                            }
+                                                        ]
+                                                    }
+                                                ]
                                             }
                                         ]
                                     }
@@ -189,7 +261,6 @@
                             },
                             {
                                 "caption": "Scenarios",
-                                "height": "50%",
                                 "widgets": [
                                     {
                                         "widget_type": "DataTable",
@@ -205,6 +276,12 @@
                                                 "comparator": "==",
                                                 "required": true,
                                                 "hidden": true
+                                            },
+                                            {
+                                                "attribute_alias": "name"
+                                            },
+                                            {
+                                                "attribute_alias": "run_feature__content"
                                             },
                                             {
                                                 "attribute_alias": "run_scenario_stats__status",
