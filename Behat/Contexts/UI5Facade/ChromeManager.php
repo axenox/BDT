@@ -4,6 +4,7 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Exceptions\ConfigException;
 use exface\Core\Exceptions\RuntimeException;
+use GuzzleHttp\Client;
 
 /**
  * Manages the lifecycle of a Chrome instance used for UI testing.
@@ -155,10 +156,9 @@ class ChromeManager
     private static function findPidByPort(int $port): ?int
     {
         $output = [];
-        // netstat -ano lists all connections with PIDs; findstr filters by port
-        exec('netstat -ano | findstr :' . $port, $output);
+        // Single process — no pipe, no cmd.exe accumulation
+        exec('netstat -ano -p TCP', $output);
         foreach ($output as $line) {
-            // Match lines where Chrome is the listener: 0.0.0.0:9222 or 127.0.0.1:9222
             if (preg_match('/(?:0\.0\.0\.0|127\.0\.0\.1):' . $port . '\s+.*LISTENING\s+(\d+)/', $line, $matches)) {
                 return (int) $matches[1];
             }
@@ -198,9 +198,16 @@ class ChromeManager
     {
         $start = time();
         while (time() - $start < $timeoutSeconds) {
-            $response = @file_get_contents("http://localhost:{$port}/json/list");
-            if ($response !== false) {
-                $pages = json_decode($response, true) ?? [];
+            
+            /* @var $client \GuzzleHttp\Client */
+            $client = new Client();
+            $response = $client->request(
+                'GET',
+                "http://localhost:{$port}/json/list"
+            );
+            
+            if ($response->getStatusCode() === 200) {
+                $pages = json_decode($response->getBody()->__toString(), true) ?? [];
                 foreach ($pages as $page) {
                     // Wait until there is at least one navigatable page with a ws:// URL
                     if (($page['type'] ?? '') === 'page' && !empty($page['webSocketDebuggerUrl'])) {

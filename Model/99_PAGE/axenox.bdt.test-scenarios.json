@@ -10,8 +10,8 @@
     "replaces_page_selector": null,
     "created_by_user_selector": "0x11eca7f5b092f284a7f5005056bea39f",
     "created_on": "2025-10-08 18:22:39",
-    "modified_by_user_selector": "0x11f08ce4baed19b88ce4005056be9857",
-    "modified_on": "2026-03-25 17:39:42",
+    "modified_by_user_selector": "0x31000000000000000000000000000000",
+    "modified_on": "2026-04-29 16:23:07",
     "contents": {
         "object_alias": "exface.Core.DUMMY",
         "widget_type": "SplitHorizontal",
@@ -78,7 +78,26 @@
                                                 "bind_to_double_click": true
                                             },
                                             {
+                                                "caption": "Validate file",
+                                                "icon": "fast-forward",
+                                                "action": {
+                                                    "alias": "exface.Core.CallWidgetFunction",
+                                                    "widget_id": "test_cli",
+                                                    "function": "run_command(\"vendor/bin/Behat vendor/[#PATHNAME_RELATIVE#] --colors --dry-run\")"
+                                                }
+                                            },
+                                            {
+                                                "caption": "Run file",
+                                                "icon": "play",
+                                                "action": {
+                                                    "alias": "exface.Core.CallWidgetFunction",
+                                                    "widget_id": "test_cli",
+                                                    "function": "run_command(\"vendor/bin/Behat vendor/[#PATHNAME_RELATIVE#] --colors\")"
+                                                }
+                                            },
+                                            {
                                                 "caption": "Run suite",
+                                                "icon": "play",
                                                 "action": {
                                                     "alias": "exface.Core.CallWidgetFunction",
                                                     "widget_id": "test_cli",

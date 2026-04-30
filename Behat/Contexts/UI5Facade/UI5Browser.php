@@ -1263,10 +1263,14 @@ JS
         $workbench->getSecurity()->authenticate($testRunnerToken);
 
         $loginFields = [];
+        // Make sure to get login form field names the way an anonymous user would see them
+        $localeOfTestRunner = $workbench->getContext()->getScopeSession()->getSessionLocale();
+        $localeOfAnonymous = $workbench->getConfig()->getOption('SERVER.DEFAULT_LOCALE');
+        $workbench->getContext()->getScopeSession()->setSessionLocale($localeOfAnonymous);
         foreach ($workbench->getConfig()->getOption('SECURITY.AUTHENTICATORS') as $authUxon) {
             if ($authUxon->getProperty('class') === '\\' . MetamodelAuthenticator::class) {
                 $loginDataObj = MetaObjectFactory::createFromString($workbench, 'exface.Core.LOGIN_DATA');
-                $loginFields['_tab'] = $authUxon->getProperty('name') ?? $workbench->getCoreApp()->getTranslator()->translate('SECURITY.SIGN_IN');
+                $loginFields['_tab'] = $authUxon->getProperty('name') ?? $workbench->getCoreApp()->getTranslator($localeOfAnonymous)->translate('SECURITY.SIGN_IN');
                 $loginFields[$loginDataObj->getAttribute('USERNAME')->getName()] = $config->getOption('TEST_USER.USERNAME');
                 $loginFields[$loginDataObj->getAttribute('PASSWORD')->getName()] = $config->getOption('TEST_USER.PASSWORD');
                 $loginAction = ActionFactory::createFromString($workbench, Login::class);
@@ -1274,6 +1278,7 @@ JS
                 break;
             }
         }
+        $workbench->getContext()->getScopeSession()->setSessionLocale($localeOfTestRunner);
 
         // Fire an on-before-login event to publish the roles
         if ($roleAliasCol !== null) {
@@ -1423,5 +1428,31 @@ JS
         } catch (\Throwable $e) {
             ErrorManager::getInstance()->logException($e, $this->getWorkbench());
         }
+    }
+    
+    /**
+     * Logs out the current browser session by calling the ExFace Logout action via
+     * synchronous XHR from within the browser. This ensures the HttpOnly session
+     * cookie is sent automatically without any page navigation.
+     */
+    public function logOutIfAlreadyLoggedIn($baseUrl): void
+    {
+        $webapp = $this->findAppFromUrl($this->getSession()->getCurrentUrl());
+        $apiUrl = rtrim($baseUrl, '/') . '/api/ui5';
+        $this->getSession()->evaluateScript(<<<JS
+        (function() {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', '$apiUrl', false);
+            xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+            xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+            xhr.send('action=exface.Core.Logout&resource=$webapp&webapp=$webapp');
+        })();
+    JS);
+    }
+    
+    public function findAppFromUrl(string $currentUrl): string
+    {
+        $pagePath = basename(parse_url($currentUrl, PHP_URL_PATH));
+        return preg_replace('/\.html$/', '', $pagePath);
     }
 }
