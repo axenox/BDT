@@ -230,7 +230,7 @@ class ChromeManager
      */
     public static function getTabList(?int $port = null): ?array
     {
-        return self::runGuzzleApi("http://localhost:" . $port ?? self::getPort() . "/json/list");
+        return self::runGuzzleApi("http://localhost:" . ($port ?? self::getPort()) . "/json/list");
     }
     
     private static function runGuzzleApi(string $url): array
