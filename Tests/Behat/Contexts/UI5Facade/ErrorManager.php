@@ -11,7 +11,6 @@ class ErrorManager
 {
     private static ?ErrorManager $instance = null;
     private array $errors = [];
-    private array $processedErrors = [];
     private float $lastErrorTime = 0;
 
     private ?string $lastLogId = null;
@@ -192,7 +191,7 @@ class ErrorManager
      */
     public function logExceptionWithId(\Throwable $e, string $source = 'Unknown', $workbench = null)
     {
-        $this->logException($e, $source, $workbench);
+        $this->logException($e, $workbench);
 
         $this->addError([
             'type'    => 'Exception',
