@@ -198,16 +198,8 @@ class ChromeManager
     {
         $start = time();
         while (time() - $start < $timeoutSeconds) {
-            
-            /* @var $client \GuzzleHttp\Client */
-            $client = new Client();
-            $response = $client->request(
-                'GET',
-                "http://localhost:{$port}/json/list"
-            );
-            
-            if ($response->getStatusCode() === 200) {
-                $pages = json_decode($response->getBody()->__toString(), true) ?? [];
+            $pages = self::getTabList($port);
+            if ($pages !== []) {
                 foreach ($pages as $page) {
                     // Wait until there is at least one navigatable page with a ws:// URL
                     if (($page['type'] ?? '') === 'page' && !empty($page['webSocketDebuggerUrl'])) {
@@ -236,12 +228,26 @@ class ChromeManager
      *
      * @return array|null Decoded JSON tab list, or null if the endpoint could not be reached
      */
-    public static function getTabList(): ?array
+    public static function getTabList(?int $port = null): ?array
     {
-        $response = @file_get_contents("http://localhost:" . self::getPort() . "/json/list");
-        if ($response === false) {
-            return null;
+        return self::runGuzzleApi("http://localhost:" . ($port ?? self::getPort()) . "/json/list");
+    }
+    
+    private static function runGuzzleApi(string $url): array
+    {
+        try {
+            /* @var $client \GuzzleHttp\Client */
+            $client = new Client();
+            $response = $client->request(
+                'GET',
+                $url
+            );
+
+            if ($response->getStatusCode() === 200) {
+                return json_decode($response->getBody()->__toString(), true) ?? [];
+            }
+        } catch (\Throwable $exception) {
         }
-        return json_decode($response, true) ?? [];
+        return [];
     }
 }
