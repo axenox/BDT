@@ -145,6 +145,30 @@ class ChromeManager
     }
 
     /**
+     * Stops the running Chrome process and starts a fresh one on the same port.
+     *
+     * This is the recovery entry point called by UI5BrowserContext::recoverChrome()
+     * when a ChromeHangException is caught mid-test. The method is intentionally
+     * thin: it delegates entirely to the existing stop() and start() methods so
+     * that all port-check, PID-detection, and readiness-polling logic stays in
+     * one place and restart() automatically benefits from any future improvements
+     * to those methods.
+     *
+     * A short sleep between stop and start gives the OS time to release the port
+     * and any file handles Chrome held, reducing the chance of start() finding the
+     * port still occupied immediately after the kill.
+     *
+     * @throws \RuntimeException If stop() cannot terminate the process or start()
+     *                           cannot confirm readiness within its timeout.
+     */
+    public static function restart(): void
+    {
+        self::stop();
+        sleep(2); // allow the OS to fully release the port before relaunching
+        self::start();
+    }
+    
+    /**
      * Finds the PID of the process listening on the given TCP port using netstat.
      *
      * Used to retrieve the Chrome PID after launching it with "start /B",
