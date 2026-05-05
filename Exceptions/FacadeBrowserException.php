@@ -13,7 +13,7 @@ class FacadeBrowserException extends RuntimeException
     private $scope = null;
     private $info = null;
 
-    public function __construct($message, $alias = null, $previous = null, AfterStepScope $behatScope = null, array $info)
+    public function __construct($message, array $info, $alias = null, $previous = null, AfterStepScope $behatScope = null)
     {
         parent::__construct($message, $alias, $previous);
         $this->scope = $behatScope;
