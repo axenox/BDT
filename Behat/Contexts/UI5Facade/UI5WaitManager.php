@@ -211,7 +211,7 @@ class UI5WaitManager
     private function waitForPageLoad(int $timeout): bool
     {
         // Wait until document.readyState becomes 'complete'
-        return $this->waitWithCdpGuard(
+        return $this->session->wait(
             $timeout * 1000,
             "document.readyState === 'complete'"
         );
@@ -233,7 +233,7 @@ class UI5WaitManager
     private function waitForBusyIndicator(int $timeout): bool
     {
         // Execute JavaScript to check if the busy indicator is no longer displayed
-        return $this->waitWithCdpGuard(
+        return $this->session->wait(
             $timeout * 1000,
             <<<JS
             (function() {
@@ -263,7 +263,7 @@ class UI5WaitManager
     private function waitForAjaxRequests(int $timeout): bool
     {
         // Execute JavaScript to check if there are no pending AJAX requests
-        return $this->waitWithCdpGuard(
+        return $this->session->wait(
             $timeout * 1000,
             <<<JS
             (function() {
@@ -287,7 +287,7 @@ class UI5WaitManager
      */
     private function waitForUI5Framework(): bool
     {
-        return $this->waitWithCdpGuard(
+        return $this->session->wait(
             $this->defaultTimeouts['ajax'] * 1000,
             <<<JS
             (function() {
@@ -316,7 +316,7 @@ class UI5WaitManager
      */
     private function waitForUI5Controls(): bool
     {
-        return $this->waitWithCdpGuard(
+        return $this->session->wait(
             $this->defaultTimeouts['ajax'] * 1000,
             <<<JS
             (function() {
@@ -341,60 +341,7 @@ class UI5WaitManager
             return $app && $app->isVisible();
         });
     }
-
-    /**
-     * Executes a Mink session->wait() call and re-throws CDP connection failures
-     * as a ChromeHangException.
-     *
-     * session->wait() blocks indefinitely when Chrome's WebSocket connection is
-     * lost, because it keeps sending CDP commands that never receive a response.
-     * This wrapper catches the lower-level connection exceptions that surface in
-     * that scenario and converts them into a ChromeHangException so that callers
-     * can react to a hung browser without waiting for the outer process timeout
-     * (e.g. Symfony Process's 600-second limit).
-     *
-     * @param int    $timeoutMs Maximum time to wait in milliseconds.
-     * @param string $js        JavaScript condition to evaluate repeatedly.
-     * @return bool True if the JS condition became truthy within the timeout.
-     * @throws ChromeHangException If the CDP connection is detected as lost.
-     */
-    private function waitWithCdpGuard(int $timeoutMs, string $js): bool
-    {
-        try {
-            return $this->session->wait($timeoutMs, $js);
-        } catch (\Exception $e) {
-            if ($this->isCdpConnectionError($e)) {
-                throw new ChromeHangException(
-                    'CDP connection lost during wait: ' . $e->getMessage(),
-                    0,
-                    $e
-                );
-            }
-            throw $e;
-        }
-    }
-
-    /**
-     * Determines whether an exception originates from a broken CDP/WebSocket connection.
-     *
-     * Chrome communicates with the PHP test process over a WebSocket via the Chrome
-     * DevTools Protocol. When Chrome hangs or crashes, this connection drops and
-     * subsequent CDP calls throw exceptions containing keywords like "WebSocket" or
-     * "Connection refused". This method centralises that detection logic so it can
-     * be reused by any wait operation without duplicating string-matching code.
-     *
-     * @param \Exception $e The exception to inspect.
-     * @return bool True if the exception indicates a lost CDP connection.
-     */
-    private function isCdpConnectionError(\Exception $e): bool
-    {
-        $msg = $e->getMessage();
-        return str_contains($msg, 'WebSocket')
-            || str_contains($msg, 'Connection refused')
-            || str_contains($msg, 'Could not connect')
-            || str_contains($msg, 'curl error');
-    }
-
+    
     /**
      * Validates that no errors occurred during the UI5 operations
      * 
@@ -464,7 +411,7 @@ class UI5WaitManager
      */
     public function waitForDOMElements(string $cssSelector, int $number = 1, int $timeoutInSeconds = 10): bool
     {
-        return $this->waitWithCdpGuard(
+        return $this->session->wait(
             $timeoutInSeconds * 1000,
             "($('{$cssSelector}').length >= {$number})"
         );
