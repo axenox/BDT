@@ -6,8 +6,10 @@ use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
 use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
+use axenox\BDT\Exceptions\AjaxException;
 use axenox\BDT\Exceptions\FacadeNodeException;
 use axenox\BDT\Exceptions\FacadeNodeScriptException;
+use axenox\BDT\Exceptions\UIException;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use axenox\BDT\Interfaces\TestResultInterface;
 use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
@@ -298,18 +300,43 @@ JS;
 
     /**
      * Runs test substep defined by the given callable and returns the corresponding result object
-     * 
+     *
      * The $callable will receive the default result object as argument and may modify it or return
      * a new one. If the callable does not return anything, it will not fail - the default result
      * will be used. If the callable throws an exception, a failed result will be created automatically
+     *
+     *  Execution order on failure:
+     *    1. Exception is caught.
+     *    2. Screenshot is captured — the browser is still in the failed state,
+     *       so the screenshot reflects exactly what went wrong (e.g. an error dialog is still visible).
+     *    3. If the exception is a UI5DialogException, the error dialog is dismissed
+     *       so the DOM is unblocked for subsequent interactions.
+     *    4. The optional $onFailure callback is invoked — use this for cleanup that must
+     *       happen after the screenshot but before the exception propagates (e.g. back-navigation
+     *       after a tile click so the browser is not left on the wrong page).
+     *    5. The exception is rethrown.
+     *
+     *  The $onFailure callback is intentionally separate from the main $fn closure so that
+     *  cleanup logic does not interfere with the screenshot: anything inside $fn that runs
+     *  after the failure point would change the browser state before the screenshot is taken.
      * 
      * @param callable $callable
      * @param string $title
      * @param string|null $category
      * @param LogBookInterface|null $logbook
+     * @param callable|null $onFailure Optional cleanup callback invoked after screenshot
+     *                                 and dialog dismiss, but before the exception is
+     *                                 rethrown. Exceptions thrown inside this callback
+     *                                 are silently swallowed to preserve the original error.
      * @return SubstepResult
      */
-    public function runAsSubstep(callable $callable, string $title, ?string $category = null, ?LogBookInterface $logbook = null) : SubstepResult
+    public function runAsSubstep(
+        callable $callable,
+        string $title,
+        ?string $category = null,
+        ?LogBookInterface $logbook = null,
+        callable $onFailure = null
+    ) : SubstepResult
     {
         $dispatcher = $this->getBrowser()->getEventDispatcher();
         $dispatcher->dispatch(new BeforeSubstep($title, $category));
@@ -320,14 +347,19 @@ JS;
             if ($returnValue instanceof SubstepResult) {
                 $substepResult = $returnValue;
             }
-        } /*catch (BrowserDriverException $e) {
-            usleep(500);
-            $this->runAsSubstep($callable, $title, $category, $logbook);
-        } */catch (\Throwable $e) {
+        } catch (\Throwable $e) {
             $logbook?->addLine('**ERROR:** ' . $e->getMessage());
             $this->getBrowser()->captureScreenshot($logbook);
             $substepResult = SubstepResult::createFailed($e, $logbook);
             ErrorManager::getInstance()->logException($e, $this->getBrowser()->getWorkbench());
+            if ($e instanceof UIException || $e instanceof AjaxException) {
+                $this->getBrowser()->dismissErrorDialogIfPresent();
+            }
+            if ($onFailure !== null) {
+                try {
+                    ($onFailure)();
+                } catch (\Throwable $ignored) {}
+            }
             // IMPORTANT: reset the node to make sure subsequent tests find it in the same state as it
             // would be if no error happened!
             $logbook->continueLine(' - resetting ' . $this->getWidgetType());

@@ -177,7 +177,13 @@ class UI5WaitManager
         {
             // Wait for initial page load
             $this->waitForPendingOperations(true, false, false);
-           
+
+            // Install the HTTP interceptor immediately after DOM is ready,
+            // BEFORE UI5 fires its initial AJAX requests (e.g. DataTable data load).
+            // The interceptor installed in prepareBeforeStep() belongs to the previous
+            // page's JS context and is lost on navigation — we must reinstall here.
+            $this->installHttpInterceptor();
+            
             // Wait for UI5 framework to initialize
             if (!$this->waitForUI5Framework()) {
                 throw new Exception("UI5 framework failed to load");

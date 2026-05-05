@@ -125,14 +125,16 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
     {
         $expectedAlias = $action->getPage()->getAliasWithNamespace();
 
+        $navigated = false;
         // Substep should fail if the page cannot be loaded (shows an error) - otherwise the substep for
         // the click is passed, and we go on checking the page
         $result = $this->runAsSubstep(
-            function(SubstepResult $result) use ($expectedAlias, $widget, $logbook) {
+            function(SubstepResult $result) use ($expectedAlias, $widget, $logbook, &$navigated) {
                 $logbook->addLine('Clicking ' . $this->getWidgetType() . ' [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
                 $logbook->addIndent(+1);
                 
                 $this->click();
+                $navigated = true;
                 $realAlias = $this->getBrowser()->getPageCurrent()->getAliasWithNamespace();
                 Assert::assertSame(
                     $expectedAlias,
@@ -160,7 +162,12 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
             },
             $this->buildMessageClicking(false),
             'Pages',
-            $logbook
+            $logbook,
+            function () use (&$navigated) {
+                if ($navigated) {
+                    $this->getBrowser()->navigateToPreviousPage();
+                }
+            }
         );
         return $result;
     }
