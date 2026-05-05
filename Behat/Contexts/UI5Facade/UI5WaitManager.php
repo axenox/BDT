@@ -2,6 +2,7 @@
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Exceptions\AjaxException;
+use axenox\BDT\Exceptions\FacadeBrowserException;
 use axenox\BDT\Exceptions\FetchApiException;
 use axenox\BDT\Exceptions\MessagePageException;
 use axenox\BDT\Exceptions\TracerException;
@@ -95,18 +96,27 @@ class UI5WaitManager
         // Merge provided timeouts with defaults
 
         // Wait for page load if requested
-        if ($waitForPage) {
-            $this->waitForPageLoad($timeouts['page']);
+        if ($waitForPage && !$this->waitForPageLoad($timeouts['page'])) {
+           throw new FacadeBrowserException(
+               "The page was not loaded within the expected time of {$timeouts['page']} seconds.", 
+               ["URL" => $this->getSession()->getCurrentUrl()]
+           );
         }
 
         // Wait for busy indicator to disappear if requested
-        if ($waitForBusy) {
-            $this->waitForBusyIndicator($timeouts['busy']);
+        if ($waitForBusy && !$this->waitForBusyIndicator($timeouts['busy'])) {
+            throw new FacadeBrowserException(
+                "The busy indicator was not disappear within the expected time of {$timeouts['busy']} seconds.",
+                ["URL" => $this->getSession()->getCurrentUrl()]
+            );
         }
 
         // Wait for AJAX requests to complete if requested
-        if ($waitForAjax) {
-            $this->waitForAjaxRequests($timeouts['ajax']);
+        if ($waitForAjax && !$this->waitForAjaxRequests($timeouts['ajax'])) {
+            throw new FacadeBrowserException(
+                "The AJAX requests was not completed within the expected time of {$timeouts['ajax']} seconds.",
+                ["URL" => $this->getSession()->getCurrentUrl()]
+            );
         }
 
         // Wait for page to load
@@ -201,7 +211,7 @@ class UI5WaitManager
     private function waitForPageLoad(int $timeout): bool
     {
         // Wait until document.readyState becomes 'complete'
-        return $this->session->wait(
+        return $this->waitWithCdpGuard(
             $timeout * 1000,
             "document.readyState === 'complete'"
         );
@@ -223,7 +233,7 @@ class UI5WaitManager
     private function waitForBusyIndicator(int $timeout): bool
     {
         // Execute JavaScript to check if the busy indicator is no longer displayed
-        return $this->session->wait(
+        return $this->waitWithCdpGuard(
             $timeout * 1000,
             <<<JS
             (function() {
@@ -253,7 +263,7 @@ class UI5WaitManager
     private function waitForAjaxRequests(int $timeout): bool
     {
         // Execute JavaScript to check if there are no pending AJAX requests
-        return $this->session->wait(
+        return $this->waitWithCdpGuard(
             $timeout * 1000,
             <<<JS
             (function() {
@@ -277,7 +287,7 @@ class UI5WaitManager
      */
     private function waitForUI5Framework(): bool
     {
-        return $this->session->wait(
+        return $this->waitWithCdpGuard(
             $this->defaultTimeouts['ajax'] * 1000,
             <<<JS
             (function() {
@@ -306,7 +316,7 @@ class UI5WaitManager
      */
     private function waitForUI5Controls(): bool
     {
-        return $this->session->wait(
+        return $this->waitWithCdpGuard(
             $this->defaultTimeouts['ajax'] * 1000,
             <<<JS
             (function() {
@@ -330,6 +340,59 @@ class UI5WaitManager
             $app = $page->findById($appId);
             return $app && $app->isVisible();
         });
+    }
+
+    /**
+     * Executes a Mink session->wait() call and re-throws CDP connection failures
+     * as a ChromeHangException.
+     *
+     * session->wait() blocks indefinitely when Chrome's WebSocket connection is
+     * lost, because it keeps sending CDP commands that never receive a response.
+     * This wrapper catches the lower-level connection exceptions that surface in
+     * that scenario and converts them into a ChromeHangException so that callers
+     * can react to a hung browser without waiting for the outer process timeout
+     * (e.g. Symfony Process's 600-second limit).
+     *
+     * @param int    $timeoutMs Maximum time to wait in milliseconds.
+     * @param string $js        JavaScript condition to evaluate repeatedly.
+     * @return bool True if the JS condition became truthy within the timeout.
+     * @throws ChromeHangException If the CDP connection is detected as lost.
+     */
+    private function waitWithCdpGuard(int $timeoutMs, string $js): bool
+    {
+        try {
+            return $this->session->wait($timeoutMs, $js);
+        } catch (\Exception $e) {
+            if ($this->isCdpConnectionError($e)) {
+                throw new ChromeHangException(
+                    'CDP connection lost during wait: ' . $e->getMessage(),
+                    0,
+                    $e
+                );
+            }
+            throw $e;
+        }
+    }
+
+    /**
+     * Determines whether an exception originates from a broken CDP/WebSocket connection.
+     *
+     * Chrome communicates with the PHP test process over a WebSocket via the Chrome
+     * DevTools Protocol. When Chrome hangs or crashes, this connection drops and
+     * subsequent CDP calls throw exceptions containing keywords like "WebSocket" or
+     * "Connection refused". This method centralises that detection logic so it can
+     * be reused by any wait operation without duplicating string-matching code.
+     *
+     * @param \Exception $e The exception to inspect.
+     * @return bool True if the exception indicates a lost CDP connection.
+     */
+    private function isCdpConnectionError(\Exception $e): bool
+    {
+        $msg = $e->getMessage();
+        return str_contains($msg, 'WebSocket')
+            || str_contains($msg, 'Connection refused')
+            || str_contains($msg, 'Could not connect')
+            || str_contains($msg, 'curl error');
     }
 
     /**
@@ -401,7 +464,7 @@ class UI5WaitManager
      */
     public function waitForDOMElements(string $cssSelector, int $number = 1, int $timeoutInSeconds = 10): bool
     {
-        return $this->session->wait(
+        return $this->waitWithCdpGuard(
             $timeoutInSeconds * 1000,
             "($('{$cssSelector}').length >= {$number})"
         );
@@ -411,9 +474,6 @@ class UI5WaitManager
     {
         $this->getSession()->evaluateScript(<<<'JS'
 (function () {
-  if (window.__exfHttpInterceptorInstalled) return;
-  window.__exfHttpInterceptorInstalled = true;
-
   // existing structure or create
   window.exfXHRLog = window.exfXHRLog || {};
   window.exfXHRLog.errors = window.exfXHRLog.errors || [];
