@@ -1450,6 +1450,49 @@ JS
     JS);
     }
     
+    /**
+     * Dismisses a visible error dialog by clicking its Close button.
+     *
+     * This method is called at the beginning of each step (prepareBeforeStep) to clean up
+     * any error dialog that was left open by the previous step's failure. The dialog must
+     * remain visible during the previous step so that the screenshot captures it — dismissal
+     * is intentionally deferred to this point so back-navigation and DOM interactions in the
+     * current step are not blocked by a lingering modal overlay.
+     *
+     * Detects error pop-ups with the `exf-error` class and closes them by clicking the close button.
+     * The close button text is translated according to the current locale.
+     *
+     * Safe to call when no dialog is present — returns false without side effects.
+     *
+     * @return bool True if a dialog was found and dismissed, false if no dialog was present.
+     */
+    public function dismissErrorDialogIfPresent(): bool
+    {        
+        $dismissed = $this->getSession()->evaluateScript(<<<'JS'
+(function () {
+    var dialog = document.querySelector('.exf-error');
+    if (!dialog) return false;
+
+    // Use SAP UI5's own control API to close the dialog properly.
+    // Native .click() bypasses UI5's event delegation and does not trigger
+    // the dialog's press handler — calling .close() on the control directly
+    // is the correct way to programmatically dismiss a sap.m.Dialog.
+    var controlId = dialog.getAttribute('id');
+    if (controlId && typeof sap !== 'undefined') {
+        var control = sap.ui.getCore().byId(controlId);
+        if (control && typeof control.close === 'function') {
+            control.close();
+            return true;
+        }
+    }
+
+    return false;
+})();
+JS);
+
+        return (bool) $dismissed;
+    }
+    
     public function findAppFromUrl(string $currentUrl): string
     {
         $pagePath = basename(parse_url($currentUrl, PHP_URL_PATH));
