@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
+use axenox\BDT\Behat\Contexts\Elements\DateParsingTrait;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
 use axenox\BDT\DataTypes\StepStatusDataType;
@@ -36,6 +37,8 @@ use exface\Core\Exceptions\RuntimeException;
  */
 class UI5DataNode extends UI5AbstractNode
 {
+
+    use DateParsingTrait;
     const CATEGORY_FILTERING = 'Filtering';
     const CATEGORY_BUTTONS = 'Buttons';
 
@@ -731,36 +734,6 @@ class UI5DataNode extends UI5AbstractNode
         // Plain number: "42", "3.14", "-7,5"
         $plain = str_replace(',', '.', $value);
         return is_numeric($plain) ? (float) $plain : null;
-    }
-
-    /**
-     * Parses date strings in multiple formats to Unix timestamp (midnight).
-     * Supported: d.m.Y, Y-m-d, d/m/Y, m/d/Y
-     * Returns null if unparseable.
-     */
-    public function parseDateFlexible(string $value): ?int
-    {
-        $value = trim($value);
-        foreach ([
-                     // Datetime formats first — more specific, must come before date-only
-                     'd.m.Y H:i:s',
-                     'd.m.Y H:i',
-                     'Y-m-d H:i:s',
-                     'Y-m-d H:i',
-                     'd/m/Y H:i:s',
-                     'd/m/Y H:i',
-                     // Date-only formats
-                     'd.m.Y',
-                     'Y-m-d',
-                     'd/m/Y',
-                     'm/d/Y',
-                 ] as $format) {
-            $dt = \DateTime::createFromFormat('!' . $format, $value);
-            if ($dt !== false && $dt->format($format) === $value) {
-                return $dt->getTimestamp();
-            }
-        }
-        return null;
     }
 
     public function normalizeBool(?string $value): ?bool
