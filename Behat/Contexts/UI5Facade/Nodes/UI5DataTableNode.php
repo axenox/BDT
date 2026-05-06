@@ -384,7 +384,10 @@ class UI5DataTableNode extends UI5DataNode
                     },
                     'Clicking ' . $buttonWidget->getCaption(),
                     'Dialogs',
-                    $logbook
+                    $logbook,
+                    function() {
+                            $this->getBrowser()->navigateToPreviousPage();
+                    }
                 );
 
                 // Say the buttons test is failed if at least one button fails
