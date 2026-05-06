@@ -194,7 +194,7 @@ class ChromeManager
      * @param int $timeoutSeconds Maximum number of seconds to wait
      * @throws RuntimeException  If Chrome does not become ready within the timeout
      */
-    private static function waitUntilReady(int $port, int $timeoutSeconds = 5): void
+    private static function waitUntilReady(int $port, int $timeoutSeconds = 10): void
     {
         $start = time();
         while (time() - $start < $timeoutSeconds) {
