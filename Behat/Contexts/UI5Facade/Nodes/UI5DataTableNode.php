@@ -8,15 +8,12 @@ use axenox\BDT\Exceptions\FacadeNodeException;
 use axenox\BDT\Interfaces\TestResultInterface;
 use Behat\Gherkin\Node\TableNode;
 use Behat\Mink\Element\NodeElement;
-use exface\Core\CommonLogic\Model\MetaObject;
 use exface\Core\DataTypes\BooleanDataType;
-use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\DateDataType;
 use exface\Core\DataTypes\NumberDataType;
 use exface\Core\DataTypes\NumberEnumDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\RuntimeException;
-use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\SelectorFactory;
 use exface\Core\Interfaces\DataTypes\DataTypeInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
@@ -31,7 +28,7 @@ use PHPUnit\Framework\Assert;
  */
 class UI5DataTableNode extends UI5DataNode
 {
-    
+
     public function getCaption(): string
     {
         return strstr($this->getNodeElement()->getAttribute('aria-label'), "\n", true);
@@ -53,7 +50,7 @@ class UI5DataTableNode extends UI5DataNode
 
     /**
      * Returns header "column" nodes (one per visible column) in UI order.
-     * 
+     *
      * @return array
      */
     public function getHeaderColumnNodes(): array
@@ -86,7 +83,7 @@ class UI5DataTableNode extends UI5DataNode
 
     protected function getLoadedRowCount(): ?int
     {
-       return count($this->getTableRows());        
+        return count($this->getTableRows());
     }
 
     public function selectRow(int $rowNumber)
@@ -148,7 +145,7 @@ class UI5DataTableNode extends UI5DataNode
     {
         /* @var $widget \exface\Core\Widgets\DataTable */
         $widget = $this->getWidget();
-        
+
         Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
         $expectedButtons = [];
         $expectedFilters = [];
@@ -210,7 +207,7 @@ class UI5DataTableNode extends UI5DataNode
         $this->checkWorksAsExpected($logbook);
     }
 
-    
+
     protected function checkTableWorksAsExpected(iShowData $dataWidget, LogBookInterface $logbook) : TestResultInterface
     {
         $parentResult = parent::checkTableWorksAsExpected($dataWidget, $logbook);
@@ -237,23 +234,23 @@ class UI5DataTableNode extends UI5DataNode
         */
         return $parentResult->isFailed() ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
     }
-    
+
     protected function checkFilterWorksAsExpected(iFilterData $filter, iShowData $dataWidget, UI5FilterNode $filterNode, SubstepResult $result) : SubstepResult
     {
         $logbook = $result->getLogbook();
         $logbook->addLine('Filtering`' . $filter->getCaption() . '`');
-        
+
         // Find and highlight the filter
         $this->getBrowser()->highlightWidget(
             $filterNode->getNodeElement(),
             $filter->getWidgetType(),
             0
         );
-        
+
         // Get a valid value for filtering
         $filterAttr = $filter->getAttribute();
-        
-        
+
+
         // Look for a value it the table
         // Verify the first DataTable contains the expected text in the specified column
         // sometimes column captions are not the same as filter captions
@@ -263,7 +260,7 @@ class UI5DataTableNode extends UI5DataNode
         if ($column !== null) {
             $columnCaption = $column->getCaption();
         }
-        
+
         if ($filterNode instanceof UI5RangeFilterNode) {
             $range = $this->findRangeValuesInDataSource($filterAttr, $filter, $dataWidget->getMetaObject());
 
@@ -301,7 +298,7 @@ class UI5DataTableNode extends UI5DataNode
             
             return $result;
         }
-        
+
         $filterVal = null;
         if ($column !== null) {
             $filterVal = $this->trySetFilterValue($filterNode, $filter, $filterAttr, $dataWidget, $logbook);
@@ -309,29 +306,31 @@ class UI5DataTableNode extends UI5DataNode
                 $logbook->continueLine(' with value `' . $filterVal . '` found in data source');
             }
         }
-        
-        if ($columnCaption === null) {
-            $logbook->continueLine(' - No column found');
-            return SubstepResult::createSkipped('No column found for filter `' . $filter->getCaption() . '`', $logbook);
-        }
 
         if (trim($filterVal ?? '') === '') {
             $logbook->continueLine(' no value found!');
             return SubstepResult::createSkipped('No value found for filter `' . $filter->getCaption() . '`', $logbook);
         }
-        
+
         $this->triggerSearch();
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
         $loadedRowCount = $this->getLoadedRowCount();
 
-        $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');        
-        
+        $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');
+
+
+        // See if our 
+        if ($columnCaption === null) {
+            $logbook->continueLine(' - No column found');
+            return SubstepResult::createSkipped('No column found for filter `' . $filter->getCaption() . '`', $logbook);
+        }
+
         $this->verifyTableContent([
             ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
         ]);
-        
+
         $logbook->continueLine(' - resetting filter');
-        
+
         $result->setTitle($result->getTitle() . ' with value "' . $filterVal . '"');
         return $result;
     }
@@ -385,7 +384,10 @@ class UI5DataTableNode extends UI5DataNode
                     },
                     'Clicking ' . $buttonWidget->getCaption(),
                     'Dialogs',
-                    $logbook
+                    $logbook,
+                    function() {
+                            $this->getBrowser()->navigateToPreviousPage();
+                    }
                 );
 
                 // Say the buttons test is failed if at least one button fails
@@ -401,7 +403,6 @@ class UI5DataTableNode extends UI5DataNode
         if($rowNumber !== null) {
             $this->selectRow($rowNumber);            
         }
-        
 
         // Log a SKIPPED substep for every reason to skip buttons
         foreach ($skippedButtons as $reason => $buttons) {
@@ -409,7 +410,7 @@ class UI5DataTableNode extends UI5DataNode
         }
         return $failed ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
     }
-    
+
     /**
      * @param string $caption
      * @return UI5HeaderColumnNode
@@ -471,16 +472,31 @@ class UI5DataTableNode extends UI5DataNode
     {
         $this->filterColumn($caption, "");
     }
-    
+
     protected function findValueInColumn(DataColumn $column, LogBookInterface $logbook): ?string
     {
         $columnCaption = $column->getCaption();
         $i = $this->getVisibleColumnIndex($column);
 
+        // Resolve the DOM column id so that extractCellValueFromRow can cross the
+        // fixed/scroll table boundary that UI5 creates for frozen columns.
+        $colId = null;
+        $headerCells = $this->getNodeElement()->findAll(
+            'css',
+            '.sapUiTableColHdrCnt .sapUiTableHeaderDataCell[data-sap-ui-colid]:not(.sapUiTableCellDummy)'
+        );
+        foreach ($headerCells as $cell) {
+            $label = $cell->find('css', 'label') ?? $cell;
+            if (trim($label->getText()) === $columnCaption) {
+                $colId = $cell->getAttribute('data-sap-ui-colid');
+                break;
+            }
+        }
+
         $rows = $this->getTableRows();
         $cellValue = null;
         foreach ($rows as $row) {
-            $cellValue = $this->extractCellValueFromRow($row, $i);
+            $cellValue = $this->extractCellValueFromRow($row, $i, $colId);
             if ($cellValue !== null) {
                 break;
             }
@@ -505,16 +521,36 @@ class UI5DataTableNode extends UI5DataNode
     }
 
     /**
-     * returns the rows of the Datatable
+     * Returns the data rows of the table, without duplicates.
      *
-     * @return array
+     * When a sapUiTable has frozen columns, UI5 renders two separate <table> elements:
+     *   - table.sapUiTableCtrlFixed  – contains only the frozen columns
+     *   - table.sapUiTableCtrlScroll – contains only the scrollable columns
+     * Both carry the same row count (same data-sap-ui-rowindex values) but different cells.
+     * Selecting from both tables would therefore count every logical row twice.
+     *
+     * We always take rows from the scroll table (which is always present).
+     * Cells that belong to frozen columns are retrieved on demand via findCellByColId(),
+     * which walks up from the row's data-sap-ui-rowindex and searches the whole table DOM.
+     *
+     * @return NodeElement[]
      */
     public function getTableRows(): array
     {
+        // Prefer scroll-table rows to avoid double-counting when fixed columns are present.
+        $scrollRows = $this->getNodeElement()->findAll(
+            'css',
+            'table.sapUiTableCtrlScroll .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden):not(.sapUiTableRowFirstFixedBottom)'
+        );
+        if (!empty($scrollRows)) {
+            return $scrollRows;
+        }
+
+        // Fallback for tables without a fixed/scroll split (e.g. sap.m.Table or single-table grids).
         return $this->getNodeElement()->findAll(
             'css',
-            '.sapUiTableCtrlFixed .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden):not(.sapUiTableRowFirstFixedBottom), ' .
-            '.sapUiTableCtrl .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden):not(.sapUiTableRowFirstFixedBottom)'
+            '.sapUiTableCtrl .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden):not(.sapUiTableRowFirstFixedBottom), ' .
+            '.sapMListTblRow'
         );
     }
 
@@ -529,39 +565,71 @@ class UI5DataTableNode extends UI5DataNode
     public function verifyTableContent(array $expectedContent): void
     {
         try {
+            // Build a deduplicated, sorted list of header cells.
+            // When fixed columns are present UI5 renders the column headers in BOTH the
+            // fixed table and the scroll table.  We deduplicate on data-sap-ui-colid so
+            // that every logical column appears exactly once.
+            $rawHeaderCells = $this->getNodeElement()->findAll(
+                'css',
+                '.sapUiTableColHdrCnt .sapUiTableHeaderDataCell[data-sap-ui-colid]:not(.sapUiTableCellDummy)'
+            );
+
+            $seenColIds    = [];
+            $uniqueHeaders = [];   // NodeElement[] – the header <td> cells, unique
+            foreach ($rawHeaderCells as $cell) {
+                $id = $cell->getAttribute('data-sap-ui-colid');
+                if ($id !== null && !isset($seenColIds[$id])) {
+                    $seenColIds[$id] = true;
+                    $uniqueHeaders[] = $cell;
+                }
+            }
+            usort($uniqueHeaders, static fn($a, $b) =>
+                (int)$a->getAttribute('data-sap-ui-colindex') <=> (int)$b->getAttribute('data-sap-ui-colindex')
+            );
+
             // Check each expected content item
             foreach ($expectedContent as $content) {
                 $columnName = $content['column'];
                 $searchValue = trim($content['value'], '"\'');
                 $rawCmp = $content['comparator'] ?? '[';
                 /** @var DataTypeInterface $inputDataType */
-                $inputDataType = $content['dataType'] ??  new StringDataType(SelectorFactory::createDataTypeSelector($this->getWorkbench(), static::class));
+                $inputDataType = $content['dataType'] ?? new StringDataType(SelectorFactory::createDataTypeSelector($this->getWorkbench(), static::class));
 
-                // First find column headers
-                $headers = $this->getNodeElement()->findAll('css', '.sapUiTableHeaderDataCell label, .sapMListTblHeader .sapMColumnHeader');
+                // Resolve column by caption from the deduplicated header list.
                 $columnIndex = null;
-
-                // Find the column index
-                foreach ($headers as $index => $header) {
-                    $headerText = trim($header->getText());
-                    if ($headerText === $columnName) {
+                $colId       = null;
+                foreach ($uniqueHeaders as $index => $headerCell) {
+                    $label = $headerCell->find('css', 'label') ?? $headerCell;
+                    if (trim($label->getText()) === $columnName) {
                         $columnIndex = $index;
+                        $colId       = $headerCell->getAttribute('data-sap-ui-colid');
                         break;
+                    }
+                }
+
+                // Fallback: sap.m.Table headers (no data-sap-ui-colid).
+                if ($columnIndex === null) {
+                    $mHeaders = $this->getNodeElement()->findAll('css', '.sapMListTblHeader .sapMColumnHeader');
+                    foreach ($mHeaders as $index => $header) {
+                        if (trim($header->getText()) === $columnName) {
+                            $columnIndex = $index;
+                            break;
+                        }
                     }
                 }
 
                 Assert::assertNotNull($columnIndex, "Column '$columnName' not found in table");
 
-                // Check table cells
-                $rows = $this->getTableRows();
+                // Check table cells - get rows from all available tables (both fixed and scroll)
+                $rows = $this->getAllTableRows();
                 $considered = 0;
                 $matches = 0;
                 $firstFailures = []; // collect first few failures for better error messages
                 foreach ($rows as $row) {
-                    $cellText = $this->extractCellValueFromRow($row, $columnIndex);
+                    // Pass $colId so extractCellValueFromRow can cross fixed/scroll boundaries.
+                    $cellText = $this->extractCellValueFromRow($row, $columnIndex, $colId);
                     $considered++;
 
-                    // Strict comparison using your limited operator set
                     $ok = $this->compareCell($cellText, $searchValue, $rawCmp, $inputDataType);
 
                     if ($ok) {
@@ -578,7 +646,6 @@ class UI5DataTableNode extends UI5DataNode
                     $matches,
                     "Not all rows of the table fits the column '{$columnName}'. {$matches}/{$considered} matched. First mismatches: " . implode(' | ', $firstFailures)
                 );
-
             }
         } catch (\Throwable $e) {
             throw new RuntimeException(
@@ -589,38 +656,136 @@ class UI5DataTableNode extends UI5DataNode
         }
     }
 
+    /**
+     * Returns all table rows including those from both fixed and scrollable table sections.
+     * Handles the case where UI5 splits tables into fixed and scroll tables.
+     *
+     * @return NodeElement[]
+     */
+    private function getAllTableRows(): array
+    {
+        $allRows = [];
+        $seenRowIndices = [];
+
+        // Get rows from the scroll table (preferred, contains most/all rows)
+        $scrollRows = $this->getNodeElement()->findAll(
+            'css',
+            'table.sapUiTableCtrlScroll .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden):not(.sapUiTableRowFirstFixedBottom)'
+        );
+        foreach ($scrollRows as $row) {
+            $rowIndex = $row->getAttribute('data-sap-ui-rowindex');
+            if ($rowIndex !== null) {
+                $seenRowIndices[$rowIndex] = true;
+                $allRows[] = $row;
+            }
+        }
+
+        // Get rows from the fixed table (may contain rows not in scroll table)
+        $fixedRows = $this->getNodeElement()->findAll(
+            'css',
+            'table.sapUiTableCtrlFixed .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden):not(.sapUiTableRowFirstFixedBottom)'
+        );
+        foreach ($fixedRows as $row) {
+            $rowIndex = $row->getAttribute('data-sap-ui-rowindex');
+            if ($rowIndex !== null && !isset($seenRowIndices[$rowIndex])) {
+                $seenRowIndices[$rowIndex] = true;
+                $allRows[] = $row;
+            }
+        }
+
+        // If no rows found in both, try the generic selector
+        if (empty($allRows)) {
+            return $this->getTableRows();
+        }
+
+        // Sort by row index to maintain order
+        usort($allRows, function ($a, $b) {
+            $indexA = (int)($a->getAttribute('data-sap-ui-rowindex') ?? -1);
+            $indexB = (int)($b->getAttribute('data-sap-ui-rowindex') ?? -1);
+            return $indexA <=> $indexB;
+        });
+
+        return $allRows;
+    }
+
 
     /**
-     * returns the cell value from requested index of the column and the row
+     * returns the cell value from requested index of the column and the row.
+     *
+     * When $colId is supplied the cell is located by its data-sap-ui-colid attribute,
+     * which works correctly even when frozen columns split the table into two <table>
+     * elements (sapUiTableCtrlFixed / sapUiTableCtrlScroll).  The index-based fallback
+     * is retained for callers that do not yet supply a column id.
      *
      * @param NodeElement $row
-     * @param int $columnIndex
+     * @param int $columnIndex  (used only when $colId is null)
+     * @param string|null $colId  data-sap-ui-colid value of the target column
      * @return string|null
      */
-    public function extractCellValueFromRow(NodeElement $row, int $columnIndex): ?string
+    public function extractCellValueFromRow(NodeElement $row, int $columnIndex, ?string $colId = null): ?string
     {
         if ($row->getAttribute('aria-hidden') === 'true') {
             return null;
         }
 
+        // --- colId-based lookup (preferred when fixed columns split the table) ---
+        if ($colId !== null) {
+            $cell = $this->findCellByColId($row, $colId);
+            if ($cell === null) {
+                return null;
+            }
+            $cellText = $this->extractCellText($cell);
+            return $cellText !== '' ? $cellText : null;
+        }
+
+        // --- Legacy index-based lookup ---
         $cells = $row->findAll('css', '.sapUiTableCell, .sapMListTblCell');
         if (count($cells) === 0) {
-            return null; // row has no cells at all
+            return null;
         }
         if (!isset($cells[$columnIndex])) {
             return null;
         }
 
-        // Extract visible text from the target cell
-        $cell = $cells[$columnIndex];
+        $cell     = $cells[$columnIndex];
+        $cellText = $this->extractCellText($cell);
 
-        $cellText = $this->extractCellText($cell); // see helper below
-
-        // Skip truly empty rows (no content at all)
         if ($cellText === '') {
             return null;
         }
         return $cellText;
+    }
+
+    /**
+     * Finds a table cell by its data-sap-ui-colid attribute.
+     *
+     * First the current row element is searched.  If nothing is found there (e.g. the
+     * requested column lives in the other half of a frozen-column table) the method uses
+     * the row's data-sap-ui-rowindex to search the whole table DOM, covering both the
+     * fixed-column table and the scroll-column table.
+     *
+     * @param NodeElement $row
+     * @param string $colId
+     * @return NodeElement|null
+     */
+    private function findCellByColId(NodeElement $row, string $colId): ?NodeElement
+    {
+        // Fast path: cell is already in this row element.
+        $cell = $row->find('css', 'td[data-sap-ui-colid="' . $colId . '"]');
+        if ($cell !== null) {
+            return $cell;
+        }
+
+        // Slow path: the cell belongs to the other table part (fixed ↔ scroll split).
+        $rowIndex = $row->getAttribute('data-sap-ui-rowindex');
+        if ($rowIndex === null) {
+            return null;
+        }
+
+        return $this->getNodeElement()->find(
+            'css',
+            '[data-sap-ui-rowindex="' . $rowIndex . '"] td[data-sap-ui-colid="' . $colId . '"]'
+        );
     }
 
     /**

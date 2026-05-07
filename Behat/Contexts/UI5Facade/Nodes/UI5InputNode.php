@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
+use axenox\BDT\Behat\Contexts\Elements\DateParsingTrait;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Mink\Element\NodeElement;
 use PHPUnit\Framework\Assert;
@@ -11,9 +12,18 @@ use PHPUnit\Framework\Assert;
  */
 class UI5InputNode extends UI5AbstractNode
 {
+
+    use DateParsingTrait;
     public function getCaption() : string
     {
-        return '';
+        $label = $this->getNodeElement()->find(
+            'xpath',
+            'ancestor::div[contains(@class,"sapUiVltCell")]'
+            . '/preceding-sibling::div[contains(@class,"sapUiVltCell")][1]'
+            . '//bdi'
+        );
+
+        return $label !== null ? trim($label->getText()) : '';
     }
     
     public function getValueVisible()
@@ -50,8 +60,8 @@ class UI5InputNode extends UI5AbstractNode
         if ($el->hasClass('exfw-InputDate') || $el->hasClass('exfw-InputDateTime')) {
             $isDateTime = $el->hasClass('exfw-InputDateTime');
             Assert::assertSame(
-                $this->normalizeDateToIso($expectedValue, $isDateTime),
-                $this->normalizeDateToIso($newVal, $isDateTime),
+                $this->normalizeDateToIso($expectedValue, $this->getCaption(), $isDateTime),
+                $this->normalizeDateToIso($newVal, $this->getCaption(), $isDateTime),
                 "Expected date `$expectedValue` does not match actual `$newVal` in filter '{$this->getCaption()}'"
             );
             return $this;
@@ -92,44 +102,5 @@ class UI5InputNode extends UI5AbstractNode
                 return $node;
         }
         return null;
-    }
-
-    /**
-     * Normalizes various date or datetime strings to a comparable ISO format.
-     *
-     * Date formats supported:    Y-m-d, d.m.Y, d/m/Y, m/d/Y
-     * Datetime formats supported: Y-m-d H:i, d.m.Y H:i, d.m.Y, H:i:s suffix is stripped
-     *                             because the UI never shows seconds.
-     *
-     * @param bool $includeTime When true, normalizes to "Y-m-d H:i"; otherwise "Y-m-d"
-     */
-    private function normalizeDateToIso(string $value, bool $includeTime = false): string
-    {
-        $value = trim($value);
-
-        if ($includeTime) {
-            $formats = [
-                'd.m.Y H:i:s',  // with seconds: "15.06.2025 14:30:00"
-                'd.m.Y H:i',    // UI display: "15.06.2025 14:30"
-                'Y-m-d H:i:s',  // ISO with seconds: "2025-06-15 14:30:00"
-                'Y-m-d H:i',    // ISO: "2025-06-15 14:30"
-                'd/m/Y H:i',
-                'm/d/Y H:i',
-            ];
-            foreach ($formats as $format) {
-                $dt = \DateTime::createFromFormat('!' . $format, $value);
-                if ($dt !== false && $dt->format($format) === $value) {
-                    return $dt->format('Y-m-d H:i'); // always normalize to H:i, no seconds
-                }
-            }
-        }
-        
-        foreach (['Y-m-d', 'd.m.Y', 'd/m/Y', 'm/d/Y'] as $format) {
-            $dt = \DateTime::createFromFormat('!' . $format, $value);
-            if ($dt !== false && $dt->format($format) === $value) {
-                return $dt->format('Y-m-d');
-            }
-        }
-        throw new \InvalidArgumentException("Cannot parse date value `$value` in filter '{$this->getCaption()}'");
     }
 }

@@ -10,6 +10,28 @@ use PHPUnit\Framework\Assert;
  */
 class UI5InputComboTableNode extends UI5InputNode
 {
+    /**
+     * Returns the visible label text for this input.
+     *
+     * The SAP UI5 form layout places the label in a sibling sapUiVltCell rather than
+     * inside the InputComboTable's own DOM subtree. This method therefore walks up the
+     * DOM to the enclosing sapUiVlt container and reads the first <bdi> label text found
+     * there, which matches the pattern used by UI5FilterNode::getCaption().
+     *
+     * Returns an empty string when no label element can be found (e.g. standalone usage
+     * outside a form layout).
+     *
+     * @return string Trimmed label text, or empty string if not found
+     */
+    public function getCaption(): string
+    {
+        $label = $this->getNodeElement()->find(
+            'xpath',
+            'ancestor::div[contains(@class,"sapUiVlt")]//span[contains(@class,"sapMLabel")]//bdi'
+        );
+        return $label !== null ? trim($label->getText()) : '';
+    }
+    
     public function getValueVisible()
     {
         $widget = $this->getWidget();

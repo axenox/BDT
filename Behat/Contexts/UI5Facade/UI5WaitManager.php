@@ -2,6 +2,7 @@
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Exceptions\AjaxException;
+use axenox\BDT\Exceptions\FacadeBrowserException;
 use axenox\BDT\Exceptions\FetchApiException;
 use axenox\BDT\Exceptions\MessagePageException;
 use axenox\BDT\Exceptions\TracerException;
@@ -96,18 +97,27 @@ class UI5WaitManager
         // Merge provided timeouts with defaults
 
         // Wait for page load if requested
-        if ($waitForPage) {
-            $this->waitForPageLoad($timeouts['page']);
+        if ($waitForPage && !$this->waitForPageLoad($timeouts['page'])) {
+           throw new FacadeBrowserException(
+               "The page was not loaded within the expected time of {$timeouts['page']} seconds.", 
+               ["URL" => $this->getSession()->getCurrentUrl()]
+           );
         }
 
         // Wait for busy indicator to disappear if requested
-        if ($waitForBusy) {
-            $this->waitForBusyIndicator($timeouts['busy']);
+        if ($waitForBusy && !$this->waitForBusyIndicator($timeouts['busy'])) {
+            throw new FacadeBrowserException(
+                "The busy indicator was not disappear within the expected time of {$timeouts['busy']} seconds.",
+                ["URL" => $this->getSession()->getCurrentUrl()]
+            );
         }
 
         // Wait for AJAX requests to complete if requested
-        if ($waitForAjax) {
-            $this->waitForAjaxRequests($timeouts['ajax']);
+        if ($waitForAjax && !$this->waitForAjaxRequests($timeouts['ajax'])) {
+            throw new FacadeBrowserException(
+                "The AJAX requests was not completed within the expected time of {$timeouts['ajax']} seconds.",
+                ["URL" => $this->getSession()->getCurrentUrl()]
+            );
         }
 
         // Wait for page to load
@@ -168,7 +178,13 @@ class UI5WaitManager
         {
             // Wait for initial page load
             $this->waitForPendingOperations(true, false, false);
-           
+
+            // Install the HTTP interceptor immediately after DOM is ready,
+            // BEFORE UI5 fires its initial AJAX requests (e.g. DataTable data load).
+            // The interceptor installed in prepareBeforeStep() belongs to the previous
+            // page's JS context and is lost on navigation — we must reinstall here.
+            $this->installHttpInterceptor();
+            
             // Wait for UI5 framework to initialize
             if (!$this->waitForUI5Framework()) {
                 throw new Exception("UI5 framework failed to load");
@@ -326,7 +342,7 @@ class UI5WaitManager
             return $app && $app->isVisible();
         });
     }
-
+    
     /**
      * Executes a Mink session->wait() call and re-throws CDP connection failures
      * as a ChromeHangException.
@@ -459,9 +475,6 @@ class UI5WaitManager
     {
         $this->getSession()->evaluateScript(<<<'JS'
 (function () {
-  if (window.__exfHttpInterceptorInstalled) return;
-  window.__exfHttpInterceptorInstalled = true;
-
   // existing structure or create
   window.exfXHRLog = window.exfXHRLog || {};
   window.exfXHRLog.errors = window.exfXHRLog.errors || [];
