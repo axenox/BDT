@@ -83,6 +83,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         $this->provider = $provider;
         $this->isDryRun = in_array('--dry-run', $_SERVER['argv'] ?? [], true);
         if (!$this->isDryRun) {
+            ChromeManager::setLogger($this->workbench->getLogger());
             $this->chromeStartResult = ChromeManager::start($chromeConfig);
             $this->startRun();
         }
