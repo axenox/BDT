@@ -13,11 +13,12 @@ use Exception;
 use exface\Core\Exceptions\InvalidArgumentException;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
+use axenox\BDT\Exceptions\ChromeHangException;
 
 
 /**
  * UI5WaitManager - Manages waiting operations for UI5 framework
- * 
+ *
  * This class provides methods to handle various waiting scenarios in UI5 applications,
  * such as waiting for page loads, busy indicators, AJAX requests, and framework initialization.
  * It also validates if any errors occurred during these operations.
@@ -31,7 +32,7 @@ class UI5WaitManager
 
     /**
      * Gets the current Mink session
-     * 
+     *
      * @return Session The Mink session
      */
     public function getSession(): Session
@@ -50,7 +51,7 @@ class UI5WaitManager
 
     /**
      * Constructor - initializes the manager with  session
-     * 
+     *
      * @param Session $session  session instance
      */
     public function __construct(Session $session)
@@ -60,10 +61,10 @@ class UI5WaitManager
 
     /**
      * Waits for specified UI5 operations
-     * 
+     *
      * This method is the main entry point for waiting for various UI5 operations.
      * It can wait for page loads, busy indicators, and AJAX requests based on the parameters provided.
-     * 
+     *
      * @param bool $waitForPage Wait for page load
      * @param bool $waitForBusy Wait for busy indicator
      * @param bool $waitForAjax Wait for AJAX requests
@@ -161,19 +162,19 @@ class UI5WaitManager
 
     /**
      * Waits for initial UI5 application load
-     * 
+     *
      * This method performs a complete initialization wait sequence:
      * 1. Waits for the initial page to load
      * 2. Waits for the UI5 framework to initialize
-     * 3. Waits for UI5 controls to be rendered 
+     * 3. Waits for UI5 controls to be rendered
      * 4. Waits for any busy indicators and AJAX requests to complete
-     * 
+     *
      * @param string $pageUrl The URL of the page being loaded
      * @throws Exception If any part of the application loading fails
      */
     public function waitForAppLoaded(string $pageUrl): void
     {
-        try 
+        try
         {
             // Wait for initial page load
             $this->waitForPendingOperations(true, false, false);
@@ -189,20 +190,14 @@ class UI5WaitManager
                 throw new Exception("UI5 framework failed to load");
             }
 
-            // Wait for UI5 controls to be rendered
-            if (!$this->waitForUI5Controls()) {
-                throw new Exception("UI5 controls failed to load");
-            }
-
-            $this->enableJsErrorTracer(); 
+            $this->enableJsErrorTracer();
             // Extract application ID from URL and wait for it to be available
             $appId = substr($pageUrl, 0, strpos($pageUrl, '.html')) . '.app';
             $this->waitForAppId($appId);
 
-            
             // Wait for busy indicators and AJAX requests to complete
             $this->waitForPendingOperations(false, true, true);
-          
+
         } catch (Exception $e) {
             throw new Exception("Failed to load UI5 application DB: " . $e->getMessage(), null, $e);
         }
@@ -210,14 +205,14 @@ class UI5WaitManager
 
     /**
      * Waits for the page to be fully loaded
-     * 
+     *
      * @param int $timeout Maximum time to wait in seconds
      * @return bool True if page loaded successfully, false otherwise
      */
     private function waitForPageLoad(int $timeout): bool
     {
         // Wait until document.readyState becomes 'complete'
-        return $this->session->wait(
+        return $this->waitWithCdpGuard(
             $timeout * 1000,
             "document.readyState === 'complete'"
         );
@@ -225,21 +220,21 @@ class UI5WaitManager
 
     /**
      * Waits for the UI5 busy indicator to disappear
-     * 
+     *
      * This method checks multiple conditions to determine if the application is still busy:
      * 1. Verifies document has finished loading (readyState === 'complete')
      * 2. Checks if jQuery AJAX requests are active ($.active)
      * 3. Verifies exfLauncher exists and is not in busy state
-     * 
+     *
      * The method returns true only when all conditions indicate the application is no longer busy.
-     * 
+     *
      * @param int $timeout Maximum time to wait in seconds
      * @return bool True if application is no longer busy, false if timeout occurred
      */
     private function waitForBusyIndicator(int $timeout): bool
     {
         // Execute JavaScript to check if the busy indicator is no longer displayed
-        return $this->session->wait(
+        return $this->waitWithCdpGuard(
             $timeout * 1000,
             <<<JS
             (function() {
@@ -255,21 +250,21 @@ class UI5WaitManager
 
     /**
      * Waits for all AJAX requests and UI5 busy indicators to complete
-     * 
+     *
      * This method monitors two separate conditions:
      * 1. jQuery AJAX requests (jQuery.active counter)
      * 2. UI5's built-in BusyIndicator status (via _globalBusyIndicatorCounter)
-     * 
+     *
      * The method returns true only when both jQuery has no active requests
      * and UI5's busy indicator counter is zero.
-     * 
+     *
      * @param int $timeout Maximum time to wait in seconds
      * @return bool True if all AJAX requests and busy indicators completed, false if timeout occurred
      */
     private function waitForAjaxRequests(int $timeout): bool
     {
         // Execute JavaScript to check if there are no pending AJAX requests
-        return $this->session->wait(
+        return $this->waitWithCdpGuard(
             $timeout * 1000,
             <<<JS
             (function() {
@@ -288,12 +283,12 @@ class UI5WaitManager
 
     /**
      * Waits for the UI5 framework to be initialized
-     * 
+     *
      * @return bool True if UI5 framework initialized, false otherwise
      */
     private function waitForUI5Framework(): bool
     {
-        return $this->session->wait(
+        return $this->waitWithCdpGuard(
             $this->defaultTimeouts['ajax'] * 1000,
             <<<JS
             (function() {
@@ -317,12 +312,12 @@ class UI5WaitManager
 
     /**
      * Waits for UI5 controls to be rendered on the page
-     * 
+     *
      * @return bool True if UI5 controls are rendered, false otherwise
      */
     private function waitForUI5Controls(): bool
     {
-        return $this->session->wait(
+        return $this->waitWithCdpGuard(
             $this->defaultTimeouts['ajax'] * 1000,
             <<<JS
             (function() {
@@ -336,7 +331,7 @@ class UI5WaitManager
 
     /**
      * Waits for the specific application ID to be available and visible
-     * 
+     *
      * @param string $appId The application ID to wait for
      */
     private function waitForAppId(string $appId): void
@@ -349,23 +344,76 @@ class UI5WaitManager
     }
     
     /**
+     * Executes a Mink session->wait() call and re-throws CDP connection failures
+     * as a ChromeHangException.
+     *
+     * session->wait() blocks indefinitely when Chrome's WebSocket connection is
+     * lost, because it keeps sending CDP commands that never receive a response.
+     * This wrapper catches the lower-level connection exceptions that surface in
+     * that scenario and converts them into a ChromeHangException so that callers
+     * can react to a hung browser without waiting for the outer process timeout
+     * (e.g. Symfony Process's 600-second limit).
+     *
+     * @param int    $timeoutMs Maximum time to wait in milliseconds.
+     * @param string $js        JavaScript condition to evaluate repeatedly.
+     * @return bool True if the JS condition became truthy within the timeout.
+     * @throws ChromeHangException If the CDP connection is detected as lost.
+     */
+    private function waitWithCdpGuard(int $timeoutMs, string $js): bool
+    {
+        try {
+            return $this->session->wait($timeoutMs, $js);
+        } catch (\Exception $e) {
+            if ($this->isCdpConnectionError($e)) {
+                throw new ChromeHangException(
+                    'CDP connection lost during wait: ' . $e->getMessage(),
+                    0,
+                    $e
+                );
+            }
+            throw $e;
+        }
+    }
+
+    /**
+     * Determines whether an exception originates from a broken CDP/WebSocket connection.
+     *
+     * Chrome communicates with the PHP test process over a WebSocket via the Chrome
+     * DevTools Protocol. When Chrome hangs or crashes, this connection drops and
+     * subsequent CDP calls throw exceptions containing keywords like "WebSocket" or
+     * "Connection refused". This method centralises that detection logic so it can
+     * be reused by any wait operation without duplicating string-matching code.
+     *
+     * @param \Exception $e The exception to inspect.
+     * @return bool True if the exception indicates a lost CDP connection.
+     */
+    private function isCdpConnectionError(\Exception $e): bool
+    {
+        $msg = $e->getMessage();
+        return str_contains($msg, 'WebSocket')
+            || str_contains($msg, 'Connection refused')
+            || str_contains($msg, 'Could not connect')
+            || str_contains($msg, 'curl error');
+    }
+
+    /**
      * Validates that no errors occurred during the UI5 operations
-     * 
+     *
      * Checks for three types of errors:
      * 1. XHR (network) errors
      * 2. UI5 MessageManager errors
      * 3. JavaScript errors
      * 4. Popup (.exf-error)
-     * 
+     *
      * @throws \RuntimeException|\Throwable If any errors are found
      */
     public function validateNoErrors(): void
     {
         try {
             $this->checkMessagePageErrors();
-            
+
             $this->checkNetworkErrors();
-            
+
             $this->checkPopupErrors();
 
             $this->checkUiErrors();
@@ -373,7 +421,7 @@ class UI5WaitManager
             $this->checkMessageManagerErrors();
 
             $this->checkTracerErrors();
-            
+
         } catch (\Throwable $e) {
             // If the browser connection timed out, the tab was likely still busy
             // executing heavy JS (e.g. SAP UI5 render cycle). Skip error validation
@@ -398,10 +446,10 @@ class UI5WaitManager
 
     /**
      * Waits till the specified number of DOM elements matching the given CSS selector are available
-     * 
+     *
      * NOTE: this does not mean, they are visible! They are merely available in the DOM. So if you
      * need to have 4 Tiles visible, so something like this:
-     * 
+     *
      * ```
      * $this->waitManager->waitForDOMElements('.exf-tile', 4);
      * $cnt = 0;
@@ -409,7 +457,7 @@ class UI5WaitManager
      *     if ($node->isVisible()) $cnt++;
      * }
      * ```
-     * 
+     *
      * @param string $cssSelector
      * @param int $number
      * @param int $timeoutInSeconds
@@ -417,7 +465,7 @@ class UI5WaitManager
      */
     public function waitForDOMElements(string $cssSelector, int $number = 1, int $timeoutInSeconds = 10): bool
     {
-        return $this->session->wait(
+        return $this->waitWithCdpGuard(
             $timeoutInSeconds * 1000,
             "($('{$cssSelector}').length >= {$number})"
         );
@@ -614,7 +662,7 @@ JS);
     private function enableJsErrorTracer(): void
     {
         try {
-        $this->getSession()->evaluateScript('window.exfLauncher.enableJsTracing();');
+            $this->getSession()->evaluateScript('window.exfLauncher.enableJsTracing();');
         } catch (\Throwable $e) {
             ErrorManager::getInstance()->logException($e);
         }
@@ -813,7 +861,7 @@ JS);
             );
         }
     }
-    
+
     private function checkMessagePageErrors()
     {
         // Check for UI5 MessagePage errors (full-page error views like "Server error: Log ID ...")

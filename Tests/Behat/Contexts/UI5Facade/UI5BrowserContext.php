@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
+use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\TwigFormatter\Context\BehatFormatterContext;
@@ -49,6 +50,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private $debug = false;
     private string $locale = 'de_DE';
     private bool $isDryRun = false;
+    private ?string $lastLoginUrl = null;
+    private ?string $lastLoginRole = null;
+    private ?string $lastLoginLocale = null;
     
     /** 
      * Initializes and starts the workbench for the test environment
@@ -288,6 +292,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iLogInToPage(string $url, string $userRoles = null, string $userLocale = null)
     {
+        // Persist login parameters so recoverChrome() can replay them.
+        $this->lastLoginUrl = $url;
+        $this->lastLoginRole = $userRoles;
+        $this->lastLoginLocale = $userLocale;
+        
         // Setup the user and get the required login data
         $userRolesArray = $this->splitArgument($userRoles);
         $loginFields = UI5Browser::setupUser($this->getWorkbench(), $userRolesArray, $userLocale);
@@ -1771,6 +1780,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->browser->setScreenshotFn(function () {
             $this->captureScreenshot();
         });
+        
+        // Bridges Chrome recovery from deep node classes back to the context.
+        $this->browser->setChromeRecoveryFn(function (string $targetPageAlias): void {
+            $this->recoverChrome($targetPageAlias);
+        });
     }
 
     /**
@@ -1815,4 +1829,57 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             }
         }
     }
+
+    /**
+     * Recovers from a hung Chrome process and resumes testing at a specific page.
+     *
+     * When Chrome's CDP connection is lost mid-test (detected via ChromeHangException),
+     * simply retrying the last action is not enough — the browser process itself must
+     * be restarted. This method coordinates the full recovery sequence:
+     *
+     *  1. Instructs ChromeManager to terminate the stale Chrome process and start a
+     *     fresh one on the same port.
+     *  2. Restarts the Mink session so it connects to the new Chrome instance.
+     *  3. Re-authenticates using the credentials saved by the most recent
+     *     iLogInToPage() call, because the new Chrome has no session cookies.
+     *  4. Navigates directly to the target page by URL, bypassing the tile overview
+     *     and the back-button navigation that would normally be needed to reach it.
+     *
+     * Direct URL navigation (step 4) is intentional: navigateToPageAlias() uses a
+     * full page load rather than the tile click + back-button flow, so Chrome starts
+     * each retry with a clean navigation stack.
+     *
+     * @param string $targetPageAlias The alias of the page to open after recovery
+     *                                (typically the tile page that was being tested
+     *                                when Chrome hung).
+     * @throws \RuntimeException If no login parameters are available (recoverChrome()
+     *                           was called before iLogInToPage() ever ran).
+     */
+    public function recoverChrome(string $targetPageAlias): void
+    {
+        if ($this->lastLoginUrl === null) {
+            throw new \RuntimeException(
+                'Cannot recover Chrome: no login parameters stored. '
+                . 'Ensure iLogInToPage() was called before the test started.'
+            );
+        }
+
+        // Step 1: Restart the Chrome process via ChromeManager.
+        ChromeManager::restart();
+
+        // Step 2: Reconnect the Mink session to the freshly started Chrome.
+        $this->getSession()->restart();
+
+        // Step 3: Re-authenticate — the new Chrome has no cookies or session state.
+        $this->iLogInToPage(
+            $this->lastLoginUrl,
+            $this->lastLoginRole,
+            $this->lastLoginLocale
+        );
+
+        // Step 4: Navigate directly to the target page without going via the tile
+        // overview, so no back-button history needs to be rebuilt.
+        $this->navigateToPageAlias($targetPageAlias);
+    }
+    
 }
