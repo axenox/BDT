@@ -87,9 +87,9 @@
         {
             "_EXPORT_SUMMARY": "BDT step run [axenox.BDT.run_step]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-03-25 18:40:05",
+            "MODIFIED_ON": "2026-05-07 12:39:22",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x11f08ce4baed19b88ce4005056be9857",
+            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f0ac35222d57aeac35025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
@@ -165,6 +165,12 @@
                                             {
                                                 "attribute_alias": "error_message",
                                                 "widget_type": "Text",
+                                                "width": 2
+                                            },
+                                            {
+                                                "attribute_alias": "url",
+                                                "widget_type": "Text",
+                                                "height": 2,
                                                 "width": 2
                                             }
                                         ]

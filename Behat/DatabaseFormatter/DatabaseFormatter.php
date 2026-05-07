@@ -445,6 +445,23 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         return $ds;
     }
     
+    /**
+     * Log the end of a test step to the database.
+     *
+     * Records the completion of a test step including duration, status, and error information.
+     * For failed steps with screenshots, also records the screenshot path and the URL where
+     * the failure occurred.
+     *
+     * @param DataSheetInterface $ds The data sheet containing the step record
+     * @param float $stepStartTime The timestamp when the step started
+     * @param int $stepStatusCode The status code of the step (passed, failed, skipped, etc.)
+     * @param \Throwable|null $e Optional exception thrown during the step
+     * @param array $logbooks Optional array of logbook entries to save
+     * @param string|null $updatedTitle Optional updated title for the step
+     * @param string|null $reason Optional reason for step status
+     *
+     * @return DataSheetInterface The updated data sheet
+     */
     protected function logStepEnd(DataSheetInterface $ds, float $stepStartTime, int $stepStatusCode, ?\Throwable $e = null, array $logbooks = [], ?string $updatedTitle = null, ?string $reason = null) : DataSheetInterface
     {
         $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
@@ -460,6 +477,10 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             if($this->provider->isCaptured()) {
                 $screenshotRelativePath = $this->provider->getPath() . DIRECTORY_SEPARATOR . $this->provider->getName();
                 $ds->setCellValue('screenshot_path', 0, $screenshotRelativePath);
+                $url = $this->provider->getUrl();
+                if ($url !== null) {
+                    $ds->setCellValue('url', 0, $url);
+                }
             }
             if ($e) {
                 $ds->setCellValue('error_message', 0, $e->getMessage());
