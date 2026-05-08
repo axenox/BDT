@@ -3,7 +3,9 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
 
 use axenox\BDT\Exceptions\ConfigException;
+use exface\Core\CommonLogic\Debugger\LogBooks\MarkdownLogBook;
 use exface\Core\Exceptions\RuntimeException;
+use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Log\LoggerInterface;
 use GuzzleHttp\Client;
 
@@ -48,6 +50,16 @@ class ChromeManager
 
     /** @var LoggerInterface|null PowerUI logger injected from DatabaseFormatter */
     private static ?LoggerInterface $logger = null;
+    
+    private static ?LogBookInterface $logbook = null;
+    
+    public static function getLogbook()
+    {
+        if (self::$logbook == null) {
+            self::$logbook = new MarkdownLogBook('Chrome');
+        }
+        return self::$logbook;
+    }
 
     /**
      * Injects the PowerUI logger so that all ChromeManager diagnostics appear
@@ -79,10 +91,11 @@ class ChromeManager
      */
     public static function start(array $config = []): ChromeStartResult
     {
-        self::log(LoggerInterface::INFO, 'ChromeManager::start() called');
-
+        self::getLogbook()->addLine('ChromeManager::start() called');
+        self::getLogbook()->addIndent(+1);
+        self::$logger?->info('Using Chrome for BDT', [], self::getLogbook());
         if (self::$pid !== null) {
-            self::log(LoggerInterface::INFO, "Chrome already running on port " . self::$port . " with PID " . self::$pid . " — reusing existing process");
+            self::getLogbook()->addLine("Chrome already running on port " . self::$port . " with PID " . self::$pid . " — reusing existing process");
             return new ChromeStartResult(
                 port:      self::$port,
                 pid:       self::$pid,
@@ -153,6 +166,8 @@ class ChromeManager
         $elapsedMs = round((microtime(true) - $startTime) * 1000, 1);
         self::log(LoggerInterface::INFO, "Chrome started successfully — PID: {$pid}, port: {$port}, startup time: {$elapsedMs} ms");
 
+        self::getLogbook()->addIndent(-1);
+        
         return new ChromeStartResult(
             port:      $port,
             pid:       $pid,
