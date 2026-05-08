@@ -42,37 +42,38 @@ use GuzzleHttp\Client;
  */
 class ChromeManager
 {
+    private static ?ChromeManager $instance = null;
+    
     /** @var int|null PID of the Chrome process started by this manager */
-    private static ?int $pid = null;
+    private ?int $pid = null;
 
     /** @var int|null Port on which Chrome's remote debugging API is listening */
-    private static ?int $port = null;
+    private ?int $port = null;
 
     /** @var LoggerInterface|null PowerUI logger injected from DatabaseFormatter */
-    private static ?LoggerInterface $logger = null;
-    
-    private static ?LogBookInterface $logbook = null;
-    
-    public static function getLogbook()
+    private ?LoggerInterface $logger = null;
+
+    private ?LogBookInterface $logbook = null;
+
+    private function __construct(?LoggerInterface $logger)
     {
-        if (self::$logbook == null) {
-            self::$logbook = new MarkdownLogBook('Chrome');
-        }
-        return self::$logbook;
+        $this->logger = $logger;
     }
 
-    /**
-     * Injects the PowerUI logger so that all ChromeManager diagnostics appear
-     * in the PowerUI log viewer alongside the rest of the application log.
-     *
-     * Must be called before start(). DatabaseFormatter does this in its
-     * constructor immediately before ChromeManager::start($chromeConfig).
-     *
-     * @param LoggerInterface $logger The workbench logger ($workbench->getLogger())
-     */
-    public static function setLogger(LoggerInterface $logger): void
+    public static function getInstance(?LoggerInterface $logger = null): static
     {
-        self::$logger = $logger;
+        if (self::$instance === null) {
+            self::$instance = new static($logger);
+        }
+        return self::$instance;
+    }
+    
+    public function getLogbook(): LogBookInterface
+    {
+        if ($this->logbook == null) {
+            $this->logbook = new MarkdownLogBook('Chrome');
+        }
+        return $this->logbook;
     }
 
     /**
@@ -89,46 +90,48 @@ class ChromeManager
      * @return ChromeStartResult Metadata about the started or reused Chrome process
      * @throws ConfigException If config is incomplete or Chrome does not become ready in time
      */
-    public static function start(array $config = []): ChromeStartResult
+    public function start(array $config = []): ChromeStartResult
     {
-        self::getLogbook()->addLine('ChromeManager::start() called');
-        self::getLogbook()->addIndent(+1);
-        self::$logger?->info('Using Chrome for BDT', [], self::getLogbook());
-        if (self::$pid !== null) {
-            self::getLogbook()->addLine("Chrome already running on port " . self::$port . " with PID " . self::$pid . " — reusing existing process");
-            return new ChromeStartResult(
-                port:      self::$port,
-                pid:       self::$pid,
-                startupMs: 0.0
-            );
+        $this->getLogbook()->addLine('ChromeManager::start() called');
+        $this->getLogbook()->addIndent(+1);
+        $this->logger?->info('Using Chrome for BDT', [], $this->getLogbook());
+        if ($this->pid !== null) {
+            $this->getLogbook()->addLine("Chrome already running on port " . $this->port . " with PID " . $this->pid . " — reusing existing process");
+            if ($this->pid !== null) {
+                return new ChromeStartResult(
+                    port: $this->port,
+                    pid: $this->pid,
+                    startupMs: 0.0
+                );
+            }
         }
-
-        $startTime   = microtime(true);
-        $executable  = $config['executable'] ?? null;
+        $startTime = microtime(true);
+        $executable = $config['executable'] ?? null;
         $userDataDir = getcwd() . DIRECTORY_SEPARATOR . $config['user_data_dir'] ?? null;
-        $port        = $config['port'] ?? 9222;
+        $port = $config['port'] ?? 9222;
 
-        self::log(LoggerInterface::INFO, "Config resolved — executable: {$executable}, userDataDir: {$userDataDir}, port: {$port}");
+        $this->getLogbook()->addLine("Config resolved — executable: {$executable}, userDataDir: {$userDataDir}, port: {$port}");
 
         if ($executable === null || $userDataDir === null) {
             $msg = 'ChromeManager requires "executable" and "user_data_dir" in the chrome config. '
                 . 'Please set them under DatabaseFormatterExtension > chrome in your behat.yml.';
-            self::log(LoggerInterface::ERROR, $msg);
+            $this->getLogbook()->addLine($msg);
             throw new ConfigException($msg, null, null);
         }
 
         // If Chrome is already listening on this port (e.g. a leftover process from a
         // previous run), kill it and start fresh to avoid inheriting stale state.
-        self::log(LoggerInterface::INFO, "Checking for an existing process on port {$port} via netstat...");
-        $existingPid = self::findPidByPort($port);
+        $this->getLogbook()->addLine("Checking for an existing process on port {$port} via netstat...");
+        $existingPid = $this->findPidByPort($port);
         if ($existingPid !== null) {
-            self::log(LoggerInterface::WARNING, "Found leftover Chrome process with PID {$existingPid} on port {$port} — stopping it before launching a new instance");
-            self::$pid = $existingPid;
-            self::stop();
-            self::log(LoggerInterface::INFO, "Waiting 500 ms for the old process to fully exit...");
+            $this->pid = $existingPid;
+            $this->getLogbook()->addLine("Found leftover Chrome process with PID {$existingPid} on port {$port} — stopping it before launching a new instance");
+            $this->pid = $existingPid;
+            $this->stop();
+            $this->getLogbook()->addLine("Waiting 500 ms for the old process to fully exit...");
             usleep(500_000);
         } else {
-            self::log(LoggerInterface::INFO, "No existing process found on port {$port}");
+            $this->getLogbook()->addLine("No existing process found on port {$port}");
         }
 
         // "start /B" launches Chrome in the background within the current cmd session —
@@ -149,31 +152,32 @@ class ChromeManager
             . ' --no-default-browser-check'
             . ' --user-data-dir="' . $userDataDir . '"';
 
-        self::log(LoggerInterface::INFO, "Launching Chrome" . ($isDebugging ? " (headless OFF — debugger detected)" : " (headless)") . " with command: {$cmd}");
+        $this->getLogbook()->addLine("Launching Chrome" . ($isDebugging ? " (headless OFF — debugger detected)" : " (headless)") . " with command: {$cmd}");
         pclose(popen($cmd, 'r'));
-        self::log(LoggerInterface::INFO, "popen() returned — Chrome process spawned, waiting for debug API to become ready...");
+        $this->getLogbook()->addLine("popen() returned — Chrome process spawned, waiting for debug API to become ready...");
 
         // Block until Chrome's debug API is ready
-        self::waitUntilReady($port);
+        $this->waitUntilReady($port);
 
         // Find the PID of the Chrome process listening on this port
-        self::log(LoggerInterface::INFO, "Chrome is ready — resolving PID via netstat...");
-        $pid = self::findPidByPort($port);
+        $this->getLogbook()->addLine("Chrome is ready — resolving PID via netstat...");
+        $pid = $this->findPidByPort($port);
 
-        self::$pid  = $pid;
-        self::$port = $port;
+        $this->pid = $pid;
+        $this->port = $port;
 
         $elapsedMs = round((microtime(true) - $startTime) * 1000, 1);
-        self::log(LoggerInterface::INFO, "Chrome started successfully — PID: {$pid}, port: {$port}, startup time: {$elapsedMs} ms");
+        $this->getLogbook()->addLine("Chrome started successfully — PID: {$pid}, port: {$port}, startup time: {$elapsedMs} ms");
 
-        self::getLogbook()->addIndent(-1);
-        
+        $this->getLogbook()->addIndent(-1);
+
         return new ChromeStartResult(
-            port:      $port,
-            pid:       $pid,
+            port: $port,
+            pid: $pid,
             startupMs: microtime(true) - $startTime
         );
     }
+    
 
     /**
      * Stops only the Chrome process that was started by this manager.
@@ -182,21 +186,21 @@ class ChromeManager
      * instances running on different ports (e.g. belonging to other projects)
      * are not affected.
      */
-    public static function stop(): void
+    public function stop(): void
     {
-        if (self::$pid === null) {
-            self::log(LoggerInterface::INFO, "stop() called but no Chrome process is being managed — nothing to do");
+        if ($this->pid === null) {
+            $this->getLogbook()->addLine("stop() called but no Chrome process is being managed — nothing to do");
             return;
         }
 
-        self::log(LoggerInterface::INFO, "Stopping Chrome process PID " . self::$pid . " (taskkill /F /PID /T)...");
+        $this->getLogbook()->addLine("Stopping Chrome process PID " . $this->pid . " (taskkill /F /PID /T)...");
 
         // /T also terminates child processes spawned by Chrome
-        exec('taskkill /F /PID ' . self::$pid . ' /T 2>nul');
+        exec('taskkill /F /PID ' . $this->pid . ' /T 2>nul');
 
-        self::log(LoggerInterface::INFO, "taskkill executed — resetting PID and port state");
-        self::$pid  = null;
-        self::$port = null;
+        $this->pid     = null;
+        $this->port    = null;
+        $this->getLogbook()->addLine("taskkill executed — resetting PID and port state");
     }
 
     /**
@@ -216,11 +220,11 @@ class ChromeManager
      * @throws \RuntimeException If stop() cannot terminate the process or start()
      *                           cannot confirm readiness within its timeout.
      */
-    public static function restart(): void
+    public function restart(): void
     {
-        self::stop();
+        $this->stop();
         sleep(2); // allow the OS to fully release the port before relaunching
-        self::start();
+        $this->start();
     }
     
     /**
@@ -232,7 +236,7 @@ class ChromeManager
      * @param int $port The remote-debugging port Chrome is listening on
      * @return int|null The PID, or null if no matching LISTENING process was found
      */
-    private static function findPidByPort(int $port): ?int
+    private function findPidByPort(int $port): ?int
     {
         $output = [];
         // Single process — no pipe, no cmd.exe accumulation
@@ -240,29 +244,29 @@ class ChromeManager
         foreach ($output as $line) {
             if (preg_match('/(?:0\.0\.0\.0|127\.0\.0\.1):' . $port . '\s+.*LISTENING\s+(\d+)/', $line, $matches)) {
                 $pid = (int) $matches[1];
-                self::log(LoggerInterface::INFO, "findPidByPort({$port}): found LISTENING process with PID {$pid}");
+                $this->getLogbook()->addLine("findPidByPort({$port}): found LISTENING process with PID {$pid}");
                 return $pid;
             }
         }
-        self::log(LoggerInterface::INFO, "findPidByPort({$port}): no LISTENING process found");
+        $this->getLogbook()->addLine("findPidByPort({$port}): no LISTENING process found");
         return null;
     }
 
     /**
      * Returns the PID of the currently managed Chrome process, or null if none is running.
      */
-    public static function getPid(): ?int
+    public function getPid(): ?int
     {
-        return self::$pid;
+        return $this->pid;
     }
 
     /**
      * Returns the remote-debugging port of the currently managed Chrome process,
      * or null if none is running.
      */
-    public static function getPort(): ?int
+    public function getPort(): ?int
     {
-        return self::$port;
+        return $this->port;
     }
 
     /**
@@ -276,40 +280,40 @@ class ChromeManager
      * @param int $timeoutSeconds Maximum number of seconds to wait
      * @throws RuntimeException   If Chrome does not become ready within the timeout
      */
-    private static function waitUntilReady(int $port, int $timeoutSeconds = 10): void
+    private function waitUntilReady(int $port, int $timeoutSeconds = 10): void
     {
-        self::log(LoggerInterface::INFO, "waitUntilReady(): polling http://localhost:{$port}/json/list (timeout: {$timeoutSeconds}s)...");
+        $this->getLogbook()->addLine("waitUntilReady(): polling http://localhost:{$port}/json/list (timeout: {$timeoutSeconds}s)...");
 
         $start   = time();
         $attempt = 0;
         while (time() - $start < $timeoutSeconds) {
             $attempt++;
-            $pages = self::getTabList($port);
+            $pages = $this->getTabList($port);
 
             if ($pages === []) {
-                self::log(LoggerInterface::INFO, "waitUntilReady() attempt #{$attempt}: tab list empty or Chrome not yet reachable — retrying in 200 ms...");
+                $this->getLogbook()->addLine("waitUntilReady() attempt #{$attempt}: tab list empty or Chrome not yet reachable — retrying in 200 ms...");
             } else {
-                self::log(LoggerInterface::INFO, "waitUntilReady() attempt #{$attempt}: received " . count($pages) . " tab(s)");
+                $this->getLogbook()->addLine("waitUntilReady() attempt #{$attempt}: received " . count($pages) . " tab(s)");
                 foreach ($pages as $page) {
                     $type  = $page['type'] ?? '(no type)';
                     $wsUrl = $page['webSocketDebuggerUrl'] ?? '';
-                    self::log(LoggerInterface::INFO, "  tab type: {$type}, url: " . ($page['url'] ?? '(none)') . ", wsDebuggerUrl: " . ($wsUrl !== '' ? $wsUrl : '(empty)'));
+                    $this->getLogbook()->addLine("  tab type: {$type}, url: " . ($page['url'] ?? '(none)') . ", wsDebuggerUrl: " . ($wsUrl !== '' ? $wsUrl : '(empty)'));
 
                     // Wait until there is at least one navigatable page with a ws:// URL
                     if ($type === 'page' && $wsUrl !== '') {
                         $elapsed = round((time() - $start) * 1000);
-                        self::log(LoggerInterface::INFO, "waitUntilReady(): Chrome ready after {$attempt} attempt(s) ({$elapsed} ms)");
+                        $this->getLogbook()->addLine("waitUntilReady(): Chrome ready after {$attempt} attempt(s) ({$elapsed} ms)");
                         return;
                     }
                 }
-                self::log(LoggerInterface::INFO, "waitUntilReady() attempt #{$attempt}: no ready page tab yet — retrying in 200 ms...");
+                $this->getLogbook()->addLine("waitUntilReady() attempt #{$attempt}: no ready page tab yet — retrying in 200 ms...");
             }
 
             usleep(200_000);
         }
 
         $msg = "Chrome did not become ready on port {$port} within {$timeoutSeconds} seconds.";
-        self::log(LoggerInterface::ERROR, $msg . " (total attempts: {$attempt})");
+        $this->getLogbook()->addLine($msg . " (total attempts: {$attempt})");
         throw new RuntimeException($msg);
     }
 
@@ -325,11 +329,11 @@ class ChromeManager
      * null the root cause is in Chrome itself rather than the WebSocket layer.
      *
      * @param int|null $port Port to query; falls back to the currently managed port if omitted
-     * @return array Decoded JSON tab list, or an empty array if the endpoint could not be reached
+     * @return array|null Decoded JSON tab list, or an empty array if the endpoint could not be reached
      */
-    public static function getTabList(?int $port = null): array
+    public function getTabList(?int $port = null): ?array
     {
-        return self::runGuzzleApi("http://localhost:" . ($port ?? self::getPort()) . "/json/list");
+        return $this->runGuzzleApi("http://localhost:" . ($port ?? $this->getPort()) . "/json/list");
     }
 
     /**
@@ -342,9 +346,10 @@ class ChromeManager
      * @param string $url Full URL of the CDP endpoint (e.g. http://localhost:9222/json/list)
      * @return array Decoded JSON response body, or an empty array on any error
      */
-    private static function runGuzzleApi(string $url): array
+    private function runGuzzleApi(string $url): array
     {
         try {
+            /* @var $client \GuzzleHttp\Client */
             $client   = new Client();
             $response = $client->request('GET', $url);
 
@@ -352,33 +357,13 @@ class ChromeManager
                 return json_decode($response->getBody()->__toString(), true) ?? [];
             }
 
-            self::log(LoggerInterface::INFO, "runGuzzleApi({$url}): unexpected HTTP status " . $response->getStatusCode());
+            $this->getLogbook()->addLine("runGuzzleApi({$url}): unexpected HTTP status " . $response->getStatusCode());
         } catch (\Throwable $e) {
             // Guzzle throws ConnectException while Chrome is still starting up;
             // log the details so we can distinguish a real failure from normal startup delay.
-            self::log(LoggerInterface::WARNING, "runGuzzleApi({$url}): " . get_class($e) . " — " . $e->getMessage());
+            $this->getLogbook()->addLine("runGuzzleApi({$url}): " . get_class($e) . " — " . $e->getMessage());
         }
 
         return [];
-    }
-
-    /**
-     * Routes a diagnostic message through the injected PowerUI logger, or falls back
-     * to PHP's error_log() if no logger has been set yet.
-     *
-     * This indirection is necessary because ChromeManager is a static utility class
-     * without a workbench. The logger is injected once via setLogger() before start()
-     * is called, which is sufficient for the entire process lifetime.
-     *
-     * @param string $level   One of the LoggerInterface level constants (INFO, WARNING, ERROR, …)
-     * @param string $message Human-readable diagnostic message
-     */
-    private static function log(string $level, string $message): void
-    {
-        if (self::$logger !== null) {
-            self::$logger->log($level, 'ChromeManager: ' . $message);
-        } else {
-            error_log('[ChromeManager] ' . $message);
-        }
     }
 }

@@ -1865,7 +1865,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
 
         // Step 1: Restart the Chrome process via ChromeManager.
-        ChromeManager::restart();
+        ChromeManager::getInstance()->restart();
 
         // Step 2: Reconnect the Mink session to the freshly started Chrome.
         $this->getSession()->restart();
