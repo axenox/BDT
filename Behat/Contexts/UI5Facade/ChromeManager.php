@@ -60,6 +60,8 @@ class ChromeManager
     /** @var LogBookInterface|null Lazily created logbook for structured diagnostic output */
     private ?LogBookInterface $logbook = null;
 
+    private array $config = [];
+
     /**
      * Private constructor enforces singleton usage via getInstance().
      *
@@ -132,7 +134,10 @@ class ChromeManager
         $this->getLogbook()->addLine('ChromeManager::start() called');
         $this->getLogbook()->addIndent(+1);
         $this->logger?->info('Using Chrome for BDT', [], $this->getLogbook());
-
+        if (!empty($config)) {
+            $this->config = $config; // store on first call
+        }
+        $config = $this->config;
         // Return immediately if a managed Chrome process is already running
         if ($this->pid !== null) {
             $this->getLogbook()->addLine("Chrome already running on port {$this->port} with PID {$this->pid} — reusing existing process");
