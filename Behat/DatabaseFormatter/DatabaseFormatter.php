@@ -83,8 +83,8 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         $this->provider = $provider;
         $this->isDryRun = in_array('--dry-run', $_SERVER['argv'] ?? [], true);
         if (!$this->isDryRun) {
-            ChromeManager::setLogger($this->workbench->getLogger());
-            $this->chromeStartResult = ChromeManager::start($chromeConfig);
+            $chromeInstance = ChromeManager::getInstance($this->workbench->getLogger());
+            $this->chromeStartResult = $chromeInstance->start($chromeConfig);
             $this->startRun();
         }
     }
@@ -120,7 +120,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         // This is a last-resort fallback in case the shutdown function was somehow not registered.
         if (! $this->exerciseFinished) {
             $this->onAfterExercise();
-            ChromeManager::stop();
+            ChromeManager::getInstance()->stop();
         }
     }
 
@@ -657,7 +657,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $this->onAfterExercise();
         }
 
-        ChromeManager::stop();
+        ChromeManager::getInstance()->stop();
     }
     private function startRun(): void
     {
