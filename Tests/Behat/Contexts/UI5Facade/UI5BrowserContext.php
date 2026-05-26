@@ -253,12 +253,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      *  Restarts Chrome and resets the Mink session once per feature boundary.
      *
-     * @BeforeFeature cannot be used here because it requires a static method,
+     *  BeforeFeature cannot be used here because it requires a static method,
      *  which has no access to $this->getSession(). Without resetting the session,
      *  the driver still holds the old WebSocket connection to the killed Chrome
      *  process and throws "Failed write() on stream" on the very next CDP call.
      *
-     *  Instead, we detect feature transitions inside @BeforeScenario by comparing
+     *  Instead, we detect feature transitions inside BeforeScenario by comparing
      *  the current feature title against the previously stored one in a static
      *  property. The restart runs only on the first scenario of each new feature —
      *  all subsequent scenarios in the same feature return immediately.
