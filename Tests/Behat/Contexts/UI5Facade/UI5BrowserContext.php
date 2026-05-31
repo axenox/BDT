@@ -319,10 +319,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * Log in to a URL with a specific role and locale
      * 
      * Examples:
-     * - Given I log in to page "exface.core.logs.html" as "Support"
-     * - Given I log in to page "exface.core.logs.html" as "Support, Debugger"
-     * - Given I log in to page "exface.core.logs.html" as "Support" with locale "de_DE"
-     * - Given I log in to page "exface.core.logs.html" as "exface.Core.SUPERUSER"
+     * - Given I log in to the page "exface.core.logs.html" as "Support"
+     * - Given I log in to the page "exface.core.logs.html" as "Support, Debugger"
+     * - Given I log in to the page "exface.core.logs.html" as "Support" with locale "de_DE"
+     * - Given I log in to the page "exface.core.logs.html" as "exface.Core.SUPERUSER"
      * 
      * @Given I log in to the page :url
      * @Given I log in to the page :url as :userRole
@@ -1495,6 +1495,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * @Then I should not see the button :unexpectedButton
+     * @Then I should not see the button :unexpectedButton on the :tableIndex table
      * @Then I should not see the buttons :unexpectedButtons
      * @Then I should not see the buttons :unexpectedButtons on the :tableIndex table
      * 
@@ -1636,7 +1638,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     public function __destruct()
     {
-        if ($this->isDryRun) {
+        if (self::$isDryRun) {
             return;
         }
         
