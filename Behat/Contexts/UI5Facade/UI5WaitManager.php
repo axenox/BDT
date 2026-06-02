@@ -445,7 +445,8 @@ class UI5WaitManager
         return str_contains($msg, 'WebSocket')
             || str_contains($msg, 'Connection refused')
             || str_contains($msg, 'Could not connect')
-            || str_contains($msg, 'curl error');
+            || str_contains($msg, 'curl error')
+            || str_contains($msg, 'Server is closed');
     }
 
     /**
