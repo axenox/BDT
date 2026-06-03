@@ -20,14 +20,11 @@ class UI5PageNode implements FacadeNodeInterface
 {
     private string $pageSelector;
     private ?UiPageInterface $page = null;
-    
+
     private $session = null;
     /** @var UI5Browser|null */
     protected $browser;
 
-
-    /** @var array<string, TestResultInterface> */
-    protected static array $validatedAliases = [];
 
     public function __construct(string $pageSelector, Session $session, UI5Browser $browser)
     {
@@ -35,7 +32,7 @@ class UI5PageNode implements FacadeNodeInterface
         $this->session = $session;
         $this->browser = $browser;
     }
-    
+
     public function getUiPage() : UiPageInterface
     {
         if ($this->page === null) {
@@ -72,18 +69,21 @@ class UI5PageNode implements FacadeNodeInterface
     public function checkWorksAsExpected(LogBookInterface $logbook) : TestResultInterface
     {
         $alias = $this->pageSelector;
+        $roles = $this->getBrowser()->getCurrentRoles();
         $logbook ??= new MarkdownLogBook($this->getCaption());
         DatabaseFormatter::addTestLogbook($logbook);
-        if (null !== $prevState = (static::$validatedAliases[$alias] ?? null)) {
-            $logbook->addLine('Page already validated — reusing previous result.');
-            return $prevState;
+
+        // Skip re-testing if the same page was already verified for this exact role set.
+        // This covers pages that appear in multiple menu locations: a works-as-expected
+        // check on any one of them is sufficient for the same user environment.
+        if (null !== $prevResult = DatabaseFormatter::hasTestedPage($roles, $alias)) {
+            $logbook->addLine('Page already validated for this role set — reusing previous result.');
+            return SubstepResult::createFromPrevious($prevResult);
         }
 
         $rootWidget = $this->getUiPage()->getWidgetRoot();
         $rootElementId = $this->getBrowser()->getElementIdFromWidget($rootWidget);
         $rootNode = $this->getSession()->getPage()->findById($rootElementId);
-        // Decide which widget type is the best "root" for the page validation.
-        // $rootNodeElement = $this->findMainWidgetNodeElementForCurrentPage($alias);
         Assert::assertNotNull($rootNode, 'Cannot determine the main widget for the current page.(' . $alias . '.html)');
 
         $widgetType = $rootWidget->getWidgetType();
@@ -95,13 +95,12 @@ class UI5PageNode implements FacadeNodeInterface
             $this->browser
         );
 
-
         try {
             $result = $facadeNode->checkWorksAsExpected($logbook);
-            self::$validatedAliases[$alias] = $result;
-        }
-        catch (\Throwable $e) {
-            self::$validatedAliases[$alias] = SubstepResult::createFailed($e, $logbook);
+            DatabaseFormatter::markPageAsTested($roles, $alias, $result);
+        } catch (\Throwable $e) {
+            $failed = SubstepResult::createFailed($e, $logbook);
+            DatabaseFormatter::markPageAsTested($roles, $alias, $failed);
             throw $e;
         }
         return $result;
@@ -145,6 +144,6 @@ class UI5PageNode implements FacadeNodeInterface
 
     public function checkDisabled(): bool
     {
-       return false;
+        return false;
     }
 }
