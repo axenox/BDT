@@ -46,12 +46,11 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
     }
     
     /**
-     * Take screenshot when step fails.
-     * Take screenshot on result step (Then)
-     * Works only with Selenium2Driver.
+     * Capture a screenshot when a step fails.
      *
      * @AfterStep
-     * @param AfterStepScope $scope
+     * @param AfterStepScope $scope The Behat after-step scope
+     * @return void
      */
     public function captureScreenshotOnFailure(AfterStepScope $scope): void
     {
@@ -63,6 +62,15 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
         $this->captureScreenshot();
     }
     
+    /**
+     * Capture and store a screenshot with the current URL.
+     *
+     * Takes a screenshot of the current browser state and stores it along with
+     * the current URL. Retries up to 3 times if the screenshot capture fails.
+     * The screenshot path and URL are stored in the provider for later database logging.
+     *
+     * @return void
+     */
     public function captureScreenshot(): void
     {
         $relativePath = 'data'
@@ -82,6 +90,7 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
             try {
                 $this->saveScreenshot($fileName, $dir);
                 $this->provider->setScreenshot($fileName, $relativePath);
+                $this->provider->setUrl($this->getSession()->getCurrentUrl());
                 return;
             } catch (\Throwable $e) {
                 if ($attempt === $maxAttempts) {

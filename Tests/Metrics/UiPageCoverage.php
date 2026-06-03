@@ -3,7 +3,6 @@ namespace axenox\BDT\Tests\Metrics;
 
 use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Common\AbstractRunMetric;
-use Behat\Behat\EventDispatcher\Event\AfterScenarioTested;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Factories\DataSheetFactory;
@@ -12,6 +11,10 @@ use exface\Core\Interfaces\Selectors\AliasSelectorInterface;
 
 /**
  * Creates metric scores for every page in every app visited by the tests and tracks page visits
+ * 
+ * This metric uses the number of published pages of an app as 100% and tracks, which pages were visited
+ * during a test run. It is calculated for an app, if at least one page from that app was opened during
+ * the run.
  * 
  * TODO how to track the number of steps, that happened on a page???
  * 
@@ -77,7 +80,11 @@ class UiPageCoverage extends AbstractRunMetric
     protected function loadMetricsForApp(string $appAlias) : DataSheetInterface
     {
         $pageSheet = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'exface.Core.PAGE');
-        $pageSheet->getFilters()->addConditionFromString('APP__ALIAS', $appAlias, ComparatorDataType::EQUALS);
+        $pageSheet->getFilters()
+            // Read pages of the current app
+            ->addConditionFromString('APP__ALIAS', $appAlias, ComparatorDataType::EQUALS)
+            // only published pages - we do not test pages, that are not visible to regular users
+            ->addConditionFromString('PUBLISHED', 1, ComparatorDataType::EQUALS);
         $pageSheet->getColumns()->addMultiple([
             'UID',
             'ALIAS',

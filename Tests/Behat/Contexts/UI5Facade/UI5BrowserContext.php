@@ -49,18 +49,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private $workbench = null;
     private $debug = false;
     private string $locale = 'de_DE';
-    private bool $isDryRun = false;
+    private static bool $isDryRun = false;
     private ?string $lastLoginUrl = null;
     private ?string $lastLoginRole = null;
     private ?string $lastLoginLocale = null;
+    private static ?string $currentFeatureTitle = null;
     
     /** 
      * Initializes and starts the workbench for the test environment
      */
     public function __construct(bool $debug = false) // Update constructor
     {
-        $this->isDryRun = in_array('--dry-run', $_SERVER['argv'] ?? [], true);
-        if ($this->isDryRun) {
+        self::$isDryRun = in_array('--dry-run', $_SERVER['argv'] ?? [], true);
+        if (self::$isDryRun) {
             return;
         }
         $this->workbench = new Workbench();
@@ -248,11 +249,48 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     /**
      * Captures scenario name before execution and sets up monitoring
+     * 
+     *
+     *  Restarts Chrome and resets the Mink session once per feature boundary.
+     *
+     *  BeforeFeature cannot be used here because it requires a static method,
+     *  which has no access to $this->getSession(). Without resetting the session,
+     *  the driver still holds the old WebSocket connection to the killed Chrome
+     *  process and throws "Failed write() on stream" on the very next CDP call.
+     *
+     *  Instead, we detect feature transitions inside BeforeScenario by comparing
+     *  the current feature title against the previously stored one in a static
+     *  property. The restart runs only on the first scenario of each new feature —
+     *  all subsequent scenarios in the same feature return immediately.
+     * 
      * @BeforeScenario 
      * @param BeforeScenarioScope $scope Behat scenario scope
      */
     public function beforeScenario(BeforeScenarioScope $scope)
     {
+        if (self::$isDryRun) {
+            return;
+        }
+
+        $featureTitle = $scope->getFeature()->getTitle();
+        if (self::$currentFeatureTitle === $featureTitle) {
+            return; // same feature, skip
+        }
+        self::$currentFeatureTitle = $featureTitle;
+
+        $manager = ChromeManager::getInstance();
+        if ($manager->getPid() === null) {
+            return; // Chrome not started yet, first feature
+        }
+
+        $manager->getLogbook()->addLine(
+            'Feature boundary detected: restarting Chrome before "' . $featureTitle . '"'
+        );
+        $manager->restart();
+
+        // Reset Mink session so the driver opens a fresh WebSocket to the new Chrome process
+        $this->getSession()->stop();
+        $this->getSession()->start();
         $this->scenarioName = $scope->getScenario()->getTitle();
 
         // Initialize XHR monitoring if browser is available
@@ -281,10 +319,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * Log in to a URL with a specific role and locale
      * 
      * Examples:
-     * - Given I log in to page "exface.core.logs.html" as "Support"
-     * - Given I log in to page "exface.core.logs.html" as "Support, Debugger"
-     * - Given I log in to page "exface.core.logs.html" as "Support" with locale "de_DE"
-     * - Given I log in to page "exface.core.logs.html" as "exface.Core.SUPERUSER"
+     * - Given I log in to the page "exface.core.logs.html" as "Support"
+     * - Given I log in to the page "exface.core.logs.html" as "Support, Debugger"
+     * - Given I log in to the page "exface.core.logs.html" as "Support" with locale "de_DE"
+     * - Given I log in to the page "exface.core.logs.html" as "exface.Core.SUPERUSER"
      * 
      * @Given I log in to the page :url
      * @Given I log in to the page :url as :userRole
@@ -1457,6 +1495,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * @Then I should not see the button :unexpectedButton
+     * @Then I should not see the button :unexpectedButton on the :tableIndex table
      * @Then I should not see the buttons :unexpectedButtons
      * @Then I should not see the buttons :unexpectedButtons on the :tableIndex table
      * 
@@ -1598,7 +1638,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     public function __destruct()
     {
-        if ($this->isDryRun) {
+        if (self::$isDryRun) {
             return;
         }
         
@@ -1865,7 +1905,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
 
         // Step 1: Restart the Chrome process via ChromeManager.
-        ChromeManager::restart();
+        ChromeManager::getInstance()->restart();
 
         // Step 2: Reconnect the Mink session to the freshly started Chrome.
         $this->getSession()->restart();

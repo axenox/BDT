@@ -2,12 +2,9 @@
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
-use axenox\BDT\Exceptions\FacadeNodeException;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Mink\Element\NodeElement;
-use exface\Core\Exceptions\RuntimeException;
-use exface\Core\Widgets\Filter;
-use exface\UI5Facade\Facades\Elements\UI5Input;
+use exface\Core\DataTypes\BooleanDataType;
 
 /**
  * Represents a UI5 Filter Node for handling various types of filter inputs
@@ -20,6 +17,8 @@ use exface\UI5Facade\Facades\Elements\UI5Input;
  * 
  * It supports finding and setting values for different filter input types 
  * commonly found in SAP UI5 applications.
+ * 
+ * @method \exface\Core\Widgets\Filter getWidget()
  */
 class UI5FilterNode extends UI5AbstractNode
 {
@@ -100,5 +99,30 @@ class UI5FilterNode extends UI5AbstractNode
             $this->inputNode = UI5FacadeNodeFactory::createFromNodeElement($inputEl, $this->getSession(), $this->getBrowser());
         }
         return $this->inputNode;
+    }
+
+    /**
+     * @return bool
+     */
+    public function shouldBeVisible() : bool
+    {
+        $filterWidget = $this->getWidget();
+        $hiddenAlways = $filterWidget->isHidden();
+        if ($hiddenAlways) {
+            return false;
+        }
+        $hiddenIf = $filterWidget->getHiddenIf();
+        if ($hiddenIf) {
+            // TODO verify, that $this->getWorkbench()->getSecurity()->getAuthenticatedUser() is the test-user.
+            // If not, we need another approach!!!
+            
+            // A filter has no input-data, so we do not need a DataSheet (unlike in case of a Button)
+            // This will result in an error though, if the hidden_if depends on a linked widget. Don't know, how to
+            // solve that yet... maybe we can get the current value of that widget here somehow???
+            $result = $hiddenIf->evaluate();
+            return BooleanDataType::cast($result) ?? true;
+        }
+        
+        return true;
     }
 }

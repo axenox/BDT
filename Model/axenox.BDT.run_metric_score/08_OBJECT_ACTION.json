@@ -67,9 +67,9 @@
         {
             "_EXPORT_SUMMARY": "Metric score: Score details [RunMetricScoreDetailsDialog]",
             "CREATED_ON": "2026-03-26 13:00:39",
-            "MODIFIED_ON": "2026-03-26 13:31:33",
+            "MODIFIED_ON": "2026-06-02 12:04:15",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
+            "MODIFIED_BY_USER": "0x11f08ce4baed19b88ce4005056be9857",
             "UID": "0x11f1ad11681ec08cad11025041000001",
             "OBJECT": "0x11f1a5e43d362fd8a5e4025041000001",
             "ACTION_PROTOTYPE": "exface/core/Actions/ShowDialog.php",
@@ -88,10 +88,13 @@
                                     "attribute_alias": "run"
                                 },
                                 {
-                                    "attribute_alias": "app"
+                                    "attribute_alias": "app__ALIAS"
                                 },
                                 {
                                     "attribute_alias": "metric"
+                                },
+                                {
+                                    "attribute_alias": "subject_name"
                                 }
                             ],
                             "columns": [
