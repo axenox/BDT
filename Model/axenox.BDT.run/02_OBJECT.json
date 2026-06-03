@@ -87,7 +87,7 @@
         {
             "_EXPORT_SUMMARY": "BDT test run [axenox.BDT.run]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-04-30 00:12:12",
+            "MODIFIED_ON": "2026-06-02 12:03:16",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x11f08ce4baed19b88ce4005056be9857",
             "UID": "0x11f08c1d222cd23e8c1d025041000001",
@@ -149,6 +149,13 @@
                                                                 "type": "bar",
                                                                 "x_attribute_alias": "run_step:COUNT",
                                                                 "y_attribute_alias": "status"
+                                                            }
+                                                        ],
+                                                        "axis_y": [
+                                                            {
+                                                                "attribute_alias": "status",
+                                                                "axis_type": "category",
+                                                                "zoomable": false
                                                             }
                                                         ]
                                                     }
@@ -245,6 +252,11 @@
                                                                             {
                                                                                 "from": "run",
                                                                                 "to": "run",
+                                                                                "comparator": "=="
+                                                                            },
+                                                                            {
+                                                                                "from": "app__ALIAS",
+                                                                                "to": "app__ALIAS",
                                                                                 "comparator": "=="
                                                                             }
                                                                         ]
@@ -349,7 +361,7 @@
                                         ],
                                         "buttons": [
                                             {
-                                                "caption": "Edit Scenario",
+                                                "caption": "Edit feature",
                                                 "action": {
                                                     "alias": "exface.Core.ShowObjectEditDialog",
                                                     "object_alias": "axenox.BDT.BEHAT_FEATURE",

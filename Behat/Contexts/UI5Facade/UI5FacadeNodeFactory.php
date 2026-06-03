@@ -8,6 +8,7 @@ use Behat\Mink\Element\NodeElement;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Factories\WidgetFactory;
+use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Widgets\AbstractWidget;
 use Behat\Mink\Session;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ButtonNode;
@@ -82,6 +83,27 @@ class UI5FacadeNodeFactory
             }
         }
         throw new WidgetNodeNotFoundException($nodeElement, 'Cannot use DOM element `' . $nodeElement->getXpath() . '` as a widget node: no `exfw-` CSS class found.');
+    }
+
+    /**
+     * Finds the DOM node matching the id of the widget and creates a FacadeNode for it
+     * 
+     * @param WidgetInterface $widget
+     * @param Session $session
+     * @param UI5Browser $browser
+     * @return FacadeNodeInterface
+     */
+    public static function createFromWidget(WidgetInterface $widget, Session $session, UI5Browser $browser) : FacadeNodeInterface
+    {
+        if (! $widget->getPage()->isExactly($browser->getPageCurrent())) {
+            throw new RuntimeException('Cannot get facade node for widget from page "' . $widget->getPage()->getAliasWithNamespace() . '" when browsing page "' . $browser->getPageCurrent()->getAliasWithNamespace() . '"!');
+        }
+        $nodeId = $browser->getElementIdFromWidget($widget);
+        $node = $session->getPage()->findById($nodeId);
+        if (! $node) {
+            throw new RuntimeException('Cannot find node with id "' . $nodeId . '" on page "' . $browser->getPageCurrent()->getAliasWithNamespace() . '"!');
+        }
+        return static::createFromNodeElement($node, $session, $browser);
     }
 
     /**

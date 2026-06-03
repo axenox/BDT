@@ -36,7 +36,7 @@ class UI5DataTableNode extends UI5DataNode
 
     public function capturesFocus(): bool
     {
-        return false;
+        return true;
     }
 
     public function getRowNodes(): array
