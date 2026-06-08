@@ -1,12 +1,14 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
+use axenox\BDT\Behat\Contexts\UI5Facade\CdpConnectionDetectorTrait;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
 use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
 use axenox\BDT\Exceptions\AjaxException;
+use axenox\BDT\Exceptions\ChromeHangException;
 use axenox\BDT\Exceptions\FacadeNodeException;
 use axenox\BDT\Exceptions\FacadeNodeScriptException;
 use axenox\BDT\Exceptions\UIException;
@@ -25,12 +27,13 @@ use PHPUnit\Framework\Assert;
 
 abstract class UI5AbstractNode implements FacadeNodeInterface
 {
+    use CdpConnectionDetectorTrait;
     private $domNode = null;
     private $session = null;
 
     /** @var UI5Browser|null */
     protected $browser;
-    
+
     private ?WidgetInterface $widget = null;
 
     public function __construct(NodeElement $nodeElement, Session $session, UI5Browser $browser)
@@ -50,7 +53,7 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
 
     /**
      * Returns the Mink DOM node element representing the widget.
-     * 
+     *
      * @return NodeElement
      */
     public function getNodeElement() : NodeElement
@@ -97,7 +100,7 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
     }
 
     public function checkWorksAsExpected(LogBookInterface $logbook) : TestResultInterface
-    {        
+    {
         $widgetType = $this->getWidgetType();
         $logbook->addLine( 'No checks defined at `' . $widgetType . '` ' . $this->getCaption());
         return SubstepResult::createPassed($logbook);
@@ -120,9 +123,9 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
     }
 
     /**
-     * 
+     *
      * $this->getElementIdFromWidget($page->getWidgetRoot())
-     * 
+     *
      * @param WidgetInterface $widget
      * @return string
      */
@@ -130,13 +133,13 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
     {
         return substr($widget->getPage()->getUid(),1) . '__' . $widget->getId();
     }
-    
+
     public static function findWidgetNode(NodeElement $innerDomNode) : NodeElement
     {
         if ($innerDomNode->hasClass('exfw')) {
             return $innerDomNode;
         }
-        
+
         try {
             $currentDomNode = $innerDomNode;
             while ($parentDomNode = $currentDomNode->getParent()) {
@@ -194,7 +197,7 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
 
         return null;
     }
-    
+
     /**
      * Returns the nearest widget root ancestor that contains both
      * the toolbar and the content area of a widget.
@@ -314,20 +317,28 @@ JS;
      *    4. The optional $onFailure callback is invoked — use this for cleanup that must
      *       happen after the screenshot but before the exception propagates (e.g. back-navigation
      *       after a tile click so the browser is not left on the wrong page).
-     *    5. The exception is rethrown.
+     *    5. The node is reset so subsequent steps find it in the same state as if no error occurred.
      *
      *  The $onFailure callback is intentionally separate from the main $fn closure so that
      *  cleanup logic does not interfere with the screenshot: anything inside $fn that runs
      *  after the failure point would change the browser state before the screenshot is taken.
-     * 
-     * @param callable $callable
-     * @param string $title
-     * @param string|null $category
-     * @param LogBookInterface|null $logbook
-     * @param callable|null $onFailure Optional cleanup callback invoked after screenshot
-     *                                 and dialog dismiss, but before the exception is
-     *                                 rethrown. Exceptions thrown inside this callback
-     *                                 are silently swallowed to preserve the original error.
+     *
+     *  All failure-handling steps are wrapped in a secondary try/catch. If Chrome has
+     *  crashed, any of those steps can throw a secondary CDP exception (e.g. "Server is closed",
+     *  "Unable to connect to tcp://..."). Without the secondary guard that exception would escape
+     *  runAsSubstep, replace the original error in the caller's error report, and surface as a
+     *  confusing socket error instead of the real test failure. The secondary exception is logged
+     *  to ErrorManager and the logbook and then swallowed so that $substepResult always carries
+     *  the original failure.
+     *
+     * @param callable          $callable  The substep logic to execute.
+     * @param string            $title     Human-readable substep title used in the logbook and events.
+     * @param string|null       $category  Optional grouping category for the substep event.
+     * @param LogBookInterface|null $logbook Logbook to write step details into.
+     * @param callable|null     $onFailure Optional cleanup callback invoked after screenshot
+     *                                     and dialog dismiss. Exceptions thrown inside this
+     *                                     callback are silently swallowed to preserve the
+     *                                     original error.
      * @return SubstepResult
      */
     public function runAsSubstep(
@@ -349,21 +360,63 @@ JS;
             }
         } catch (\Throwable $e) {
             $logbook?->addLine('**ERROR:** ' . $e->getMessage());
-            $this->getBrowser()->captureScreenshot($logbook);
-            $substepResult = SubstepResult::createFailed($e, $logbook);
-            ErrorManager::getInstance()->logException($e, $this->getBrowser()->getWorkbench());
-            if ($e instanceof UIException || $e instanceof AjaxException) {
-                $this->getBrowser()->dismissErrorDialogIfPresent();
+
+            // If the original exception is (or wraps) a CDP connection failure, convert it
+            // to ChromeHangException so that callers such as UI5ContainerNode can trigger
+            // the Chrome recovery path. We still attempt a screenshot and log entry first
+            // (both best-effort — Chrome may be gone), then re-throw so the SubstepResult
+            // is never silently swallowed when a restart is needed.
+            $isCdpCrash = $this->isCdpConnectionError($e);
+            if ($isCdpCrash) {
+                // Best-effort: screenshot and log may fail if Chrome is already dead.
+                try { $this->getBrowser()->captureScreenshot($logbook); } catch (\Throwable $ignored) {}
+                try { ErrorManager::getInstance()->logException($e, $this->getBrowser()->getWorkbench()); } catch (\Throwable $ignored) {}
+                if  ($e instanceof ChromeHangException) {                   
+                    $this->getBrowser()->recoverChrome($this->getSession()->getCurrentUrl());
+                }
             }
-            if ($onFailure !== null) {
+            
+            // Steps 2–5 all touch the live browser or DOM. If Chrome has crashed, any of
+            // them can throw a secondary CDP exception ("Server is closed", socket errors, …).
+            // The outer guard ensures that a secondary failure never escapes runAsSubstep and
+            // never replaces the original exception $e in the caller's error report.
+            try {
+                $this->getBrowser()->captureScreenshot($logbook);
+                $substepResult = SubstepResult::createFailed($e, $logbook);
+                ErrorManager::getInstance()->logException($e, $this->getBrowser()->getWorkbench());
+                if ($e instanceof UIException || $e instanceof AjaxException) {
+                   $this->getBrowser()->dismissErrorDialogIfPresent();
+                }
+                if ($onFailure !== null) {
+                    try {
+                        ($onFailure)();
+                    } catch (\Throwable $ignored) {}
+                }
+                // getWidgetType() calls getAttribute() on the live DOM — safe during normal
+                // failures but will throw if Chrome has crashed. Fall back to the PHP class
+                // name so the reset log line is still written even when the browser is gone.
                 try {
-                    ($onFailure)();
-                } catch (\Throwable $ignored) {}
+                    $widgetTypeLabel = $this->getWidgetType() ?? get_class($this);
+                } catch (\Throwable $ignored) {
+                    $widgetTypeLabel = get_class($this);
+                }
+                // IMPORTANT: reset the node so subsequent steps find it in the same state
+                // as they would if no error had occurred.
+                $logbook?->continueLine(' - resetting ' . $widgetTypeLabel);
+                $this->reset();
+            } catch (\Throwable $secondaryError) {
+                // A secondary CDP/browser error occurred during failure handling (e.g. Chrome
+                // crashed between the original failure and the screenshot/reset calls).
+                // Log it for diagnostics but do not let it propagate — $substepResult must
+                // carry the original failure, not this secondary one.
+                ErrorManager::getInstance()->logException($secondaryError, $this->getBrowser()->getWorkbench());
+                $logbook?->addLine('**WARNING:** Secondary error during failure handling (Chrome may have crashed): ' . $secondaryError->getMessage());
+                // Guarantee $substepResult is always assigned even if captureScreenshot()
+                // threw before line "SubstepResult::createFailed($e, $logbook)" was reached.
+                if (!isset($substepResult)) {
+                    $substepResult = SubstepResult::createFailed($e, $logbook);
+                }
             }
-            // IMPORTANT: reset the node to make sure subsequent tests find it in the same state as it
-            // would be if no error happened!
-            $logbook->continueLine(' - resetting ' . $this->getWidgetType());
-            $this->reset();
         }
         $resultEvent = new AfterSubstep($substepResult, $substepResult->getTitle() ?? $title, $category);
         $dispatcher->dispatch($resultEvent);
@@ -382,7 +435,7 @@ JS;
         $dispatcher->dispatch($resultEvent);
         return $resultEvent;
     }
-    
+
     protected function logSubstepResult(SubstepResult $result, ?string $category = null) : AfterSubstep
     {
         $dispatcher = $this->getBrowser()->getEventDispatcher();
@@ -423,9 +476,9 @@ JS;
 
     /**
      * Returns the result of the given JavaScript snippet
-     * 
+     *
      * The script must evaluate to a scalar value. It is a good idea to wrap the script in an iife:
-     * 
+     *
      * ```
      *  (function(oInput, sDelim){
      *      var aTokens = oInput.getTokens();
@@ -435,9 +488,9 @@ JS;
      *      });
      *      return sVal;
      *  })(sap.ui.getCore().byId('{$this->getElementId()}'), '{$this->getWidget()->getMultiSelectTextDelimiter()}')
-     * 
+     *
      * ```
-     * 
+     *
      * @param string $script
      * @return mixed
      */
@@ -458,7 +511,7 @@ JS;
     {
         return $this->getBrowser()->getWorkbench();
     }
-    
+
     public function checkDisabled(): bool
     {
         return false;
@@ -483,7 +536,7 @@ JS;
         );
         return $this;
     }
-    
+
     protected function checkCaptionMatchesWidget() : FacadeNodeInterface
     {
         $widgetCaption = $this->getWidget()->getCaption();
