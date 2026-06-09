@@ -60,7 +60,11 @@ class ChromeManager
     /** @var LogBookInterface|null Lazily created logbook for structured diagnostic output */
     private ?LogBookInterface $logbook = null;
 
+    /** @var array Chrome launch configuration stored by configure(); used by every start() call */
     private array $config = [];
+
+    /** @var array[] Log of every start() call; cleared by DatabaseFormatter after each feature is written */
+    private array $startHistory = [];
 
     /**
      * Private constructor enforces singleton usage via getInstance().
@@ -96,6 +100,18 @@ class ChromeManager
     }
 
     /**
+     * Stores the Chrome launch configuration so that subsequent start() and restart() calls
+     * can use it without requiring the caller to pass config each time.
+     *
+     * Must be called once before start() — typically from DatabaseFormatter::__construct(),
+     * which is the only place that has access to the behat.yml chrome section.
+     */
+    public function configure(array $config): void
+    {
+        $this->config = $config;
+    }
+
+    /**
      * Returns the logbook used for structured diagnostic output, creating it on first access.
      *
      * The logbook collects all ChromeManager messages under a single "Chrome" section,
@@ -124,30 +140,15 @@ class ChromeManager
      * When an Xdebug session is active, --headless is omitted so the tester can
      * watch the browser and interact with it during debugging.
      *
-     * @param array $config Chrome config array from DatabaseFormatterExtension:
-     *                      ['executable' => ..., 'user_data_dir' => ..., 'port' => ...]
      * @return ChromeStartResult Metadata about the started or reused Chrome process
      * @throws ConfigException If config is incomplete or Chrome does not become ready in time
      */
-    public function start(array $config = []): ChromeStartResult
+    public function start(): ChromeStartResult
     {
         $this->getLogbook()->addLine('ChromeManager::start() called');
         $this->getLogbook()->addIndent(+1);
         $this->logger?->info('Using Chrome for BDT', [], $this->getLogbook());
-        if (!empty($config)) {
-            $this->config = $config; // store on first call
-        }
         $config = $this->config;
-        // Return immediately if a managed Chrome process is already running
-        if ($this->pid !== null) {
-            $this->getLogbook()->addLine("Chrome already running on port {$this->port} with PID {$this->pid} — reusing existing process");
-            $this->getLogbook()->addIndent(-1);
-            return new ChromeStartResult(
-                port: $this->port,
-                pid: $this->pid,
-                startupMs: 0.0
-            );
-        }
         $startTime = microtime(true);
         $executable = $config['executable'] ?? null;
         $userDataDir = getcwd() . DIRECTORY_SEPARATOR . $config['user_data_dir'] ?? null;
@@ -215,11 +216,18 @@ class ChromeManager
         $this->getLogbook()->addLine("Chrome started successfully — PID: {$pid}, port: {$port}, startup time: {$elapsedMs} ms");
         $this->getLogbook()->addIndent(-1);
 
-        return new ChromeStartResult(
+        $result = new ChromeStartResult(
             port: $port,
             pid: $pid,
             startupMs: microtime(true) - $startTime
         );
+        $this->startHistory[] = [
+            'pid'              => $pid,
+            'port'             => $port,
+            'startup_duration' => round((microtime(true) - $startTime) * 1000, 1),
+            'started_at'       => date('Y-m-d H:i:s')
+        ];
+        return $result;
     }
 
     /**
@@ -266,8 +274,11 @@ class ChromeManager
      * and any file handles Chrome held, reducing the chance of start() finding the
      * port still occupied immediately after the kill.
      *
+     * After this method returns, getLastStartResult() reflects the newly started
+     * Chrome process so that callers can record the restart metadata.
+     *
      * @throws RuntimeException If stop() cannot terminate the process or start()
-     *                          cannot confirm readiness within its timeout
+     *                          cannot confirm readiness within its timeout.
      */
     public function restart(): void
     {
@@ -280,6 +291,30 @@ class ChromeManager
         $this->start();
 
         $this->getLogbook()->addIndent(-1);
+    }
+
+    /**
+     * Clears the start history collected since the last clearStartHistory() call.
+     *
+     * Called by DatabaseFormatter after writing chrome_info for a feature so that
+     * the next feature starts with a clean slate. ChromeManager itself never clears
+     * the history — it only appends to it.
+     */
+    public function clearStartHistory(): void
+    {
+        $this->startHistory = [];
+    }
+
+    /**
+     * Returns all start() calls recorded since the last clearStartHistory() call.
+     *
+     * Each entry contains pid, port, startup_duration (ms), started_at, and restart_reason.
+     *
+     * @return array[]
+     */
+    public function getStartHistory(): array
+    {
+        return $this->startHistory;
     }
 
     /**
@@ -316,30 +351,6 @@ class ChromeManager
     public function getTabList(?int $port = null): array
     {
         return $this->runGuzzleApi('http://localhost:' . ($port ?? $this->getPort()) . '/json/list');
-    }
-
-    /**
-     * Stops the running Chrome process and starts a fresh one on the same port.
-     *
-     * This is the recovery entry point called by UI5BrowserContext::recoverChrome()
-     * when a ChromeHangException is caught mid-test. The method is intentionally
-     * thin: it delegates entirely to the existing stop() and start() methods so
-     * that all port-check, PID-detection, and readiness-polling logic stays in
-     * one place and restart() automatically benefits from any future improvements
-     * to those methods.
-     *
-     * A short sleep between stop and start gives the OS time to release the port
-     * and any file handles Chrome held, reducing the chance of start() finding the
-     * port still occupied immediately after the kill.
-     *
-     * @throws \RuntimeException If stop() cannot terminate the process or start()
-     *                           cannot confirm readiness within its timeout.
-     */
-    public static function restart(): void
-    {
-        self::stop();
-        sleep(2); // allow the OS to fully release the port before relaunching
-        self::start();
     }
     
     /**

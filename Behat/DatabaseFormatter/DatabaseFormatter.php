@@ -68,8 +68,6 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private ScreenshotProviderInterface $provider;
     /** @var MarkdownLogBook[]  */
     private static array        $stepLogbooks = [];
-    
-    private ChromeStartResult $chromeStartResult;
     private bool $exerciseFinished = false;
 
     // Do not create a run record for dry-run executions.
@@ -83,8 +81,8 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         $this->provider = $provider;
         $this->isDryRun = in_array('--dry-run', $_SERVER['argv'] ?? [], true);
         if (!$this->isDryRun) {
-            $chromeInstance = ChromeManager::getInstance($this->workbench->getLogger());
-            $this->chromeStartResult = $chromeInstance->start($chromeConfig);
+            ChromeManager::getInstance($this->workbench->getLogger())
+                ->configure($chromeConfig);
             $this->startRun();
         }
     }
@@ -243,11 +241,15 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $ds = $this->featureDataSheet->extractSystemColumns();
             $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
             $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->featureStart);
+            $ds->setCellValue('chrome_info', 0, $this->buildChromeInfo());
             $ds->dataUpdate();
             $this->featureDataSheet = null;
         }
         catch(\Exception $e){
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+        } finally {
+            // Clear so the next feature starts with a clean history
+            ChromeManager::getInstance()->clearStartHistory();
         }
     }
 
@@ -320,14 +322,14 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                     $pageUid = $page->getUid();
                     //not to reach memory limit
                     unset($page);
+                    $dsActions->addRow([
+                        'run_scenario' => $scenarioUid,
+                        'page_alias' => $pageAlias,
+                        'page' => $pageUid
+                    ]);
                 } catch (\Throwable $e) {
                     $pageUid = null;
                 }
-                $dsActions->addRow([
-                    'run_scenario' => $scenarioUid,
-                    'page_alias' => $pageAlias,
-                    'page' => $pageUid
-                ]);
             }
             if (! $dsActions->isEmpty()) {
                 $dsActions->dataCreate();
@@ -610,19 +612,24 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         return $this->runDataSheet->getUidColumn()->getValue(0);
     }
 
+    /**
+     * Builds a JSON string with metadata about every Chrome instance that ran during
+     * the current feature.
+     *
+     * Reads ChromeManager::getStartHistory() which accumulates one entry per start()
+     * call since the last clearStartHistory(). A feature with no crash will have a
+     * single entry; a feature with one crash recovery will have two entries.
+     *
+     * @param array $extra Additional key-value pairs merged into each entry (rarely needed).
+     * @return string JSON-encoded array of chrome start records.
+     */
     private function buildChromeInfo(array $extra = []): string
     {
-        $formula = FormulaFactory::createFromString(
-            $this->workbench,
-            '=TimeFromSeconds(' . $this->chromeStartResult?->startupMs . ')'
-        );
-        $duration = $formula->evaluate();
-        $data = [
-            'port'              => $this->chromeStartResult?->port,
-            'pid'               => $this->chromeStartResult?->pid,
-            'startup_duration'  => $duration
-        ];
-        return json_encode(array_merge($data, $extra));
+        $history = ChromeManager::getInstance()->getStartHistory();
+        if (!empty($extra)) {
+            $history = array_map(fn($entry) => array_merge($entry, $extra), $history);
+        }
+        return json_encode($history);
     }
 
     /**
@@ -678,8 +685,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run');
             $ds->addRow([
                 'started_on' => DateTimeDataType::now(),
-                'behat_command' => $command,
-                'chrome_info'   => $this->buildChromeInfo(),
+                'behat_command' => $command
             ]);
             $ds->dataCreate(false);
             $this->runDataSheet = $ds;
