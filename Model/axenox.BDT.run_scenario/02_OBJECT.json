@@ -87,9 +87,9 @@
         {
             "_EXPORT_SUMMARY": "BDT scenario run [axenox.BDT.run_scenario]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-04-16 16:55:28",
+            "MODIFIED_ON": "2026-06-08 15:49:48",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x11f08ce4baed19b88ce4005056be9857",
+            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f08f0e222d25a48f0e025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
@@ -237,6 +237,19 @@
                                     {
                                         "attribute_alias": "run_feature__feature_file__CONTENTS",
                                         "widget_type": "axenox.BDT.InputGherkin",
+                                        "disabled": true,
+                                        "hide_caption": true,
+                                        "width": "100%",
+                                        "height": "100%"
+                                    }
+                                ]
+                            },
+                            {
+                                "caption": "Chrome Info",
+                                "widgets": [
+                                    {
+                                        "attribute_alias": "run_feature__chrome_info",
+                                        "widget_type": "InputJson",
                                         "disabled": true,
                                         "hide_caption": true,
                                         "width": "100%",

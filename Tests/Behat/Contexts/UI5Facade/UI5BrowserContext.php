@@ -28,6 +28,7 @@ use Behat\Behat\Hook\Scope\BeforeStepScope;
 use Behat\Gherkin\Node\TableNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataTableNode;
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
+use axenox\BDT\Behat\Contexts\UI5Facade\CdpConnectionDetectorTrait;
 
 
 /**
@@ -43,6 +44,8 @@ use Symfony\Component\EventDispatcher\EventDispatcherInterface;
  */
 class UI5BrowserContext extends BehatFormatterContext implements Context
 {
+    use CdpConnectionDetectorTrait;
+    
     private $browser;
     private $scenarioName;
 
@@ -54,6 +57,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private ?string $lastLoginRole = null;
     private ?string $lastLoginLocale = null;
     private static ?string $currentFeatureTitle = null;
+    private ?string $lastPageAlias = null;
     
     /** 
      * Initializes and starts the workbench for the test environment
@@ -149,8 +153,48 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             echo "LogID: " . $wrappedException->getId() . "\n";
             // Display LogID for debugging purposes 
             $this->logDebug("LogID: " . $wrappedException->getId() . "\n");
-        }
 
+            // If the step failed due to a lost CDP connection, attempt to recover
+            // Chrome so the next step in this scenario can continue on a live browser.
+            // The step itself is already recorded as failed — recovery only affects
+            // what comes after it.
+            if ($exception !== null && $this->isCdpConnectionError($exception)) {
+                $this->recoverChromeAfterStepFailure();
+            }
+        }
+    }
+
+    /**
+     * Attempts to recover Chrome after a CDP connection failure detected in @AfterStep.
+     *
+     * Reads the current URL from the session (which may itself fail if Chrome is
+     * already gone), derives the page path from it, and delegates to recoverChrome().
+     * All errors are caught and logged — this method must never throw because it runs
+     * inside an AfterStep hook where an uncaught exception would corrupt Behat's
+     * internal state.
+     */
+    private function recoverChromeAfterStepFailure(): void
+    {
+        try {
+            $pageAlias = $this->lastPageAlias ?? $this->lastLoginUrl ?? '';
+
+            $this->logDebug('CDP connection lost detected in @AfterStep — attempting Chrome recovery (page: ' . $pageAlias . ')');
+            $this->recoverChrome($pageAlias);
+            $this->logDebug('Chrome recovery successful after step failure.');
+
+        } catch (\Throwable $recoveryError) {
+            // Recovery failed (e.g. login page unreachable, Chrome could not start).
+            // Log it but do not re-throw — the step is already failed, and surfacing
+            // a recovery error here would replace the real error in Behat's output.
+            $this->logDebug('Chrome recovery failed after step failure: ' . $recoveryError->getMessage());
+            try {
+                $this->getWorkbench()->getLogger()->logException(new RuntimeException(
+                    'Chrome recovery failed after step failure: ' . $recoveryError->getMessage(),
+                    null,
+                    $recoveryError
+                ));
+            } catch (\Throwable $ignored) {}
+        }
     }
 
     /**
@@ -174,6 +218,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Clear XHR logs to monitor only current step's network activity
         $this->browser->clearXHRLog();
 
+        //write the page alias to continue if the chrome crushes
+        $this->lastPageAlias = $this->getBrowser()->getPageAliasFromCurrentUrl();
+        
         // install http status interceptor to eliminate bad requests
         $this->getBrowser()->getWaitManager()->installHttpInterceptor();
         
@@ -280,17 +327,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         $manager = ChromeManager::getInstance();
         if ($manager->getPid() === null) {
-            return; // Chrome not started yet, first feature
+            // First feature: Chrome has not been started yet — start it now.
+            // Config was already stored in ChromeManager by DatabaseFormatter::__construct().
+            $manager->getLogbook()->addLine('First feature: starting Chrome for "' . $featureTitle . '"');
+            $manager->start();
+        } else {
+            // Subsequent features: restart to get a clean browser state.
+            $manager->getLogbook()->addLine('Feature boundary detected: restarting Chrome before "' . $featureTitle . '"');
+            $manager->restart();
+            // Reset Mink session so the driver opens a fresh WebSocket to the new Chrome process
+            $this->getSession()->stop();
+            $this->getSession()->start();
         }
 
-        $manager->getLogbook()->addLine(
-            'Feature boundary detected: restarting Chrome before "' . $featureTitle . '"'
-        );
-        $manager->restart();
-
-        // Reset Mink session so the driver opens a fresh WebSocket to the new Chrome process
-        $this->getSession()->stop();
-        $this->getSession()->start();
         $this->scenarioName = $scope->getScenario()->getTitle();
 
         // Initialize XHR monitoring if browser is available
@@ -1206,7 +1255,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             throw new \RuntimeException("Table {$index} not found. Only " . count($tables) . " tables available.");
         }
         $table = $tables[$tableIndex];
-        $this->getBrowser()->highlightWidget($table->getNodeElement(), 'DataTable', $index);
+        $this->getBrowser()->highlightWidget($table->getNodeElement(), 'DataTable', $tableIndex);
         // Focus the selected table
         $this->getBrowser()->focus($table);
     }
@@ -1794,6 +1843,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private function navigateToPageAlias(string $pageAlias): void
     {
         $this->getEventDispatcher()->dispatch(new AfterPageVisited($pageAlias));
+        $this->lastPageAlias = $pageAlias;
         
         // Navigate to the page using Mink's path navigation
         $url = $pageAlias . '.html';
