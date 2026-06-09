@@ -437,7 +437,7 @@ class UI5DataNode extends UI5AbstractNode
         $ds = DataSheetFactory::createFromObject($metaObject);
         foreach ($this->hiddenFilters as $hiddenFilter) {
             if ($hiddenFilter->getMetaObject()->isExactly($ds->getMetaObject())) {
-                $filterNode = UI5FacadeNodeFactory::createFromWidget($hiddenFilter->getTargetWidget());
+                $filterNode = UI5FacadeNodeFactory::createFromWidget($hiddenFilter, $this->getSession(), $this->getBrowser());
                 $hiddenFilterValue = $filterNode->getValueVisible();
                 if ($hiddenFilterValue !== null) {
                     $ds->getFilters()->addConditionFromString(
