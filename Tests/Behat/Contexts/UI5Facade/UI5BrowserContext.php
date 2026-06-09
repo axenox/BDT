@@ -250,17 +250,18 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
 
     /**
-     * Ensures consistent state after each test step
-     * - Waits for all pending UI5 operations
-     * - Verifies no errors occurred
-     * - Takes screenshot on failure
-     * 
+     * Ensures consistent state after each test step by waiting for UI5 operations
+     * and validating that no errors occurred.
+     *
+     * Must never throw — any uncaught exception from an AfterStep hook causes Behat
+     * to exit with code 255, killing the entire test run. Chrome hang and timeout
+     * errors are caught here and logged; Chrome recovery is attempted if needed.
+     *
      * @AfterStep
-     * @param AfterStepScope $scope Current step scope
      */
     public function completeAfterStep(AfterStepScope $scope): void
     {
-        // Skip if step already failed
+        // Skip if step already failed — no point waiting for UI that may be broken
         if (!$scope->getTestResult()->isPassed()) {
             return;
         }
@@ -270,28 +271,40 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             return;
         }
 
-        // Comprehensive waiting operations to ensure UI stabilization
-        $this->getBrowser()->handleStepWaitOperations(true);
+        try {
+            // Wait for all pending UI5 operations to finish
+            $this->getBrowser()->handleStepWaitOperations(true);
 
-        // Check for any errors that occurred
-        $this->browser->getWaitManager()->validateNoErrors();
+            // Check for any errors that occurred during the step
+            $this->browser->getWaitManager()->validateNoErrors();
 
-        //  Log step completion for debugging   
-        $stepKeyword = $scope->getStep()->getKeyword();
-        $stepText = $scope->getStep()->getText();
-        $this->logDebug(sprintf(
-            "\nCompleted step: %s %s",
-            $stepKeyword,
-            $stepText
-        ));
+            $stepKeyword = $scope->getStep()->getKeyword();
+            $stepText    = $scope->getStep()->getText();
+            $stepName    = sprintf('%s %s', $stepKeyword, $stepText);
 
-        // Show step completion timing information
-        $stepName = sprintf("%s %s", $stepKeyword, $stepText);
-        $this->browser->showStepTiming($stepName, false, $this->stepStartTime);
+            $this->logDebug(sprintf("\nCompleted step: %s", $stepName));
+            $this->browser->showStepTiming($stepName, false, $this->stepStartTime);
 
-        // Add a 1-second pause after each step
-        $this->getSession()->wait(1000);
+            // Short pause to let the UI fully settle before the next step starts
+            $this->getSession()->wait(1000);
 
+        } catch (\Throwable $e) {
+            // Re-throwing from an AfterStep hook kills the Behat process with exit
+            // code 255. Instead, log the error and attempt Chrome recovery if the
+            // failure was caused by a lost CDP connection.
+            $this->logDebug('Wait operation failed (after step): ' . $e->getMessage());
+            try {
+                $this->getWorkbench()->getLogger()->logException(new RuntimeException(
+                    'Wait operation failed (after step): ' . $e->getMessage(),
+                    null,
+                    $e
+                ));
+            } catch (\Throwable $ignored) {}
+
+            if ($this->isCdpConnectionError($e)) {
+                $this->recoverChromeAfterStepFailure();
+            }
+        }
     }
 
     /**
