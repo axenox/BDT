@@ -1805,7 +1805,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $logbook = new MarkdownLogBook($node->getCaption());
         $logbook->setIndentActive(1);
         DatabaseFormatter::addTestLogbook($logbook);
-        $node->itWorksAsShown($fields, $logbook);
+        $result = $node->itWorksAsShown($fields, $logbook);
+        if ($result->isFailed()) {
+            throw new RuntimeException(
+                'Widget "' . $node->getCaption() . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details')
+            );
+        }
     }
 
     /**
@@ -1826,7 +1831,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $logbook = new MarkdownLogBook($node->getCaption());
         $logbook->setIndentActive(1);
         DatabaseFormatter::addTestLogbook($logbook);
-        $node->checkWorksAsExpected($logbook);
+        $result = $node->checkWorksAsExpected($logbook);
+        if ($result->isFailed()) {
+            throw new RuntimeException(
+                'Widget "' . $node->getCaption() . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details')
+            );
+        }
     }
 
     /**
