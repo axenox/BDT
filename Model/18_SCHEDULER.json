@@ -82,7 +82,7 @@
         {
             "_EXPORT_SUMMARY": "onelink.Basis daily autom. tests ",
             "CREATED_ON": "2026-06-09 15:43:38",
-            "MODIFIED_ON": "2026-06-09 15:44:20",
+            "MODIFIED_ON": "2026-06-10 09:03:37",
             "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f1ac8338772070ac83025041000001",
@@ -95,7 +95,7 @@
             "TASK_UXON": {
                 "cmd": [
                     "vendor\\bin\\action axenox.BDT:Behat init",
-                    "vendor\\bin\\Behat --suite=onelink.Basis --tag=Status::Ready"
+                    "vendor\\bin\\Behat --suite=onelink.Basis --tags=Status::Ready"
                 ],
                 "timeout": 3600,
                 "ignored_exit_codes": [

@@ -3,6 +3,7 @@
 namespace axenox\BDT\Behat\TwigFormatter\Formatter;
 
 use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
+use axenox\BDT\Behat\Listeners\GlobalExceptionListener;
 use Behat\Behat\EventDispatcher\Event\AfterFeatureTested;
 use Behat\Behat\EventDispatcher\Event\AfterOutlineTested;
 use Behat\Behat\EventDispatcher\Event\AfterScenarioTested;
@@ -14,11 +15,10 @@ use Behat\Behat\EventDispatcher\Event\BeforeStepTested;
 use Behat\Behat\Tester\Result\ExecutedStepResult;
 use Behat\Testwork\Counter\Memory;
 use Behat\Testwork\Counter\Timer;
-use Behat\Testwork\EventDispatcher\Event\AfterExerciseCompleted;
 use Behat\Testwork\EventDispatcher\Event\AfterSuiteTested;
 use Behat\Testwork\EventDispatcher\Event\BeforeExerciseCompleted;
 use Behat\Testwork\EventDispatcher\Event\BeforeSuiteTested;
-use Behat\Testwork\EventDispatcher\Event\ExerciseCompleted;
+use Behat\Testwork\Exception\ExceptionPresenter;
 use Behat\Testwork\Output\Exception\BadOutputPathException;
 use Behat\Testwork\Output\Formatter;
 use Behat\Testwork\Output\Printer\OutputPrinter;
@@ -47,12 +47,12 @@ class BehatFormatter implements Formatter
     private $parameters;
 
     /**
-     * @var
+     * @var string
      */
     private $name;
 
     /**
-     * @var
+     * @var Timer
      */
     private $timer;
 
@@ -194,7 +194,20 @@ class BehatFormatter implements Formatter
 
     private Timer $timerFeature;
     private bool $isDryRun = false;
-
+    
+    /**
+     * Tracks whether the exercise timer was actually started.
+     *
+     * Behat's Timer::stop() throws a TimerException when called on a timer that
+     * was never started. __destruct() always runs at PHP shutdown, even when the
+     * run aborts BEFORE the exercise begins (fatal error / exception during setup).
+     * In that case the timer was never started, so stopping it in __destruct()
+     * would throw and MASK the real underlying error. This flag lets __destruct()
+     * skip the stop() call safely.
+     *
+     * @var bool
+     */
+    private bool $timerStarted = false;
     //</editor-fold>
 
     //<editor-fold desc="Formatter functions">
@@ -244,23 +257,34 @@ class BehatFormatter implements Formatter
         $this->timerFeature = new Timer();
         $this->memory = new Memory();
         $this->provider = $provider;
-        
+
         // Initialize the exception listener but don't try to register it directly
-        $exceptionPresenter = new \Behat\Testwork\Exception\ExceptionPresenter();
-        $this->exceptionListener = new \axenox\BDT\Behat\Listeners\GlobalExceptionListener($exceptionPresenter);
+        $exceptionPresenter = new ExceptionPresenter();
+        $this->exceptionListener = new GlobalExceptionListener($exceptionPresenter);
     }
 
     public function __destruct()
     {
-        if ($this->isDryRun) { 
+        if ($this->isDryRun) {
             return;
         }
-        // whenever the formatter object is about to be destroyed
-        // (i.e. at the very end of the test run, even on error), flush the report:
-        $this->timer->stop();
-        $print = $this->renderer->renderAfterExercise($this);
-        $this->printer->writeln($print);
+        // No exercise started -> nothing to finalize and the timer was never started.
+        if (!$this->timerStarted) {
+            return;
+        }
+        try {
+            // whenever the formatter object is about to be destroyed
+            // (i.e. at the very end of the test run, even on error), flush the report:
+            $this->timer->stop();
+            $print = $this->renderer->renderAfterExercise($this);
+            $this->printer->writeln($print);
+        } catch (\Throwable $e) {
+            // A destructor must never throw during shutdown; log and swallow so the:Zsa
+            // real underlying error stays visible instead of being masked.
+            ErrorManager::getInstance()->logException($e);
+        }
     }
+    
     /**
      * Returns an array of event names this subscriber wants to listen to.
      * @return array The event names to listen to
@@ -552,6 +576,10 @@ class BehatFormatter implements Formatter
     public function onBeforeExercise(BeforeExerciseCompleted $event)
     {
         $this->timer->start();
+        // Mark the timer as started so __destruct() can stop it safely. Without this,
+        // a run that aborts before the exercise begins makes __destruct() call stop()
+        // on an unstarted timer, which throws a TimerException at shutdown.
+        $this->timerStarted = true;
 
         $print = $this->renderer->renderBeforeExercise($this);
         $this->printer->write($print);
