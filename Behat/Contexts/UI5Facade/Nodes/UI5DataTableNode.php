@@ -141,7 +141,7 @@ class UI5DataTableNode extends UI5DataNode
      * @param TableNode $fields
      * @param LogBookInterface $logbook
      */
-    public function itWorksAsShown(TableNode $fields, LogBookInterface $logbook): void
+    public function itWorksAsShown(TableNode $fields, LogBookInterface $logbook): TestResultInterface
     {
         /* @var $widget \exface\Core\Widgets\DataTable */
         $widget = $this->getWidget();
@@ -204,7 +204,7 @@ class UI5DataTableNode extends UI5DataNode
             Assert::assertEmpty($extraButtons,   'Unexpected buttons: ' . implode(', ', $extraButtons));
         }
 
-        $this->checkWorksAsExpected($logbook);
+        return $this->checkWorksAsExpected($logbook);
     }
 
 
