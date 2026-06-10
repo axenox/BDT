@@ -3,7 +3,6 @@ namespace axenox\BDT\Behat\DatabaseFormatter;
 
 use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
 use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
-use axenox\BDT\Behat\Contexts\UI5Facade\ChromeStartResult;
 use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
@@ -30,7 +29,6 @@ use exface\Core\DataTypes\PhpFilePathDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Factories\DataSheetFactory;
-use exface\Core\Factories\FormulaFactory;
 use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\DataSheets\DataSheetInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
@@ -81,7 +79,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         $this->provider = $provider;
         $this->isDryRun = in_array('--dry-run', $_SERVER['argv'] ?? [], true);
         if (!$this->isDryRun) {
-            ChromeManager::getInstance($this->workbench->getLogger())
+            ChromeManager::getInstance($this)
                 ->configure($chromeConfig);
             $this->startRun();
         }
@@ -120,6 +118,10 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $this->onAfterExercise();
             ChromeManager::getInstance()->stop();
         }
+    }
+    public function getWorkbench(): WorkbenchInterface
+    {
+        return $this->workbench;
     }
 
     public function getName(): string
@@ -521,13 +523,30 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         return $this->logError($e->getMessage(), $e);
     }
 
-    /**
+    /** 
+     * Defensive fallback for the "no open scenario" case: a run_step row requires a
+     * run_scenario FK, so it can only be written while a scenario is open. logError() can be
+     * called before any scenario exists — most importantly when Chrome fails to start inside
+     * the very first BeforeScenario hook, before onBeforeScenario() created the scenario
+     * record. In that case we must not dereference a null scenarioDataSheet: doing so would
+     * crash here, hide the real cause, and leave the run looking like an unexplained stop.
+     * Instead, we log the exception through the workbench logger, producing a monitor-visible
+     * entry with a log id regardless of hook ordering, and return an unsaved sheet.
+     * 
      * {@inheritDoc}
      * @see TestRunObserverInterface::logError()
      */
     public function logError(string $title, ?\Throwable $e = null) : DataSheetInterface
     {
         $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_step');
+
+        // No open scenario yet → a run_step cannot be created (it needs a run_scenario FK).
+        // Fall back to a plain workbench log entry so the failure is never silently lost.
+        if ($this->scenarioDataSheet === null) {
+            $this->workbench->getLogger()->logException($e ?? new RuntimeException($title));
+            return $ds;
+        }
+
         $row = [
             'run_scenario' => $this->scenarioDataSheet->getUidColumn()->getValue(0),
             'run_sequence_idx' => $this->stepIdx,
@@ -540,7 +559,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         ];
         if ($e) {
             $ds->setCellValue('error_message', 0, $e->getMessage());
-            if($e instanceof ExceptionInterface) {
+            if ($e instanceof ExceptionInterface) {
                 $ds->setCellValue('error_log_id', 0, $e->getLogId());
             }
             $this->workbench->getLogger()->logException($e);
