@@ -338,39 +338,47 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         catch(\Exception $e){
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
         }
-        gc_collect_cycles();
     }
 
-    public function onBeforeStep(BeforeStepTested $event) 
+    public function onBeforeStep(BeforeStepTested $event): void
     {
         if ($this->isDryRun) {
             return;
         }
         static::$stepLogbooks = [];
-        try{
+        // Reset so that onAfterStep can detect a failed DB record creation
+        $this->stepDataSheet = null;
+        try {
             $step = $event->getStep();
             $this->stepIdx++;
             $this->stepStart = $this->microtime();
             $ds = $this->logStepStart($step->getText(), $step->getLine());
             $this->stepDataSheet = $ds;
             $this->provider->setName($ds->getUidColumn()->getValue(0));
-        }
-        catch(\Exception $e){
+        } catch (\Throwable $e) {
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
         }
     }
 
-    public function onAfterStep(AfterStepTested $event) 
+    public function onAfterStep(AfterStepTested $event): void
     {
-        try{
+        try {
             if ($this->isDryRun) {
+                return;
+            }
+            // stepDataSheet is null when onBeforeStep failed to create the DB record.
+            // In that case there is nothing to close — just clear the orphaned substep
+            // stack so the next step starts clean.
+            if ($this->stepDataSheet === null) {
+                $this->substepDataSheets = [];
+                $this->substepStarts = [];
                 return;
             }
             $result = $event->getTestResult();
             $ds = $this->stepDataSheet->extractSystemColumns();
             $stepStatusCode = StepStatusDataType::convertFromBehatResultCode($result->getResultCode());
             $this->logStepEnd($ds, $this->stepStart, $stepStatusCode, $result->getResultCode() === TestResult::FAILED ? $result->getException() : null, $this::$stepLogbooks);
-            
+
             // Make sure to end ALL substeps. Substeps can only exist inside a step, so if the step ends, all
             // of them MUST end too. Give the substeps the status code of the step
             /* @var \exface\Core\Interfaces\DataSheets\DataSheetInterface $ds */
@@ -381,7 +389,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             }
             $this->substepDataSheets = [];
             $this->substepStarts = [];
-        } catch(\Exception $e){
+        } catch (\Throwable $e) {
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
         }
     }
