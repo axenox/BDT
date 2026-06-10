@@ -54,8 +54,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private string $locale = 'de_DE';
     private static bool $isDryRun = false;
     private ?string $lastLoginUrl = null;
-    private ?string $lastLoginRole = null;
     private ?string $lastLoginLocale = null;
+    /** @var array|null Browser-side login form fields (caption => value) computed during the first login and replayed verbatim by recoverChrome() without touching the DB */
+    private ?array $lastLoginFields = null;
+    /** @var string|null Caption of the authenticator tab to open on the login form; cached for recovery replay */
+    private ?string $lastLoginTabCaption = null;
+    /** @var string|null Caption of the login submit button; cached for recovery replay */
+    private ?string $lastLoginButtonCaption = null;
     private static ?string $currentFeatureTitle = null;
     private ?string $lastPageAlias = null;
     
@@ -417,7 +422,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         // Persist login parameters so recoverChrome() can replay them.
         $this->lastLoginUrl = $url;
-        $this->lastLoginRole = $userRoles;
         $this->lastLoginLocale = $userLocale;
         
         // Setup the user and get the required login data
@@ -432,11 +436,38 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $btnCaption = $loginFields['_button'];
         unset($loginFields['_button']);
 
+        // Cache the resolved, browser-only login data so recoverChrome() can replay just the
+        // form fill on the fresh Chrome without calling setupUser() (and thus the DB) again.
+        $this->lastLoginFields = $loginFields;
+        $this->lastLoginTabCaption = $tabCaption;
+        $this->lastLoginButtonCaption = $btnCaption;
+        
         $this->setLocale($userLocale);
 
+        // Fill the form
+        $this->browserLogin($url, $tabCaption, $btnCaption, $loginFields);
+    }
+    
+    /**
+     * Replays the browser-side login: visits the page, opens the authenticator tab, fills the
+     * form and submits it. This is the only work a fresh Chrome actually needs to log back in —
+     * the DB user/roles/locale setup and the process-side authentication done by setupUser() are
+     * already in effect for the whole scenario and must NOT be repeated.
+     *
+     * Separated out from iLogInToPage() so recoverChrome() can call it directly with the values
+     * cached on the first login, avoiding the USER_AUTHENTICATOR optimistic-lock conflict that a
+     * second setupUser() call would cause.
+     *
+     * @param string $url         Page URL to log in to
+     * @param string $tabCaption  Caption of the authenticator tab to open
+     * @param string $btnCaption  Caption of the login submit button
+     * @param array  $loginFields Form fields as caption => value (without the _tab/_button keys)
+     */
+    private function browserLogin(string $url, string $tabCaption, string $btnCaption, array $loginFields): void
+    {
         // Go to the page
         $this->iVisitPage($url);
-        
+
         // If a stale session is active, the login form won't appear — we land directly
         // on the requested page instead. Detect this with a short retry and log out first.
         try {
@@ -1988,13 +2019,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $targetPageAlias The alias of the page to open after recovery
      *                                (typically the tile page that was being tested
      *                                when Chrome hung).
-     * @throws \RuntimeException If no login parameters are available (recoverChrome()
+     * @throws RuntimeException If no login parameters are available (recoverChrome()
      *                           was called before iLogInToPage() ever ran).
      */
     public function recoverChrome(string $targetPageAlias): void
     {
         if ($this->lastLoginUrl === null) {
-            throw new \RuntimeException(
+            throw new RuntimeException(
                 'Cannot recover Chrome: no login parameters stored. '
                 . 'Ensure iLogInToPage() was called before the test started.'
             );
@@ -2006,11 +2037,17 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Step 2: Reconnect the Mink session to the freshly started Chrome.
         $this->getSession()->restart();
 
-        // Step 3: Re-authenticate — the new Chrome has no cookies or session state.
-        $this->iLogInToPage(
+        // Step 3: Re-authenticate the BROWSER only — replay just the login form with the values
+        // cached on the first login. We are continuing the same scenario, so the DB user/roles/
+        // locale setup and the process-side authentication from the original iLogInToPage() are
+        // still valid; only the fresh Chrome lost its cookies/session. We deliberately do NOT
+        // call setupUser() again, which would re-bump the USER_AUTHENTICATOR row the browser
+        // login already updated and fail with an optimistic-lock "changed in the meantime" error.
+        $this->browserLogin(
             $this->lastLoginUrl,
-            $this->lastLoginRole,
-            $this->lastLoginLocale
+            $this->lastLoginTabCaption,
+            $this->lastLoginButtonCaption,
+            $this->lastLoginFields
         );
 
         // Step 4: Navigate directly to the target page without going via the tile
