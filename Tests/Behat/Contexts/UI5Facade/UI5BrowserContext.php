@@ -33,14 +33,14 @@ use axenox\BDT\Behat\Contexts\UI5Facade\CdpConnectionDetectorTrait;
 
 /**
  * Test steps available for the OpenUI5 facade
- * 
+ *
  * UI5BrowserContext class provides test steps for OpenUI5 facade testing
  * Each scenario gets its own context instance
- * 
+ *
  * Every scenario gets its own context instance.
  * You can also pass arbitrary arguments to the
  * context constructor through behat.yml.
- * 
+ *
  */
 class UI5BrowserContext extends BehatFormatterContext implements Context
 {
@@ -101,7 +101,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         return $this->getWorkbench()->getInstallationPath();
     }
-    
+
     public function getLocale(): string
     {
         return $this->locale;
@@ -393,7 +393,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     /**
      * Verifies that the page content is accessible and not empty
-     * 
+     *
      * @Then I should see the page
      */
     public function iShouldSeeThePage()
@@ -479,6 +479,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $this->iVisitPage($url);
             $this->getBrowser()->goToTab($tabCaption, null, 5);
         }
+        
+        // Store the active roles on the browser instance so that nodes can build
+        // role-aware cache keys for works-as-expected deduplication without having
+        // to carry the role array through every call chain.
+        $this->getBrowser()->setCurrentRoles($userRolesArray);
         // Fill out the login form
         foreach ($loginFields as $caption => $value) {
             $input = $this->getBrowser()->findInputByCaption($caption);
@@ -512,11 +517,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         if ($url && !StringDataType::endsWith($url, '.html')) {
             $url .= '.html';
         }
-        
+
         // Page alias like `axenox.bdt.home`
         $pageAlias = StringDataType::substringAfter($url, '/', false, true);
         $pageAlias = StringDataType::substringBefore($url, '.html', $url, false, true);
-        
+
         $this->navigateToPageAlias($pageAlias);
     }
 
@@ -590,9 +595,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     /**
      * Verifies that the currently focused element contains a specified number of widgets
      * of a given type. Used after focusing on a container element.
-     * 
+     *
      * @Then it has :number widget of type ":widgetType"
-     * 
+     *
      * @param int $number Expected number of widgets
      * @param string $widgetType Type of widget to look for
      */
@@ -636,9 +641,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     /**
      * Fills multiple form fields with values from a table
      * The table should have columns 'widget_name' and 'value'
-     * 
+     *
      * @Then I fill the following fields:
-     * 
+     *
      * @param TableNode $fields Table with field names and values
      */
     public function iFillTheFollowingFields(TableNode $fields): void
@@ -661,11 +666,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Verifies that a focused widget (typically a form or filter group) contains the 
+     * Verifies that a focused widget (typically a form or filter group) contains the
      * specified filters by name
-     * 
+     *
      * @Then it has filters: :filterList
-     * 
+     *
      * @param string $filterList Comma-separated list of expected filter names
      */
     public function itHasFilters(string $filterList): void
@@ -715,9 +720,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     /**
      * Filter input handling for UI5 applications
      * Supports both standard input fields and special UI5 components like ComboBox
-     * 
+     *
      * @When I enter :value in filter :filterName
-     * 
+     *
      * @param string $value The value to enter/select in the filter
      * @param string $filterName The name/label of the filter field
      * @throws \RuntimeException if filter field cannot be found or interaction fails
@@ -731,9 +736,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     /**
      * Verifies if specific text appears in a named column of a DataTable
-     * 
+     *
      * @Then I see ":text" in column ":columnName"
-     * 
+     *
      * @param string $text Text to look for
      * @param string $columnName Name of the column to check
      */
@@ -756,9 +761,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * Clicks a button with the specified caption
      * Searches for a button within the currently focused widget or page
      * Uses multiple search strategies to find the button
-     * 
+     *
      * @When I click button ":caption"
-     * 
+     *
      * @param string $caption Text caption of the button to click
      * @throws RuntimeException If button cannot be found or clicked
      */
@@ -837,12 +842,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     /**
      * Provides detailed debugging information when button search fails
-     * 
+     *
      * Logs:
      * - Widget HTML content
      * - All buttons within the widget
      * - All buttons on the page
-     * 
+     *
      * @param string $caption The button caption being searched
      * @param NodeElement $widget The widget being searched
      */
@@ -873,13 +878,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     /**
      * Provides detailed debugging information when button click fails
-     * 
+     *
      * Logs:
      * - Button text
      * - Button visibility status
      * - Button enabled/disabled state
      * - Executes JavaScript to further investigate button properties
-     * 
+     *
      * @param NodeElement $button The button that failed to click
      * @param string $caption The button's caption
      */
@@ -904,9 +909,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     /**
      * Clicks a tab with the specified caption
-     * 
+     *
      * @When I click tab ":caption"
-     * 
+     *
      * @param string $caption Text caption of the tab to click
      * @return void
      */
@@ -917,7 +922,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     /**
      * Enters text into an input widget identified by its caption
-     * 
+     *
      * @When I type ":value" into ":caption"
      *
      * @param string $value The text to enter
@@ -958,16 +963,16 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     /**
      * Verify the existence of a button with specific text
-     * 
+     *
      * This method supports multiple scenarios for button verification:
      * - Check button existence by text
      * - Check button existence in a specific table/section
-     * 
+     *
      * @Then I should see button :buttonText
      * @Then I should see buttons :buttonText
      * @Then I should see a button with text :buttonText
      * @Then I should see button :buttonText at the :tableName
-     * 
+     *
      * @param string $buttonText The text of the button to find
      * @param string|null $tableName Optional table/section name
      * @throws \Exception If button is not found
@@ -1124,10 +1129,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     /**
      * Verifies that the currently focused widget has a column with the specified caption
      * Typically used with DataTable widgets
-     * 
+     *
      * @Then it has a column ":caption"
      * @Then it has columns ":caption"
-     * 
+     *
      * @param string $caption Column caption to look for
      * @return void
      */
@@ -1150,9 +1155,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     /**
      * Verifies that any DataTable on the page contains the specified text
      * Searches all cells in the first DataTable found
-     * 
+     *
      * @Then the DataTable contains :text
-     * 
+     *
      * @param string $text Text to search for in the DataTable
      */
     public function theDataTableContains(string $text): void
@@ -1180,7 +1185,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     /**
      * Verifies that at least one data item is present in a DataTable
      * Useful for checking if filtering operations returned results
-     * 
+     *
      * @Then I see at least one data item
      */
     public function iSeeFilteredResultsInDataTable(): void
@@ -1246,7 +1251,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $hasFilter ? 'present' : 'not present'
         ));
     }
-    
+
     /**
      * @When I visit the following pages:
      */
@@ -1272,10 +1277,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
             // Initialize browser with current session
             $this->browser = new UI5Browser(
-                $this->getWorkbench(), 
-                $currentSession, 
+                $this->getWorkbench(),
+                $currentSession,
                 $this->getEventDispatcher(),
-                $url, 
+                $url,
                 $this->getLocale()
             );
             $this->wireBrowserCallbacks();
@@ -1302,11 +1307,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
     }
 
-    /** 
+    /**
      * Focuses on a specific table by index
-     * 
+     *
      * @When I look at table :index
-     * 
+     *
      * @param int $index The 1-based index of the table to focus on
      * @throws \RuntimeException If the table cannot be found
      */
@@ -1402,13 +1407,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             throw new \Exception("Could not click button '$buttonCaption': " . $e->getMessage());
         }
     }
-    
+
     /**
      * Clicks the overflow button on the specified table
-     * 
+     *
      * @Then I click the overflow button on table :tableIndex
      * @Then I click the overflow button
-     * 
+     *
      * @param string|null $tableIndex Table index (optional)
      * @return void
      */
@@ -1427,7 +1432,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     /**
      * Clicks the overflow button of the selected table or in the focused context
-     * 
+     *
      * @param int|null $tableIndex The table index (1-based) of the overflow button to click
      * @return void
      */
@@ -1539,12 +1544,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         throw new \RuntimeException("XLSX file could not be downloaded or is empty.");
     }
-    
+
     /**
      * Verify the presence of specific tiles on the page
      * This method checks if all expected tiles are present in the UI
-     * 
-     * @Then I see tiles :tileNames 
+     *
+     * @Then I see tiles :tileNames
      */
     public function iSeeTiles($tileNames): void
     {
@@ -1590,7 +1595,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * @Then I only see tiles :tileNames 
+     * @Then I only see tiles :tileNames
      */
     public function iOnlySeeTiles($tileNames): void
     {
@@ -1615,7 +1620,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @Then I should not see the button :unexpectedButton on the :tableIndex table
      * @Then I should not see the buttons :unexpectedButtons
      * @Then I should not see the buttons :unexpectedButtons on the :tableIndex table
-     * 
+     *
      */
     public function iShouldNotSeeTheFollowingButtons($unexpectedButtons, $tableIndex = null)
     {
@@ -1665,9 +1670,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * Given I log in ...
      * And test data from "nbr.OneLink" folder "Global" is loaded
      * When I do...
-     * 
+     *
      * @Given test data from ":appAlias" folder ":subfolder" is loaded
-     * 
+     *
      * @param string $appAlias
      * @param string $subfolder
      * @return void
@@ -1686,7 +1691,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     /**
      * Verifies that a toast message appears with the expected text
-     * 
+     *
      * @param string $expectedText The text (or part of text) expected in the toast
      * @param int $timeout Maximum time to wait for the toast in seconds
      * @return void
@@ -1757,7 +1762,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         if (self::$isDryRun) {
             return;
         }
-        
+
         UI5Browser::resetUser($this->workbench);
         $this->workbench->stop();
     }
@@ -1774,11 +1779,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     /**
      * Examples:
-     * 
+     *
      * - [#=Now()#]
      * - [#=GetConfig('exface.Core', 'CONFIG_KEY')#]
      * - `TestReport [#=Now('yyyyMMdd_HHmmss')#]`
-     * 
+     *
      * @param string $argument
      * @return string
      */
@@ -1810,13 +1815,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     /**
      * Central function for error handling in UI5 Browser context
-     * 
+     *
      * This function captures, processes and logs exceptions that occur during browser operations.
      * It standardizes the error handling process by formatting error data into a consistent structure
      * and delegates the actual logging to the ErrorManager singleton. The function enriches basic
      * exception information with contextual data such as the current URL and allows for additional
      * custom data to be included.
-     * 
+     *
      * @param \Exception $e The caught exception instance
      * @param string $type Error type classification (e.g., 'validation', 'connection', 'timeout')
      * @param string $source Source of the error (typically the method name where exception occurred)
@@ -1851,17 +1856,17 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     /**
      * Example
-     * 
+     *
      * ```
      * Given I log in ...
      * When I look at table 1
      * Then It works as shown below
      * Column Caption | Filter Caption | Button Caption
-     * 
+     *
      * ```
      * @Then It works as shown below
      * | :Column Caption | :Filter Caption | :Button Caption |
-     * 
+     *
      * @param TableNode $fields Table with field names and values
      * @return void
      */
@@ -1889,7 +1894,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * Then It works as expected
      * ```
      * @Then It works as expected
-     * 
+     *
      * @return void
      */
     public function itWorksAsExpected(): void
@@ -1929,10 +1934,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         // Initialize the UI5Browser with the current session and URL
         $this->browser = new UI5Browser(
-            $this->getWorkbench(), 
-            $this->getSession(), 
-            $this->getEventDispatcher(), 
-            $url, 
+            $this->getWorkbench(),
+            $this->getSession(),
+            $this->getEventDispatcher(),
+            $url,
             $this->getLocale()
         );
         $this->wireBrowserCallbacks();

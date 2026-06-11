@@ -15,11 +15,7 @@ use exface\Core\Actions\Login;
 use exface\Core\CommonLogic\Security\AuthenticationToken\MetamodelUsernamePasswordAuthToken;
 use exface\Core\CommonLogic\Security\Authenticators\MetamodelAuthenticator;
 use exface\Core\CommonLogic\Workbench;
-use exface\Core\DataTypes\BooleanDataType;
 use exface\Core\DataTypes\ComparatorDataType;
-use exface\Core\DataTypes\DateDataType;
-use exface\Core\DataTypes\NumberDataType;
-use exface\Core\DataTypes\NumberEnumDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\InvalidArgumentException;
 use exface\Core\Exceptions\RuntimeException;
@@ -28,7 +24,6 @@ use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\FacadeFactory;
 use exface\Core\Factories\MetaObjectFactory;
 use exface\Core\Factories\UiPageFactory;
-use exface\Core\Interfaces\DataTypes\DataTypeInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\UiPageInterface;
 use exface\Core\Interfaces\WidgetInterface;
@@ -63,6 +58,15 @@ class UI5Browser
     private array $pagesVisited = [];
 
     private string $locale;
+
+    /**
+     * Role aliases that were applied to the test user in the current scenario via
+     * {@see setupUser()}. Stored here so that any node can retrieve them through
+     * {@see getCurrentRoles()} without needing to pass roles down through every call chain.
+     *
+     * @var string[]
+     */
+    private array $currentRoles = [];
 
     /** @var callable|null */
     private $navigator = null;
@@ -157,6 +161,35 @@ class UI5Browser
     public function getLocale(): string
     {
         return $this->locale;
+    }
+
+    /**
+     * Returns the role aliases that were applied to the test user at login time for
+     * the current scenario.
+     *
+     * Nodes use this to build the role-aware cache keys required by
+     * {@see DatabaseFormatter::hasTestedPage()} and {@see DatabaseFormatter::hasTestedWidget()}.
+     *
+     * @return string[] Sorted role alias array, or an empty array when no roles were set.
+     */
+    public function getCurrentRoles(): array
+    {
+        return $this->currentRoles;
+    }
+
+    /**
+     * Stores the role aliases that were applied to the test user for the current scenario.
+     *
+     * Called by {@see UI5BrowserContext::iLogInToPage()} immediately after
+     * {@see setupUser()} so that the roles are available to any node that needs them
+     * without threading the role array through every method signature.
+     *
+     * @param string[] $roles Role aliases passed to the login step.
+     * @return void
+     */
+    public function setCurrentRoles(array $roles): void
+    {
+        $this->currentRoles = $roles;
     }
 
     /**
@@ -1438,34 +1471,29 @@ JS
         })();
     JS);
     }
-    
+
     /**
-     * Dismisses a visible error dialog by clicking its Close button.
+     * Attempts to close any SAP UI5 error dialog currently blocking the DOM.
      *
-     * This method is called at the beginning of each step (prepareBeforeStep) to clean up
-     * any error dialog that was left open by the previous step's failure. The dialog must
-     * remain visible during the previous step so that the screenshot captures it — dismissal
-     * is intentionally deferred to this point so back-navigation and DOM interactions in the
-     * current step are not blocked by a lingering modal overlay.
+     * Called from the abstract node layer immediately after the screenshot is captured,
+     * so the dialog is still visible in the screenshot but no longer blocks subsequent
+     * back-navigation or teardown interactions.
      *
-     * Detects error pop-ups with the `exf-error` class and closes them by clicking the close button.
-     * The close button text is translated according to the current locale.
+     * Uses SAP UI5's own control API (sap.ui.getCore().byId().close()) rather than
+     * native .click(), because UI5 buttons bypass the browser's native click handler
+     * and route events through their own delegation system.
      *
-     * Safe to call when no dialog is present — returns false without side effects.
-     *
-     * @return bool True if a dialog was found and dismissed, false if no dialog was present.
+     * @return bool True if a dialog was found and dismissed, false if none was present.
      */
     public function dismissErrorDialogIfPresent(): bool
-    {        
+    {
         $dismissed = $this->getSession()->evaluateScript(<<<'JS'
 (function () {
-    var dialog = document.querySelector('.exf-error');
+    // Target the SAP UI5 error dialog — class 'sapMDialogError' is always present
+    // on sap.m.Dialog instances rendered with type MessageType.Error.
+    var dialog = document.querySelector('.sapMDialogError');
     if (!dialog) return false;
 
-    // Use SAP UI5's own control API to close the dialog properly.
-    // Native .click() bypasses UI5's event delegation and does not trigger
-    // the dialog's press handler — calling .close() on the control directly
-    // is the correct way to programmatically dismiss a sap.m.Dialog.
     var controlId = dialog.getAttribute('id');
     if (controlId && typeof sap !== 'undefined') {
         var control = sap.ui.getCore().byId(controlId);
@@ -1475,13 +1503,28 @@ JS
         }
     }
 
+    // Fallback: trigger the designated end-button directly for custom dialog layouts
+    // where the control API may not be available (e.g. unit-test stubs).
+    var closeBtn = dialog.querySelector('button.sapMDialogEndButton');
+    if (!closeBtn) {
+        var buttons = dialog.querySelectorAll('button');
+        for (var i = 0; i < buttons.length; i++) {
+            var txt = (buttons[i].innerText || buttons[i].textContent || '').trim().toLowerCase();
+            if (txt === 'close' || txt === 'schließen' || txt === 'schliessen') {
+                closeBtn = buttons[i];
+                break;
+            }
+        }
+    }
+    if (closeBtn) { closeBtn.click(); return true; }
+
     return false;
 })();
 JS);
 
         return (bool) $dismissed;
     }
-    
+
     public function findAppFromUrl(string $currentUrl): string
     {
         $pagePath = basename(parse_url($currentUrl, PHP_URL_PATH));
