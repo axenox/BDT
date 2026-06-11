@@ -39,6 +39,7 @@ class DatabaseFormatterExtension implements Extension
             new Reference('database_formatter.workbench'),
             new Reference('screenshot.provider'),
             new Reference(EventDispatcherExtension::DISPATCHER_ID),
+            new Reference('suite.registry'),
             $config['chrome'] ?? []
         ]);
 
