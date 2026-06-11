@@ -50,7 +50,8 @@ class FeatureFileValidator
             self::checkScenarioKeywords($lines),
             self::checkDocStringClosure($lines),
             self::checkDataTableAlignment($lines),
-            self::checkDuplicateTags($lines)
+            self::checkDuplicateTags($lines),
+            self::checkStepsAfterExamples($lines)
         );
 
         return new FeatureValidationResult($errors);
@@ -497,6 +498,90 @@ class FeatureFileValidator
                         . ($blockStartLine ? '(block starting at line ' . $blockStartLine . ')' : '') . '.';
                 } else {
                     $currentTags[] = $token;
+                }
+            }
+        }
+        return $errors;
+    }
+    
+    /**
+     * Checks that no step lines appear after an Examples: block within a Scenario Outline.
+     *
+     * In Gherkin, the Examples table must be the last element of a Scenario Outline.
+     * A step written after the Examples block is silently ignored by some parsers but
+     * treated as a fatal structure error by others — either way it always indicates a
+     * mistake that would cause the outline to behave unexpectedly at runtime.
+     *
+     * @param string[] $lines
+     * @return string[]
+     */
+    private static function checkStepsAfterExamples(array $lines): array
+    {
+        $errors      = [];
+        $inDocString = false;
+        $inOutline   = false;
+        $inExamples  = false;
+        $examplesLine = null;
+
+        foreach ($lines as $i => $line) {
+            $trimmed = trim($line);
+
+            if (str_starts_with($trimmed, '"""')) {
+                $inDocString = ! $inDocString;
+                continue;
+            }
+            if ($inDocString) {
+                continue;
+            }
+            if ($trimmed === '' || str_starts_with($trimmed, '#')) {
+                continue;
+            }
+
+            // A new Scenario Outline resets state.
+            if (str_starts_with($trimmed, 'Scenario Outline:')) {
+                $inOutline   = true;
+                $inExamples  = false;
+                $examplesLine = null;
+                continue;
+            }
+
+            // Any other scenario/feature keyword closes the outline context.
+            if (preg_match('/^(Feature|Background|Scenario|Rule):/i', $trimmed)
+                && ! str_starts_with($trimmed, 'Scenario Outline:')) {
+                $inOutline   = false;
+                $inExamples  = false;
+                $examplesLine = null;
+                continue;
+            }
+
+            if ($inOutline && str_starts_with($trimmed, 'Examples:')) {
+                $inExamples   = true;
+                $examplesLine = $i + 1;
+                continue;
+            }
+
+            // Tags after an Examples block belong to the next scenario — reset.
+            if ($inExamples && str_starts_with($trimmed, '@')) {
+                $inOutline   = false;
+                $inExamples  = false;
+                $examplesLine = null;
+                continue;
+            }
+
+            // Table rows are expected inside Examples — skip them.
+            if ($inExamples && str_starts_with($trimmed, '|')) {
+                continue;
+            }
+
+            // Any step keyword after Examples is the error we are looking for.
+            if ($inExamples) {
+                foreach (self::STEP_KEYWORDS as $kw) {
+                    if (str_starts_with($trimmed, $kw . ' ') || $trimmed === $kw) {
+                        $errors[] = 'Line ' . ($i + 1) . ': Step found after Examples block '
+                            . '(Examples starts at line ' . $examplesLine . '). '
+                            . 'The Examples table must be the last element of a Scenario Outline.';
+                        break;
+                    }
                 }
             }
         }
