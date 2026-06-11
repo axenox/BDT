@@ -7,6 +7,7 @@ use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
 use axenox\BDT\DataTypes\StepStatusDataType;
+use axenox\BDT\Interfaces\TestResultInterface;
 use axenox\BDT\Interfaces\TestRunObserverInterface;
 use Behat\Testwork\Output\Formatter;
 use Behat\Testwork\Tester\Result\TestResult;
@@ -37,19 +38,19 @@ use exface\Core\Interfaces\WorkbenchInterface;
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 
 class DatabaseFormatter implements Formatter, TestRunObserverInterface
-{    
+{
     private static $eventDispatcher;
-    
+
     private WorkbenchInterface  $workbench;
     private ?array $metrics = null;
-    
+
     private ?DataSheetInterface $runDataSheet = null;
     private float               $runStart;
-    
+
     private ?DataSheetInterface $featureDataSheet = null;
     private float               $featureStart;
     private int                 $featureIdx = 0;
-    
+
     private ?DataSheetInterface $scenarioDataSheet = null;
     private float               $scenarioStart;
     private static array        $scenarioPages = [];
@@ -61,8 +62,24 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     /* @var \exface\Core\Interfaces\DataSheets\DataSheetInterface $substepDataSheets */
     private array               $substepDataSheets = [];
     private array               $substepStarts = [];
-    
+
     private static array        $testedPages = [];
+
+    /**
+     * Tracks which page/widget + role-set combinations have already been verified by a
+     * works-as-expected check during the current test run.
+     *
+     * Keys are built by {@see buildRolesKey()} and follow the format:
+     *   - Page level:   "RoleA|RoleB::page::exface.Core.Logs"
+     *   - Widget level: "RoleA|RoleB::widget::Filter::Name"
+     *
+     * Values are the {@see TestResultInterface} returned when the check was first executed,
+     * so callers can return the cached result without repeating the test.
+     *
+     * @var array<string, TestResultInterface>
+     */
+    private static array        $testedEnvironments = [];
+
     private ScreenshotProviderInterface $provider;
     /** @var MarkdownLogBook[]  */
     private static array        $stepLogbooks = [];
@@ -106,7 +123,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             AfterPageVisited::class => 'onAfterPageVisited',
         ];
     }
-    
+
     public function __destruct()
     {
         if ($this->isDryRun) {
@@ -156,12 +173,12 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             if ($this->isDryRun || $this->runDataSheet === null) {
                 return;
             }
-            
+
             $ds = $this->runDataSheet->extractSystemColumns();
             $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
             $ds->setCellValue('duration_ms', 0,$this->microtime() - $this->runStart);
             $ds->dataUpdate();
-            
+
             // Mark as finished so that onShutdown() does not call this method a second time
             $this->exerciseFinished = true;
         }
@@ -169,7 +186,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
         }
     }
-    
+
     public function onAfterSuite(AfterSuiteTested $event) : void
     {
         try{
@@ -201,7 +218,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         }
     }
 
-    public function onBeforeFeature(BeforeFeatureTested $event) 
+    public function onBeforeFeature(BeforeFeatureTested $event)
     {
         if ($this->isDryRun) {
             return;
@@ -234,7 +251,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         }
     }
 
-    public function onAfterFeature(AfterFeatureTested $event) 
+    public function onAfterFeature(AfterFeatureTested $event)
     {
         if ($this->isDryRun) {
             return;
@@ -255,7 +272,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         }
     }
 
-    public function onBeforeScenario(BeforeScenarioTested $event) 
+    public function onBeforeScenario(BeforeScenarioTested $event)
     {
         if ($this->isDryRun) {
             return;
@@ -280,7 +297,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         }
     }
 
-    public function onBeforeOutline(BeforeOutlineTested $event) 
+    public function onBeforeOutline(BeforeOutlineTested $event)
     {
         if ($this->isDryRun) {
             return;
@@ -305,7 +322,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         }
     }
 
-    public function onAfterScenario(AfterScenarioTested|AfterOutlineTested $event) 
+    public function onAfterScenario(AfterScenarioTested|AfterOutlineTested $event)
     {
         if ($this->isDryRun) {
             return;
@@ -316,7 +333,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->scenarioStart);
             $ds->dataUpdate();
             $scenarioUid = $ds->getUidColumn()->getValue(0);
-    
+
             $dsActions = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_scenario_action');
             foreach (static::$scenarioPages as $pageAlias) {
                 try {
@@ -413,7 +430,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
 
             $this->substepStarts[] = $startTime;
             $this->substepDataSheets[] = $ds;
-            
+
             $this->provider->setName($ds->getUidColumn()->getValue(0));
         }
         catch(\Exception $e){
@@ -438,7 +455,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
         }
     }
-    
+
     protected function logStepStart(string $title, int $line, ?string $parentStepUid = null) : DataSheetInterface
     {
         $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_step');
@@ -457,7 +474,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         $ds->dataCreate(false);
         return $ds;
     }
-    
+
     /**
      * Log the end of a test step to the database.
      *
@@ -660,6 +677,99 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     }
 
     /**
+     * Builds a canonical, order-independent string key from a set of role aliases.
+     *
+     * Roles are sorted before joining so that ["Admin", "Editor"] and ["Editor", "Admin"]
+     * produce the same key. An empty role list returns the special token "__no_roles__"
+     * to remain distinguishable from a missing/null value.
+     *
+     * @param string[] $roles Role aliases for the current test scenario.
+     * @return string           Sorted, pipe-separated roles string, e.g. "Admin|Editor".
+     */
+    private static function buildRolesKey(array $roles): string
+    {
+        if (empty($roles)) {
+            return '__no_roles__';
+        }
+        $sorted = $roles;
+        sort($sorted);
+        return implode('|', $sorted);
+    }
+
+    /**
+     * Determines whether the given page has already been fully verified (works-as-expected)
+     * for the supplied set of roles during the current test run.
+     *
+     * Use this check before navigating to a page just to run a works-as-expected assertion:
+     * if the same page was already validated for the same user environment (same role set),
+     * the navigation can be skipped entirely and the cached result reused.
+     *
+     * @param string[] $roles     Role aliases active in the current scenario.
+     * @param string   $pageAlias Fully-qualified page alias, e.g. "exface.Core.Logs".
+     * @return TestResultInterface|null  The previous result if already tested, null otherwise.
+     */
+    public static function hasTestedPage(array $roles, string $pageAlias): ?TestResultInterface
+    {
+        $key = self::buildRolesKey($roles) . '::page::' . $pageAlias;
+        return self::$testedEnvironments[$key] ?? null;
+    }
+
+    /**
+     * Records that the given page has been fully verified (works-as-expected) for the
+     * supplied role set.
+     *
+     * Call this immediately after a successful or failed page-level works-as-expected check
+     * so that subsequent calls to {@see hasTestedPage()} can return the cached result.
+     *
+     * @param string[]             $roles     Role aliases active in the current scenario.
+     * @param string               $pageAlias Fully-qualified page alias, e.g. "exface.Core.Logs".
+     * @param TestResultInterface  $result    The result produced by the works-as-expected check.
+     * @return void
+     */
+    public static function markPageAsTested(array $roles, string $pageAlias, TestResultInterface $result): void
+    {
+        $key = self::buildRolesKey($roles) . '::page::' . $pageAlias;
+        self::$testedEnvironments[$key] = $result;
+    }
+
+    /**
+     * Determines whether a specific widget has already been verified (works-as-expected)
+     * for the supplied role set during the current test run.
+     *
+     * The widget is identified by its DOM element ID (e.g. "0x1a2b3c__FilterName"), which
+     * is unique per widget per page. Use {@see UI5AbstractNode::getElementId()} or
+     * {@see UI5Browser::getElementIdFromWidget()} to obtain this value.
+     *
+     * @param string[] $roles     Role aliases active in the current scenario.
+     * @param string   $widgetId  DOM element ID of the widget, e.g. "0x1a2b3c__FilterName".
+     * @return TestResultInterface|null  The previous result if already tested, null otherwise.
+     */
+    public static function hasTestedWidget(array $roles, string $widgetId): ?TestResultInterface
+    {
+        $key = self::buildRolesKey($roles) . '::widget::' . $widgetId;
+        return self::$testedEnvironments[$key] ?? null;
+    }
+
+    /**
+     * Records that a specific widget has been verified (works-as-expected) for the
+     * supplied role set.
+     *
+     * Call this immediately after a widget-level works-as-expected check so that
+     * subsequent calls to {@see hasTestedWidget()} can return the cached result
+     * without re-executing the check.
+     *
+     * @param string[]            $roles    Role aliases active in the current scenario.
+     * @param string              $widgetId DOM element ID of the widget, e.g. "0x1a2b3c__FilterName".
+     * @param TestResultInterface $result   The result produced by the works-as-expected check.
+     * @return void
+     */
+    public static function markWidgetAsTested(array $roles, string $widgetId, TestResultInterface $result): void
+    {
+        $key = self::buildRolesKey($roles) . '::widget::' . $widgetId;
+        self::$testedEnvironments[$key] = $result;
+    }
+
+    /**
      * Guaranteed to run even on fatal PHP errors and uncaught exceptions.
      *
      * Responsibilities:
@@ -698,7 +808,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         if ($this->isDryRun) {
             return;
         }
-        
+
         $this->runStart = $this->microtime();
 
         $cliArgs = $_SERVER['argv'] ?? [];
@@ -728,6 +838,6 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         register_shutdown_function(function () {
             $this->onShutdown();
         });
-        
+
     }
 }
