@@ -3,7 +3,6 @@ namespace axenox\BDT\Behat\DatabaseFormatter;
 
 use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
 use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
-use axenox\BDT\Behat\Contexts\UI5Facade\ChromeStartResult;
 use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
@@ -31,7 +30,6 @@ use exface\Core\DataTypes\PhpFilePathDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Factories\DataSheetFactory;
-use exface\Core\Factories\FormulaFactory;
 use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\DataSheets\DataSheetInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
@@ -85,8 +83,6 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private ScreenshotProviderInterface $provider;
     /** @var MarkdownLogBook[]  */
     private static array        $stepLogbooks = [];
-
-    private ChromeStartResult $chromeStartResult;
     private bool $exerciseFinished = false;
 
     // Do not create a run record for dry-run executions.
@@ -100,8 +96,8 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         $this->provider = $provider;
         $this->isDryRun = in_array('--dry-run', $_SERVER['argv'] ?? [], true);
         if (!$this->isDryRun) {
-            $chromeInstance = ChromeManager::getInstance($this->workbench->getLogger());
-            $this->chromeStartResult = $chromeInstance->start($chromeConfig);
+            ChromeManager::getInstance($this)
+                ->configure($chromeConfig);
             $this->startRun();
         }
     }
@@ -139,6 +135,10 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $this->onAfterExercise();
             ChromeManager::getInstance()->stop();
         }
+    }
+    public function getWorkbench(): WorkbenchInterface
+    {
+        return $this->workbench;
     }
 
     public function getName(): string
@@ -260,11 +260,15 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $ds = $this->featureDataSheet->extractSystemColumns();
             $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
             $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->featureStart);
+            $ds->setCellValue('chrome_info', 0, $this->buildChromeInfo());
             $ds->dataUpdate();
             $this->featureDataSheet = null;
         }
         catch(\Exception $e){
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+        } finally {
+            // Clear so the next feature starts with a clean history
+            ChromeManager::getInstance()->clearStartHistory();
         }
     }
 
@@ -337,14 +341,14 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                     $pageUid = $page->getUid();
                     //not to reach memory limit
                     unset($page);
+                    $dsActions->addRow([
+                        'run_scenario' => $scenarioUid,
+                        'page_alias' => $pageAlias,
+                        'page' => $pageUid
+                    ]);
                 } catch (\Throwable $e) {
                     $pageUid = null;
                 }
-                $dsActions->addRow([
-                    'run_scenario' => $scenarioUid,
-                    'page_alias' => $pageAlias,
-                    'page' => $pageUid
-                ]);
             }
             if (! $dsActions->isEmpty()) {
                 $dsActions->dataCreate();
@@ -353,32 +357,40 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         catch(\Exception $e){
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
         }
-        gc_collect_cycles();
     }
 
-    public function onBeforeStep(BeforeStepTested $event)
+    public function onBeforeStep(BeforeStepTested $event): void
     {
         if ($this->isDryRun) {
             return;
         }
         static::$stepLogbooks = [];
-        try{
+        // Reset so that onAfterStep can detect a failed DB record creation
+        $this->stepDataSheet = null;
+        try {
             $step = $event->getStep();
             $this->stepIdx++;
             $this->stepStart = $this->microtime();
             $ds = $this->logStepStart($step->getText(), $step->getLine());
             $this->stepDataSheet = $ds;
             $this->provider->setName($ds->getUidColumn()->getValue(0));
-        }
-        catch(\Exception $e){
+        } catch (\Throwable $e) {
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
         }
     }
 
-    public function onAfterStep(AfterStepTested $event)
+    public function onAfterStep(AfterStepTested $event): void
     {
-        try{
+        try {
             if ($this->isDryRun) {
+                return;
+            }
+            // stepDataSheet is null when onBeforeStep failed to create the DB record.
+            // In that case there is nothing to close — just clear the orphaned substep
+            // stack so the next step starts clean.
+            if ($this->stepDataSheet === null) {
+                $this->substepDataSheets = [];
+                $this->substepStarts = [];
                 return;
             }
             $result = $event->getTestResult();
@@ -396,7 +408,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             }
             $this->substepDataSheets = [];
             $this->substepStarts = [];
-        } catch(\Exception $e){
+        } catch (\Throwable $e) {
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
         }
     }
@@ -528,13 +540,30 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         return $this->logError($e->getMessage(), $e);
     }
 
-    /**
+    /** 
+     * Defensive fallback for the "no open scenario" case: a run_step row requires a
+     * run_scenario FK, so it can only be written while a scenario is open. logError() can be
+     * called before any scenario exists — most importantly when Chrome fails to start inside
+     * the very first BeforeScenario hook, before onBeforeScenario() created the scenario
+     * record. In that case we must not dereference a null scenarioDataSheet: doing so would
+     * crash here, hide the real cause, and leave the run looking like an unexplained stop.
+     * Instead, we log the exception through the workbench logger, producing a monitor-visible
+     * entry with a log id regardless of hook ordering, and return an unsaved sheet.
+     * 
      * {@inheritDoc}
      * @see TestRunObserverInterface::logError()
      */
     public function logError(string $title, ?\Throwable $e = null) : DataSheetInterface
     {
         $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_step');
+
+        // No open scenario yet → a run_step cannot be created (it needs a run_scenario FK).
+        // Fall back to a plain workbench log entry so the failure is never silently lost.
+        if ($this->scenarioDataSheet === null) {
+            $this->workbench->getLogger()->logException($e ?? new RuntimeException($title));
+            return $ds;
+        }
+
         $row = [
             'run_scenario' => $this->scenarioDataSheet->getUidColumn()->getValue(0),
             'run_sequence_idx' => $this->stepIdx,
@@ -547,7 +576,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         ];
         if ($e) {
             $ds->setCellValue('error_message', 0, $e->getMessage());
-            if($e instanceof ExceptionInterface) {
+            if ($e instanceof ExceptionInterface) {
                 $ds->setCellValue('error_log_id', 0, $e->getLogId());
             }
             $this->workbench->getLogger()->logException($e);
@@ -627,19 +656,24 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         return $this->runDataSheet->getUidColumn()->getValue(0);
     }
 
+    /**
+     * Builds a JSON string with metadata about every Chrome instance that ran during
+     * the current feature.
+     *
+     * Reads ChromeManager::getStartHistory() which accumulates one entry per start()
+     * call since the last clearStartHistory(). A feature with no crash will have a
+     * single entry; a feature with one crash recovery will have two entries.
+     *
+     * @param array $extra Additional key-value pairs merged into each entry (rarely needed).
+     * @return string JSON-encoded array of chrome start records.
+     */
     private function buildChromeInfo(array $extra = []): string
     {
-        $formula = FormulaFactory::createFromString(
-            $this->workbench,
-            '=TimeFromSeconds(' . $this->chromeStartResult?->startupMs . ')'
-        );
-        $duration = $formula->evaluate();
-        $data = [
-            'port'              => $this->chromeStartResult?->port,
-            'pid'               => $this->chromeStartResult?->pid,
-            'startup_duration'  => $duration
-        ];
-        return json_encode(array_merge($data, $extra));
+        $history = ChromeManager::getInstance()->getStartHistory();
+        if (!empty($extra)) {
+            $history = array_map(fn($entry) => array_merge($entry, $extra), $history);
+        }
+        return json_encode($history);
     }
 
     /**
@@ -788,8 +822,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run');
             $ds->addRow([
                 'started_on' => DateTimeDataType::now(),
-                'behat_command' => $command,
-                'chrome_info'   => $this->buildChromeInfo(),
+                'behat_command' => $command
             ]);
             $ds->dataCreate(false);
             $this->runDataSheet = $ds;
