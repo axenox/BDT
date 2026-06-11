@@ -1901,7 +1901,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $result = $node->checkWorksAsExpected($logbook);
         if ($result->isFailed()) {
             throw new RuntimeException(
-                'Widget "' . $node->getCaption() . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details')
+                'Widget "' . $node->getCaption() ?? $node->getWidgetType() . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details')
             );
         }
     }
