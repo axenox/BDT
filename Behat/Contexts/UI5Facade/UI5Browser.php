@@ -403,23 +403,13 @@ JS
         try {
             $highlightScript = sprintf(<<<JS
         (function() {
-            const el = document.querySelector("#%s");
+            const el = document.getElementById('%s');
             if (el) {
-
-                // Clear previous highlights
                 el.style.outline = 'none';
-                
-                // Add new highlight
                 el.style.outline = '5px solid %s';
                 el.style.outlineOffset = '4px';
-
-                // Remove existing debug label if present
                 const existingLabel = el.querySelector('.debug-highlight-label');
-                if (existingLabel) {
-                    existingLabel.remove();
-                }
-
-                // Create new debug label
+                if (existingLabel) existingLabel.remove();
                 const label = document.createElement('div');
                 label.className = 'debug-highlight-label';
                 label.style.cssText = `
@@ -433,10 +423,7 @@ JS
                     z-index: 9999;
                 `;
                 label.textContent = '%s #%d';
-                
                 el.appendChild(label);
-
-                // Call global highlight function if it exists
                 if (window.highlightElement && typeof window.highlightElement === 'function') {
                     window.highlightElement(el, '%s', '%s #%d');
                 }
@@ -450,8 +437,7 @@ JS
                 $index + 1,
                 $color,
                 $widgetType,
-                $index + 1,
-                $node->getAttribute('id')  // Add ID to warning message
+                $index + 1
             );
 
             // Execute the highlighting script
@@ -1405,7 +1391,7 @@ JS
      *   /nbr.onelink.trasse-ausfuehrung.html#/nbr.onelink.trasse-ausfuehrung-trasse/%257B...
      *   -> should return: nbr.onelink.trasse-ausfuehrung-trasse
      */
-    private function getPageAliasFromCurrentUrl(): ?string
+    public function getPageAliasFromCurrentUrl(): ?string
     {
         $hash = (string) $this->getSession()->evaluateScript('return window.location.hash || "";');
         if ($hash !== '' && $hash !== '#') {

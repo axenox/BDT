@@ -28,6 +28,7 @@ use Behat\Behat\Hook\Scope\BeforeStepScope;
 use Behat\Gherkin\Node\TableNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataTableNode;
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
+use axenox\BDT\Behat\Contexts\UI5Facade\CdpConnectionDetectorTrait;
 
 
 /**
@@ -43,6 +44,8 @@ use Symfony\Component\EventDispatcher\EventDispatcherInterface;
  */
 class UI5BrowserContext extends BehatFormatterContext implements Context
 {
+    use CdpConnectionDetectorTrait;
+    
     private $browser;
     private $scenarioName;
 
@@ -51,9 +54,15 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private string $locale = 'de_DE';
     private static bool $isDryRun = false;
     private ?string $lastLoginUrl = null;
-    private ?string $lastLoginRole = null;
     private ?string $lastLoginLocale = null;
+    /** @var array|null Browser-side login form fields (caption => value) computed during the first login and replayed verbatim by recoverChrome() without touching the DB */
+    private ?array $lastLoginFields = null;
+    /** @var string|null Caption of the authenticator tab to open on the login form; cached for recovery replay */
+    private ?string $lastLoginTabCaption = null;
+    /** @var string|null Caption of the login submit button; cached for recovery replay */
+    private ?string $lastLoginButtonCaption = null;
     private static ?string $currentFeatureTitle = null;
+    private ?string $lastPageAlias = null;
     
     /** 
      * Initializes and starts the workbench for the test environment
@@ -104,23 +113,29 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Logs failed steps to the workbench log
-     * Captures exceptions and ensures they are properly recorded
+     * Logs failed steps to the workbench log and attempts Chrome recovery if the
+     * failure was caused by a lost CDP connection.
+     *
+     * Must never throw — any uncaught exception from an AfterStep hook causes Behat
+     * to exit with code 255, killing the entire test run.
      *
      * @AfterStep
-     * @param AfterStepScope $scope The scope containing step execution result
      */
     public function logFailedStep(AfterStepScope $scope): void
     {
         $result = $scope->getTestResult();
 
-        // Handle different result types
-        if (!$result->isPassed()) {
-            // Get exception based on result type
+        if ($result->isPassed()) {
+            return;
+        }
+
+        try {
             $exception = null;
             if (method_exists($result, 'getException')) {
                 $exception = $result->getException();
-                // Convert to our exception type for consistent handling
+            }
+
+            if ($exception !== null) {
                 $wrappedException = new RuntimeException(
                     $exception->getMessage(),
                     null,
@@ -132,88 +147,138 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 $wrappedException = new RuntimeException('Step failed without exception details');
             }
 
-            // Log with full details to the workbench log
             $this->getWorkbench()->getLogger()->logException($wrappedException);
-
-            // Set Error Id for reference
             ErrorManager::getInstance()->setLastLogId($wrappedException->getId());
 
-            // Add to ErrorManager as a Behat exception
-            ErrorManager::getInstance()->addError([
-                'type' => 'BehatException',
-                'message' => $exception->getMessage(),
-                'status' => $exception->getCode(),
-                'stack' => $exception->getTraceAsString(),
-            ], 'AfterStep');
+            // Only populate exception details when an actual exception is available —
+            // UndefinedStepResult and bare failures carry no exception object.
+            if ($exception !== null) {
+                ErrorManager::getInstance()->addError([
+                    'type'    => 'BehatException',
+                    'message' => $exception->getMessage(),
+                    'status'  => $exception->getCode(),
+                    'stack'   => $exception->getTraceAsString(),
+                ], 'AfterStep');
+            }
 
             echo "LogID: " . $wrappedException->getId() . "\n";
             // Display LogID for debugging purposes 
             $this->logDebug("LogID: " . $wrappedException->getId() . "\n");
-        }
 
+            // If the step failed due to a lost CDP connection, attempt to recover
+            // Chrome so the next step in this scenario can continue on a live browser.
+            // The step itself is already recorded as failed — recovery only affects
+            // what comes after it.
+            if ($exception !== null && $this->isCdpConnectionError($exception)) {
+                $this->recoverChromeAfterStepFailure();
+            }
+        } catch (\Throwable $e) {
+            // Logging itself failed (e.g. DB unreachable). Swallow so Behat can continue.
+            $this->logDebug('logFailedStep internal error: ' . $e->getMessage());
+        }
     }
 
     /**
-     * Prepares the environment before each test step
-     * - Clears XHR logs for fresh monitoring
-     * - Ensures UI5 is in ready state
-     * - Cleans up any visual debugging elements
+     * Attempts to recover Chrome after a CDP connection failure detected in @AfterStep.
+     *
+     * Reads the current URL from the session (which may itself fail if Chrome is
+     * already gone), derives the page path from it, and delegates to recoverChrome().
+     * All errors are caught and logged — this method must never throw because it runs
+     * inside an AfterStep hook where an uncaught exception would corrupt Behat's
+     * internal state.
+     */
+    private function recoverChromeAfterStepFailure(): void
+    {
+        try {
+            $pageAlias = $this->lastPageAlias ?? $this->lastLoginUrl ?? '';
+
+            $this->logDebug('CDP connection lost detected in @AfterStep — attempting Chrome recovery (page: ' . $pageAlias . ')');
+            $this->recoverChrome($pageAlias);
+            $this->logDebug('Chrome recovery successful after step failure.');
+
+        } catch (\Throwable $recoveryError) {
+            // Recovery failed (e.g. login page unreachable, Chrome could not start).
+            // Log it but do not re-throw — the step is already failed, and surfacing
+            // a recovery error here would replace the real error in Behat's output.
+            $this->logDebug('Chrome recovery failed after step failure: ' . $recoveryError->getMessage());
+            try {
+                $this->getWorkbench()->getLogger()->logException(new RuntimeException(
+                    'Chrome recovery failed after step failure: ' . $recoveryError->getMessage(),
+                    null,
+                    $recoveryError
+                ));
+            } catch (\Throwable $ignored) {}
+        }
+    }
+
+    /**
+     * Prepares the environment before each test step by clearing XHR logs, installing
+     * the HTTP interceptor, and recording the current page alias for crash recovery.
+     *
+     * Must never throw — any uncaught exception from a BeforeStep hook causes Behat
+     * to exit with code 255. CDP failures (e.g. Chrome crashed between steps) are
+     * caught and logged so the step itself can still run and fail gracefully.
      *
      * @BeforeStep
      */
     public function prepareBeforeStep(BeforeStepScope $scope): void
     {
-        // Skip if browser hasn't been initialized yet
         if (!$this->browser) {
             return;
         }
 
-        // Clear the ErrorManager for a fresh start
-        ErrorManager::getInstance()->clearErrors();
+        try {
+            ErrorManager::getInstance()->clearErrors();
+            $this->browser->clearXHRLog();
 
-        // Clear XHR logs to monitor only current step's network activity
-        $this->browser->clearXHRLog();
+            // Record the current page alias before the step runs so that Chrome
+            // recovery after a crash knows which page to reload.
+            $this->lastPageAlias = $this->getBrowser()->getPageAliasFromCurrentUrl();
 
-        // install http status interceptor to eliminate bad requests
-        $this->getBrowser()->getWaitManager()->installHttpInterceptor();
+            $this->getBrowser()->getWaitManager()->installHttpInterceptor();
 
-        // Add a small additional wait to ensure complete stability
-        $this->getSession()->wait(1000);
+            // Short pause to let the UI fully settle before the step executes
+            $this->getSession()->wait(1000);
 
-        // Remove any widget highlights from previous steps
-        $this->getBrowser()->clearWidgetHighlights();
+            $this->getBrowser()->clearWidgetHighlights();
 
-        // Log the beginning of the step for debugging purposes
-        $stepKeyword = $scope->getStep()->getKeyword();
-        $stepText = $scope->getStep()->getText();
+            $stepKeyword = $scope->getStep()->getKeyword();
+            $stepText    = $scope->getStep()->getText();
+            $stepLine    = $scope->getStep()->getLine();
+            $stepName    = sprintf('%s %s', $stepKeyword, $stepText);
 
-        // Get the step's line number
-        $stepLine = $scope->getStep()->getLine();
+            $this->logDebug(sprintf("\n[%d] Starting step: %s", $stepLine, $stepName));
+            $this->browser->showTestCaseName(sprintf('Step [%d]: %s', $stepLine, $stepName));
+            $this->stepStartTime = $this->browser->showStepTiming($stepName, true);
 
-        // Show the step number in the message
-        $this->logDebug(sprintf("\n[%d] Starting step: %s %s", $stepLine, $stepKeyword, $stepText));
-
-        // Show the step name
-        $this->browser->showTestCaseName(sprintf("Step [%d]: %s - %s", $stepLine, $stepKeyword, $stepText));
-
-        // Record step start time and display timing information
-        $stepName = sprintf("%s %s", $stepKeyword, $stepText);
-        $this->stepStartTime = $this->browser->showStepTiming($stepName, true);
+        } catch (\Throwable $e) {
+            // A CDP or browser error during pre-step setup must not kill Behat.
+            // The step itself will likely fail and trigger normal error handling.
+            $this->logDebug('prepareBeforeStep failed: ' . $e->getMessage());
+            try {
+                $this->getWorkbench()->getLogger()->logException(new RuntimeException(
+                    'prepareBeforeStep failed: ' . $e->getMessage(),
+                    null,
+                    $e
+                ));
+            } catch (\Throwable $ignored) {}
+        }
     }
 
 
     /**
-     * Ensures consistent state after each test step
-     * - Waits for all pending UI5 operations
-     * - Verifies no errors occurred
-     * - Takes screenshot on failure
+     * Ensures consistent state after each test step by waiting for UI5 operations
+     * and validating that no errors occurred.
+     *
+     * Must never throw — any uncaught exception from an AfterStep hook causes Behat
+     * to exit with code 255, killing the entire test run. Chrome hang and timeout
+     * errors are caught here and logged; Chrome recovery is attempted if needed.
      *
      * @AfterStep
-     * @param AfterStepScope $scope Current step scope
      */
     public function completeAfterStep(AfterStepScope $scope): void
     {
-        // Skip if step already failed
+        // Skip if step already failed — no point waiting for UI that may be broken
         if (!$scope->getTestResult()->isPassed()) {
             return;
         }
@@ -223,50 +288,56 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             return;
         }
 
-        // Comprehensive waiting operations to ensure UI stabilization
-        $this->getBrowser()->handleStepWaitOperations(true);
+        try {
+            // Wait for all pending UI5 operations to finish
+            $this->getBrowser()->handleStepWaitOperations(true);
 
-        // Check for any errors that occurred
-        $this->browser->getWaitManager()->validateNoErrors();
+            // Check for any errors that occurred during the step
+            $this->browser->getWaitManager()->validateNoErrors();
 
-        //  Log step completion for debugging   
-        $stepKeyword = $scope->getStep()->getKeyword();
-        $stepText = $scope->getStep()->getText();
-        $this->logDebug(sprintf(
-            "\nCompleted step: %s %s",
-            $stepKeyword,
-            $stepText
-        ));
+            $stepKeyword = $scope->getStep()->getKeyword();
+            $stepText    = $scope->getStep()->getText();
+            $stepName    = sprintf('%s %s', $stepKeyword, $stepText);
 
-        // Show step completion timing information
-        $stepName = sprintf("%s %s", $stepKeyword, $stepText);
-        $this->browser->showStepTiming($stepName, false, $this->stepStartTime);
+            $this->logDebug(sprintf("\nCompleted step: %s", $stepName));
+            $this->browser->showStepTiming($stepName, false, $this->stepStartTime);
 
-        // Add a 1-second pause after each step
-        $this->getSession()->wait(1000);
+            // Short pause to let the UI fully settle before the next step starts
+            $this->getSession()->wait(1000);
 
+        } catch (\Throwable $e) {
+            // Re-throwing from an AfterStep hook kills the Behat process with exit
+            // code 255. Instead, log the error and attempt Chrome recovery if the
+            // failure was caused by a lost CDP connection.
+            $this->logDebug('Wait operation failed (after step): ' . $e->getMessage());
+            try {
+                $this->getWorkbench()->getLogger()->logException(new RuntimeException(
+                    'Wait operation failed (after step): ' . $e->getMessage(),
+                    null,
+                    $e
+                ));
+            } catch (\Throwable $ignored) {}
+
+            if ($this->isCdpConnectionError($e)) {
+                $this->recoverChromeAfterStepFailure();
+            }
+        }
     }
 
     /**
-     * Captures scenario name before execution and sets up monitoring
-     * 
+     * Restarts Chrome and resets the Mink session at each feature boundary to ensure
+     * a clean browser state for every new feature.
      *
-     *  Restarts Chrome and resets the Mink session once per feature boundary.
+     * BeforeFeature cannot be used here because it requires a static method, which
+     * has no access to $this->getSession(). Feature transitions are detected by
+     * comparing the current feature title against the previously stored static value.
      *
-     *  BeforeFeature cannot be used here because it requires a static method,
-     *  which has no access to $this->getSession(). Without resetting the session,
-     *  the driver still holds the old WebSocket connection to the killed Chrome
-     *  process and throws "Failed write() on stream" on the very next CDP call.
+     * Must never throw — any uncaught exception from a BeforeScenario hook causes
+     * Behat to exit with code 255.
      *
-     *  Instead, we detect feature transitions inside BeforeScenario by comparing
-     *  the current feature title against the previously stored one in a static
-     *  property. The restart runs only on the first scenario of each new feature —
-     *  all subsequent scenarios in the same feature return immediately.
-     * 
-     * @BeforeScenario 
-     * @param BeforeScenarioScope $scope Behat scenario scope
+     * @BeforeScenario
      */
-    public function beforeScenario(BeforeScenarioScope $scope)
+    public function beforeScenario(BeforeScenarioScope $scope): void
     {
         if (self::$isDryRun) {
             return;
@@ -274,29 +345,48 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         $featureTitle = $scope->getFeature()->getTitle();
         if (self::$currentFeatureTitle === $featureTitle) {
-            return; // same feature, skip
+            return; // same feature, Chrome restart only happens at feature boundaries
         }
         self::$currentFeatureTitle = $featureTitle;
 
-        $manager = ChromeManager::getInstance();
-        if ($manager->getPid() === null) {
-            return; // Chrome not started yet, first feature
+        try {
+            $manager = ChromeManager::getInstance();
+            if ($manager->getPid() === null) {
+                // First feature: Chrome has not been started yet
+                $manager->getLogbook()->addLine('First feature: starting Chrome for "' . $featureTitle . '"');
+                $manager->start();
+            } else {
+                // Subsequent features: restart to get a clean browser state
+                $manager->getLogbook()->addLine('Feature boundary: restarting Chrome before "' . $featureTitle . '"');
+                $manager->restart();
+                // Reset Mink session so the driver opens a fresh WebSocket to the new Chrome process
+                $this->getSession()->stop();
+                $this->getSession()->start();
+            }
+        } catch (\Throwable $e) {
+            // Chrome start/restart failed. Log it but do not re-throw — the scenario
+            // steps will fail naturally when they try to use the browser, and normal
+            // error handling (logFailedStep, recoverChromeAfterStepFailure) will take over.
+            $this->logDebug('beforeScenario Chrome start/restart failed: ' . $e->getMessage());
+            try {
+                $this->getWorkbench()->getLogger()->logException(new RuntimeException(
+                    'beforeScenario Chrome start/restart failed for feature "' . $featureTitle . '": ' . $e->getMessage(),
+                    null,
+                    $e
+                ));
+            } catch (\Throwable $ignored) {}
         }
 
-        $manager->getLogbook()->addLine(
-            'Feature boundary detected: restarting Chrome before "' . $featureTitle . '"'
-        );
-        $manager->restart();
-
-        // Reset Mink session so the driver opens a fresh WebSocket to the new Chrome process
-        $this->getSession()->stop();
-        $this->getSession()->start();
         $this->scenarioName = $scope->getScenario()->getTitle();
 
-        // Initialize XHR monitoring if browser is available
         if ($this->browser) {
-            $this->browser->initializeXHRMonitoring();
-            $this->logDebug("\nXHR monitoring initialized for scenario: " . $this->scenarioName . "\n");
+            try {
+                $this->browser->initializeXHRMonitoring();
+                $this->logDebug("\nXHR monitoring initialized for scenario: " . $this->scenarioName . "\n");
+            } catch (\Throwable $e) {
+                // Non-critical — XHR monitoring failure should not abort the scenario
+                $this->logDebug('XHR monitoring init failed: ' . $e->getMessage());
+            }
         }
     }
 
@@ -332,7 +422,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     {
         // Persist login parameters so recoverChrome() can replay them.
         $this->lastLoginUrl = $url;
-        $this->lastLoginRole = $userRoles;
         $this->lastLoginLocale = $userLocale;
         
         // Setup the user and get the required login data
@@ -347,8 +436,35 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $btnCaption = $loginFields['_button'];
         unset($loginFields['_button']);
 
+        // Cache the resolved, browser-only login data so recoverChrome() can replay just the
+        // form fill on the fresh Chrome without calling setupUser() (and thus the DB) again.
+        $this->lastLoginFields = $loginFields;
+        $this->lastLoginTabCaption = $tabCaption;
+        $this->lastLoginButtonCaption = $btnCaption;
+        
         $this->setLocale($userLocale);
 
+        // Fill the form
+        $this->browserLogin($url, $tabCaption, $btnCaption, $loginFields);
+    }
+    
+    /**
+     * Replays the browser-side login: visits the page, opens the authenticator tab, fills the
+     * form and submits it. This is the only work a fresh Chrome actually needs to log back in —
+     * the DB user/roles/locale setup and the process-side authentication done by setupUser() are
+     * already in effect for the whole scenario and must NOT be repeated.
+     *
+     * Separated out from iLogInToPage() so recoverChrome() can call it directly with the values
+     * cached on the first login, avoiding the USER_AUTHENTICATOR optimistic-lock conflict that a
+     * second setupUser() call would cause.
+     *
+     * @param string $url         Page URL to log in to
+     * @param string $tabCaption  Caption of the authenticator tab to open
+     * @param string $btnCaption  Caption of the login submit button
+     * @param array  $loginFields Form fields as caption => value (without the _tab/_button keys)
+     */
+    private function browserLogin(string $url, string $tabCaption, string $btnCaption, array $loginFields): void
+    {
         // Go to the page
         $this->iVisitPage($url);
 
@@ -1211,7 +1327,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             throw new \RuntimeException("Table {$index} not found. Only " . count($tables) . " tables available.");
         }
         $table = $tables[$tableIndex];
-        $this->getBrowser()->highlightWidget($table->getNodeElement(), 'DataTable', $index);
+        $this->getBrowser()->highlightWidget($table->getNodeElement(), 'DataTable', $tableIndex);
         // Focus the selected table
         $this->getBrowser()->focus($table);
     }
@@ -1761,7 +1877,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $logbook = new MarkdownLogBook($node->getCaption());
         $logbook->setIndentActive(1);
         DatabaseFormatter::addTestLogbook($logbook);
-        $node->itWorksAsShown($fields, $logbook);
+        $result = $node->itWorksAsShown($fields, $logbook);
+        if ($result->isFailed()) {
+            throw new RuntimeException(
+                'Widget "' . $node->getCaption() ?? $node->getWidgetType() . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details')
+            );
+        }
     }
 
     /**
@@ -1782,7 +1903,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $logbook = new MarkdownLogBook($node->getCaption());
         $logbook->setIndentActive(1);
         DatabaseFormatter::addTestLogbook($logbook);
-        $node->checkWorksAsExpected($logbook);
+        $result = $node->checkWorksAsExpected($logbook);
+        if ($result->isFailed()) {
+            throw new RuntimeException(
+                'Widget "' . $node->getCaption() ?? $node->getWidgetType() . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details')
+            );
+        }
     }
 
     /**
@@ -1799,7 +1925,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private function navigateToPageAlias(string $pageAlias): void
     {
         $this->getEventDispatcher()->dispatch(new AfterPageVisited($pageAlias));
-
+        $this->lastPageAlias = $pageAlias;
+        
         // Navigate to the page using Mink's path navigation
         $url = $pageAlias . '.html';
         $this->visitPath('/' . $url);
@@ -1897,7 +2024,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $targetPageAlias The alias of the page to open after recovery
      *                                (typically the tile page that was being tested
      *                                when Chrome hung).
-     * @throws RuntimeException|\Exception If no login parameters are available (recoverChrome()
+     * @throws RuntimeException If no login parameters are available (recoverChrome()
      *                           was called before iLogInToPage() ever ran).
      */
     public function recoverChrome(string $targetPageAlias): void
@@ -1915,11 +2042,17 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Step 2: Reconnect the Mink session to the freshly started Chrome.
         $this->getSession()->restart();
 
-        // Step 3: Re-authenticate — the new Chrome has no cookies or session state.
-        $this->iLogInToPage(
+        // Step 3: Re-authenticate the BROWSER only — replay just the login form with the values
+        // cached on the first login. We are continuing the same scenario, so the DB user/roles/
+        // locale setup and the process-side authentication from the original iLogInToPage() are
+        // still valid; only the fresh Chrome lost its cookies/session. We deliberately do NOT
+        // call setupUser() again, which would re-bump the USER_AUTHENTICATOR row the browser
+        // login already updated and fail with an optimistic-lock "changed in the meantime" error.
+        $this->browserLogin(
             $this->lastLoginUrl,
-            $this->lastLoginRole,
-            $this->lastLoginLocale
+            $this->lastLoginTabCaption,
+            $this->lastLoginButtonCaption,
+            $this->lastLoginFields
         );
 
         // Step 4: Navigate directly to the target page without going via the tile

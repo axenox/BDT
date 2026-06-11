@@ -5,7 +5,7 @@ use axenox\BDT\Exceptions\ConfigException;
 use exface\Core\CommonLogic\Debugger\LogBooks\MarkdownLogBook;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Interfaces\Debug\LogBookInterface;
-use exface\Core\Interfaces\Log\LoggerInterface;
+use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use GuzzleHttp\Client;
 
 /**
@@ -54,45 +54,71 @@ class ChromeManager
     /** @var int|null Port on which Chrome's remote debugging API is listening */
     private ?int $port = null;
 
-    /** @var LoggerInterface|null PowerUI logger; injected on the first getInstance() call */
-    private ?LoggerInterface $logger = null;
+    /**
+     * @var DatabaseFormatter|null
+     * The active DatabaseFormatter, injected on the first getInstance() call.
+     *
+     * Typed against the concrete DatabaseFormatter (not TestRunObserverInterface) on purpose:
+     * we specifically rely on its logError() implementation, which creates a FAILED run_step
+     * bound to the current scenario/step in the results DB. Holding the formatter instead of a
+     * plain logger lets a Chrome startup failure show up as a real failed step, rather than an
+     * unexplained timeout with the cause buried in the logbook.
+     */
+    private ?DatabaseFormatter $databaseFormatter = null;
 
     /** @var LogBookInterface|null Lazily created logbook for structured diagnostic output */
     private ?LogBookInterface $logbook = null;
 
+    /** @var array Chrome launch configuration stored by configure(); used by every start() call */
     private array $config = [];
+
+    /** @var array[] Log of every start() call; cleared by DatabaseFormatter after each feature is written */
+    private array $startHistory = [];
 
     /**
      * Private constructor enforces singleton usage via getInstance().
      *
-     * The logger is optional so that getInstance() can be called without arguments
-     * after the instance has already been initialized with a logger.
+     * The formatter is optional so getInstance() can be called without arguments once the
+     * instance already exists. It is the DatabaseFormatter, the only component able to write a
+     * failed step to the results DB via its overridden logError().
      *
-     * @param LoggerInterface|null $logger PowerUI logger to route diagnostic messages through
+     * @param DatabaseFormatter|null $databaseFormatter Formatter used to report Chrome startup failures as a test step
      */
-    private function __construct(?LoggerInterface $logger = null)
+    private function __construct(?DatabaseFormatter $databaseFormatter = null)
     {
-        $this->logger = $logger;
+        $this->databaseFormatter = $databaseFormatter;
     }
 
     /**
      * Returns the singleton ChromeManager instance, creating it on the first call.
      *
-     * The logger parameter is only meaningful on the very first call (typically from
-     * DatabaseFormatter). All subsequent callers should omit it; the instance retains
-     * the logger that was injected during initialization.
+     * The formatter parameter is only meaningful on the very first call (from
+     * DatabaseFormatter::__construct(), which passes itself). All subsequent callers should
+     * omit it; the instance retains the formatter injected during initialization.
      *
      * Pattern: initialize-once singleton with optional constructor injection.
      *
-     * @param LoggerInterface|null $logger Logger to inject; ignored if the instance already exists
+     * @param DatabaseFormatter|null $databaseFormatter Formatter to inject; ignored if the instance already exists
      * @return static The singleton instance
      */
-    public static function getInstance(?LoggerInterface $logger = null): static
+    public static function getInstance(?DatabaseFormatter $databaseFormatter = null): static
     {
         if (self::$instance === null) {
-            self::$instance = new static($logger);
+            self::$instance = new static($databaseFormatter);
         }
         return self::$instance;
+    }
+
+    /**
+     * Stores the Chrome launch configuration so that subsequent start() and restart() calls
+     * can use it without requiring the caller to pass config each time.
+     *
+     * Must be called once before start() — typically from DatabaseFormatter::__construct(),
+     * which is the only place that has access to the behat.yml chrome section.
+     */
+    public function configure(array $config): void
+    {
+        $this->config = $config;
     }
 
     /**
@@ -124,30 +150,15 @@ class ChromeManager
      * When an Xdebug session is active, --headless is omitted so the tester can
      * watch the browser and interact with it during debugging.
      *
-     * @param array $config Chrome config array from DatabaseFormatterExtension:
-     *                      ['executable' => ..., 'user_data_dir' => ..., 'port' => ...]
      * @return ChromeStartResult Metadata about the started or reused Chrome process
      * @throws ConfigException If config is incomplete or Chrome does not become ready in time
      */
-    public function start(array $config = []): ChromeStartResult
+    public function start(): ChromeStartResult
     {
         $this->getLogbook()->addLine('ChromeManager::start() called');
         $this->getLogbook()->addIndent(+1);
-        $this->logger?->info('Using Chrome for BDT', [], $this->getLogbook());
-        if (!empty($config)) {
-            $this->config = $config; // store on first call
-        }
+        $this->databaseFormatter?->getWorkbench()->getLogger()->info('Using Chrome for BDT', [], $this->getLogbook());
         $config = $this->config;
-        // Return immediately if a managed Chrome process is already running
-        if ($this->pid !== null) {
-            $this->getLogbook()->addLine("Chrome already running on port {$this->port} with PID {$this->pid} — reusing existing process");
-            $this->getLogbook()->addIndent(-1);
-            return new ChromeStartResult(
-                port: $this->port,
-                pid: $this->pid,
-                startupMs: 0.0
-            );
-        }
         $startTime = microtime(true);
         $executable = $config['executable'] ?? null;
         $userDataDir = getcwd() . DIRECTORY_SEPARATOR . $config['user_data_dir'] ?? null;
@@ -215,11 +226,18 @@ class ChromeManager
         $this->getLogbook()->addLine("Chrome started successfully — PID: {$pid}, port: {$port}, startup time: {$elapsedMs} ms");
         $this->getLogbook()->addIndent(-1);
 
-        return new ChromeStartResult(
+        $result = new ChromeStartResult(
             port: $port,
             pid: $pid,
             startupMs: microtime(true) - $startTime
         );
+        $this->startHistory[] = [
+            'pid'              => $pid,
+            'port'             => $port,
+            'startup_duration' => round((microtime(true) - $startTime) * 1000, 1),
+            'started_at'       => date('Y-m-d H:i:s')
+        ];
+        return $result;
     }
 
     /**
@@ -266,8 +284,11 @@ class ChromeManager
      * and any file handles Chrome held, reducing the chance of start() finding the
      * port still occupied immediately after the kill.
      *
+     * After this method returns, getLastStartResult() reflects the newly started
+     * Chrome process so that callers can record the restart metadata.
+     *
      * @throws RuntimeException If stop() cannot terminate the process or start()
-     *                          cannot confirm readiness within its timeout
+     *                          cannot confirm readiness within its timeout.
      */
     public function restart(): void
     {
@@ -280,6 +301,30 @@ class ChromeManager
         $this->start();
 
         $this->getLogbook()->addIndent(-1);
+    }
+
+    /**
+     * Clears the start history collected since the last clearStartHistory() call.
+     *
+     * Called by DatabaseFormatter after writing chrome_info for a feature so that
+     * the next feature starts with a clean slate. ChromeManager itself never clears
+     * the history — it only appends to it.
+     */
+    public function clearStartHistory(): void
+    {
+        $this->startHistory = [];
+    }
+
+    /**
+     * Returns all start() calls recorded since the last clearStartHistory() call.
+     *
+     * Each entry contains pid, port, startup_duration (ms), started_at, and restart_reason.
+     *
+     * @return array[]
+     */
+    public function getStartHistory(): array
+    {
+        return $this->startHistory;
     }
 
     /**
@@ -317,7 +362,7 @@ class ChromeManager
     {
         return $this->runGuzzleApi('http://localhost:' . ($port ?? $this->getPort()) . '/json/list');
     }
-
+    
     /**
      * Finds the PID of the process listening on the given TCP port using netstat.
      *
@@ -397,7 +442,14 @@ class ChromeManager
         $msg = "**ERROR** Chrome did not become ready on port {$port} within {$timeoutSeconds} seconds.";
         $this->getLogbook()->addLine($msg . " (total attempts: {$attempt})");
         $this->getLogbook()->addIndent(-1);
-        throw new RuntimeException($msg);
+        $exception = new RuntimeException($msg);
+        try {
+            $this->databaseFormatter?->logError($msg, $exception);
+        } catch (\Throwable $logError) {
+            $this->getLogbook()->addLine('Could not report the Chrome startup failure to the DatabaseFormatter: ' . $logError->getMessage());
+        }
+
+        throw $exception;
     }
 
     /**

@@ -141,7 +141,7 @@ class UI5DataTableNode extends UI5DataNode
      * @param TableNode $fields
      * @param LogBookInterface $logbook
      */
-    public function itWorksAsShown(TableNode $fields, LogBookInterface $logbook): void
+    public function itWorksAsShown(TableNode $fields, LogBookInterface $logbook): TestResultInterface
     {
         /* @var $widget \exface\Core\Widgets\DataTable */
         $widget = $this->getWidget();
@@ -204,7 +204,7 @@ class UI5DataTableNode extends UI5DataNode
             Assert::assertEmpty($extraButtons,   'Unexpected buttons: ' . implode(', ', $extraButtons));
         }
 
-        $this->checkWorksAsExpected($logbook);
+        return $this->checkWorksAsExpected($logbook);
     }
 
 
@@ -375,18 +375,25 @@ class UI5DataTableNode extends UI5DataNode
                 $this->selectRow($rowNumber);
                 $this->selectRow(++$rowNumber);
             }
-
+            $urlBeforeClick = $this->getSession()->getCurrentUrl();
             if (!$buttonNode->checkDisabled()) {
                 // Press the button in a substep
                 $substepResult = $this->runAsSubstep(
                     function() use ($buttonNode, $logbook) {
                         return $buttonNode->checkWorksAsExpected($logbook);
                     },
-                    'Clicking ' . $buttonWidget->getCaption(),
+                    'Clicking "' . $buttonWidget->getCaption() . '"',
                     'Dialogs',
                     $logbook,
-                    function() {
+                    function() use ($urlBeforeClick) {
+                        // If the dialog caused a full-page navigation (large dialogs rendered as
+                        // separate pages), go back. If only a popup error appeared without navigation
+                        // (URL unchanged), dismissErrorDialogIfPresent() in runAsSubstep's catch
+                        // block already handled it — navigating back here would be wrong.
+                        $urlAfterError = $this->getSession()->getCurrentUrl();
+                        if ($urlAfterError !== $urlBeforeClick) {
                             $this->getBrowser()->navigateToPreviousPage();
+                        }
                     }
                 );
 

@@ -78,6 +78,56 @@
                 "timeout": 10800
             },
             "FIRST_RUN": "2026-04-29 14:45:00"
+        },
+        {
+            "_EXPORT_SUMMARY": "onelink.Basis daily autom. tests ",
+            "CREATED_ON": "2026-06-09 15:43:38",
+            "MODIFIED_ON": "2026-06-10 09:12:56",
+            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x11efa24edb84611aa24e025041000001",
+            "UID": "0x11f1ac8338772070ac83025041000001",
+            "ACTION_UXON": null,
+            "QUEUE_TOPICS": "behat",
+            "SCHEDULE": "30 23 * * *",
+            "APP": "0x11efa2214f96c8b8a221025041000001",
+            "DESCRIPTION": "",
+            "NAME": "onelink.Basis daily autom. tests ",
+            "TASK_UXON": {
+                "cmd": [
+                    "vendor\\bin\\action axenox.BDT:Behat init",
+                    "vendor\\bin\\Behat --suite=onelink.Basis --tags=Status::Ready"
+                ],
+                "timeout": 3600,
+                "ignored_exit_codes": [
+                    1
+                ]
+            },
+            "FIRST_RUN": "2026-06-09 15:43:00"
+        },
+        {
+            "_EXPORT_SUMMARY": "evening onelink.Basis daily autom. tests ",
+            "CREATED_ON": "2026-06-10 13:48:49",
+            "MODIFIED_ON": "2026-06-10 13:48:49",
+            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "UID": "0x11f1ab8a58c30ee8ab8a025041000001",
+            "ACTION_UXON": null,
+            "QUEUE_TOPICS": "behat",
+            "SCHEDULE": "0 19 * * *",
+            "APP": "0x11efa2214f96c8b8a221025041000001",
+            "DESCRIPTION": "",
+            "NAME": "evening onelink.Basis daily autom. tests ",
+            "TASK_UXON": {
+                "cmd": [
+                    "vendor\\bin\\action axenox.BDT:Behat init",
+                    "vendor\\bin\\Behat --suite=onelink.Basis --tags=Status::Ready"
+                ],
+                "timeout": 3600,
+                "ignored_exit_codes": [
+                    1
+                ]
+            },
+            "FIRST_RUN": "2026-06-10 13:48:00"
         }
     ],
     "totals_rows": [],
