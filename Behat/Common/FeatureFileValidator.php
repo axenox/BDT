@@ -51,7 +51,8 @@ class FeatureFileValidator
             self::checkDocStringClosure($lines),
             self::checkDataTableAlignment($lines),
             self::checkDuplicateTags($lines),
-            self::checkStepsAfterExamples($lines)
+            self::checkStepsAfterExamples($lines),
+            self::checkUnclosedQuotesInTableCells($lines)
         );
 
         return new FeatureValidationResult($errors);
@@ -251,7 +252,12 @@ class FeatureFileValidator
                 continue;
             }
 
-            // Any non-table line ends the Examples block
+            // A "#"-only line is a valid Gherkin comment inside a table — skip it.
+            if ($inExamples && str_starts_with($trimmed, '#')) {
+                continue;
+            }
+
+            // Any non-table, non-empty, non-comment line ends the Examples block.
             if ($inExamples && ! str_starts_with($trimmed, '|') && $trimmed !== '') {
                 $inExamples  = false;
                 $headerCols  = null;
@@ -293,25 +299,31 @@ class FeatureFileValidator
 
         foreach ($lines as $i => $line) {
             $trimmed = trim($line);
+
             if (str_starts_with($trimmed, 'Examples:')) {
                 $inExamples = true;
                 continue;
             }
+
+            // A "#"-only line is a valid Gherkin comment — it skips the row entirely.
+            // Keep $inExamples true so the lines after it are still checked.
+            if ($inExamples && str_starts_with($trimmed, '#')) {
+                continue;
+            }
+
+            // Any non-table, non-empty, non-comment line closes the Examples block.
             if ($inExamples && ! str_starts_with($trimmed, '|') && $trimmed !== '') {
                 $inExamples = false;
             }
+
             if ($inExamples && str_starts_with($trimmed, '|')) {
-                // Find "#" that is not inside a cell value enclosed by pipes
-                // Simple heuristic: "#" after the last "|"
+                // Detect "#" that appears AFTER the last closing pipe — this is an
+                // inline comment appended to a table row, which some Gherkin parsers
+                // treat as an extra column and others silently corrupt the cell value.
                 $afterLastPipe = substr($trimmed, strrpos($trimmed, '|') + 1);
-                if (str_contains($afterLastPipe, '#')) {
-                    $errors[] = 'Line ' . ($i + 1) . ': Inline comment "#" after the closing pipe in an '
-                        . 'Examples table row is not allowed.';
-                }
-                // "#" anywhere in the row outside a cell (before first pipe or between pipes with no value)
-                if (preg_match('/\|\s*#/', $trimmed)) {
-                    $errors[] = 'Line ' . ($i + 1) . ': Inline comment "#" inside an Examples table cell '
-                        . 'is ambiguous and not allowed.';
+                if (trim($afterLastPipe) !== '' && str_contains($afterLastPipe, '#')) {
+                    $errors[] = 'Line ' . ($i + 1) . ': Inline comment after the closing "|" '
+                        . 'in a table row is not allowed. ';
                 }
             }
         }
@@ -431,6 +443,11 @@ class FeatureFileValidator
                 continue;
             }
 
+            // A "#"-only line is a valid Gherkin comment — it does not break a table block.
+            if (str_starts_with($trimmed, '#')) {
+                continue;
+            }
+
             if (str_starts_with($trimmed, '|')) {
                 $cols = self::countTableColumns($trimmed);
                 if ($tableHeaderCols === null) {
@@ -503,7 +520,7 @@ class FeatureFileValidator
         }
         return $errors;
     }
-    
+
     /**
      * Checks that no step lines appear after an Examples: block within a Scenario Outline.
      *
@@ -582,6 +599,50 @@ class FeatureFileValidator
                             . 'The Examples table must be the last element of a Scenario Outline.';
                         break;
                     }
+                }
+            }
+        }
+        return $errors;
+    }
+
+    /**
+     * Detects unclosed quoted strings inside pipe-delimited table cells.
+     *
+     * A cell value like | "Start 1 A  (missing closing quote) causes Behat to
+     * misparse the remainder of the table and produces confusing runtime errors.
+     * This check splits each table row into cells and verifies that every cell
+     * containing an opening double-quote also has a matching closing double-quote.
+     *
+     * @param string[] $lines
+     * @return string[]
+     */
+    private static function checkUnclosedQuotesInTableCells(array $lines): array
+    {
+        $errors      = [];
+        $inDocString = false;
+
+        foreach ($lines as $i => $line) {
+            $trimmed = trim($line);
+
+            if (str_starts_with($trimmed, '"""')) {
+                $inDocString = ! $inDocString;
+                continue;
+            }
+            if ($inDocString || str_starts_with($trimmed, '#') || ! str_starts_with($trimmed, '|')) {
+                continue;
+            }
+
+            // Split into cells by pipe, strip surrounding pipes first.
+            $inner = trim($trimmed, '|');
+            $cells = explode('|', $inner);
+
+            foreach ($cells as $cellIndex => $cell) {
+                $cellTrimmed = trim($cell);
+                // Count double-quotes in the cell value; an odd number means unclosed.
+                $quoteCount = substr_count($cellTrimmed, '"');
+                if ($quoteCount % 2 !== 0) {
+                    $errors[] = 'Line ' . ($i + 1) . ': Table cell ' . ($cellIndex + 1)
+                        . ' contains an unclosed double-quote: ' . trim($cell);
                 }
             }
         }
