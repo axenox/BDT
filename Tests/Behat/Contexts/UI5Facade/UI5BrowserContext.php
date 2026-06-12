@@ -445,7 +445,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->setLocale($userLocale);
 
         // Fill the form
-        $this->browserLogin($url, $tabCaption, $btnCaption, $loginFields);
+        $this->browserLogin($url, $tabCaption, $btnCaption, $loginFields, $userRolesArray);
     }
     
     /**
@@ -462,8 +462,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $tabCaption  Caption of the authenticator tab to open
      * @param string $btnCaption  Caption of the login submit button
      * @param array  $loginFields Form fields as caption => value (without the _tab/_button keys)
+     * @param array  $userRoles   Array of user roles
      */
-    private function browserLogin(string $url, string $tabCaption, string $btnCaption, array $loginFields): void
+    private function browserLogin(string $url, string $tabCaption, string $btnCaption, array $loginFields, array $userRoles): void
     {
         // Go to the page
         $this->iVisitPage($url);
@@ -1880,7 +1881,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $result = $node->itWorksAsShown($fields, $logbook);
         if ($result->isFailed()) {
             throw new RuntimeException(
-                'Widget "' . $node->getCaption() ?? $node->getWidgetType() . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details')
+                'Widget "' . ($node->getCaption() ?? $node->getWidgetType()) . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details')
             );
         }
     }
@@ -1906,7 +1907,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $result = $node->checkWorksAsExpected($logbook);
         if ($result->isFailed()) {
             throw new RuntimeException(
-                'Widget "' . $node->getCaption() ?? $node->getWidgetType() . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details')
+                'Widget "' . ($node->getCaption() ?? $node->getWidgetType())) . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details')
             );
         }
     }
