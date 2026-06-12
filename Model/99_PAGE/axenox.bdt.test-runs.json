@@ -11,7 +11,7 @@
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2025-07-08 18:20:52",
     "modified_by_user_selector": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-    "modified_on": "2026-06-08 15:46:24",
+    "modified_on": "2026-06-11 16:36:56",
     "contents": {
         "widget_type": "DataTable",
         "id": "table_runs",
@@ -40,6 +40,9 @@
                 "attribute_alias": "run_stats__duration_s"
             },
             {
+                "attribute_alias": "expected_feature_count"
+            },
+            {
                 "caption": "Features",
                 "widget_type": "DataColumnGroup",
                 "columns": [
@@ -60,6 +63,9 @@
                         "caption": "Skipped"
                     }
                 ]
+            },
+            {
+                "attribute_alias": "expected_scenario_count"
             },
             {
                 "caption": "Steps",

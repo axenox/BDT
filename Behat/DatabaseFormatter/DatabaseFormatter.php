@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\DatabaseFormatter;
 
+use axenox\BDT\Behat\Common\ExpectedTestCountCalculator;
 use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
 use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
 use axenox\BDT\Behat\Events\AfterPageVisited;
@@ -9,7 +10,10 @@ use axenox\BDT\Behat\Events\BeforeSubstep;
 use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Interfaces\TestResultInterface;
 use axenox\BDT\Interfaces\TestRunObserverInterface;
+use Behat\Testwork\EventDispatcher\Event\BeforeSuiteTested;
 use Behat\Testwork\Output\Formatter;
+use Behat\Testwork\Suite\Suite;
+use Behat\Testwork\Suite\SuiteRegistry;
 use Behat\Testwork\Tester\Result\TestResult;
 use Behat\Testwork\EventDispatcher\Event\AfterSuiteTested;
 use Behat\Behat\EventDispatcher\Event\AfterOutlineTested;
@@ -64,6 +68,10 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private array               $substepStarts = [];
 
     private static array        $testedPages = [];
+    // Provides all resolved suites (paths, filters) as Behat itself parsed them from
+    // behat.yml and its imports - used once at run start to compute the expected scope.
+    private SuiteRegistry $suiteRegistry;
+    private bool $expectedResultsCalculated = false;
 
     /**
      * Tracks which page/widget + role-set combinations have already been verified by a
@@ -89,11 +97,12 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     // Dry-run is used as a pre-flight syntax check and must not pollute the test results DB.
     private bool $isDryRun = false;
 
-    public function __construct(WorkbenchInterface $workbench, ScreenshotProviderInterface $provider, EventDispatcherInterface $eventDispatcher, array $chromeConfig = [])
+    public function __construct(WorkbenchInterface $workbench, ScreenshotProviderInterface $provider, EventDispatcherInterface $eventDispatcher, SuiteRegistry $suiteRegistry, array $chromeConfig = [])
     {
         self::$eventDispatcher = $eventDispatcher;
         $this->workbench = $workbench;
         $this->provider = $provider;
+        $this->suiteRegistry = $suiteRegistry;
         $this->isDryRun = in_array('--dry-run', $_SERVER['argv'] ?? [], true);
         if (!$this->isDryRun) {
             ChromeManager::getInstance($this)
@@ -108,6 +117,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             // BeforeExerciseCompleted::BEFORE => 'onBeforeExercise',
             // Use __destruct() to finish the log on inner errors too
             // AfterExerciseCompleted::AFTER => 'onAfterExercise',
+            BeforeSuiteTested::BEFORE => 'onBeforeSuite',
             AfterSuiteTested::AFTER => 'onAfterSuite',
             BeforeFeatureTested::BEFORE => 'onBeforeFeature',
             AfterFeatureTested::AFTER => 'onAfterFeature',
@@ -174,7 +184,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                 return;
             }
 
-            $ds = $this->runDataSheet->extractSystemColumns();
+            $ds = $this->getRun($this->runDataSheet->getUidColumn()->getValue(0))->extractSystemColumns();
             $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
             $ds->setCellValue('duration_ms', 0,$this->microtime() - $this->runStart);
             $ds->dataUpdate();
@@ -183,6 +193,34 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $this->exerciseFinished = true;
         }
         catch(\Throwable $e){
+            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+        }
+    }
+
+    /**
+     * Creates the run row exactly once, on the first suite of the exercise.
+     *
+     * Why on the first suite rather than at construction: suite.registry is only populated by
+     * the time suites start running, so this is the earliest point where the full expected
+     * scope can be computed. The row is created once; subsequent suites short-circuit on the
+     * non-null runDataSheet.
+     */
+    public function onBeforeSuite(BeforeSuiteTested $event): void
+    {
+        if (!($this->isDryRun || $this->runDataSheet == null) && $this->expectedResultsCalculated) {
+            return;
+        }
+        try {
+            [$expectedFeatures, $expectedScenarios] = $this->calculateExpectedTotals();
+            $ds = $this->getRun($this->runDataSheet->getUidColumn()->getValue(0))->extractSystemColumns();
+            // Expected scope is written here - not per suite - so the run row receives exactly
+            // one update after creation, avoiding the TimeStampingBehavior optimistic-locking
+            // conflict. Totals were accumulated across all suites in onBeforeSuite().
+            $ds->setCellValue('expected_feature_count', 0, $expectedFeatures);
+            $ds->setCellValue('expected_scenario_count', 0, $expectedScenarios);
+            $ds->dataUpdate();
+            $this->expectedResultsCalculated = true;
+        } catch (\Throwable $e) {
             ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
         }
     }
@@ -803,6 +841,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
 
         ChromeManager::getInstance()->stop();
     }
+    
     private function startRun(): void
     {
         if ($this->isDryRun) {
@@ -839,5 +878,107 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $this->onShutdown();
         });
 
+    }
+
+    /**
+     * Computes the total features/scenarios Behat is expected to run across ALL configured
+     * suites, before any feature executes.
+     *
+     * Why the suite repository instead of re-parsing behat.yml: Behat has already resolved the
+     * imports chain, profiles, path placeholders and suite globs into concrete Suite objects
+     * here. Re-reading the YAML would mean duplicating that whole resolution and drifting from
+     * Behat's real behavior. Each suite exposes its resolved paths via getSetting('paths').
+     *
+     * Why one total up front (not per suite): the value only serves silent-stop detection,
+     * which needs the complete expected scope from the start. A per-suite running total would,
+     * at a crash, only cover the suites already started - collapsing expected onto actual and
+     * hiding the very stop we want to detect. A suite whose paths do not exist on this machine
+     * (placeholder / non-real-project suites) simply contributes nothing.
+     *
+     * @return array{0:?int,1:?int} [expectedFeatureCount, expectedScenarioCount]; null on error.
+     * @throws \Throwable
+     */
+    private function calculateExpectedTotals(): array
+    {
+        try {
+            $calculator = new ExpectedTestCountCalculator();
+            $features = 0;
+            $scenarios = 0;
+            $selectedSuite = $this->getCliOption('suite');
+            foreach ($this->suiteRegistry->getSuites() as $suite) {
+                // Honour Behat's --suite option: when a single suite is selected on the CLI,
+                // only that suite runs, so only it must be counted. Without this filter the
+                // expected totals would include every configured suite across all imported
+                // apps and dwarf what actually ran, making every --suite run look like it
+                // stopped early.
+                if ($selectedSuite !== null && $suite->getName() !== $selectedSuite) {
+                    continue;
+                }
+                $paths = $suite->hasSetting('paths') ? $suite->getSetting('paths') : [];
+                if (empty($paths)) {
+                    continue;
+                }
+                $result = $calculator->calculate($paths, $this->resolveTagExpression($suite));
+                $features += $result->featureCount;
+                $scenarios += $result->scenarioCount;
+            }
+            return [$features, $scenarios];
+        } catch (\Throwable $e) {
+            // Never let scope estimation block run creation; leave the counts NULL instead.
+            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+            return [null, null];
+        }
+    }
+
+    /**
+     * Resolves the active tag filter for a suite, preferring the CLI "--tags" option (which
+     * Behat applies globally to every suite) over the suite's own configured filters.
+     *
+     * Why read argv directly: CLI --tags is the authoritative override Behat applies last, and
+     * the formatter already reads $_SERVER['argv'] elsewhere. The per-suite "filters.tags"
+     * setting is only the fallback for runs without an explicit --tags.
+     */
+    private function resolveTagExpression(Suite $suite): ?string
+    {
+        // CLI --tags is Behat's authoritative override, applied to every suite.
+        $cliTags = $this->getCliOption('tags');
+        if ($cliTags !== null) {
+            return $cliTags;
+        }
+        // Otherwise fall back to the suite's own configured tag filter.
+        $filters = $suite->hasSetting('filters') ? $suite->getSetting('filters') : [];
+        return $filters['tags'] ?? null;
+    }
+
+    /**
+     * Reads a "--name=value" or "--name value" option from the CLI arguments.
+     *
+     * Why centralize: both the tag filter and the --suite selection need the same two argv
+     * spellings that Behat itself accepts. One reader keeps their parsing identical and avoids
+     * duplicating the lookup in two places.
+     */
+    private function getCliOption(string $name): ?string
+    {
+        $argv = $_SERVER['argv'] ?? [];
+        $prefix = '--' . $name . '=';
+        foreach ($argv as $i => $arg) {
+            if (str_starts_with($arg, $prefix)) {
+                return substr($arg, strlen($prefix));
+            }
+            if ($arg === '--' . $name && isset($argv[$i + 1])) {
+                return $argv[$i + 1];
+            }
+        }
+        return null;
+    }
+    
+    private function getRun(string $uid)
+    {
+        $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run');
+        $uidAlias = $ds->getMetaObject()->getUidAttributeAlias();
+        $ds->getColumns()->addFromExpression($uidAlias);
+        $ds->getFilters()->addConditionFromString($uidAlias, $uid, ComparatorDataType::EQUALS);
+        $ds->dataRead();
+        return $ds;
     }
 }
