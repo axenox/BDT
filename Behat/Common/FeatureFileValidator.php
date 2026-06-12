@@ -52,7 +52,8 @@ class FeatureFileValidator
             self::checkDataTableAlignment($lines),
             self::checkDuplicateTags($lines),
             self::checkStepsAfterExamples($lines),
-            self::checkUnclosedQuotesInTableCells($lines)
+            self::checkUnclosedQuotesInTableCells($lines),
+            self::checkTableRowClosingPipe($lines)
         );
 
         return new FeatureValidationResult($errors);
@@ -644,6 +645,39 @@ class FeatureFileValidator
                     $errors[] = 'Line ' . ($i + 1) . ': Table cell ' . ($cellIndex + 1)
                         . ' contains an unclosed double-quote: ' . trim($cell);
                 }
+            }
+        }
+        return $errors;
+    }
+
+    /**
+     * Checks that every pipe-delimited table row ends with a closing "|".
+     *
+     * Gherkin requires table rows to be wrapped in pipes on both sides.
+     * A row like | "foo" | "bar"  (missing the trailing pipe) causes a parse
+     * error that prevents the entire feature file from running.
+     *
+     * @param string[] $lines
+     * @return string[]
+     */
+    private static function checkTableRowClosingPipe(array $lines): array
+    {
+        $errors      = [];
+        $inDocString = false;
+
+        foreach ($lines as $i => $line) {
+            $trimmed = trim($line);
+
+            if (str_starts_with($trimmed, '"""')) {
+                $inDocString = ! $inDocString;
+                continue;
+            }
+            if ($inDocString || str_starts_with($trimmed, '#') || ! str_starts_with($trimmed, '|')) {
+                continue;
+            }
+
+            if (! str_ends_with($trimmed, '|')) {
+                $errors[] = 'Line ' . ($i + 1) . ': Table row does not end with "|": ' . mb_substr($trimmed, 0, 80);
             }
         }
         return $errors;
