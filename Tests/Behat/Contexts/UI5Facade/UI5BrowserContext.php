@@ -484,7 +484,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Store the active roles on the browser instance so that nodes can build
         // role-aware cache keys for works-as-expected deduplication without having
         // to carry the role array through every call chain.
-        $this->getBrowser()->setCurrentRoles($userRolesArray);
+        $this->getBrowser()->setCurrentRoles($userRoles);
         // Fill out the login form
         foreach ($loginFields as $caption => $value) {
             $input = $this->getBrowser()->findInputByCaption($caption);
@@ -1907,7 +1907,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $result = $node->checkWorksAsExpected($logbook);
         if ($result->isFailed()) {
             throw new RuntimeException(
-                'Widget "' . ($node->getCaption() ?? $node->getWidgetType())) . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details')
+                'Widget "' . ($node->getCaption() ?? $node->getWidgetType()) . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details')
             );
         }
     }

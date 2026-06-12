@@ -5,6 +5,7 @@ use axenox\BDT\Behat\Common\FeatureFileValidator;
 use exface\Core\CommonLogic\Model\Behaviors\AbstractBehavior;
 use exface\Core\Events\Action\OnBeforeActionPerformedEvent;
 use exface\Core\Exceptions\RuntimeException;
+use exface\Core\Facades\ConsoleFacade\CliCommandRunner;
 use exface\Core\Interfaces\Model\BehaviorInterface;
 
 /**
@@ -130,8 +131,11 @@ class FeatureFileValidatingBehavior extends AbstractBehavior
                 continue;
             }
 
+            // Step 1: run our own structural checks first — they are fast and produce
+            // precise line-level error messages.  Only proceed to the dry-run if these
+            // pass, because a dry-run on a structurally broken file would produce
+            // confusing parser noise on top of errors we already report clearly.
             $validationResult = FeatureFileValidator::validate($content);
-
             if (! $validationResult->isValid()) {
                 $rowLabel = $this->buildRowLabel($data, $rowNr);
                 throw new RuntimeException(
@@ -140,7 +144,140 @@ class FeatureFileValidatingBehavior extends AbstractBehavior
                     . $validationResult->toText()
                 );
             }
+
+            // Step 2: run a Behat dry-run as a safety net for parser-level errors our
+            // own checks cannot detect (e.g. malformed scenario outlines, illegal
+            // Unicode in keywords, Gherkin dialect mismatches).
+            $dryRunError = $this->runDryRun($content);
+            if ($dryRunError !== null) {
+                $rowLabel = $this->buildRowLabel($data, $rowNr);
+                throw new RuntimeException(
+                    'Feature file ' . $rowLabel . ' failed the Behat dry-run and cannot be saved:' . "\n\n"
+                    . $dryRunError
+                );
+            }
         }
+    }
+
+    /**
+     * Writes the given Gherkin content to a temporary file, runs a Behat dry-run
+     * against it, and returns any parse/syntax error output.
+     *
+     * Returns null when the dry-run finds no fatal errors (undefined steps are
+     * intentionally ignored — they produce a non-zero exit code but are not
+     * considered blocking).  Returns a string with the error output when a fatal
+     * parser error is detected.
+     *
+     * The temporary file is always deleted after the run, even when an error occurs.
+     *
+     * @param string $content Raw Gherkin content to validate.
+     * @return string|null Error output from Behat, or null if the file is valid.
+     */
+    private function runDryRun(string $content): ?string
+    {
+        // Write content to a temporary feature file and a minimal behat.yml next to it.
+        // The custom config has no suite path restrictions so Behat parses the file
+        // regardless of the project-level behat.yml suite configuration.
+        $tmpDir  = sys_get_temp_dir();
+        $tmpId   = uniqid('bdt_dryrun_', true);
+        $tmpFile = $tmpDir . DIRECTORY_SEPARATOR . $tmpId . '.feature';
+        $tmpConf = $tmpDir . DIRECTORY_SEPARATOR . $tmpId . '.yml';
+
+        file_put_contents($tmpFile, $content);
+        // Minimal Behat config: one default suite pointing directly at the temp file.
+        // No contexts are loaded — dry-run only checks Gherkin syntax, not step definitions.
+        file_put_contents($tmpConf, implode("\n", [
+            'default:',
+            '  suites:',
+            '    default:',
+            '      paths:',
+            '        - ' . str_replace('\\', '/', $tmpFile),
+            '      contexts: []',
+        ]));
+
+        try {
+            $cwd = $this->getWorkbench()->getInstallationPath();
+            // On Windows with IIS, CliCommandRunner falls back to exec() which does not
+            // inherit cwd — so we must use an absolute path to the Behat binary.
+            // The .bat wrapper is called via "cmd /c" because escapeshellarg() wraps the
+            // path in quotes and quoted .bat files are not executable without cmd /c.
+            if (DIRECTORY_SEPARATOR === '\\') {
+                $behatBin = $cwd . '\\vendor\\bin\\behat.bat';
+                $cmd = 'cmd /c ' . $behatBin . ' --config ' . escapeshellarg($tmpConf) . ' --dry-run --no-colors --format=pretty';
+            } else {
+                $cmd = $cwd . '/vendor/bin/behat --config ' . escapeshellarg($tmpConf) . ' --dry-run --no-colors --format=pretty';
+            }
+
+            $output = '';
+            // Exit code 0 = all steps defined and dry-run passed.
+            // Exit code 1 = some steps undefined — not a fatal error, ignore.
+            // Any other exit code = real parser/bootstrap failure.
+            foreach (CliCommandRunner::runCliCommand($cmd, [], 30, $cwd, true, [0, 1]) as $chunk) {
+                $output .= $chunk;
+            }
+
+            // Even with exit codes 0/1, Behat may print a parse error in the output.
+            // Detect the canonical Gherkin parse error marker.
+            if (stripos($output, 'ParseException') !== false
+                || stripos($output, 'Lexer Exception') !== false
+                || stripos($output, 'SyntaxException') !== false
+            ) {
+                return $this->extractDryRunError($output);
+            }
+
+            return null;
+        } catch (\Throwable $e) {
+            // If the dry-run process itself fails (e.g. Behat binary not found or
+            // timeout), re-throw so the save is blocked — we cannot confirm the file
+            // is valid if the dry-run could not run at all.
+            throw new RuntimeException(
+                'Feature file dry-run could not be executed: ' . $e->getMessage(),
+                null,
+                $e
+            );
+        } finally {
+            // Always clean up the temp file, regardless of success or failure.
+            if (file_exists($tmpFile)) {
+                @unlink($tmpFile);
+            }
+            if (file_exists($tmpConf)) {
+                @unlink($tmpConf);
+            }
+        }
+    }
+
+    /**
+     * Extracts a concise error message from raw Behat dry-run output.
+     *
+     * Behat prints verbose stack traces that are not useful to the end user.
+     * This method strips everything after the first blank line following the
+     * error headline so only the human-readable part is returned.
+     *
+     * @param string $output Raw output from the Behat dry-run process.
+     * @return string Trimmed error message suitable for display.
+     */
+    private function extractDryRunError(string $output): string
+    {
+        $lines  = explode("\n", $output);
+        $result = [];
+        $found  = false;
+
+        foreach ($lines as $line) {
+            // Start collecting from the first line that mentions an exception.
+            if (! $found && (stripos($line, 'Exception') !== false || stripos($line, 'Error') !== false)) {
+                $found = true;
+            }
+            if (! $found) {
+                continue;
+            }
+            // Stop at the first blank line after the error — everything after is stack trace.
+            if ($found && trim($line) === '') {
+                break;
+            }
+            $result[] = trim($line);
+        }
+
+        return $result !== [] ? implode("\n", $result) : trim($output);
     }
 
     /**
