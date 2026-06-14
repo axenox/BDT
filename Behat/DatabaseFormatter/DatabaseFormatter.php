@@ -184,7 +184,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                 return;
             }
 
-            $ds = $this->getRun($this->runDataSheet->getUidColumn()->getValue(0))->extractSystemColumns();
+            $ds = $this->runDataSheet;
             $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
             $ds->setCellValue('duration_ms', 0,$this->microtime() - $this->runStart);
             $ds->dataUpdate();
@@ -207,12 +207,12 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
      */
     public function onBeforeSuite(BeforeSuiteTested $event): void
     {
-        if (!($this->isDryRun || $this->runDataSheet == null) && $this->expectedResultsCalculated) {
+        if ($this->isDryRun === true || $this->runDataSheet === null || $this->expectedResultsCalculated === true) {
             return;
         }
         try {
             [$expectedFeatures, $expectedScenarios] = $this->calculateExpectedTotals();
-            $ds = $this->getRun($this->runDataSheet->getUidColumn()->getValue(0))->extractSystemColumns();
+            $ds = $this->runDataSheet;
             // Expected scope is written here - not per suite - so the run row receives exactly
             // one update after creation, avoiding the TimeStampingBehavior optimistic-locking
             // conflict. Totals were accumulated across all suites in onBeforeSuite().
@@ -859,6 +859,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         }
         try{
             $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run');
+            $ds->getColumns()->addFromSystemAttributes();
             $ds->addRow([
                 'started_on' => DateTimeDataType::now(),
                 'behat_command' => $command
@@ -970,15 +971,5 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             }
         }
         return null;
-    }
-    
-    private function getRun(string $uid)
-    {
-        $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run');
-        $uidAlias = $ds->getMetaObject()->getUidAttributeAlias();
-        $ds->getColumns()->addFromExpression($uidAlias);
-        $ds->getFilters()->addConditionFromString($uidAlias, $uid, ComparatorDataType::EQUALS);
-        $ds->dataRead();
-        return $ds;
     }
 }
