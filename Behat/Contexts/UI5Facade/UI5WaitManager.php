@@ -240,7 +240,17 @@ class UI5WaitManager
             // The interceptor installed in prepareBeforeStep() belongs to the previous
             // page's JS context and is lost on navigation — we must reinstall here.
             $this->installHttpInterceptor();
-
+            // Fail fast on server error pages: if the navigation landed on a
+            // plain HTML error page (e.g. "No route can be found"), there is no
+            // point waiting 30 s for a UI5 framework that will never appear.
+            // Throwing here puts the REAL server error into the step record.
+            $errorText = $this->detectServerErrorPage();
+            if ($errorText !== null) {
+                throw new RuntimeException(
+                    'Server returned an error page instead of the UI5 application: ' . $errorText
+                );
+            }
+            
             // Wait for UI5 framework to initialize
             if (!$this->waitForUI5Framework()) {
                 throw new Exception("UI5 framework failed to load");
@@ -976,5 +986,54 @@ JS
                 ['Source' => 'UI5WaitManager', 'Type' => $error['type'], 'Details' => $error['details']]
             );
         }
+    }
+    
+    /**
+     * Detects whether the currently loaded document is a server-side error page
+     * instead of a real UI5 application page.
+     *
+     * Why this exists: top-level navigation responses (e.g. HTTP 400 from
+     * FacadeResolverMiddleware when a page alias does not exist) bypass the
+     * XHR/fetch interceptor entirely — the only client-side symptom is that the
+     * UI5 framework never appears. Without this check, waitForUI5Framework()
+     * burns its full timeout and throws a generic "UI5 framework failed to load",
+     * hiding the real cause ("No route can be found for URL ..."), which is then
+     * only visible in the server log. This check reads the actual error text from
+     * the document body and fails fast with the real message, so it ends up in
+     * the step record instead of a generic timeout.
+     *
+     * @return string|null The extracted error text if the page is an error page, null otherwise
+     */
+    private function detectServerErrorPage(): ?string
+    {
+        return $this->getSession()->evaluateScript(<<<'JS'
+(function () {
+    // A real UI5 app page always carries the UI5 bootstrap script.
+    // If it is present, this is not a plain server error page.
+    if (document.querySelector('script[src*="sap-ui-core"]') !== null) return null;
+    if (typeof sap !== 'undefined') return null;
+
+    var body = (document.body && (document.body.innerText || document.body.textContent) || '').trim();
+    if (!body) return null;
+
+    // Known server-side error markers rendered as plain HTML pages
+    var markers = [
+        /No route can be found for URL/i,
+        /please check system configuration option FACADES\.ROUTES/i,
+        /UI Page with alias .* not found/i,
+        /HttpBadRequestError/i,
+        /Fatal error/i,
+        /Internal Server Error/i
+    ];
+    for (var i = 0; i < markers.length; i++) {
+        if (markers[i].test(body)) {
+            // Return only the first lines — enough to identify the cause
+            return body.split('\n').slice(0, 5).join(' | ').substring(0, 500);
+        }
+    }
+    return null;
+})();
+JS
+        );
     }
 }
