@@ -47,7 +47,11 @@ class DatabaseFormatterExtension implements Extension
 
         $container->setDefinition('database_formatter.formatter', $definition);
 
-        $workbench = Workbench::startNewInstance();
+        // Start a new workbench for the test run formatter. Disable monitor to avoid flooding the DB with all the
+        // errors it registers. These errors are not relevant for system monitoring - they are test results!
+        $workbench = Workbench::startNewInstance([
+            'MONITOR.ENABLED' => false
+        ]);
         // $container is a Symfony DI container: https://symfony.com/doc/current/components/dependency_injection.html
         $container->set('database_formatter.workbench', $workbench);
     }
