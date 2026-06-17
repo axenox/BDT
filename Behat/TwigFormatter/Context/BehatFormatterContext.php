@@ -73,6 +73,12 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
      */
     public function captureScreenshot(): void
     {
+        // Guard: provider must be set by the initializer. If not, quietly skip screenshot
+        if (!isset($this->provider) || $this->provider === null) {
+            error_log('captureScreenshot skipped: no screenshot provider set');
+            return;
+        }
+
         $relativePath = 'data'
             . DIRECTORY_SEPARATOR . 'axenox'
             . DIRECTORY_SEPARATOR . 'BDT'
@@ -89,13 +95,20 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
         for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
             try {
                 $this->saveScreenshot($fileName, $dir);
-                $this->provider->setScreenshot($fileName, $relativePath);
-                $this->provider->setUrl($this->getSession()->getCurrentUrl());
+                // Try to set provider fields but catch any provider-related exceptions
+                try {
+                    $this->provider->setScreenshot($fileName, $relativePath);
+                    $this->provider->setUrl($this->getSession()->getCurrentUrl());
+                } catch (\Throwable $providerEx) {
+                    error_log('Failed to set screenshot info on provider: ' . $providerEx->getMessage());
+                }
                 return;
             } catch (\Throwable $e) {
+                // On final failure, log and swallow the exception so AfterStep hook does not kill Behat
                 if ($attempt === $maxAttempts) {
                     error_log('Screenshot failed after ' . $maxAttempts . ' attempts: ' . $e->getMessage());
-                    throw $e;
+                    // Also write to PHP error log for visibility; do NOT rethrow to avoid killing Behat
+                    return;
                 }
                 sleep(2);
             }
