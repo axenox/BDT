@@ -53,7 +53,8 @@ class FeatureFileValidator
             self::checkDuplicateTags($lines),
             self::checkStepsAfterExamples($lines),
             self::checkUnclosedQuotesInTableCells($lines),
-            self::checkTableRowClosingPipe($lines)
+            self::checkTableRowClosingPipe($lines),
+            self::checkExamplesRequireOutline($lines)
         );
 
         return new FeatureValidationResult($errors);
@@ -699,5 +700,92 @@ class FeatureFileValidator
         $cells = explode('|', $inner);
         // Filter out empty strings produced by trailing separators
         return count(array_filter($cells, fn($c) => trim($c) !== ''));
+    }
+
+    /**
+     * Checks that every scenario containing an Examples block is declared as a
+     * "Scenario Outline:" (or "Scenario Template:"), not a plain "Scenario:".
+     *
+     * An Examples table only has meaning under a Scenario Outline, where each row is
+     * substituted into the <placeholders> of the steps. Written under a plain "Scenario:"
+     * the parser performs no substitution: the <placeholders> stay literal and the Examples
+     * rows are dead weight, so the scenario silently does the wrong thing at runtime.
+     *
+     * Why catch it at the header instead of relying on checkStepsAfterExamples(): the wrong
+     * header is the root cause. Reporting "this must be a Scenario Outline" points the author
+     * straight at the fix, whereas a downstream "step after Examples" message only describes a
+     * symptom — and this also catches mis-declared outlines that have no trailing steps at all
+     * and would otherwise pass unnoticed.
+     *
+     * @param string[] $lines
+     * @return string[]
+     */
+    private static function checkExamplesRequireOutline(array $lines): array
+    {
+        $errors          = [];
+        $inDocString     = false;
+        $inScenarioBlock = false;
+        $isOutline       = false;
+        $scenarioLine    = null;
+
+        foreach ($lines as $i => $line) {
+            $trimmed = trim($line);
+
+            // DocString boundaries (""") toggle raw-text mode where nothing is parsed.
+            if (str_starts_with($trimmed, '"""')) {
+                $inDocString = !$inDocString;
+                continue;
+            }
+            if ($inDocString) {
+                continue;
+            }
+
+            // Blank lines and full-line comments never change parsing state.
+            if ($trimmed === '' || str_starts_with($trimmed, '#')) {
+                continue;
+            }
+
+            // "Scenario Outline:" / "Scenario Template:" — Examples is legal here.
+            if (preg_match('/^Scenario\s+(Outline|Template):/i', $trimmed)) {
+                $inScenarioBlock = true;
+                $isOutline       = true;
+                $scenarioLine    = $i + 1;
+                continue;
+            }
+
+            // Plain "Scenario:" — Examples is NOT legal here.
+            if (preg_match('/^Scenario:/i', $trimmed)) {
+                $inScenarioBlock = true;
+                $isOutline       = false;
+                $scenarioLine    = $i + 1;
+                continue;
+            }
+
+            // Feature/Background/Rule headers close the current scenario context.
+            if (preg_match('/^(Feature|Background|Rule):/i', $trimmed)) {
+                $inScenarioBlock = false;
+                $isOutline       = false;
+                $scenarioLine    = null;
+                continue;
+            }
+
+            // The actual rule: an Examples block must sit under a Scenario Outline.
+            if (preg_match('/^Examples:/i', $trimmed)) {
+                if (!$inScenarioBlock) {
+                    $errors[] = 'Line ' . ($i + 1) . ': Examples block found outside any '
+                        . 'scenario. An Examples table must belong to a Scenario Outline.';
+                } elseif (!$isOutline) {
+                    $errors[] = 'Line ' . ($i + 1) . ': Examples block under a plain '
+                        . '"Scenario:" (header at line ' . $scenarioLine . '). A scenario that '
+                        . 'uses an Examples table must be declared as "Scenario Outline:".';
+                    // Treat the rest of this block as an outline so a second Examples table
+                    // does not produce a duplicate root-cause error for the same scenario.
+                    $isOutline = true;
+                }
+                continue;
+            }
+        }
+
+        return $errors;
     }
 }
