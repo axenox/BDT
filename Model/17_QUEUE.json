@@ -59,7 +59,7 @@
         {
             "_EXPORT_SUMMARY": "Behat tasks",
             "CREATED_ON": "2025-08-14 11:47:14",
-            "MODIFIED_ON": "2025-09-15 12:57:49",
+            "MODIFIED_ON": "2026-06-18 07:42:42",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f0b189a8acf06ab189025041000001",
@@ -69,6 +69,7 @@
             "ALIAS": "BEHAT_TASKS",
             "ALLOW_MULTI_QUEUE_HANDLING": 0,
             "CONFIG_UXON": {
+                "output_folder": "/data/axenox/BDT/Logs",
                 "topics": {
                     "all_of": [
                         "behat"
