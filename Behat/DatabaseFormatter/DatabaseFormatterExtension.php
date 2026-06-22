@@ -29,6 +29,7 @@ class DatabaseFormatterExtension implements Extension
             ->scalarNode('user_data_dir')->defaultNull()->end()
             ->end()
             ->end()
+            ->scalarNode('run_uid')->defaultNull()->end()
             ->end();
     }
 
@@ -40,7 +41,8 @@ class DatabaseFormatterExtension implements Extension
             new Reference('screenshot.provider'),
             new Reference(EventDispatcherExtension::DISPATCHER_ID),
             new Reference('suite.registry'),
-            $config['chrome'] ?? []
+            $config['chrome'] ?? [],
+            $config['run_uid'] ?? null
         ]);
 
         $definition->addTag('output.formatter');
