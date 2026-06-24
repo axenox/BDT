@@ -50,6 +50,7 @@ final class ExpectedTestCountCalculator
         $scenarios = 0;
         $scanned = [];
         $errors = [];
+        $matchedFiles = [];
 
         // Build the tag filter once and reuse it for every feature.
         $tagFilter = ($tagExpression !== null && trim($tagExpression) !== '')
@@ -84,12 +85,14 @@ final class ExpectedTestCountCalculator
             }
 
             $features++;
-            // getScenarios() returns each outline as a single node, which is what we want:
-            // DatabaseFormatter records one run_scenario per outline, not one per example row.
+            // Record the path of every feature that survived the tag filter. The count alone
+            // is enough for silent-stop detection (DatabaseFormatter's use), but the parallel
+            // coordinator needs the actual file list to split work across workers.
+            $matchedFiles[] = $file;
             $scenarios += count($feature->getScenarios());
         }
 
-        return new ExpectedTestCountResult($features, $scenarios, $scanned, $errors);
+        return new ExpectedTestCountResult($features, $scenarios, $scanned, $errors, $matchedFiles);
     }
 
     /**
