@@ -2,6 +2,7 @@
 namespace axenox\BDT\Behat\DatabaseFormatter;
 
 use axenox\BDT\Behat\Common\ExpectedTestCountCalculator;
+use axenox\BDT\Behat\Common\RunRecordWriter;
 use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
 use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
 use axenox\BDT\Behat\Events\AfterPageVisited;
@@ -96,8 +97,15 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     // Do not create a run record for dry-run executions.
     // Dry-run is used as a pre-flight syntax check and must not pollute the test results DB.
     private bool $isDryRun = false;
+    
+    /**
+     * When non-null, the formatter is running in attach-mode and must bind to the
+     * provided run UID without creating or updating the run row itself.
+     * @var string|null
+     */
+    private ?string $injectedRunUid = null;
 
-    public function __construct(WorkbenchInterface $workbench, ScreenshotProviderInterface $provider, EventDispatcherInterface $eventDispatcher, SuiteRegistry $suiteRegistry, array $chromeConfig = [])
+    public function __construct(WorkbenchInterface $workbench, ScreenshotProviderInterface $provider, EventDispatcherInterface $eventDispatcher, SuiteRegistry $suiteRegistry, array $chromeConfig = [], ?string $runUid = null)
     {
         self::$eventDispatcher = $eventDispatcher;
         $this->workbench = $workbench;
@@ -107,7 +115,32 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         if (!$this->isDryRun) {
             ChromeManager::getInstance($this)
                 ->configure($chromeConfig);
-            $this->startRun();
+            // If a run UID was injected via config, operate in attach-mode: bind to the existing
+            // run row and avoid creating/updating the run record. Otherwise perform the normal
+            // startRun flow which creates the run row and registers the finalizer.
+            if (!empty($runUid)) {
+                $this->injectedRunUid = $runUid;
+                try {
+                    $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run');
+                    $ds->getColumns()->addFromSystemAttributes();
+                    $ds->getFilters()->addConditionFromString('UID', $runUid, ComparatorDataType::EQUALS);
+                    $ds->dataRead();
+                    if ($ds->countRows() === 0) {
+                        throw new RuntimeException('Attached run UID ' . $runUid . ' not found');
+                    }
+                    $this->runDataSheet = $ds;
+                    $this->registerMetrics();
+                    // Still register the shutdown handler, but the handler will avoid touching the run row
+                    // when in attach-mode.
+                    register_shutdown_function(function () {
+                        $this->onShutdown();
+                    });
+                } catch (\Throwable $e) {
+                    ErrorManager::getInstance()->logException($e, $this->workbench);
+                }
+            } else {
+                $this->startRun();
+            }
         }
     }
 
@@ -180,20 +213,19 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     public function onAfterExercise(): void
     {
         try{
-            if ($this->isDryRun || $this->runDataSheet === null) {
+            // When running in attach-mode (a coordinator provides the run UID), workers must
+            // not modify the run row at all. Only non-attached runs (the current single-process
+            // ownership flow) should write finished_on and duration_ms.
+            if ($this->isDryRun || $this->runDataSheet === null || $this->injectedRunUid !== null) {
                 return;
             }
-
-            $ds = $this->runDataSheet;
-            $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
-            $ds->setCellValue('duration_ms', 0,$this->microtime() - $this->runStart);
-            $ds->dataUpdate();
+            (new RunRecordWriter())->finalize($this->runDataSheet);            
 
             // Mark as finished so that onShutdown() does not call this method a second time
             $this->exerciseFinished = true;
         }
         catch(\Throwable $e){
-            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+            ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
 
@@ -207,21 +239,21 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
      */
     public function onBeforeSuite(BeforeSuiteTested $event): void
     {
-        if ($this->isDryRun === true || $this->runDataSheet === null || $this->expectedResultsCalculated === true) {
+        // In attach-mode (injectedRunUid set) the coordinator already computed and wrote the
+        // expected counts onto the run row exactly once. Workers must never touch the run row,
+        // both because ownership belongs to the coordinator and because concurrent dataUpdate()
+        // calls from multiple workers on the same row would trigger optimistic-locking conflicts.
+        if ($this->isDryRun === true || $this->runDataSheet === null || $this->expectedResultsCalculated === true|| $this->injectedRunUid !== null) {
             return;
         }
         try {
             [$expectedFeatures, $expectedScenarios] = $this->calculateExpectedTotals();
-            $ds = $this->runDataSheet;
-            // Expected scope is written here - not per suite - so the run row receives exactly
-            // one update after creation, avoiding the TimeStampingBehavior optimistic-locking
-            // conflict. Totals were accumulated across all suites in onBeforeSuite().
-            $ds->setCellValue('expected_feature_count', 0, $expectedFeatures);
-            $ds->setCellValue('expected_scenario_count', 0, $expectedScenarios);
-            $ds->dataUpdate();
+            if ($expectedFeatures !== null) {
+                (new RunRecordWriter())->setExpectedCounts($this->runDataSheet, $expectedFeatures, $expectedScenarios);
+            }
             $this->expectedResultsCalculated = true;
         } catch (\Throwable $e) {
-            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+            ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
 
@@ -252,7 +284,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             }
         }
         catch(\Exception $e){
-            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+            ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
 
@@ -285,7 +317,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $this->featureDataSheet = $ds;
         }
         catch(\Exception $e){
-            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+            ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
 
@@ -303,7 +335,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $this->featureDataSheet = null;
         }
         catch(\Exception $e){
-            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+            ErrorManager::getInstance()->logException($e, $this->workbench);
         } finally {
             // Clear so the next feature starts with a clean history
             ChromeManager::getInstance()->clearStartHistory();
@@ -331,7 +363,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $this->scenarioDataSheet = $ds;
         }
         catch(\Exception $e){
-            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+            ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
 
@@ -356,7 +388,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $this->scenarioDataSheet = $ds;
         }
         catch(\Exception $e){
-            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+            ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
 
@@ -393,7 +425,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             }
         }
         catch(\Exception $e){
-            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+            ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
 
@@ -413,7 +445,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $this->stepDataSheet = $ds;
             $this->provider->setName($ds->getUidColumn()->getValue(0));
         } catch (\Throwable $e) {
-            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+            ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
 
@@ -447,7 +479,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $this->substepDataSheets = [];
             $this->substepStarts = [];
         } catch (\Throwable $e) {
-            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+            ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
 
@@ -472,7 +504,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $this->provider->setName($ds->getUidColumn()->getValue(0));
         }
         catch(\Exception $e){
-            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+            ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
 
@@ -490,7 +522,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             array_pop($this->substepStarts);
         }
         catch(\Exception $e){
-            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+            ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
 
@@ -827,9 +859,8 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                 $error['file'],
                 $error['line']
             );
-            ErrorManager::getInstance()->logExceptionWithId(
+            ErrorManager::getInstance()->logException(
                 new RuntimeException($message),
-                'DatabaseFormatter::onShutdown',
                 $this->workbench
             );
         }
@@ -848,8 +879,6 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             return;
         }
 
-        $this->runStart = $this->microtime();
-
         $cliArgs = $_SERVER['argv'] ?? [];
         $command = null;
         if (! empty($cliArgs)) {
@@ -858,19 +887,13 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $command = implode(' ', $cliArgs);
         }
         try{
-            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run');
-            $ds->getColumns()->addFromSystemAttributes();
-            $ds->addRow([
-                'started_on' => DateTimeDataType::now(),
-                'behat_command' => $command
-            ]);
-            $ds->dataCreate(false);
-            $this->runDataSheet = $ds;
-
+            // Run-row creation is shared with the coordinator's RunLifecycle via RunRecordWriter,
+            // so the run schema stays controlled from one place.
+            $this->runDataSheet = (new RunRecordWriter())->create($this->workbench, $command);
             $this->registerMetrics();
         }
-        catch(\Exception $e){
-            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+        catch(\Throwable $e){
+            ErrorManager::getInstance()->logException($e, $this->workbench);
         }
         // Register a shutdown function so that finished_on is always written,
         // even if Behat crashes with a fatal error or an uncaught exception.
@@ -926,7 +949,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             return [$features, $scenarios];
         } catch (\Throwable $e) {
             // Never let scope estimation block run creation; leave the counts NULL instead.
-            ErrorManager::getInstance()->logExceptionWithId($e, 'DatabaseFormatter', $this->workbench);
+            ErrorManager::getInstance()->logException($e, $this->workbench);
             return [null, null];
         }
     }
