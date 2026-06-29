@@ -14,6 +14,7 @@ use exface\Core\Interfaces\DataSheets\DataSheetInterface;
 use exface\Core\Interfaces\DataSources\DataTransactionInterface;
 use exface\Core\Interfaces\Tasks\ResultInterface;
 use exface\Core\Interfaces\Tasks\TaskInterface;
+use Symfony\Component\Yaml\Yaml;
 
 /**
  * Coordinator action for parallel BDT test execution.
@@ -43,15 +44,22 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
 
     private const DEFAULT_TAGS = '@Status::Ready';
 
-    // Phase 3 uses a single fixed port from the nightly band. Free-port discovery within a
-    // band is a Phase 4 concern (multiple workers competing for ports); a single worker has
-    // no contender, so a constant keeps Phase 3 minimal and deterministic.
-    private const PHASE3_FIXED_PORT = 9301;
-
-    // Wall-clock ceiling for the single worker. Even without parallelism we never want a hung
-    // Chrome/CDP session to block the coordinator forever; on timeout we kill the worker and
-    // finalize the run so it is never left open.
+    // Wall-clock ceiling per worker, used as the FALLBACK when PARALLEL.WORKER_TIMEOUT_SECONDS
+    // is not set in app config. We never use runCliCommand's 60s default - a Behat run needs far
+    // longer. Symfony Process enforces this per worker and throws on exceedance; that throw is
+    // caught per-lane in the drain phase, so a hung worker is a recorded failure, not a stall.
     private const WORKER_TIMEOUT_SECONDS = 1800;
+
+    // App-config keys for the parallel orchestration layer. Kept as constants so the reads in
+    // resolvePortBand()/resolveMaxWorkers()/resolveWorkerTimeout() can never drift from config.
+    private const CFG_PORT_BAND  = 'PARALLEL.PORT_BAND_SCHEDULED';
+    private const CFG_MAX_WORKERS = 'PARALLEL.MAX_WORKERS';
+    private const CFG_WORKER_TIMEOUT = 'PARALLEL.WORKER_TIMEOUT_SECONDS';
+
+    // Per-project orchestration override. A SEPARATE file from behat.yml on purpose: behat.yml
+    // is worker config, this is coordinator config. Mixing them would let a worker accidentally
+    // read or break the band. Optional - absent means "use app-config defaults".
+    private const OVERRIDE_FILE = 'bdt_parallel.yml';
 
     // Meta object alias - identical to the one DatabaseFormatter writes to, so the
     // coordinator and the worker operate on the very same run row.
@@ -65,10 +73,12 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     private float $runStart = 0.0;
 
     /**
-     * Entry point. Drives the five-step lifecycle once, with a single worker.
+     * Entry point. Drives the run lifecycle once, fanning the matched features out to N workers.
      *
-     * The steps mirror exactly what was done by hand in Phase 1, now automated:
-     * create run -> compute expected scope -> write lane config -> run worker -> finalize.
+     * The Phase 3 lifecycle is preserved verbatim - create run -> compute expected scope over
+     * ALL features -> finalize exactly once. The only Phase 4 change is additive: instead of one
+     * worker, we split the matched features into buckets and run a fleet concurrently. The
+     * coordinator stays the sole writer of the run row; every worker attaches to the same UID.
      */
     protected function perform(TaskInterface $task, DataTransactionInterface $transaction): ResultInterface
     {
@@ -87,69 +97,77 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
 
         $cwd = $this->getWorkbench()->getInstallationPath();
 
-        // --- Step 1: open the run record (sole creator, so the worker can attach to its UID) ---
+        // --- Step 0: prepare the environment exactly like a single Behat run does ---
+        // Every non-parallel run is preceded by `Behat init`, which (re)creates the global
+        // behat.yml, registers app suites and - most importantly - refreshes base_url to the
+        // current workbench URL. Lanes never run init themselves, so a stale base_url would make
+        // every worker fail. Running it once up front keeps the parallel path equivalent.
+        $this->runInit($cwd);
+
+        // --- Step 1: open the run record (sole creator, so the workers can attach to its UID) ---
         $runUid = $this->createRunRow($tags);
 
         try {
-            // --- Step 2: compute the full expected scope up front ---
-            // Done here, not in the worker, because attach-mode workers skip this, and because
-            // the expected totals must reflect ALL matched features even if the worker dies
-            // partway through (otherwise silent-stop detection is impossible).
+            // --- Step 2: compute the full expected scope up front over ALL matched features ---
+            // Done here, not in the workers, because attach-mode workers skip this, and because
+            // the expected totals must reflect ALL matched features even if a worker dies partway
+            // through (otherwise silent-stop detection is impossible).
             $expected = (new \axenox\BDT\Behat\Common\ExpectedTestCountCalculator())
                 ->calculate([$featurePath], $tags);
 
             // A broken feature file aborts the whole Behat run at parse time, so surface the
-            // offenders now rather than letting the worker crash opaquely with exit code 255.
+            // offenders now rather than letting a worker crash opaquely with exit code 255.
             if ($expected->hasErrors()) {
                 throw new RuntimeException(
                     'Feature files failed to parse: ' . implode('; ', array_keys($expected->errors))
                 );
             }
 
-            // --- Step 3: persist the expected counts onto the run row ---
-            // ExpectedTestCountResult exposes public properties (no getters): featureCount /
-            // scenarioCount. We re-read the row fresh by UID before updating (see updateRunRow)
-            // to avoid the optimistic-locking ConcurrentWriteError caused by a stale modified_on.
+            // --- Step 3: persist the expected counts onto the run row (once, for the whole run) ---
             $this->updateRunRow($runUid, [
                 'expected_feature_count'  => $expected->featureCount,
                 'expected_scenario_count' => $expected->scenarioCount,
             ]);
 
-            // --- Step 4: generate the single lane config ---
-            // run_uid is written INTO the file (not an env var) because the team chose
-            // debuggability over env-var fragility - a developer can open the lane file and
-            // see exactly which run this worker attaches to.
-            $laneConfigPath = $this->writeLaneConfig(
-                $cwd,
-                1,
-                $runUid,
-                self::PHASE3_FIXED_PORT,
-                $chromePath
-            );
+            // --- Step 4: decide the fleet size. NO user pool exists - users are provisioned per
+            // role at run-time by UI5Browser::setupUser(), so the only ceiling is "do not start
+            // more workers than there are features to test". ---
+            $matchedFiles = $expected->matchedFiles;
+            $maxWorkers   = $this->resolveMaxWorkers();
+            $workerCount  = max(1, min($maxWorkers, count($matchedFiles)));
+            $buckets      = $this->bucketFeatures($matchedFiles, $workerCount);
 
-            // --- Step 5a: run the single worker synchronously ---
-            $this->runSingleWorker($cwd, $laneConfigPath, $tags, $featurePath);
+            // --- Step 5: run the fleet. Wrapped so a worker failure still reaches finalize. ---
+            $failures = $this->runFleet($cwd, $behatConfig, $runUid, $chromePath, $tags, $buckets);
 
         } catch (\Throwable $e) {
-            // Any coordinator-side failure must still close the run row, otherwise it stays
-            // open forever with no finished_on. Finalize, then re-throw so the CLI sees it.
+            // Any coordinator-side failure must still close the run row, otherwise it stays open
+            // forever with no finished_on. Finalize, then re-throw so the CLI sees it.
             $this->finalizeRunRow($runUid);
             throw new RuntimeException('Parallel run coordinator failed: ' . $e->getMessage(), null, $e);
         }
 
-        // --- Step 5b: finalize (finished_on + duration). Child-row outcomes already live in
-        // the DB, written by the worker in attach-mode; we only stamp the run as finished. ---
+        // --- Finalize exactly once, after all workers exit. Child-row outcomes already live in
+        // the DB, written by the workers in attach-mode; we only stamp the run as finished. ---
         $this->finalizeRunRow($runUid);
 
-        return ResultFactory::createMessageResult(
-            $task,
-            sprintf(
-                'Parallel run %s finished. Expected %d features / %d scenarios.',
-                $runUid,
-                $expected->featureCount,
-                $expected->scenarioCount
-            )
-        );
+        // The normal Behat flow was written to data/axenox/BDT/Logs/<run_uid>.log. The scheduled
+        // queue message stays terse: only worker errors are returned (with the log path to dig in);
+        // if every lane passed, just a short confirmation referencing the log.
+        $logPath = 'data/axenox/BDT/Logs/' . $runUid . '.log';
+        if (! empty($failures)) {
+            $lines = [];
+            foreach ($failures as $lane => $err) {
+                $lines[] = 'Lane ' . $lane . ': ' . $err;
+            }
+            $msg = sprintf('Parallel run %s finished with %d worker error(s):', $runUid, count($failures))
+                . "\n" . implode("\n", $lines)
+                . "\nSee full log: " . $logPath;
+        } else {
+            $msg = sprintf('Parallel run %s finished, no worker errors. See log: %s', $runUid, $logPath);
+        }
+
+        return ResultFactory::createMessageResult($task, $msg);
     }
 
     /**
@@ -294,20 +312,23 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         int $lane,
         string $runUid,
         int $port,
-        string $chromePath
+        string $chromePath,
+        string $importConfigName = 'behat.yml'
     ): string {
-        // Per-lane isolated profile dir. A distinct user_data_dir per worker is what lets
-        // multiple Chrome instances coexist; for a single Phase 3 worker it still must be a
-        // path Chrome can create and own.
+        // Per-lane unique identity passed DOWN to the worker. Two workers may run scenarios that
+        // resolve to the SAME role; setupUser() writes a shared USER_AUTHENTICATOR row, so without
+        // a per-lane suffix concurrent workers sharing a role collide on optimistic locking. We
+        // only GENERATE and PASS this lane_id - setupUser namespaces the provisioned user with it.
+        $laneId = $runUid . '_lane' . $lane;
+        // Per-lane isolated profile dir. A distinct user_data_dir per worker is what lets multiple
+        // Chrome instances coexist.
         //
         // IMPORTANT: ChromeManager::start() builds the final path as
         // getcwd() . DIRECTORY_SEPARATOR . <user_data_dir>, i.e. it expects a path RELATIVE
-        // to the installation root (exactly like BaseConfig.yml's "data\axenox\BDT\ChromeUserData").
-        // If we wrote an ABSOLUTE path here, ChromeManager would prepend getcwd() to it and
-        // produce a broken "C:\...\C:\..." path. Chrome would then silently fall back to the
-        // real user profile dir and show the "Who's using Chrome?" profile picker, hanging the
-        // run. So we write the RELATIVE path into the YAML and only use the absolute form to
-        // create the directory up front.
+        // to the installation root. An ABSOLUTE path would get getcwd() prepended a second time,
+        // produce a broken "C:\...\C:\..." path, and Chrome would fall back to the real default
+        // profile and show the "Who's using Chrome?" picker, hanging the lane. So we write the
+        // RELATIVE path into the YAML and only use the absolute form to create the directory.
         $userDataDirRelative = 'data' . DIRECTORY_SEPARATOR
             . 'axenox' . DIRECTORY_SEPARATOR
             . 'BDT' . DIRECTORY_SEPARATOR
@@ -316,15 +337,15 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             throw new RuntimeException('Could not create lane user_data_dir: ' . $userDataDirRelative);
         }
 
-        // Lane file uses a fixed name per band and is overwritten each run - durable truth
-        // lives in the DB, so we deliberately do not accumulate lane files.
+        // Lane file uses a per-lane name and is overwritten each run - durable truth lives in
+        // the DB, so we deliberately do not accumulate lane files.
         $laneConfigPath = $workingDir . DIRECTORY_SEPARATOR . 'behat_scheduled_lane' . $lane . '.yml';
 
         $extensionFqn = \axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatterExtension::class;
 
         $yaml = "# AUTO-GENERATED lane config - overwritten every run. Do not edit by hand.\n"
             . "imports:\n"
-            . "  - behat.yml\n"
+            . "  - " . $importConfigName . "\n"
             . "default:\n"
             . "  extensions:\n"
             . "    Behat\\MinkExtension:\n"
@@ -334,6 +355,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             . "            api_url: 'http://localhost:" . $port . "'\n"
             . "    \\" . $extensionFqn . ":\n"
             . "      run_uid: '" . $runUid . "'\n"
+            . "      lane_id: '" . $laneId . "'\n"
             . "      chrome:\n"
             . "        port: " . $port . "\n"
             . "        executable: '" . $this->yamlEscapeWindowsPath($chromePath) . "'\n"
@@ -358,38 +380,260 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Runs the single worker via the Core CLI runner and returns its collected output.
+     * Resolves the maximum worker count from app config.
      *
-     * Why CliCommandRunner instead of a hand-rolled proc_open: this is the same primitive
-     * CliTaskQueue uses to run nightly commands, so worker execution behaves identically to
-     * the existing path. It already (1) falls back from Symfony Process to exec() under IIS -
-     * exactly the IIS constraint this stack hits - and (2) understands Behat exit codes: we
-     * pass ignoredExitCodes=[1] so a normal "some tests failed" (exit 1) is NOT treated as a
-     * worker crash, while an internal Behat crash (exit 2) still surfaces as a hard failure.
-     *
-     * Why silent=false: we WANT exit code 2 to throw, so a genuinely broken worker propagates
-     * up to perform()'s catch, which finalizes the run instead of leaving it open.
-     *
-     * NOTE (Phase 4): runCliCommand() BLOCKS - its generator waits for the process to finish.
-     * That is correct for ONE worker, but calling it N times in a row runs workers
-     * SEQUENTIALLY, not in parallel. Phase 4 must manage a fleet of async processes itself
-     * (Symfony Process::start() + polling, gated by the same IIS detection), not loop this.
+     * Why config-driven: the sensible parallelism level depends on the host (CPU/RAM, number of
+     * Chrome instances it can host). Keeping it in app config lets ops tune it without code
+     * changes. There is deliberately NO user-pool ceiling - users are provisioned per role at
+     * run-time, so the real cap is simply this value vs. the number of features.
      */
-    private function runSingleWorker(string $cwd, string $laneConfigPath, string $tags, ?string $featurePath = null): string
+    private function resolveMaxWorkers(): int
     {
-        // Positional feature path overrides suite paths ("run only this") - this is how Phase 4
-        // hands each worker its bucket. Phase 3: optional. Omit to run the whole tag-filtered
-        // suite, or pass one feature to prove a single PASSED case. It must sit OUTSIDE --config.
+        $cfg = $this->getWorkbench()->getApp('axenox.BDT')->getConfig();
+        $max = (int) $cfg->getOption(self::CFG_MAX_WORKERS);
+        if ($max < 1) {
+            throw new RuntimeException(self::CFG_MAX_WORKERS . ' must be >= 1, got ' . $max);
+        }
+        return $max;
+    }
+
+    /**
+     * Resolves the [start, end] port band, preferring a per-project override file.
+     *
+     * Why a SEPARATE override file (bdt_parallel.yml) instead of a key in behat.yml: behat.yml is
+     * worker config, the band is orchestration config. Mixing them risks a worker breaking the
+     * band or vice versa. The band is only a SEARCH WINDOW - real collision-safety comes from the
+     * runtime free-port probe (allocateFreePort), so two projects with overlapping bands still
+     * never clash. A malformed override does not silently guess: it fails loudly.
+     *
+     * @return int[] [startPort, endPort]
+     */
+    private function resolvePortBand(string $behatConfig): array
+    {
+        $overridePath = dirname($behatConfig) . DIRECTORY_SEPARATOR . self::OVERRIDE_FILE;
+        if (is_file($overridePath)) {
+            $parsed = Yaml::parseFile($overridePath);
+            $band = $parsed['port_band'] ?? null;
+            if (! is_string($band) || ! preg_match('/^\d+-\d+$/', $band)) {
+                throw new RuntimeException(
+                    'Malformed ' . self::OVERRIDE_FILE . ': "port_band" must be like "9301-9400", got ' . var_export($band, true)
+                );
+            }
+        } else {
+            // Explicit log line rather than a silent guess, so the source of the band is traceable.
+            $this->getWorkbench()->getLogger()->info('No ' . self::OVERRIDE_FILE . ' override; using app-config port band');
+            $band = (string) $this->getWorkbench()->getApp('axenox.BDT')->getConfig()->getOption(self::CFG_PORT_BAND);
+        }
+        [$start, $end] = array_map('intval', explode('-', $band));
+        if ($end < $start) {
+            throw new RuntimeException('Invalid port band ' . $band);
+        }
+        return [$start, $end];
+    }
+
+    /**
+     * Splits matched feature files into N disjoint buckets covering ALL of them.
+     *
+     * Round-robin so file size/scenario count is spread roughly evenly across lanes instead of
+     * front-loading the first worker. Together the buckets cover every matched feature exactly
+     * once, so the expected counts (computed over all features) stay consistent with what runs.
+     *
+     * @param string[] $files
+     * @return string[][]
+     */
+    private function bucketFeatures(array $files, int $workerCount): array
+    {
+        $buckets = array_fill(0, $workerCount, []);
+        foreach (array_values($files) as $i => $file) {
+            $buckets[$i % $workerCount][] = $file;
+        }
+        return $buckets;
+    }
+
+    /**
+     * Allocates the first currently-free port in the band via a probe, skipping already-held ones.
+     *
+     * Why probe instead of just reserving: the band is shared across projects, so a statically
+     * assigned port can already be taken. fsockopen with a short timeout tells us if a port is
+     * busy (open socket = busy, refused = free). The caller verifies the bind after Chrome starts
+     * and reallocates on failure, handling the probe->bind race.
+     *
+     * @param int[] $held Ports already assigned to other lanes in this run
+     */
+    private function allocateFreePort(int $start, int $end, array $held): int
+    {
+        for ($port = $start; $port <= $end; $port++) {
+            if (in_array($port, $held, true)) {
+                continue;
+            }
+            if (! $this->isPortBound($port)) {
+                return $port;
+            }
+        }
+        throw new RuntimeException('Port band ' . $start . '-' . $end . ' exhausted - no free port for the next worker');
+    }
+
+    /**
+     * Builds the Behat worker command: lane config + tags, with the bucket as positional args.
+     *
+     * Positional feature paths go OUTSIDE --config so Behat runs exactly that bucket. The lane
+     * config carries run_uid + lane_id + Chrome port, so configuration flows only through the
+     * generated YAML - no BEHAT_PARAMS overrides.
+     *
+     * @param string[] $bucket
+     */
+    private function buildWorkerCommand(string $laneConfigPath, string $tags, array $bucket): string
+    {
         $cmd = sprintf('vendor\\bin\\behat --config "%s" --tags="%s"', $laneConfigPath, $tags);
-        if ($featurePath !== null && $featurePath !== '') {
-            $cmd .= ' "' . $featurePath . '"';
+        foreach ($bucket as $feature) {
+            $cmd .= ' "' . $feature . '"';
+        }
+        return $cmd;
+    }
+
+    /**
+     * Runs the standard Behat "init" once before the fleet, mirroring a single-process run.
+     *
+     * A normal run is always preceded by `Behat init`, which recreates the global behat.yml,
+     * registers app suites and refreshes base_url to the live workbench URL. Lanes never init
+     * themselves, so without this a stale base_url breaks every worker. We reuse the existing
+     * action verbatim through the CLI runner (blocking, single shot) instead of duplicating its
+     * logic, so the parallel path stays equivalent to the sequential one. silent=false so a real
+     * init failure throws and the coordinator finalizes/aborts instead of running on a bad config.
+     */
+    private function runInit(string $cwd): void
+    {
+        $output = '';
+        foreach (CliCommandRunner::runCliCommand('vendor\\bin\\action axenox.BDT:Behat init', [], 300.0, $cwd, false) as $chunk) {
+            $output .= $chunk; // drain so init completes before workers start; output is informational
+        }
+        $this->getWorkbench()->getLogger()->info('BDT parallel: Behat init done');
+    }
+
+    /**
+     * Resolves the per-worker wall-clock timeout from app config, falling back to the constant.
+     *
+     * Why never the runCliCommand 60s default: a Behat lane runs minutes, not seconds. Symfony
+     * Process enforces this timeout per worker and throws on exceedance; that throw is caught in
+     * the per-lane drain, so a hung worker is recorded as a failure without blocking the others.
+     */
+    private function resolveWorkerTimeout(): float
+    {
+        $cfg = $this->getWorkbench()->getApp('axenox.BDT')->getConfig();
+        return (float) ($cfg->getOption(self::CFG_WORKER_TIMEOUT) ?: self::WORKER_TIMEOUT_SECONDS);
+    }
+
+    /**
+     * Launches the whole fleet concurrently via CliCommandRunner, then drains every lane.
+     *
+     * The verified runtime is CLI with no SERVER_SOFTWARE, so canUseSymfonyProcess() is TRUE and
+     * the IIS exec() branch never applies - there is exactly ONE spawn path. We exploit that on
+     * the Symfony branch runCliCommand() calls Process::start() BEFORE returning its generator:
+     * launching all lanes (Phase A) gets N workers running in parallel, and iterating each
+     * generator (Phase B) only waits, so wall-clock is ~max(worker), not sum(worker). silent=false
+     * + ignoredExitCodes=[1] means a normal "some tests failed" (exit 1) is fine, while a crash
+     * (exit 2) or timeout throws during drain - caught per lane so one failure cannot abort the
+     * others or skip finalize. $failures is coordinator-side logging only; run status lives in the
+     * attach-mode child rows.
+     *
+     * @param string[][] $buckets
+     * @return array<int,string> Worker failures keyed by lane; only these reach the queue message
+     * @throws \Throwable
+     */
+    private function runFleet(string $cwd, string $behatConfig, string $runUid, string $chromePath, string $tags, array $buckets): array
+    {
+        [$portStart, $portEnd] = $this->resolvePortBand($behatConfig);
+        $timeout = $this->resolveWorkerTimeout();
+        $heldPorts = [];
+        // Import the base config by its real filename (e.g. "Behat.yml"), so the lane import
+        // matches the actual file even on case-sensitive systems instead of assuming "behat.yml".
+        $importConfigName = basename($behatConfig);
+
+        // The normal Behat stream is verbose; instead of returning it to the scheduled queue we
+        // write it to one file per run named by run_uid under data/axenox/BDT/Logs. The queue gets
+        // only error messages (see perform()), the full flow stays inspectable on disk.
+        $logFile = $this->openRunLog($cwd, $runUid);
+
+        // Phase A - launch: each runCliCommand() starts its worker and returns a generator without
+        // blocking, so all lanes run concurrently. Each lane gets a runtime-free port + lane config.
+        $streams = [];
+        foreach ($buckets as $idx => $bucket) {
+            $lane = $idx + 1;
+            $port = $this->allocateFreePort($portStart, $portEnd, $heldPorts);
+            $heldPorts[] = $port;
+            $laneConfig = $this->writeLaneConfig($cwd, $lane, $runUid, $port, $chromePath, $importConfigName);
+            $cmd = $this->buildWorkerCommand($laneConfig, $tags, $bucket);
+            $streams[$lane] = CliCommandRunner::runCliCommand($cmd, [], $timeout, $cwd, false, [1]);
         }
 
-        $output = '';
-        foreach (CliCommandRunner::runCliCommand($cmd, [], (float) self::WORKER_TIMEOUT_SECONDS, $cwd, false, [1]) as $chunk) {
-            $output .= $chunk;
+        // Phase B - drain: iterating is where the wait happens, but processes already run in
+        // parallel. Each drain is wrapped so one lane's exit-2 crash or timeout is recorded WITHOUT
+        // aborting the others; finalize still runs once afterwards (no orphaned open run).
+        $failures = [];
+        foreach ($streams as $lane => $stream) {
+            $this->writeRunLog($logFile, '===== Lane ' . $lane . ' =====');
+            try {
+                foreach ($stream as $chunk) {
+                    $this->writeRunLog($logFile, $chunk); // normal flow goes to the log, not the queue
+                }
+            } catch (\Throwable $e) {
+                $failures[$lane] = $e->getMessage();
+                $this->writeRunLog($logFile, 'LANE ' . $lane . ' FAILED: ' . $e->getMessage());
+                $this->getWorkbench()->getLogger()->error('BDT parallel worker lane ' . $lane . ' failed: ' . $e->getMessage());
+            }
         }
-        return $output;
+
+        if (is_resource($logFile)) {
+            fclose($logFile);
+        }
+        return $failures;
+    }
+
+    /**
+     * Opens (creating the dir) data/axenox/BDT/Logs/<run_uid>.log for append.
+     *
+     * One file per run keeps every lane's normal Behat output together and findable by UID. Append
+     * mode tolerates re-runs without truncating earlier diagnostics.
+     *
+     * @return resource
+     */
+    private function openRunLog(string $cwd, string $runUid)
+    {
+        $dir = $cwd . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR
+            . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR . 'Logs';
+        if (! is_dir($dir) && ! @mkdir($dir, 0777, true) && ! is_dir($dir)) {
+            throw new RuntimeException('Could not create BDT log directory: ' . $dir);
+        }
+        $handle = @fopen($dir . DIRECTORY_SEPARATOR . $runUid . '.log', 'a');
+        if ($handle === false) {
+            throw new RuntimeException('Could not open run log file for run ' . $runUid);
+        }
+        return $handle;
+    }
+
+    /**
+     * Appends a line if the handle is open; ignores write failures so logging never breaks the fleet.
+     *
+     * @param resource $handle
+     */
+    private function writeRunLog($handle, string $text): void
+    {
+        if (is_resource($handle)) {
+            @fwrite($handle, $text . PHP_EOL);
+        }
+    }
+
+    /**
+     * Returns TRUE if something is listening on the port (closed socket connects = busy).
+     */
+    private function isPortBound(int $port): bool
+    {
+        $sock = @fsockopen('127.0.0.1', $port, $errno, $errstr, 0.2);
+        if ($sock !== false) {
+            fclose($sock);
+            return true;
+        }
+        return false;
     }
 
     /**
