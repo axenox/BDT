@@ -105,16 +105,26 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
      */
     private ?string $injectedRunUid = null;
 
-    public function __construct(WorkbenchInterface $workbench, ScreenshotProviderInterface $provider, EventDispatcherInterface $eventDispatcher, SuiteRegistry $suiteRegistry, array $chromeConfig = [], ?string $runUid = null)
+    /**
+     * Per-lane identifier injected via config in parallel runs (e.g. "<run_uid>_lane2").
+     *
+     * Kept static so {@see UI5Browser::setupUser()} can read it without a formatter reference and
+     * namespace the provisioned test user per lane. This prevents two concurrent workers that
+     * resolve to the same role from colliding on the shared user row (optimistic locking).
+     */
+    private static ?string $laneId = null;
+
+    public function __construct(WorkbenchInterface $workbench, ScreenshotProviderInterface $provider, EventDispatcherInterface $eventDispatcher, SuiteRegistry $suiteRegistry, array $chromeConfig = [], ?string $runUid = null, ?string $laneId = null)
     {
         self::$eventDispatcher = $eventDispatcher;
+        self::$laneId = $laneId;
         $this->workbench = $workbench;
         $this->provider = $provider;
         $this->suiteRegistry = $suiteRegistry;
         $this->isDryRun = in_array('--dry-run', $_SERVER['argv'] ?? [], true);
         if (!$this->isDryRun) {
             ChromeManager::getInstance($this)
-                ->configure($chromeConfig);
+                ->configure($chromeConfig);            
             // If a run UID was injected via config, operate in attach-mode: bind to the existing
             // run row and avoid creating/updating the run record. Otherwise perform the normal
             // startRun flow which creates the run row and registers the finalizer.
@@ -686,6 +696,17 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     public static function getEventDispatcher(): EventDispatcherInterface
     {
         return self::$eventDispatcher;
+    }
+
+    /**
+     * Returns the per-lane id injected in parallel runs, or null in a normal single run.
+     *
+     * setupUser() uses this to namespace the test user per lane so concurrent workers sharing a
+     * role do not collide on the shared user row.
+     */
+    public static function getLaneId(): ?string
+    {
+        return self::$laneId;
     }
 
     protected function registerMetrics() : array
