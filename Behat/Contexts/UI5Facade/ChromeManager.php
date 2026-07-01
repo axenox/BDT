@@ -74,6 +74,8 @@ class ChromeManager
 
     /** @var array[] Log of every start() call; cleared by DatabaseFormatter after each feature is written */
     private array $startHistory = [];
+    /** App-config key deciding Chrome window visibility; see resolveHeadless(). */
+    private const CFG_CHROME_HEADLESS = 'PARALLEL.CHROME_HEADLESS';
 
     /**
      * Private constructor enforces singleton usage via getInstance().
@@ -147,8 +149,11 @@ class ChromeManager
      * If a leftover Chrome process from a previous run is already listening on the
      * configured port, it is killed first to avoid inheriting stale state.
      *
-     * When an Xdebug session is active, --headless is omitted so the tester can
-     * watch the browser and interact with it during debugging.
+     * Whether Chrome runs headless is decided by resolveHeadless(): the app-config flag
+     * PARALLEL.CHROME_HEADLESS wins when set (true = headless, false = visible), and Xdebug
+     * auto-detection is only the fallback when the flag is absent - so a live debugger shows the
+     * browser only when nobody configured the flag. Fleet workers run with the debugger disabled,
+     * so their fallback is always headless.
      *
      * @return ChromeStartResult Metadata about the started or reused Chrome process
      * @throws ConfigException If config is incomplete or Chrome does not become ready in time
@@ -192,12 +197,16 @@ class ChromeManager
         // "start /B" launches Chrome in the background within the current cmd session —
         // identical to a bat file. The empty "" after "start /B" is the window title
         // placeholder required by the Windows start command when a path follows.
-        // When running under a debugger, --headless is omitted so the tester can
-        // watch the browser and interact with it during debugging.
-        $isDebugging = extension_loaded('xdebug') && xdebug_is_debugger_active();
+        //
+        // Whether Chrome runs headless is decided by resolveHeadless(): the app-config flag
+        // PARALLEL.CHROME_HEADLESS wins when set (the server sets it true = always headless, a local
+        // operator sets it false to watch the browser), and Xdebug auto-detection is only the fallback
+        // when the flag is absent. Fleet workers run with the debugger disabled, so their fallback is
+        // always headless - the intended default for an unattended run.
+        $headless = $this->resolveHeadless();
         $cmd = 'start /B "" '
             . '"' . getcwd() . DIRECTORY_SEPARATOR . $executable . '"'
-            . ($isDebugging ? '' : ' --headless --no-sandbox')
+            . ($headless ? ' --headless --no-sandbox' : '')
             . ' --window-size=1920,1080 --disable-extensions --disable-gpu'
             . ' --disable-dev-shm-usage'
             . ' --remote-debugging-port=' . $port
@@ -207,7 +216,7 @@ class ChromeManager
             . ' --no-default-browser-check'
             . ' --user-data-dir="' . $userDataDir . '"';
 
-        $this->getLogbook()->addLine("Launching Chrome" . ($isDebugging ? " (headless OFF — debugger detected)" : " (headless)") . " with command: {$cmd}");
+        $this->getLogbook()->addLine("Launching Chrome (" . ($headless ? "headless" : "visible") . ") with command: {$cmd}");
         pclose(popen($cmd, 'r'));
         $this->getLogbook()->addLine("popen() returned — Chrome process spawned, waiting for debug API to become ready...");
 
@@ -481,5 +490,45 @@ class ChromeManager
         }
 
         return [];
+    }
+
+    /**
+     * Public, side-effect-free view of the headless decision, so callers can REPORT what start()
+     * will do before it runs (e.g. a startup banner) without duplicating the resolution logic.
+     *
+     * Returns the exact same value start() uses, keeping any "will run headless/visible" message in
+     * perfect sync with the real launch - there is only one source of truth (resolveHeadless()).
+     *
+     * @return bool TRUE if the next start() would launch headless, FALSE for a visible window
+     */
+    public function willRunHeadless(): bool
+    {
+        return $this->resolveHeadless();
+    }
+
+    /**
+     * Decides whether Chrome starts headless.
+     *
+     * The app-config flag PARALLEL.CHROME_HEADLESS wins when present (true = headless, false = visible),
+     * so operators control visibility deterministically. When the key is absent (or config is unreadable),
+     * fall back to Xdebug auto-detection: visible while a debugger is attached, headless otherwise. Fleet
+     * workers run with the debugger disabled, so their fallback is always headless.
+     *
+     * @return bool TRUE to launch headless, FALSE for a visible window
+     */
+    private function resolveHeadless(): bool
+    {
+        try {
+            $wb = $this->databaseFormatter?->getWorkbench();
+            if ($wb !== null) {
+                $cfg = $wb->getApp('axenox.BDT')->getConfig();
+                if ($cfg->hasOption(self::CFG_CHROME_HEADLESS)) {
+                    return (bool) $cfg->getOption(self::CFG_CHROME_HEADLESS);
+                }
+            }
+        } catch (\Throwable $e) {
+            // Config unreadable (no workbench/app) - fall through to Xdebug auto-detection.
+        }
+        return ! (extension_loaded('xdebug') && xdebug_is_debugger_active());
     }
 }
