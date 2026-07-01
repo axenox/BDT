@@ -14,6 +14,8 @@ use exface\Core\Interfaces\DataSheets\DataSheetInterface;
 use exface\Core\Interfaces\DataSources\DataTransactionInterface;
 use exface\Core\Interfaces\Tasks\ResultInterface;
 use exface\Core\Interfaces\Tasks\TaskInterface;
+use Symfony\Component\Process\Process;
+use Symfony\Component\Process\Exception\ProcessTimedOutException;
 use Symfony\Component\Yaml\Yaml;
 
 /**
@@ -56,6 +58,10 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     private const CFG_MAX_WORKERS = 'PARALLEL.MAX_WORKERS';
     private const CFG_WORKER_TIMEOUT = 'PARALLEL.WORKER_TIMEOUT_SECONDS';
 
+    // App-config key deciding Chrome window visibility. MUST match ChromeManager::CFG_CHROME_HEADLESS
+    // so the banner reports exactly what the workers' ChromeManager will resolve at launch time.
+    private const CFG_CHROME_HEADLESS = 'PARALLEL.CHROME_HEADLESS';
+
     // Per-project orchestration override. A SEPARATE file from behat.yml on purpose: behat.yml
     // is worker config, this is coordinator config. Mixing them would let a worker accidentally
     // read or break the band. Optional - absent means "use app-config defaults".
@@ -65,12 +71,39 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     // coordinator and the worker operate on the very same run row.
     private const OBJ_RUN = 'axenox.BDT.run';
 
+
+    // Poll cadence for the concurrent drain loop. 100 ms is small enough that lane output is streamed
+    // to its log near-live, but large enough that the busy-wait costs negligible CPU while N workers
+    // run for minutes.
+    private const DRAIN_POLL_MICROSECONDS = 100000;
+
+    // Environment overrides applied to every worker process. The key one is XDEBUG_MODE=off: it
+    // disables the Xdebug debugger in the worker regardless of the inherited xdebug.mode/trigger, so
+    // workers never connect back to the IDE's single debug client (port 9003). Without this, a
+    // coordinator launched under a debugger makes every worker inherit the Xdebug trigger; the IDE
+    // serializes those debug sessions, blocking the 3rd/4th worker at startup and capping real
+    // concurrency at ~2. XDEBUG_SESSION/XDEBUG_TRIGGER are set to false so Symfony Process REMOVES
+    // them from the inherited environment, neutralizing any trigger that XDEBUG_MODE alone might miss.
+    // All other parent env vars (PATH, etc.) are inherited unchanged.
+    private const WORKER_ENV = [
+        'XDEBUG_MODE'    => 'off',
+        'XDEBUG_SESSION' => false,
+        'XDEBUG_TRIGGER' => false,
+    ];
+
     /**
      * Captured at run-row creation so the finalize step can compute the same wall-clock
      * duration the single-process formatter computes (microtime delta, in seconds - the
      * duration_ms column historically stores seconds in this codebase).
      */
     private float $runStart = 0.0;
+
+    /**
+     * The human-readable startup banner (worker count, headless state, debugger state), built once
+     * before the fleet launches and reused in the final CLI message so the same expectation the user
+     * saw at the start is echoed back at the end.
+     */
+    private string $startupBanner = '';
 
     /**
      * Entry point. Drives the run lifecycle once, fanning the matched features out to N workers.
@@ -137,8 +170,15 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             $workerCount  = max(1, min($maxWorkers, count($matchedFiles)));
             $buckets      = $this->bucketFeatures($matchedFiles, $workerCount);
 
+            // --- Step 4b: announce the resolved run configuration BEFORE any worker starts, so the
+            // user knows what to expect (how many workers will run, whether Chrome will be visible,
+            // and whether a debugger is in play). Purely informational - it changes no behaviour. ---
+            $banner = $this->buildStartupBanner($workerCount, $maxWorkers, count($matchedFiles));
+            $this->startupBanner = $banner;
+            $this->getWorkbench()->getLogger()->info($banner);
+
             // --- Step 5: run the fleet. Wrapped so a worker failure still reaches finalize. ---
-            $failures = $this->runFleet($cwd, $behatConfig, $runUid, $chromePath, $tags, $buckets);
+            $failures = $this->runFleet($cwd, $behatConfig, $runUid, $chromePath, $tags, $buckets, $banner);
 
         } catch (\Throwable $e) {
             // Any coordinator-side failure must still close the run row, otherwise it stays open
@@ -151,22 +191,31 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // the DB, written by the workers in attach-mode; we only stamp the run as finished. ---
         $this->finalizeRunRow($runUid);
 
-        // The normal Behat flow was written to data/axenox/BDT/Logs/<run_uid>.log. The scheduled
-        // queue message stays terse: only worker errors are returned (with the log path to dig in);
-        // if every lane passed, just a short confirmation referencing the log.
-        $logPath = 'data/axenox/BDT/Logs/' . $runUid . '.log';
+        // Lane output now lives in one file per lane: data/axenox/BDT/Logs/<run_uid>_lane<N>.log.
+        // A lane failure here means the WORKER ITSELF failed (crash, signal/timeout termination or a
+        // launch failure) - NOT that some of its tests failed. Behat's exit 1 is treated as a normal
+        // completion because per-scenario pass/fail is recorded authoritatively in the attach-mode
+        // child rows. When a worker fails fatally, the whole run must fail so a scheduled task/queue
+        // marks it red. We therefore THROW when $failures is non-empty - AFTER finalize above, so the
+        // run row is always closed. The exception message lists each failing lane and points at its
+        // log. If no worker failed fatally, we return a terse success message referencing the log
+        // directory (individual test failures are still visible in the child rows).
+        $logDirRel = 'data/axenox/BDT/Logs';
         if (! empty($failures)) {
             $lines = [];
             foreach ($failures as $lane => $err) {
-                $lines[] = 'Lane ' . $lane . ': ' . $err;
+                $lines[] = 'Lane ' . $lane . ' (' . $logDirRel . '/' . $runUid . '_lane' . $lane . '.log): ' . $err;
             }
-            $msg = sprintf('Parallel run %s finished with %d worker error(s):', $runUid, count($failures))
+            throw new RuntimeException(
+                $this->startupBanner . "\n"
+                . sprintf('Parallel run %s finished with %d worker error(s):', $runUid, count($failures))
                 . "\n" . implode("\n", $lines)
-                . "\nSee full log: " . $logPath;
-        } else {
-            $msg = sprintf('Parallel run %s finished, no worker errors. See log: %s', $runUid, $logPath);
+                . "\nLane logs: " . $logDirRel . '/' . $runUid . '_lane*.log'
+            );
         }
 
+        $msg = $this->startupBanner . "\n"
+            . sprintf('Parallel run %s finished, no worker errors. Lane logs: %s/%s_lane*.log', $runUid, $logDirRel, $runUid);
         return ResultFactory::createMessageResult($task, $msg);
     }
 
@@ -333,8 +382,9 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             . 'axenox' . DIRECTORY_SEPARATOR
             . 'BDT' . DIRECTORY_SEPARATOR
             . 'chrome_profiles' . DIRECTORY_SEPARATOR . 'lane' . $lane;
-        if (! is_dir($userDataDirRelative) && ! @mkdir($userDataDirRelative, 0777, true) && ! is_dir($userDataDirRelative)) {
-            throw new RuntimeException('Could not create lane user_data_dir: ' . $userDataDirRelative);
+        $userDataDirAbsolute = $workingDir . DIRECTORY_SEPARATOR . $userDataDirRelative;
+        if (! is_dir($userDataDirAbsolute) && ! @mkdir($userDataDirAbsolute, 0755, true) && ! is_dir($userDataDirAbsolute)) {
+            throw new RuntimeException('Could not create lane user_data_dir: ' . $userDataDirAbsolute);
         }
 
         // Lane file uses a per-lane name and is overwritten each run - durable truth lives in
@@ -398,6 +448,93 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
+     * Builds the human-readable startup banner that sets the user's expectation before any worker
+     * starts: how many workers will actually run (and why, vs. the configured maximum), whether
+     * Chrome will be visible or headless, and whether the coordinator itself is running under a
+     * debugger.
+     *
+     * The banner is purely informational - it changes no behaviour. Its whole job is to make an
+     * unattended-looking run self-explanatory: a user who launched N=4 but sees "1 worker" instantly
+     * knows there was only one matched feature, and a user debugging locally is reminded that fleet
+     * workers ALWAYS run with the debugger off and (by default) headless, so they should use the
+     * non-parallel single-worker path to actually step through a browser.
+     *
+     * @param int $workerCount    The fleet size that will actually run
+     * @param int $maxWorkers      The configured PARALLEL.MAX_WORKERS ceiling
+     * @param int $matchedFeatures The number of feature files the tag filter matched
+     */
+    private function buildStartupBanner(int $workerCount, int $maxWorkers, int $matchedFeatures): string
+    {
+        $debuggerActive = $this->isDebuggerActive();
+        $headless = $this->resolveHeadlessForBanner();
+
+        // Explain WHY the fleet is this size, since worker count is min(maxWorkers, matchedFeatures).
+        if ($workerCount < $maxWorkers) {
+            $reason = 'capped by ' . $matchedFeatures . ' matched feature(s)';
+        } else {
+            $reason = 'limited by ' . self::CFG_MAX_WORKERS . '=' . $maxWorkers;
+        }
+
+        // Headless may be undecided at coordinator level (no app-config flag) - then the workers'
+        // ChromeManager falls back to Xdebug auto-detection, and since fleet workers run with the
+        // debugger forced off, that fallback is always headless.
+        if ($headless === null) {
+            $chromeLine = 'headless (auto: ' . self::CFG_CHROME_HEADLESS . ' not set, workers run debugger-off)';
+        } else {
+            $chromeLine = $headless ? 'headless (' . self::CFG_CHROME_HEADLESS . '=true)' : 'visible (' . self::CFG_CHROME_HEADLESS . '=false)';
+        }
+
+        $lines = [
+            '===== BDT parallel run configuration =====',
+            'Workers:  ' . $workerCount . ' (' . $reason . ')',
+            'Chrome:   ' . $chromeLine,
+        ];
+        if ($debuggerActive) {
+            $lines[] = 'Debugger: ATTACHED to the coordinator - NOTE: fleet workers force the debugger OFF, '
+                . 'so breakpoints do NOT hit inside tests. Use the non-parallel single-worker path to step through a browser.';
+        } else {
+            $lines[] = 'Debugger: not attached';
+        }
+        $lines[] = '==========================================';
+
+        return implode("\n", $lines);
+    }
+
+    /**
+     * Returns TRUE if an Xdebug debugger session is currently active on the coordinator process.
+     *
+     * Mirrors the detection ChromeManager uses, so the banner's debugger note stays consistent with
+     * the actual headless fallback behaviour. Guarded for older Xdebug builds that may not expose
+     * xdebug_is_debugger_active().
+     */
+    private function isDebuggerActive(): bool
+    {
+        return extension_loaded('xdebug')
+            && function_exists('xdebug_is_debugger_active')
+            && xdebug_is_debugger_active();
+    }
+
+    /**
+     * Resolves the headless state the way the banner needs to report it: the explicit app-config flag
+     * PARALLEL.CHROME_HEADLESS when present (true/false), or NULL when it is absent.
+     *
+     * NULL is meaningful: it tells the banner that no operator decision exists, so the workers'
+     * ChromeManager will fall back to Xdebug auto-detection - which, because fleet workers run with the
+     * debugger disabled, always resolves to headless. Kept separate from ChromeManager::resolveHeadless()
+     * on purpose: this reports intent for the whole fleet, that one decides an individual worker's window.
+     *
+     * @return bool|null TRUE = headless, FALSE = visible, NULL = not configured (auto -> headless for workers)
+     */
+    private function resolveHeadlessForBanner(): ?bool
+    {
+        $cfg = $this->getWorkbench()->getApp('axenox.BDT')->getConfig();
+        if ($cfg->hasOption(self::CFG_CHROME_HEADLESS)) {
+            return (bool) $cfg->getOption(self::CFG_CHROME_HEADLESS);
+        }
+        return null;
+    }
+
+    /**
      * Resolves the [start, end] port band, preferring a per-project override file.
      *
      * Why a SEPARATE override file (bdt_parallel.yml) instead of a key in behat.yml: behat.yml is
@@ -451,12 +588,24 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Allocates the first currently-free port in the band via a probe, skipping already-held ones.
+     * Allocates the first currently-free port in the band via a probe, skipping ports already
+     * handed to other lanes in THIS run.
      *
-     * Why probe instead of just reserving: the band is shared across projects, so a statically
-     * assigned port can already be taken. fsockopen with a short timeout tells us if a port is
-     * busy (open socket = busy, refused = free). The caller verifies the bind after Chrome starts
-     * and reallocates on failure, handling the probe->bind race.
+     * Collision-safety is LAYERED rather than reserved up front, because the worker - not the
+     * coordinator - owns its Chrome lifecycle, so there is no post-launch port the coordinator could
+     * "verify and reallocate" without either killing/relaunching the worker or fighting it for that
+     * Chrome (and Phase A is deliberately non-blocking, so per-bind verification would serialize
+     * startup). The layers:
+     *   1. Within this run, $held guarantees two lanes never receive the same port.
+     *   2. Across runs/projects, the separate port bands make overlap unlikely, and the probe skips
+     *      any already-bound port (open socket = busy, refused = free).
+     *   3. The residual probe->bind race (a port that turns busy after we picked it) is NOT silent:
+     *      the worker's ChromeManager fails to bring Chrome up on that port, Behat exits non-zero,
+     *      and the lane is recorded as a failure during drain.
+     * The single case NOT defended here is a LIVE foreign Chrome already on a probed port - the
+     * worker's ChromeManager would kill it as a "leftover". Band separation is what prevents that; if
+     * bands are ever overlapped across concurrent runs, add explicit reservation instead of relying
+     * on the probe.
      *
      * @param int[] $held Ports already assigned to other lanes in this run
      */
@@ -524,91 +673,234 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Launches the whole fleet concurrently via CliCommandRunner, then drains every lane.
+     * Launches the whole fleet concurrently, then drains every lane in parallel.
      *
-     * The verified runtime is CLI with no SERVER_SOFTWARE, so canUseSymfonyProcess() is TRUE and
-     * the IIS exec() branch never applies - there is exactly ONE spawn path. We exploit that on
-     * the Symfony branch runCliCommand() calls Process::start() BEFORE returning its generator:
-     * launching all lanes (Phase A) gets N workers running in parallel, and iterating each
-     * generator (Phase B) only waits, so wall-clock is ~max(worker), not sum(worker). silent=false
-     * + ignoredExitCodes=[1] means a normal "some tests failed" (exit 1) is fine, while a crash
-     * (exit 2) or timeout throws during drain - caught per lane so one failure cannot abort the
-     * others or skip finalize. $failures is coordinator-side logging only; run status lives in the
-     * attach-mode child rows.
+     * The verified runtime is CLI, so we drive Symfony Process directly here instead of through
+     * CliCommandRunner's generator: a generator can only be drained with a blocking foreach, which
+     * serializes the fleet (lane N+1 is not even read until lane N's process exits). That blocking
+     * sequential drain - not workerCount, not the port band, not Process::start() - was the measured
+     * cap that pinned real concurrency to a 2-wide pipeline. Instead we:
+     *   Phase A - start every worker Process (start() is eager + non-blocking), so all lanes run at once.
+     *   Phase B - poll ALL still-running processes in a round-robin loop, reading each one's
+     *             incremental output non-blockingly and streaming it to that lane's log. No lane can
+     *             block another, so wall-clock is ~max(lane) and true N-wide concurrency is achieved.
+     * Exit-code classification: a lane fails only when the WORKER ITSELF fails - a crash (exit 2/255)
+     * or a signal/timeout termination (null exit code). Behat's exit 1 ("some tests failed") is NOT a
+     * lane failure, because authoritative per-scenario results live in the attach-mode child rows; a
+     * worker that ran to completion did its job even if some of its tests failed. A lane failure is
+     * recorded WITHOUT aborting the others, so finalize still runs once; the caller then throws if
+     * $failures is non-empty so the task fails.
      *
      * @param string[][] $buckets
-     * @return array<int,string> Worker failures keyed by lane; only these reach the queue message
+     * @param string $banner Startup banner echoed into the coordinator log so the run's log opens with
+     *                       the same expectation the user saw on the console
+     * @return array<int,string> Worker failures keyed by lane; non-empty means the run must fail
      * @throws \Throwable
      */
-    private function runFleet(string $cwd, string $behatConfig, string $runUid, string $chromePath, string $tags, array $buckets): array
+    private function runFleet(string $cwd, string $behatConfig, string $runUid, string $chromePath, string $tags, array $buckets, string $banner = ''): array
     {
         [$portStart, $portEnd] = $this->resolvePortBand($behatConfig);
         $timeout = $this->resolveWorkerTimeout();
         $heldPorts = [];
-        // Import the base config by its real filename (e.g. "Behat.yml"), so the lane import
-        // matches the actual file even on case-sensitive systems instead of assuming "behat.yml".
+        // Import the base config by its real filename so the lane import matches even on
+        // case-sensitive systems instead of assuming "behat.yml".
         $importConfigName = basename($behatConfig);
 
-        // The normal Behat stream is verbose; instead of returning it to the scheduled queue we
-        // write it to one file per run named by run_uid under data/axenox/BDT/Logs. The queue gets
-        // only error messages (see perform()), the full flow stays inspectable on disk.
-        $logFile = $this->openRunLog($cwd, $runUid);
-
-        // Phase A - launch: each runCliCommand() starts its worker and returns a generator without
-        // blocking, so all lanes run concurrently. Each lane gets a runtime-free port + lane config.
-        $streams = [];
-        foreach ($buckets as $idx => $bucket) {
-            $lane = $idx + 1;
-            $port = $this->allocateFreePort($portStart, $portEnd, $heldPorts);
-            $heldPorts[] = $port;
-            $laneConfig = $this->writeLaneConfig($cwd, $lane, $runUid, $port, $chromePath, $importConfigName);
-            $cmd = $this->buildWorkerCommand($laneConfig, $tags, $bucket);
-            $streams[$lane] = CliCommandRunner::runCliCommand($cmd, [], $timeout, $cwd, false, [1]);
+        // Coordinator-level diagnostic log. The fleet diagnostics (launch/drain timings used to
+        // localize the 2-worker concurrency cap) belong in OUR OWN log file, not in the workbench
+        // logger: the DB-backed log only keeps a couple of info rows and is the wrong place for
+        // high-frequency orchestration traces. One coordinator log per run sits next to the per-lane
+        // logs so the whole fleet's timeline is greppable in a single file.
+        $logDir = $this->ensureLogDir($cwd);
+        $diagLog = $this->openCoordinatorLog($logDir, $runUid);
+        $this->writeRunLog($diagLog, '===== Coordinator DIAG (run ' . $runUid . ') =====');
+        if ($banner !== '') {
+            $this->writeRunLog($diagLog, $banner);
         }
 
-        // Phase B - drain: iterating is where the wait happens, but processes already run in
-        // parallel. Each drain is wrapped so one lane's exit-2 crash or timeout is recorded WITHOUT
-        // aborting the others; finalize still runs once afterwards (no orphaned open run).
-        $failures = [];
-        foreach ($streams as $lane => $stream) {
-            $this->writeRunLog($logFile, '===== Lane ' . $lane . ' =====');
+        // Phase A - launch: start every worker Process up front. Process::start() is eager and
+        // non-blocking (the diagnostic run confirmed all 4 lanes spawn within ~1.2 s), so this gets
+        // the whole fleet running concurrently. A launch-side failure (port band exhausted, lane
+        // config unwritable) must NOT escape runFleet: doing so would hit the coordinator's catch and
+        // finalize the run while workers already launched are still writing child rows. Instead we
+        // record it as that lane's failure, stop launching further lanes, and fall through to drain
+        // whatever DID start. Buckets that never launch simply produce no child rows, so the run's
+        // child count falls short of expected_scenario_count - the silent-stop signal this framework
+        // exists to raise - instead of being masked by a premature finalize.
+        $processes = [];   // lane => Process
+        $laneLogs  = [];   // lane => log file handle (opened in Phase A so output streams live)
+        $laneStart = [];   // lane => microtime when the worker started
+        $failures  = [];
+        $launchStartWall = microtime(true);
+        foreach ($buckets as $idx => $bucket) {
+            $lane = $idx + 1;
             try {
-                foreach ($stream as $chunk) {
-                    $this->writeRunLog($logFile, $chunk); // normal flow goes to the log, not the queue
-                }
+                $port = $this->allocateFreePort($portStart, $portEnd, $heldPorts);
+                $heldPorts[] = $port;
+                $laneConfig = $this->writeLaneConfig($cwd, $lane, $runUid, $port, $chromePath, $importConfigName);
+                $cmd = $this->buildWorkerCommand($laneConfig, $tags, $bucket);
+
+                // Open the lane log BEFORE start() so a failure to open it cannot leave an orphan
+                // running worker with nowhere to stream its output.
+                $laneLog = $this->openLaneLog($logDir, $runUid, $lane);
+                $this->writeRunLog($laneLog, '===== Lane ' . $lane . ' (port ' . $port . ') =====');
+
+                // Drive Symfony Process directly so Phase B can poll all lanes concurrently. The
+                // worker environment is the parent environment with the Xdebug DEBUGGER forced OFF
+                // (see WORKER_ENV): the coordinator is often launched under an IDE debugger, so its
+                // env carries an Xdebug trigger/session. Inherited unchanged, every worker would
+                // connect back to the single IDE debug client (port 9003) on startup; that client
+                // services only a couple of sessions at once, so the 3rd/4th worker blocks - silent,
+                // producing no output - until an earlier worker exits and frees a debug slot. THAT is
+                // the real "cap of 2". Disabling the debugger per worker restores true N-wide
+                // concurrency. Headless itself is now decided by the worker's ChromeManager from
+                // app-config PARALLEL.CHROME_HEADLESS (with the debugger off, its Xdebug fallback is
+                // headless too). To step through a test, use the non-parallel single-worker path.
+                $callStart = microtime(true);
+                $process = Process::fromShellCommandline($cmd, $cwd, self::WORKER_ENV, null, $timeout);
+                $process->start();
+                $callMs = (microtime(true) - $callStart) * 1000;
+
+                $processes[$lane] = $process;
+                $laneLogs[$lane]  = $laneLog;
+                $laneStart[$lane] = microtime(true);
+
+                $this->writeRunLog($diagLog, sprintf(
+                    'DIAG launch: lane %d port %d - Process::start() returned in %.1f ms (%.1f ms since first launch)',
+                    $lane,
+                    $port,
+                    $callMs,
+                    (microtime(true) - $launchStartWall) * 1000
+                ));
             } catch (\Throwable $e) {
-                $failures[$lane] = $e->getMessage();
-                $this->writeRunLog($logFile, 'LANE ' . $lane . ' FAILED: ' . $e->getMessage());
-                $this->getWorkbench()->getLogger()->error('BDT parallel worker lane ' . $lane . ' failed: ' . $e->getMessage());
+                // Stop launching further lanes: an exhausted band stays exhausted and a setup error
+                // (e.g. unwritable config) is likely systemic. Record and break to the drain phase so
+                // the already-running workers are awaited and the run finalizes cleanly afterwards.
+                $failures[$lane] = 'launch failed: ' . $e->getMessage();
+                $this->writeRunLog($diagLog, 'DIAG launch: lane ' . $lane . ' FAILED: ' . $e->getMessage());
+                $this->getWorkbench()->getLogger()->error('BDT parallel worker lane ' . $lane . ' launch failed: ' . $e->getMessage());
+                break;
             }
         }
 
-        if (is_resource($logFile)) {
-            fclose($logFile);
+        // Phase B - concurrent drain: poll EVERY still-running worker each pass, reading its
+        // incremental output non-blockingly and streaming it to that lane's log. Because no single
+        // foreach blocks on one lane, all workers progress together - this is the fix for the 2-wide
+        // cap, where the old blocking generator drain read lane 1 to completion before even touching
+        // lane 2. Per-lane failures (non-ignored exit code, timeout, signal) are recorded WITHOUT
+        // aborting the others; finalize still runs once afterwards.
+        $active = $processes;
+        $firstOutputAt = [];
+        while (! empty($active)) {
+            foreach ($active as $lane => $process) {
+                // Stream whatever new output arrived since the last pass.
+                $wrote = $this->streamLaneOutput($process, $laneLogs[$lane]);
+                if ($wrote && ! isset($firstOutputAt[$lane])) {
+                    $firstOutputAt[$lane] = true;
+                    $this->writeRunLog($diagLog, sprintf(
+                        'DIAG drain: lane %d - first output at +%.1f s into run',
+                        $lane,
+                        microtime(true) - $this->runStart
+                    ));
+                }
+
+                // Enforce the per-worker wall-clock timeout. In async mode Symfony only checks the
+                // timeout when we ask it to, so a hung worker would otherwise never time out.
+                try {
+                    $process->checkTimeout();
+                } catch (ProcessTimedOutException $e) {
+                    $failures[$lane] = 'timed out after ' . $timeout . ' s';
+                    $this->writeRunLog($laneLogs[$lane], 'LANE ' . $lane . ' TIMED OUT after ' . $timeout . ' s');
+                    $this->writeRunLog($diagLog, sprintf('DIAG drain: lane %d TIMED OUT at +%.1f s', $lane, microtime(true) - $this->runStart));
+                    $this->getWorkbench()->getLogger()->error('BDT parallel worker lane ' . $lane . ' timed out after ' . $timeout . ' s');
+                    $process->stop(0); // SIGKILL-equivalent; release the slot immediately
+                    $this->finishLaneLog($laneLogs[$lane]);
+                    unset($active[$lane]);
+                    continue;
+                }
+
+                if (! $process->isRunning()) {
+                    // Flush the tail that arrived after the last read, then classify the exit.
+                    $this->streamLaneOutput($process, $laneLogs[$lane]);
+                    $exitCode = $process->getExitCode(); // null if the worker was terminated by a signal
+                    $durationS = microtime(true) - $laneStart[$lane];
+                    // Only the worker's OWN fatal failure is a lane failure here - a crash (exit 2/255)
+                    // or a signal termination (null exit code, e.g. taskkill). Behat's exit 1 ("some
+                    // tests failed") is deliberately NOT treated as a lane failure: authoritative
+                    // per-scenario pass/fail already lives in the attach-mode child rows, so a worker
+                    // that completed normally must not be reported as a worker error just because some
+                    // of its tests failed. Exit 0 (all passed) and exit 1 (ran to completion, some
+                    // tests failed) both mean the worker itself did its job.
+                    if ($exitCode !== 0 && $exitCode !== 1) {
+                        if ($exitCode === null) {
+                            $failures[$lane] = 'terminated without exit code';
+                        } else {
+                            $failures[$lane] = 'exit code ' . $exitCode;
+                        }
+                        $this->writeRunLog($laneLogs[$lane], 'LANE ' . $lane . ' FAILED: ' . $failures[$lane]);
+                        $this->getWorkbench()->getLogger()->error('BDT parallel worker lane ' . $lane . ' failed: ' . $failures[$lane]);
+                    }
+                    $this->writeRunLog($diagLog, sprintf(
+                        'DIAG drain: lane %d finished - exit %s after %.1f s (+%.1f s into run)',
+                        $lane,
+                        $exitCode === null ? 'n/a' : (string) $exitCode,
+                        $durationS,
+                        microtime(true) - $this->runStart
+                    ));
+                    $this->finishLaneLog($laneLogs[$lane]);
+                    unset($active[$lane]);
+                }
+            }
+            // Yield the CPU briefly between passes; nothing to do until workers produce more output.
+            if (! empty($active)) {
+                usleep(self::DRAIN_POLL_MICROSECONDS);
+            }
+        }
+
+        if (is_resource($diagLog)) {
+            fclose($diagLog);
         }
         return $failures;
     }
 
     /**
-     * Opens (creating the dir) data/axenox/BDT/Logs/<run_uid>.log for append.
+     * Streams a worker's incremental stdout/stderr into its lane log, then frees the read buffer.
      *
-     * One file per run keeps every lane's normal Behat output together and findable by UID. Append
-     * mode tolerates re-runs without truncating earlier diagnostics.
+     * Why incremental + clearOutput: getIncrementalOutput()/getIncrementalErrorOutput() are
+     * non-blocking and return only what arrived since the previous call, which is exactly what the
+     * round-robin drain needs to keep every lane moving. clearOutput()/clearErrorOutput() then drop
+     * the already-written bytes so a worker that logs for minutes does not accumulate its entire
+     * output in memory. Raw fwrite (no added newline) preserves the worker's own line breaks.
      *
-     * @return resource
+     * @param resource $logHandle
+     * @return bool TRUE if any bytes were written this call (used to timestamp first output)
      */
-    private function openRunLog(string $cwd, string $runUid)
+    private function streamLaneOutput(Process $process, $logHandle): bool
     {
-        $dir = $cwd . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR
-            . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR . 'Logs';
-        if (! is_dir($dir) && ! @mkdir($dir, 0777, true) && ! is_dir($dir)) {
-            throw new RuntimeException('Could not create BDT log directory: ' . $dir);
+        $out = $process->getIncrementalOutput();
+        $err = $process->getIncrementalErrorOutput();
+        if ($out !== '' && is_resource($logHandle)) {
+            @fwrite($logHandle, $out);
         }
-        $handle = @fopen($dir . DIRECTORY_SEPARATOR . $runUid . '.log', 'a');
-        if ($handle === false) {
-            throw new RuntimeException('Could not open run log file for run ' . $runUid);
+        if ($err !== '' && is_resource($logHandle)) {
+            @fwrite($logHandle, $err);
         }
-        return $handle;
+        $process->clearOutput();
+        $process->clearErrorOutput();
+        return $out !== '' || $err !== '';
+    }
+
+    /**
+     * Closes a lane log handle if it is still open. Centralized so every drain exit path (normal
+     * finish, timeout, failure) releases the handle exactly once.
+     *
+     * @param resource $logHandle
+     */
+    private function finishLaneLog($logHandle): void
+    {
+        if (is_resource($logHandle)) {
+            fclose($logHandle);
+        }
     }
 
     /**
@@ -655,5 +947,63 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             return $default;
         }
         throw new RuntimeException('Required parameter "' . $name . '" is missing.');
+    }
+
+    /**
+     * Ensures the BDT log directory exists and returns its absolute path.
+     *
+     * Extracted from the old single-file opener so the directory guarantee and the absolute base
+     * are shared by every per-lane log. Anchored at $cwd (installation root), so it never depends on
+     * this action's process cwd.
+     *
+     * @return string Absolute path to data/axenox/BDT/Logs
+     */
+    private function ensureLogDir(string $cwd): string
+    {
+        $dir = $cwd . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR
+            . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR . 'Logs';
+        if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
+            throw new RuntimeException('Could not create BDT log directory: ' . $dir);
+        }
+        return $dir;
+    }
+
+    /**
+     * Opens one log file per lane named "<run_uid>_lane<N>.log" for append.
+     *
+     * Why a file per lane instead of one shared run log: a worker that crashes or times out leaves
+     * its partial output in its OWN clearly-named file instead of buried under other lanes, and each
+     * lane becomes independently greppable/tailable. Append mode tolerates a re-run without
+     * truncating earlier diagnostics; naming by run_uid + lane keeps runs from overwriting each other.
+     *
+     * @return resource
+     */
+    private function openLaneLog(string $logDir, string $runUid, int $lane)
+    {
+        $handle = @fopen($logDir . DIRECTORY_SEPARATOR . $runUid . '_lane' . $lane . '.log', 'a');
+        if ($handle === false) {
+            throw new RuntimeException('Could not open lane log file for run ' . $runUid . ' lane ' . $lane);
+        }
+        return $handle;
+    }
+
+    /**
+     * Opens the single coordinator diagnostic log "<run_uid>_coordinator.log" for append.
+     *
+     * Why a dedicated coordinator log instead of the workbench logger: the launch/drain timings used
+     * to localize the concurrency cap are high-frequency orchestration traces. The DB-backed workbench
+     * log is meant for a few meaningful info/error rows, not a per-lane timeline, so the fleet
+     * diagnostics live here next to the per-lane logs and stay greppable in one file. Append mode +
+     * naming by run_uid keeps runs from overwriting each other.
+     *
+     * @return resource
+     */
+    private function openCoordinatorLog(string $logDir, string $runUid)
+    {
+        $handle = @fopen($logDir . DIRECTORY_SEPARATOR . $runUid . '_coordinator.log', 'a');
+        if ($handle === false) {
+            throw new RuntimeException('Could not open coordinator log file for run ' . $runUid);
+        }
+        return $handle;
     }
 }
