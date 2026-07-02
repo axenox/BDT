@@ -1,13 +1,13 @@
 <?php
 namespace axenox\BDT\Actions;
 
+use axenox\BDT\Behat\Common\RunRecordWriter;
 use exface\Core\CommonLogic\AbstractAction;
 use exface\Core\CommonLogic\Actions\ServiceParameter;
-use exface\Core\DataTypes\ComparatorDataType;
+use exface\Core\CommonLogic\DataSheets\DataSheet;
 use exface\Core\DataTypes\DateTimeDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Facades\ConsoleFacade\CliCommandRunner;
-use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\ResultFactory;
 use exface\Core\Interfaces\Actions\iCanBeCalledFromCLI;
 use exface\Core\Interfaces\DataSheets\DataSheetInterface;
@@ -69,7 +69,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
 
     // Meta object alias - identical to the one DatabaseFormatter writes to, so the
     // coordinator and the worker operate on the very same run row.
-    private const OBJ_RUN = 'axenox.BDT.run';
+    private ?DataSheetInterface $runDataSheet = null;
 
 
     // Poll cadence for the concurrent drain loop. 100 ms is small enough that lane output is streamed
@@ -136,9 +136,10 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // current workbench URL. Lanes never run init themselves, so a stale base_url would make
         // every worker fail. Running it once up front keeps the parallel path equivalent.
         $this->runInit($cwd);
-
+        $runRecordWriter = new RunRecordWriter();
         // --- Step 1: open the run record (sole creator, so the workers can attach to its UID) ---
-        $runUid = $this->createRunRow($tags);
+        $this->runDataSheet = $runRecordWriter->create($this->getWorkbench(), $tags);
+        $runUid = $this->runDataSheet->getUidColumn()->getValue(0);
 
         try {
             // --- Step 2: compute the full expected scope up front over ALL matched features ---
@@ -157,10 +158,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             }
 
             // --- Step 3: persist the expected counts onto the run row (once, for the whole run) ---
-            $this->updateRunRow($runUid, [
-                'expected_feature_count'  => $expected->featureCount,
-                'expected_scenario_count' => $expected->scenarioCount,
-            ]);
+            $runRecordWriter->setExpectedCounts($this->runDataSheet, $expected->featureCount, $expected->scenarioCount);
 
             // --- Step 4: decide the fleet size. NO user pool exists - users are provisioned per
             // role at run-time by UI5Browser::setupUser(), so the only ceiling is "do not start
@@ -183,13 +181,13 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         } catch (\Throwable $e) {
             // Any coordinator-side failure must still close the run row, otherwise it stays open
             // forever with no finished_on. Finalize, then re-throw so the CLI sees it.
-            $this->finalizeRunRow($runUid);
+            $runRecordWriter->finalize($this->runDataSheet);
             throw new RuntimeException('Parallel run coordinator failed: ' . $e->getMessage(), null, $e);
         }
 
         // --- Finalize exactly once, after all workers exit. Child-row outcomes already live in
         // the DB, written by the workers in attach-mode; we only stamp the run as finished. ---
-        $this->finalizeRunRow($runUid);
+        $runRecordWriter->finalize($this->runDataSheet);
 
         // Lane output now lives in one file per lane: data/axenox/BDT/Logs/<run_uid>_lane<N>.log.
         // A lane failure here means the WORKER ITSELF failed (crash, signal/timeout termination or a
@@ -257,90 +255,6 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                 ->setName(self::OPT_CHROME_PATH)
                 ->setDescription('Path to chrome.exe (NOT GoogleChromePortable.exe)')
         ];
-    }
-
-    /**
-     * Creates the run row and returns its UID.
-     *
-     * Why this mirrors DatabaseFormatter::startRun() exactly: the coordinator and the worker
-     * must agree on the run object's shape. addFromSystemAttributes() is required so the UID
-     * column comes back populated after dataCreate(); behat_command records the coordinator
-     * invocation for traceability, parallel to how the single-process formatter records it.
-     */
-    private function createRunRow(string $tags): string
-    {
-        $this->runStart = microtime(true);
-
-        $ds = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), self::OBJ_RUN);
-        $ds->getColumns()->addFromSystemAttributes();
-        $ds->addRow([
-            'started_on'    => DateTimeDataType::now(),
-            'behat_command' => 'RunParallel --tags=' . $tags,
-        ]);
-        $ds->dataCreate(false);
-
-        $uid = $ds->getUidColumn()->getValue(0);
-        if ($uid === null || $uid === '') {
-            throw new RuntimeException('Run row was created but no UID was returned.');
-        }
-        return $uid;
-    }
-
-    /**
-     * Re-reads the run row fresh by UID and applies the given column values.
-     *
-     * Why re-read instead of reusing the create-time sheet: the sheet captured at creation
-     * keeps the create-time modified_on timestamp. Any later dataUpdate() from it fails the
-     * optimistic-locking check (ConcurrentWriteError) because the stored row has since moved
-     * on. Reading a fresh sheet by UID picks up the current modified_on and updates cleanly.
-     *
-     * @param array<string,mixed> $values
-     */
-    private function updateRunRow(string $runUid, array $values): void
-    {
-        $ds = $this->readRunRow($runUid);
-        foreach ($values as $col => $val) {
-            $ds->setCellValue($col, 0, $val);
-        }
-        $ds->dataUpdate();
-    }
-
-    /**
-     * Stamps finished_on and duration on the run row.
-     *
-     * Why only these two columns: this matches DatabaseFormatter::onAfterExercise() one to one.
-     * There is no status column written anywhere in the formatter, so the coordinator must not
-     * invent one - the run's pass/fail picture lives in the child rows the worker wrote.
-     * duration is microtime(true) - runStart (seconds), consistent with the existing data.
-     */
-    private function finalizeRunRow(string $runUid): void
-    {
-        $this->updateRunRow($runUid, [
-            'finished_on' => DateTimeDataType::now(),
-            'duration_ms' => microtime(true) - $this->runStart,
-        ]);
-    }
-
-    /**
-     * Loads a single run row by UID with system attributes, ready for update.
-     *
-     * Why a dedicated helper: every update path needs the same fresh-read-by-UID shape, and
-     * centralizing it keeps the optimistic-locking guarantee in one place.
-     */
-    private function readRunRow(string $runUid): DataSheetInterface
-    {
-        $ds = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), self::OBJ_RUN);
-        $ds->getColumns()->addFromSystemAttributes();
-        $ds->getFilters()->addConditionFromString(
-            $ds->getMetaObject()->getUidAttributeAlias(),
-            $runUid,
-            ComparatorDataType::EQUALS
-        );
-        $ds->dataRead();
-        if ($ds->countRows() !== 1) {
-            throw new RuntimeException('Expected exactly one run row for UID ' . $runUid . ', got ' . $ds->countRows());
-        }
-        return $ds;
     }
 
     /**
