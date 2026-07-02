@@ -166,12 +166,12 @@ class ChromeManager
         $config = $this->config;
         $startTime = microtime(true);
         $executable = $config['executable'] ?? null;
-        $userDataDir = getcwd() . DIRECTORY_SEPARATOR . $config['user_data_dir'] ?? null;
+        $userDataDir = getcwd() . DIRECTORY_SEPARATOR . ($config['user_data_dir'] ?? null);
         $port = $config['port'] ?? 9222;
 
         $this->getLogbook()->addLine("Config resolved — executable: {$executable}, userDataDir: {$userDataDir}, port: {$port}");
 
-        if ($executable === null || $userDataDir === null) {
+        if ($executable === null || $config['user_data_dir'] === null) {
             $msg = '**ERROR** ChromeManager requires "executable" and "user_data_dir" in the chrome config. '
                 . 'Please set them under DatabaseFormatterExtension > chrome in your behat.yml.';
             $this->getLogbook()->addLine($msg);
