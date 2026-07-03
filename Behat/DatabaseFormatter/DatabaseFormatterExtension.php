@@ -30,6 +30,7 @@ class DatabaseFormatterExtension implements Extension
             ->end()
             ->end()
             ->scalarNode('run_uid')->defaultNull()->end()
+            ->scalarNode('lane_id')->defaultNull()->end()
             ->end();
     }
 
@@ -42,7 +43,8 @@ class DatabaseFormatterExtension implements Extension
             new Reference(EventDispatcherExtension::DISPATCHER_ID),
             new Reference('suite.registry'),
             $config['chrome'] ?? [],
-            $config['run_uid'] ?? null
+            $config['run_uid'] ?? null,
+            $config['lane_id'] ?? null
         ]);
 
         $definition->addTag('output.formatter');

@@ -3,6 +3,7 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Exceptions\ConfigException;
 use exface\Core\CommonLogic\Debugger\LogBooks\MarkdownLogBook;
+use exface\Core\DataTypes\FilePathDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
@@ -74,6 +75,8 @@ class ChromeManager
 
     /** @var array[] Log of every start() call; cleared by DatabaseFormatter after each feature is written */
     private array $startHistory = [];
+    /** App-config key deciding Chrome window visibility; see resolveHeadless(). */
+    private const CFG_CHROME_HEADLESS = 'PARALLEL.CHROME_HEADLESS';
 
     /**
      * Private constructor enforces singleton usage via getInstance().
@@ -147,8 +150,11 @@ class ChromeManager
      * If a leftover Chrome process from a previous run is already listening on the
      * configured port, it is killed first to avoid inheriting stale state.
      *
-     * When an Xdebug session is active, --headless is omitted so the tester can
-     * watch the browser and interact with it during debugging.
+     * Whether Chrome runs headless is decided by resolveHeadless(): the app-config flag
+     * PARALLEL.CHROME_HEADLESS wins when set (true = headless, false = visible), and Xdebug
+     * auto-detection is only the fallback when the flag is absent - so a live debugger shows the
+     * browser only when nobody configured the flag. Fleet workers run with the debugger disabled,
+     * so their fallback is always headless.
      *
      * @return ChromeStartResult Metadata about the started or reused Chrome process
      * @throws ConfigException If config is incomplete or Chrome does not become ready in time
@@ -161,7 +167,21 @@ class ChromeManager
         $config = $this->config;
         $startTime = microtime(true);
         $executable = $config['executable'] ?? null;
-        $userDataDir = getcwd() . DIRECTORY_SEPARATOR . $config['user_data_dir'] ?? null;
+        // Resolve the executable to an absolute path. An ABSOLUTE path (e.g. the fleet's
+        // PARALLEL.CHROME_PATH = "C:\Program Files\Google\Chrome\Application\chrome.exe") is used
+        // AS-IS - prepending getcwd() would produce a broken "C:\...\C:\..." path, Chrome would
+        // never launch, and waitUntilReady() would block until timeout (the worker "hangs" with no
+        // steps recorded). Only a RELATIVE path (e.g. the interactive "data\...\GoogleChromePortable.exe")
+        // is resolved against the installation root, exactly as before.
+        if ($executable !== null && FilePathDataType::isRelative($executable)) {
+            $executable = getcwd() . DIRECTORY_SEPARATOR . $executable;
+        }
+        // Resolve relative to cwd only when the key is actually present; a missing key must stay
+        // null so the mandatory-config guard below fails loudly instead of silently letting Chrome
+        // use cwd itself as the profile dir. (?? binds looser than ., so the old one-liner never worked.)
+        $userDataDir = isset($config['user_data_dir'])
+            ? getcwd() . DIRECTORY_SEPARATOR . $config['user_data_dir']
+            : null;
         $port = $config['port'] ?? 9222;
 
         $this->getLogbook()->addLine("Config resolved — executable: {$executable}, userDataDir: {$userDataDir}, port: {$port}");
@@ -174,16 +194,48 @@ class ChromeManager
             throw new ConfigException($msg, null, null);
         }
 
-        // Kill any leftover Chrome process on this port before starting a fresh one
+        // Deal with any process already occupying this port BEFORE launching. We only kill it if
+        // it is provably OUR OWN leftover Chrome (same user_data_dir on its command line); a live
+        // foreign process - another project's fleet worker, another tester's run, or a non-Chrome
+        // application - must NEVER be killed. On a shared server the ports come from probed bands,
+        // so an occupied port here means either our stale leftover or a band/collision problem
+        // that must surface loudly instead of sabotaging someone else's running browser.
         $this->getLogbook()->addLine("Checking for an existing process on port {$port} via netstat...");
         $this->getLogbook()->addIndent(+1);
         $existingPid = $this->findPidByPort($port);
         if ($existingPid !== null) {
-            $this->getLogbook()->addLine("Found leftover process PID {$existingPid} — stopping it before launching a new instance");
-            $this->pid = $existingPid;
-            $this->stop();
-            $this->getLogbook()->addLine("Waiting 500 ms for the old process to fully exit...");
-            usleep(500_000);
+            $cmdLine = $this->getProcessCommandLine($existingPid);
+            if ($cmdLine !== null && $this->isOwnLeftover($cmdLine, $userDataDir)) {
+                // Our own leftover from a previous run on this profile - safe to kill as before.
+                $this->getLogbook()->addLine("Found OUR leftover process PID {$existingPid} (command line matches our user_data_dir) — stopping it before launching a new instance");
+                $this->pid = $existingPid;
+                $this->stop();
+                $this->getLogbook()->addLine("Waiting 500 ms for the old process to fully exit...");
+                usleep(500_000);
+            } elseif ($cmdLine === null && $this->findPidByPort($port) === null) {
+                // The process exited between the netstat scan and the command-line query - the
+                // port is free now, proceed with a normal launch.
+                $this->getLogbook()->addLine("Process PID {$existingPid} vanished before it could be inspected — port {$port} is free now");
+            } else {
+                // Foreign live process (different user_data_dir, not Chrome at all, or state
+                // unknown while the port is still held): fail loudly, never kill.
+                $shownCmd = $cmdLine === null ? '(command line not retrievable)' : $cmdLine;
+                $msg = "**ERROR** Port {$port} is occupied by a FOREIGN process (PID {$existingPid}): {$shownCmd}. "
+                    . 'Refusing to kill it. This usually indicates a port-band collision between projects or runs — '
+                    . 'check the port_band / port_band_interactive settings in bdt_parallel.yml and the PARALLEL.* app config.';
+                $this->getLogbook()->addLine($msg);
+                $this->getLogbook()->addIndent(-1);
+                $this->getLogbook()->addIndent(-1);
+                $exception = new RuntimeException($msg);
+                try {
+                    // Same reporting path as waitUntilReady(): surface the failure as a real failed
+                    // step in the results DB instead of an unexplained timeout.
+                    $this->databaseFormatter?->logError($msg, $exception);
+                } catch (\Throwable $logError) {
+                    $this->getLogbook()->addLine('Could not report the foreign-process conflict to the DatabaseFormatter: ' . $logError->getMessage());
+                }
+                throw $exception;
+            }
         } else {
             $this->getLogbook()->addLine("No existing process found on port {$port}");
         }
@@ -192,12 +244,16 @@ class ChromeManager
         // "start /B" launches Chrome in the background within the current cmd session —
         // identical to a bat file. The empty "" after "start /B" is the window title
         // placeholder required by the Windows start command when a path follows.
-        // When running under a debugger, --headless is omitted so the tester can
-        // watch the browser and interact with it during debugging.
-        $isDebugging = extension_loaded('xdebug') && xdebug_is_debugger_active();
+        //
+        // Whether Chrome runs headless is decided by resolveHeadless(): the app-config flag
+        // PARALLEL.CHROME_HEADLESS wins when set (the server sets it true = always headless, a local
+        // operator sets it false to watch the browser), and Xdebug auto-detection is only the fallback
+        // when the flag is absent. Fleet workers run with the debugger disabled, so their fallback is
+        // always headless - the intended default for an unattended run.
+        $headless = $this->resolveHeadless();
         $cmd = 'start /B "" '
-            . '"' . getcwd() . DIRECTORY_SEPARATOR . $executable . '"'
-            . ($isDebugging ? '' : ' --headless --no-sandbox')
+            . '"' . $executable . '"'
+            . ($headless ? ' --headless --no-sandbox' : '')
             . ' --window-size=1920,1080 --disable-extensions --disable-gpu'
             . ' --disable-dev-shm-usage'
             . ' --remote-debugging-port=' . $port
@@ -207,7 +263,7 @@ class ChromeManager
             . ' --no-default-browser-check'
             . ' --user-data-dir="' . $userDataDir . '"';
 
-        $this->getLogbook()->addLine("Launching Chrome" . ($isDebugging ? " (headless OFF — debugger detected)" : " (headless)") . " with command: {$cmd}");
+        $this->getLogbook()->addLine("Launching Chrome (" . ($headless ? "headless" : "visible") . ") with command: {$cmd}");
         pclose(popen($cmd, 'r'));
         $this->getLogbook()->addLine("popen() returned — Chrome process spawned, waiting for debug API to become ready...");
 
@@ -362,7 +418,7 @@ class ChromeManager
     {
         return $this->runGuzzleApi('http://localhost:' . ($port ?? $this->getPort()) . '/json/list');
     }
-    
+
     /**
      * Finds the PID of the process listening on the given TCP port using netstat.
      *
@@ -391,6 +447,71 @@ class ChromeManager
         $this->getLogbook()->addLine("No LISTENING process found on port {$port}");
         $this->getLogbook()->addIndent(-1);
         return null;
+    }
+
+    /**
+     * Returns the full command line of a running process, or null if it cannot be determined.
+     *
+     * WHY THIS EXISTS: it is the evidence for the own-vs-foreign decision in start(). A Chrome
+     * command line contains its --user-data-dir argument, which is the only reliable marker
+     * distinguishing OUR leftover instance from a live Chrome belonging to another project or
+     * tester on the same server - the CDP HTTP endpoints do not expose the profile directory.
+     *
+     * WHY POWERSHELL Get-CimInstance INSTEAD OF WMIC: wmic is deprecated/removed on current
+     * Windows versions; Get-CimInstance queries the same Win32_Process data everywhere. The
+     * filter is built from an int PID, so no injection surface exists. Single quotes inside the
+     * double-quoted PowerShell command avoid cmd.exe quote-escaping pitfalls.
+     *
+     * @param int $pid PID of the process to inspect
+     * @return string|null The command line, or null on query failure or if the process is gone
+     */
+    private function getProcessCommandLine(int $pid): ?string
+    {
+        $cmd = 'powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \'ProcessId=' . $pid . '\').CommandLine"';
+        $this->getLogbook()->addLine("getProcessCommandLine({$pid}): querying via PowerShell...");
+
+        $output = [];
+        $exitCode = 1;
+        exec($cmd, $output, $exitCode);
+        $commandLine = trim(implode(' ', $output));
+
+        if ($exitCode !== 0 || $commandLine === '') {
+            $this->getLogbook()->addLine("getProcessCommandLine({$pid}): no command line retrievable (exit {$exitCode})");
+            return null;
+        }
+
+        $this->getLogbook()->addLine("getProcessCommandLine({$pid}): {$commandLine}");
+        return $commandLine;
+    }
+
+    /**
+     * Decides whether a command line belongs to OUR leftover Chrome instance.
+     *
+     * WHY MATCH ON user_data_dir: it is the one launch argument that is unique per BDT
+     * run/lane by construction (per-lane and per-port profile dirs), so its presence in the
+     * command line proves the process was started for THIS configuration. The comparison is
+     * Windows-tolerant: case-insensitive with normalized backslashes, because CIM output and
+     * our config may disagree on casing or slash direction.
+     *
+     * WHY THE FULL QUOTED ARGUMENT FORM instead of a bare substring: a bare directory match
+     * has a prefix trap - "...\lane1" is a substring of "...\lane10", so lane 1 would treat
+     * lane 10's LIVE Chrome as its own leftover and kill it. Every Chrome this manager launches
+     * carries exactly --user-data-dir="<absolute dir>" (see the launch command in start()), so
+     * matching that complete quoted argument is both precise and guaranteed to recognize our own
+     * leftovers. Anything that does not match this exact form is treated as foreign - the safe
+     * default, since foreign means "fail loudly", never "kill".
+     *
+     * @param string $commandLine         Full command line of the occupying process
+     * @param string $userDataDirAbsolute Our resolved absolute user_data_dir
+     * @return bool TRUE if the process is our own leftover and safe to kill
+     */
+    private function isOwnLeftover(string $commandLine, string $userDataDirAbsolute): bool
+    {
+        $normalize = function (string $path): string {
+            return strtolower(str_replace('/', '\\', $path));
+        };
+        $needle = '--user-data-dir="' . $normalize($userDataDirAbsolute) . '"';
+        return str_contains($normalize($commandLine), $needle);
     }
 
     /**
@@ -481,5 +602,45 @@ class ChromeManager
         }
 
         return [];
+    }
+
+    /**
+     * Public, side-effect-free view of the headless decision, so callers can REPORT what start()
+     * will do before it runs (e.g. a startup banner) without duplicating the resolution logic.
+     *
+     * Returns the exact same value start() uses, keeping any "will run headless/visible" message in
+     * perfect sync with the real launch - there is only one source of truth (resolveHeadless()).
+     *
+     * @return bool TRUE if the next start() would launch headless, FALSE for a visible window
+     */
+    public function willRunHeadless(): bool
+    {
+        return $this->resolveHeadless();
+    }
+
+    /**
+     * Decides whether Chrome starts headless.
+     *
+     * The app-config flag PARALLEL.CHROME_HEADLESS wins when present (true = headless, false = visible),
+     * so operators control visibility deterministically. When the key is absent (or config is unreadable),
+     * fall back to Xdebug auto-detection: visible while a debugger is attached, headless otherwise. Fleet
+     * workers run with the debugger disabled, so their fallback is always headless.
+     *
+     * @return bool TRUE to launch headless, FALSE for a visible window
+     */
+    private function resolveHeadless(): bool
+    {
+        try {
+            $wb = $this->databaseFormatter?->getWorkbench();
+            if ($wb !== null) {
+                $cfg = $wb->getApp('axenox.BDT')->getConfig();
+                if ($cfg->hasOption(self::CFG_CHROME_HEADLESS)) {
+                    return (bool) $cfg->getOption(self::CFG_CHROME_HEADLESS);
+                }
+            }
+        } catch (\Throwable $e) {
+            // Config unreadable (no workbench/app) - fall through to Xdebug auto-detection.
+        }
+        return ! (extension_loaded('xdebug') && xdebug_is_debugger_active());
     }
 }

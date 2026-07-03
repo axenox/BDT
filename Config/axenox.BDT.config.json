@@ -9,6 +9,12 @@
         "START_ON_UNIX": "",
         "OPTIONS": {}
     },
+    "PARALLEL.MAX_WORKERS": 4,
+    "PARALLEL.PORT_BAND_INTERACTIVE": "9951-9999",
+    "PARALLEL.PORT_BAND_SCHEDULED": "9251-9300",
+    "PARALLEL.WORKER_TIMEOUT_SECONDS": 1800,
+    "PARALLEL.CHROME_HEADLESS": true,
+    "PARALLEL.CHROME_PATH":"data\\axenox\\BDT\\GoogleChromePortable\\App\\Chrome-bin\\chrome.exe",
     "TEST_USER.USERNAME": "bdt_test",
     "TEST_USER.PASSWORD": "BDT!test54321",
     "TEST_USER.FIRST_NAME": "BDT",

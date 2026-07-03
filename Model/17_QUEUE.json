@@ -59,9 +59,9 @@
         {
             "_EXPORT_SUMMARY": "Behat tasks",
             "CREATED_ON": "2025-08-14 11:47:14",
-            "MODIFIED_ON": "2026-06-18 07:42:42",
+            "MODIFIED_ON": "2026-06-25 11:21:10",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
             "UID": "0x11f0b189a8acf06ab189025041000001",
             "PROTOTYPE_CLASS": "\\exface\\Core\\CommonLogic\\Queue\\CliTaskQueue",
             "APP": "0x11efa2214f96c8b8a221025041000001",
@@ -82,6 +82,7 @@
                 "allowed_commands": [
                     "#^vendor/bin/behat(?:\\.bat)?(?:\\s|$)#i",
                     "#^vendor/bin/action(?:\\.bat)?(?:\\s|$)#i",
+                    "#^vendor/bin/action(?:\\:RunParallel)?(?:\\s|$)#i",
                     "#^start\\s+\"\"\\s+data/axenox/BDT/[a-zA-Z0-9_-]+\\.bat(?:\\s|$)#i",
                     "#^data/axenox/BDT/[a-zA-Z0-9_-]+\\.bat(?:\\s|$)#i",
                     "#^C:/wamp/www/exface/exface/data/axenox/BDT/Chrome/GoogleChromePortable/GoogleChromePortable\\.exe(?:\\s|$)#i"
