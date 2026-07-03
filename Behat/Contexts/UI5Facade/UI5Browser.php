@@ -1224,15 +1224,33 @@ JS
     public static function setupUser(WorkbenchInterface $workbench, array $roles, string $locale = null): array
     {
         $config = $workbench->getApp('axenox.BDT')->getConfig();
+        $baseUsername = $config->getOption('TEST_USER.USERNAME');
+        $testRunnerPassword = $config->getOption('TEST_USER.PASSWORD');
+
+        // In a parallel run each worker carries a lane_id (wired through DatabaseFormatter). Give every
+        // lane its OWN exface.Core.USER row by suffixing the username, so concurrent workers never
+        // read-modify-write the same user row. Sharing one row across lanes breaks in two ways:
+        //   1. the concurrent dataUpdate() below fails the optimistic-lock check, and
+        //   2. roles cross-contaminate: dataUpdate() OVERWRITES USER_ROLE_USERS, so the last writer wins
+        //      while both browser sessions are logged in under the same username — a scenario can then
+        //      silently run with another lane's roles.
+        // Only the stable "_laneN" slot is appended, never the full run-scoped lane_id, so the set of
+        // test users stays bounded to the worker count and is reused on every nightly run instead of
+        // piling up a fresh row each night. In the single-process path getLaneId() is null, so the
+        // username and all existing behavior are unchanged.
+        $laneId = DatabaseFormatter::getLaneId();
+        $testRunnerUsername = $laneId !== null
+            ? $baseUsername . self::laneUserSuffix($laneId)
+            : $baseUsername;
+        
+        
         $userSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER');
-        $userSheet->getFilters()->addConditionFromString('USERNAME', $config->getOption('TEST_USER.USERNAME'), ComparatorDataType::EQUALS);
+        $userSheet->getFilters()->addConditionFromString('USERNAME', $testRunnerUsername, ComparatorDataType::EQUALS);
         $userSheet->getColumns()->addFromSystemAttributes();
         $userSheet->getColumns()->addMultiple([
             'USERNAME'
         ]);
         $userSheet->dataRead();
-        $testRunnerUsername = $config->getOption('TEST_USER.USERNAME');
-        $testRunnerPassword = $config->getOption('TEST_USER.PASSWORD');
         if ($userSheet->isEmpty()) {
             $userSheet->addRow([
                 'USERNAME' => $testRunnerUsername,
@@ -1293,8 +1311,8 @@ JS
             if ($authUxon->getProperty('class') === '\\' . MetamodelAuthenticator::class) {
                 $loginDataObj = MetaObjectFactory::createFromString($workbench, 'exface.Core.LOGIN_DATA');
                 $loginFields['_tab'] = $authUxon->getProperty('name') ?? $workbench->getCoreApp()->getTranslator($localeOfAnonymous)->translate('SECURITY.SIGN_IN');
-                $loginFields[$loginDataObj->getAttribute('USERNAME')->getName()] = $config->getOption('TEST_USER.USERNAME');
-                $loginFields[$loginDataObj->getAttribute('PASSWORD')->getName()] = $config->getOption('TEST_USER.PASSWORD');
+                $loginFields[$loginDataObj->getAttribute('USERNAME')->getName()] = $testRunnerUsername;
+                $loginFields[$loginDataObj->getAttribute('PASSWORD')->getName()] = $testRunnerPassword;
                 $loginAction = ActionFactory::createFromString($workbench, Login::class);
                 $loginFields['_button'] = $loginAction->getName();
                 break;
@@ -1315,7 +1333,8 @@ JS
 
     public function getTestingUsername() : string
     {
-        return $this->getWorkbench()->getOption('TEST_USER.USERNAME');
+        $config = $this->getWorkbench()->getApp('axenox.BDT')->getConfig();
+        return $config->getOption('TEST_USER.USERNAME');
     }
 
     public static function resetUser(WorkbenchInterface $workbench): void
@@ -1324,7 +1343,29 @@ JS
         $dataSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER_ROLE_USERS');
         $dataSheet->getFilters()->addConditionFromString('USER__USERNAME', $config->getOption('TEST_USER.USERNAME'), ComparatorDataType::EQUALS);
         $dataSheet->dataDelete();
-        return;
+    }
+
+    /**
+     * Derives the stable per-lane username suffix from a lane_id.
+     *
+     * Why only the trailing "_laneN" and not the whole lane_id: lane_id is built by the coordinator
+     * as "<run_uid>_laneN". The run_uid changes every night, so embedding it would create a brand new
+     * user row on every run and let test users accumulate without bound. Keeping just "_laneN" makes
+     * the username identical across runs, so find-or-create reuses the same row and the user set stays
+     * capped at the worker count.
+     *
+     * Why it throws instead of falling back: if we are in a parallel run (lane_id present) but cannot
+     * locate the lane slot, silently using the base username would put every lane back on one shared
+     * row — the exact collision this change exists to prevent. Failing loudly surfaces a broken
+     * lane_id contract instead of hiding it behind a data race.
+     */
+    private static function laneUserSuffix(string $laneId): string
+    {
+        $pos = strrpos($laneId, '_lane');
+        if ($pos === false) {
+            throw new RuntimeException('Cannot derive lane user suffix: lane_id "' . $laneId . '" has no "_laneN" token.');
+        }
+        return substr($laneId, $pos);
     }
 
     /**
