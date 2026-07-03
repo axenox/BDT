@@ -3,6 +3,7 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Exceptions\ConfigException;
 use exface\Core\CommonLogic\Debugger\LogBooks\MarkdownLogBook;
+use exface\Core\DataTypes\FilePathDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
@@ -166,12 +167,26 @@ class ChromeManager
         $config = $this->config;
         $startTime = microtime(true);
         $executable = $config['executable'] ?? null;
-        $userDataDir = getcwd() . DIRECTORY_SEPARATOR . ($config['user_data_dir'] ?? null);
+        // Resolve the executable to an absolute path. An ABSOLUTE path (e.g. the fleet's
+        // PARALLEL.CHROME_PATH = "C:\Program Files\Google\Chrome\Application\chrome.exe") is used
+        // AS-IS - prepending getcwd() would produce a broken "C:\...\C:\..." path, Chrome would
+        // never launch, and waitUntilReady() would block until timeout (the worker "hangs" with no
+        // steps recorded). Only a RELATIVE path (e.g. the interactive "data\...\GoogleChromePortable.exe")
+        // is resolved against the installation root, exactly as before.
+        if ($executable !== null && FilePathDataType::isRelative($executable)) {
+            $executable = getcwd() . DIRECTORY_SEPARATOR . $executable;
+        }
+        // Resolve relative to cwd only when the key is actually present; a missing key must stay
+        // null so the mandatory-config guard below fails loudly instead of silently letting Chrome
+        // use cwd itself as the profile dir. (?? binds looser than ., so the old one-liner never worked.)
+        $userDataDir = isset($config['user_data_dir'])
+            ? getcwd() . DIRECTORY_SEPARATOR . $config['user_data_dir']
+            : null;
         $port = $config['port'] ?? 9222;
 
         $this->getLogbook()->addLine("Config resolved — executable: {$executable}, userDataDir: {$userDataDir}, port: {$port}");
 
-        if ($executable === null || $config['user_data_dir'] === null) {
+        if ($executable === null || $userDataDir === null) {
             $msg = '**ERROR** ChromeManager requires "executable" and "user_data_dir" in the chrome config. '
                 . 'Please set them under DatabaseFormatterExtension > chrome in your behat.yml.';
             $this->getLogbook()->addLine($msg);
@@ -179,16 +194,48 @@ class ChromeManager
             throw new ConfigException($msg, null, null);
         }
 
-        // Kill any leftover Chrome process on this port before starting a fresh one
+        // Deal with any process already occupying this port BEFORE launching. We only kill it if
+        // it is provably OUR OWN leftover Chrome (same user_data_dir on its command line); a live
+        // foreign process - another project's fleet worker, another tester's run, or a non-Chrome
+        // application - must NEVER be killed. On a shared server the ports come from probed bands,
+        // so an occupied port here means either our stale leftover or a band/collision problem
+        // that must surface loudly instead of sabotaging someone else's running browser.
         $this->getLogbook()->addLine("Checking for an existing process on port {$port} via netstat...");
         $this->getLogbook()->addIndent(+1);
         $existingPid = $this->findPidByPort($port);
         if ($existingPid !== null) {
-            $this->getLogbook()->addLine("Found leftover process PID {$existingPid} — stopping it before launching a new instance");
-            $this->pid = $existingPid;
-            $this->stop();
-            $this->getLogbook()->addLine("Waiting 500 ms for the old process to fully exit...");
-            usleep(500_000);
+            $cmdLine = $this->getProcessCommandLine($existingPid);
+            if ($cmdLine !== null && $this->isOwnLeftover($cmdLine, $userDataDir)) {
+                // Our own leftover from a previous run on this profile - safe to kill as before.
+                $this->getLogbook()->addLine("Found OUR leftover process PID {$existingPid} (command line matches our user_data_dir) — stopping it before launching a new instance");
+                $this->pid = $existingPid;
+                $this->stop();
+                $this->getLogbook()->addLine("Waiting 500 ms for the old process to fully exit...");
+                usleep(500_000);
+            } elseif ($cmdLine === null && $this->findPidByPort($port) === null) {
+                // The process exited between the netstat scan and the command-line query - the
+                // port is free now, proceed with a normal launch.
+                $this->getLogbook()->addLine("Process PID {$existingPid} vanished before it could be inspected — port {$port} is free now");
+            } else {
+                // Foreign live process (different user_data_dir, not Chrome at all, or state
+                // unknown while the port is still held): fail loudly, never kill.
+                $shownCmd = $cmdLine === null ? '(command line not retrievable)' : $cmdLine;
+                $msg = "**ERROR** Port {$port} is occupied by a FOREIGN process (PID {$existingPid}): {$shownCmd}. "
+                    . 'Refusing to kill it. This usually indicates a port-band collision between projects or runs — '
+                    . 'check the port_band / port_band_interactive settings in bdt_parallel.yml and the PARALLEL.* app config.';
+                $this->getLogbook()->addLine($msg);
+                $this->getLogbook()->addIndent(-1);
+                $this->getLogbook()->addIndent(-1);
+                $exception = new RuntimeException($msg);
+                try {
+                    // Same reporting path as waitUntilReady(): surface the failure as a real failed
+                    // step in the results DB instead of an unexplained timeout.
+                    $this->databaseFormatter?->logError($msg, $exception);
+                } catch (\Throwable $logError) {
+                    $this->getLogbook()->addLine('Could not report the foreign-process conflict to the DatabaseFormatter: ' . $logError->getMessage());
+                }
+                throw $exception;
+            }
         } else {
             $this->getLogbook()->addLine("No existing process found on port {$port}");
         }
@@ -205,7 +252,7 @@ class ChromeManager
         // always headless - the intended default for an unattended run.
         $headless = $this->resolveHeadless();
         $cmd = 'start /B "" '
-            . '"' . getcwd() . DIRECTORY_SEPARATOR . $executable . '"'
+            . '"' . $executable . '"'
             . ($headless ? ' --headless --no-sandbox' : '')
             . ' --window-size=1920,1080 --disable-extensions --disable-gpu'
             . ' --disable-dev-shm-usage'
@@ -371,7 +418,7 @@ class ChromeManager
     {
         return $this->runGuzzleApi('http://localhost:' . ($port ?? $this->getPort()) . '/json/list');
     }
-    
+
     /**
      * Finds the PID of the process listening on the given TCP port using netstat.
      *
@@ -400,6 +447,71 @@ class ChromeManager
         $this->getLogbook()->addLine("No LISTENING process found on port {$port}");
         $this->getLogbook()->addIndent(-1);
         return null;
+    }
+
+    /**
+     * Returns the full command line of a running process, or null if it cannot be determined.
+     *
+     * WHY THIS EXISTS: it is the evidence for the own-vs-foreign decision in start(). A Chrome
+     * command line contains its --user-data-dir argument, which is the only reliable marker
+     * distinguishing OUR leftover instance from a live Chrome belonging to another project or
+     * tester on the same server - the CDP HTTP endpoints do not expose the profile directory.
+     *
+     * WHY POWERSHELL Get-CimInstance INSTEAD OF WMIC: wmic is deprecated/removed on current
+     * Windows versions; Get-CimInstance queries the same Win32_Process data everywhere. The
+     * filter is built from an int PID, so no injection surface exists. Single quotes inside the
+     * double-quoted PowerShell command avoid cmd.exe quote-escaping pitfalls.
+     *
+     * @param int $pid PID of the process to inspect
+     * @return string|null The command line, or null on query failure or if the process is gone
+     */
+    private function getProcessCommandLine(int $pid): ?string
+    {
+        $cmd = 'powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \'ProcessId=' . $pid . '\').CommandLine"';
+        $this->getLogbook()->addLine("getProcessCommandLine({$pid}): querying via PowerShell...");
+
+        $output = [];
+        $exitCode = 1;
+        exec($cmd, $output, $exitCode);
+        $commandLine = trim(implode(' ', $output));
+
+        if ($exitCode !== 0 || $commandLine === '') {
+            $this->getLogbook()->addLine("getProcessCommandLine({$pid}): no command line retrievable (exit {$exitCode})");
+            return null;
+        }
+
+        $this->getLogbook()->addLine("getProcessCommandLine({$pid}): {$commandLine}");
+        return $commandLine;
+    }
+
+    /**
+     * Decides whether a command line belongs to OUR leftover Chrome instance.
+     *
+     * WHY MATCH ON user_data_dir: it is the one launch argument that is unique per BDT
+     * run/lane by construction (per-lane and per-port profile dirs), so its presence in the
+     * command line proves the process was started for THIS configuration. The comparison is
+     * Windows-tolerant: case-insensitive with normalized backslashes, because CIM output and
+     * our config may disagree on casing or slash direction.
+     *
+     * WHY THE FULL QUOTED ARGUMENT FORM instead of a bare substring: a bare directory match
+     * has a prefix trap - "...\lane1" is a substring of "...\lane10", so lane 1 would treat
+     * lane 10's LIVE Chrome as its own leftover and kill it. Every Chrome this manager launches
+     * carries exactly --user-data-dir="<absolute dir>" (see the launch command in start()), so
+     * matching that complete quoted argument is both precise and guaranteed to recognize our own
+     * leftovers. Anything that does not match this exact form is treated as foreign - the safe
+     * default, since foreign means "fail loudly", never "kill".
+     *
+     * @param string $commandLine         Full command line of the occupying process
+     * @param string $userDataDirAbsolute Our resolved absolute user_data_dir
+     * @return bool TRUE if the process is our own leftover and safe to kill
+     */
+    private function isOwnLeftover(string $commandLine, string $userDataDirAbsolute): bool
+    {
+        $normalize = function (string $path): string {
+            return strtolower(str_replace('/', '\\', $path));
+        };
+        $needle = '--user-data-dir="' . $normalize($userDataDirAbsolute) . '"';
+        return str_contains($normalize($commandLine), $needle);
     }
 
     /**

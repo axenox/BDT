@@ -10,8 +10,8 @@
     "replaces_page_selector": null,
     "created_by_user_selector": "0x11eca7f5b092f284a7f5005056bea39f",
     "created_on": "2025-10-08 18:22:39",
-    "modified_by_user_selector": "0x11f08ce4baed19b88ce4005056be9857",
-    "modified_on": "2026-06-02 11:18:02",
+    "modified_by_user_selector": "0x11efa72c1fb56dfea72c025041000001",
+    "modified_on": "2026-07-02 12:17:42",
     "contents": {
         "object_alias": "exface.Core.DUMMY",
         "widget_type": "SplitHorizontal",
@@ -246,20 +246,6 @@
                                 "hint": "Set up an app to be tested",
                                 "commands": [
                                     "vendor/bin/action axenox.BDT:Behat init --addApp=<App alias>"
-                                ]
-                            },
-                            {
-                                "caption": "Restart Chrome",
-                                "hint": "Run preconfigured Chrome.bat in data folder",
-                                "commands": [
-                                    "data\\axenox\\BDT\\Chrome.bat"
-                                ]
-                            },
-                            {
-                                "caption": "Start browser",
-                                "hint": "Start a remote controlled browser for UI tests",
-                                "commands": [
-                                    "vendor/bin/action axenox.BDT:Behat startBrowser --browser=<Browser config key>"
                                 ]
                             }
                         ]

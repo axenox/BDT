@@ -1,11 +1,10 @@
 <?php
 namespace axenox\BDT\Actions;
 
+use axenox\BDT\Behat\Common\PortProbingTrait;
 use axenox\BDT\Behat\Common\RunRecordWriter;
 use exface\Core\CommonLogic\AbstractAction;
 use exface\Core\CommonLogic\Actions\ServiceParameter;
-use exface\Core\CommonLogic\DataSheets\DataSheet;
-use exface\Core\DataTypes\DateTimeDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Facades\ConsoleFacade\CliCommandRunner;
 use exface\Core\Factories\ResultFactory;
@@ -16,7 +15,6 @@ use exface\Core\Interfaces\Tasks\ResultInterface;
 use exface\Core\Interfaces\Tasks\TaskInterface;
 use Symfony\Component\Process\Process;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
-use Symfony\Component\Yaml\Yaml;
 
 /**
  * Coordinator action for parallel BDT test execution.
@@ -37,14 +35,22 @@ use Symfony\Component\Yaml\Yaml;
  */
 class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
 {
+    // Port-band resolution and free-port probing shared with the interactive RunTest action,
+    // so the two execution paths can never drift apart in how they allocate Chrome ports.
+    use PortProbingTrait;
+
     // CLI option names - kept as constants so the option declarations in getCliOptions()
     // and the reads via getTaskParam() can never drift apart.
     private const OPT_TAGS         = 'tags';
     private const OPT_BEHAT_CONFIG = 'behat_config';
-    private const OPT_FEATURE_PATH = 'feature_path';
+    private const OPT_FEATURE      = 'feature';
     private const OPT_CHROME_PATH  = 'chrome_path';
+    private const OPT_SUITE        = 'suite';
 
     private const DEFAULT_TAGS = '@Status::Ready';
+    // Base config filename defaulted to when --behat_config is omitted. Behat init (re)writes this at
+    // the installation root, so it is always present and current by the time we resolve it.
+    private const DEFAULT_BEHAT_CONFIG = 'behat.yml';
 
     // Wall-clock ceiling per worker, used as the FALLBACK when PARALLEL.WORKER_TIMEOUT_SECONDS
     // is not set in app config. We never use runCliCommand's 60s default - a Behat run needs far
@@ -61,16 +67,18 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     // App-config key deciding Chrome window visibility. MUST match ChromeManager::CFG_CHROME_HEADLESS
     // so the banner reports exactly what the workers' ChromeManager will resolve at launch time.
     private const CFG_CHROME_HEADLESS = 'PARALLEL.CHROME_HEADLESS';
+    
+    // App-config home for the REAL chrome.exe path. Separate from the base behat.yml chrome.executable
+    // on purpose: that one points at GoogleChromePortable.exe (single-instance lock), which workers must
+    // NOT use. The fleet needs a direct chrome.exe, so it gets its own key.
+    private const CFG_CHROME_PATH = 'PARALLEL.CHROME_PATH';  // NEW
 
-    // Per-project orchestration override. A SEPARATE file from behat.yml on purpose: behat.yml
-    // is worker config, this is coordinator config. Mixing them would let a worker accidentally
-    // read or break the band. Optional - absent means "use app-config defaults".
-    private const OVERRIDE_FILE = 'bdt_parallel.yml';
+    // Per-project bdt_parallel.yml key for the SCHEDULED band. The override file itself (name,
+    // location, rationale) is owned by PortProbingTrait, shared with the interactive RunTest
+    // action - only the key differs per execution path.
+    private const OVERRIDE_KEY_SCHEDULED = 'port_band';
 
-    // Meta object alias - identical to the one DatabaseFormatter writes to, so the
-    // coordinator and the worker operate on the very same run row.
     private ?DataSheetInterface $runDataSheet = null;
-
 
     // Poll cadence for the concurrent drain loop. 100 ms is small enough that lane output is streamed
     // to its log near-live, but large enough that the busy-wait costs negligible CPU while N workers
@@ -115,30 +123,46 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      */
     protected function perform(TaskInterface $task, DataTransactionInterface $transaction): ResultInterface
     {
-        // --- Read inputs (loud failure on anything missing; we never guess paths) ---
-        $tags         = $this->getTaskParam($task, self::OPT_TAGS, self::DEFAULT_TAGS);
-        $behatConfig  = $this->getTaskParam($task, self::OPT_BEHAT_CONFIG); // abs path to base nightly behat.yml
-        $featurePath  = $this->getTaskParam($task, self::OPT_FEATURE_PATH); // abs path/dir scanned for expected counts
-        $chromePath   = $this->getTaskParam($task, self::OPT_CHROME_PATH);  // abs path to chrome.exe (NOT GoogleChromePortable.exe)
+        // --- Read inputs. Only --tags carries a real default here; the path/scope inputs are read as
+        // nullable and resolved AFTER init from their authoritative sources, so the common case is a bare
+        // `RunParallel --tags=...`. ---
+        $tags           = $this->getOptionalTaskParam($task, self::OPT_TAGS);
+        $behatConfigArg = $this->getOptionalTaskParam($task, self::OPT_BEHAT_CONFIG);
+        $chromePathArg  = $this->getOptionalTaskParam($task, self::OPT_CHROME_PATH);
+        $featureArg     = $this->getOptionalTaskParam($task, self::OPT_FEATURE);
+        $suiteArg       = $this->getOptionalTaskParam($task, self::OPT_SUITE);
 
-        if (! is_file($behatConfig)) {
-            throw new RuntimeException('behat_config is not a file: ' . $behatConfig);
+        // At least one scope selector must be present. tags no longer has a baked-in default, so a bare
+        // invocation with no --tags, --feature or --suite would run the ENTIRE test base with no filter -
+        // the "looks green but ran the wrong thing" footgun this framework exists to prevent. behat_config
+        // and chrome_path are intentionally excluded: they are infrastructure with their own resolution and
+        // loud validation, not run scope.
+        if ($tags === null && $featureArg === null && $suiteArg === null) {
+            throw new RuntimeException('Provide at least one of --tags, --feature or --suite; refusing to run the whole test base unscoped.');
         }
-        if (! file_exists($featurePath)) {
-            throw new RuntimeException('feature_path does not exist: ' . $featurePath);
-        }
-
         $cwd = $this->getWorkbench()->getInstallationPath();
 
-        // --- Step 0: prepare the environment exactly like a single Behat run does ---
-        // Every non-parallel run is preceded by `Behat init`, which (re)creates the global
-        // behat.yml, registers app suites and - most importantly - refreshes base_url to the
-        // current workbench URL. Lanes never run init themselves, so a stale base_url would make
-        // every worker fail. Running it once up front keeps the parallel path equivalent.
+        // --- Step 0: prepare the environment exactly like a single Behat run does. Init runs FIRST so the
+        // installation-root behat.yml exists and is current before we default to it below; a stale base_url
+        // would otherwise break every worker. ---
         $this->runInit($cwd);
+
+        // --- Resolve the deferred inputs from their authoritative sources. Each validates and fails loudly,
+        // so defaulting never degrades into a silently-wrong path (never-guess is preserved). ---
+        $behatConfig = $this->resolveBehatConfig($behatConfigArg, $cwd);
+        $chromePath  = $this->resolveChromePath($chromePathArg);
+        $scanRoots   = $this->resolveScanRoots($behatConfig, $featureArg, $suiteArg);
+
         $runRecordWriter = new RunRecordWriter();
         // --- Step 1: open the run record (sole creator, so the workers can attach to its UID) ---
-        $this->runDataSheet = $runRecordWriter->create($this->getWorkbench(), $tags);
+        // behat_command records WHAT this run executed. We store the coordinator's own resolved invocation
+        // (action + scope selectors), NOT the tag string: passing $tags mislabels the column, and a parallel
+        // run has no single behat command anyway - it fans out to N lane commands. The reconstructed action
+        // command is the one reproducible truth for the whole run.
+        $behatCommand = $this->describeInvocation($tags, $featureArg, $suiteArg);
+        // --- Step 1: open the run record (sole creator, so the workers can attach to its UID) ---
+        $this->runDataSheet = $runRecordWriter->create($this->getWorkbench(), $behatCommand);
+        $this->runStart = microtime(true);
         $runUid = $this->runDataSheet->getUidColumn()->getValue(0);
 
         try {
@@ -147,7 +171,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             // the expected totals must reflect ALL matched features even if a worker dies partway
             // through (otherwise silent-stop detection is impossible).
             $expected = (new \axenox\BDT\Behat\Common\ExpectedTestCountCalculator())
-                ->calculate([$featurePath], $tags);
+                ->calculate($scanRoots, $tags);
 
             // A broken feature file aborts the whole Behat run at parse time, so surface the
             // offenders now rather than letting a worker crash opaquely with exit code 255.
@@ -164,6 +188,16 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             // role at run-time by UI5Browser::setupUser(), so the only ceiling is "do not start
             // more workers than there are features to test". ---
             $matchedFiles = $expected->matchedFiles;
+            // An empty scope must not fall through to a single worker with an empty bucket: buildWorkerCommand()
+            // with no positional paths makes Behat run the ENTIRE suite, contradicting an expected count of 0 and
+            // producing a wildly wrong run. Finalize cleanly and report instead.
+            if ($matchedFiles === []) {
+                $runRecordWriter->finalize($this->runDataSheet);
+                return ResultFactory::createMessageResult(
+                    $task,
+                    sprintf('Parallel run %s: no feature files matched the requested scope/tags. Nothing to run.', $runUid)
+                );
+            }
             $maxWorkers   = $this->resolveMaxWorkers();
             $workerCount  = max(1, min($maxWorkers, count($matchedFiles)));
             $buckets      = $this->bucketFeatures($matchedFiles, $workerCount);
@@ -243,17 +277,24 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         return [
             (new ServiceParameter($this))
                 ->setName(self::OPT_TAGS)
-                ->setDescription('Behat tag filter to select scenarios, e.g. "@Status::Ready"')
-                ->setDefaultValue(self::DEFAULT_TAGS),
+                ->setDescription('Behat tag filter, e.g. "@Status::Ready". Optional - but at least one of --tags, --feature or --suite is required.')
+                ->setDefaultValue(null),
             (new ServiceParameter($this))
                 ->setName(self::OPT_BEHAT_CONFIG)
-                ->setDescription('Path to the base nightly behat.yml the lane config imports'),
-            (new ServiceParameter($this))
-                ->setName(self::OPT_FEATURE_PATH)
-                ->setDescription('Path (file or directory) scanned to compute the expected feature/scenario counts'),
+                ->setDescription('Base behat.yml the lanes import. Optional - defaults to the installation-root behat.yml refreshed by Behat init.')
+                ->setDefaultValue(null),
             (new ServiceParameter($this))
                 ->setName(self::OPT_CHROME_PATH)
-                ->setDescription('Path to chrome.exe (NOT GoogleChromePortable.exe)')
+                ->setDescription('Path to chrome.exe (NOT GoogleChromePortable.exe). Optional - defaults to app config ' . self::CFG_CHROME_PATH . '.')
+                ->setDefaultValue(null),
+            (new ServiceParameter($this))
+                ->setName(self::OPT_FEATURE)
+                ->setDescription('Restrict the run to a single feature file or directory. Optional - defaults to all suites in behat.yml. Mutually exclusive with --suite.')
+                ->setDefaultValue(null),
+            (new ServiceParameter($this))
+                ->setName(self::OPT_SUITE)
+                ->setDescription('Restrict the run to a named Behat suite. Optional. Mutually exclusive with --feature.')
+                ->setDefaultValue(null),
         ];
     }
 
@@ -449,40 +490,6 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Resolves the [start, end] port band, preferring a per-project override file.
-     *
-     * Why a SEPARATE override file (bdt_parallel.yml) instead of a key in behat.yml: behat.yml is
-     * worker config, the band is orchestration config. Mixing them risks a worker breaking the
-     * band or vice versa. The band is only a SEARCH WINDOW - real collision-safety comes from the
-     * runtime free-port probe (allocateFreePort), so two projects with overlapping bands still
-     * never clash. A malformed override does not silently guess: it fails loudly.
-     *
-     * @return int[] [startPort, endPort]
-     */
-    private function resolvePortBand(string $behatConfig): array
-    {
-        $overridePath = dirname($behatConfig) . DIRECTORY_SEPARATOR . self::OVERRIDE_FILE;
-        if (is_file($overridePath)) {
-            $parsed = Yaml::parseFile($overridePath);
-            $band = $parsed['port_band'] ?? null;
-            if (! is_string($band) || ! preg_match('/^\d+-\d+$/', $band)) {
-                throw new RuntimeException(
-                    'Malformed ' . self::OVERRIDE_FILE . ': "port_band" must be like "9301-9400", got ' . var_export($band, true)
-                );
-            }
-        } else {
-            // Explicit log line rather than a silent guess, so the source of the band is traceable.
-            $this->getWorkbench()->getLogger()->info('No ' . self::OVERRIDE_FILE . ' override; using app-config port band');
-            $band = (string) $this->getWorkbench()->getApp('axenox.BDT')->getConfig()->getOption(self::CFG_PORT_BAND);
-        }
-        [$start, $end] = array_map('intval', explode('-', $band));
-        if ($end < $start) {
-            throw new RuntimeException('Invalid port band ' . $band);
-        }
-        return [$start, $end];
-    }
-
-    /**
      * Splits matched feature files into N disjoint buckets covering ALL of them.
      *
      * Round-robin so file size/scenario count is spread roughly evenly across lanes instead of
@@ -502,52 +509,26 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Allocates the first currently-free port in the band via a probe, skipping ports already
-     * handed to other lanes in THIS run.
+     * Builds the Behat worker command: lane config + optional tag filter, with the bucket as positional
+     * args.
      *
-     * Collision-safety is LAYERED rather than reserved up front, because the worker - not the
-     * coordinator - owns its Chrome lifecycle, so there is no post-launch port the coordinator could
-     * "verify and reallocate" without either killing/relaunching the worker or fighting it for that
-     * Chrome (and Phase A is deliberately non-blocking, so per-bind verification would serialize
-     * startup). The layers:
-     *   1. Within this run, $held guarantees two lanes never receive the same port.
-     *   2. Across runs/projects, the separate port bands make overlap unlikely, and the probe skips
-     *      any already-bound port (open socket = busy, refused = free).
-     *   3. The residual probe->bind race (a port that turns busy after we picked it) is NOT silent:
-     *      the worker's ChromeManager fails to bring Chrome up on that port, Behat exits non-zero,
-     *      and the lane is recorded as a failure during drain.
-     * The single case NOT defended here is a LIVE foreign Chrome already on a probed port - the
-     * worker's ChromeManager would kill it as a "leftover". Band separation is what prevents that; if
-     * bands are ever overlapped across concurrent runs, add explicit reservation instead of relying
-     * on the probe.
+     * Positional feature paths go OUTSIDE --config so Behat runs exactly that bucket. The lane config
+     * carries run_uid + lane_id + Chrome port, so configuration flows only through the generated YAML -
+     * no BEHAT_PARAMS overrides.
      *
-     * @param int[] $held Ports already assigned to other lanes in this run
-     */
-    private function allocateFreePort(int $start, int $end, array $held): int
-    {
-        for ($port = $start; $port <= $end; $port++) {
-            if (in_array($port, $held, true)) {
-                continue;
-            }
-            if (! $this->isPortBound($port)) {
-                return $port;
-            }
-        }
-        throw new RuntimeException('Port band ' . $start . '-' . $end . ' exhausted - no free port for the next worker');
-    }
-
-    /**
-     * Builds the Behat worker command: lane config + tags, with the bucket as positional args.
-     *
-     * Positional feature paths go OUTSIDE --config so Behat runs exactly that bucket. The lane
-     * config carries run_uid + lane_id + Chrome port, so configuration flows only through the
-     * generated YAML - no BEHAT_PARAMS overrides.
+     * Why --tags is conditional: when scope came from --feature/--suite with no tag filter, we OMIT
+     * --tags rather than pass --tags="". An empty tag expression is not "no filter" to Behat, and it
+     * would diverge from ExpectedTestCountCalculator (which counts ALL scenarios when the tag expression
+     * is empty), breaking expected==actual.
      *
      * @param string[] $bucket
      */
-    private function buildWorkerCommand(string $laneConfigPath, string $tags, array $bucket): string
+    private function buildWorkerCommand(string $laneConfigPath, ?string $tags, array $bucket): string
     {
-        $cmd = sprintf('vendor\\bin\\behat --config "%s" --tags="%s"', $laneConfigPath, $tags);
+        $cmd = sprintf('vendor\\bin\\behat --config "%s"', $laneConfigPath);
+        if ($tags !== null && trim($tags) !== '') {
+            $cmd .= sprintf(' --tags="%s"', $tags);
+        }
         foreach ($bucket as $feature) {
             $cmd .= ' "' . $feature . '"';
         }
@@ -611,9 +592,9 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * @return array<int,string> Worker failures keyed by lane; non-empty means the run must fail
      * @throws \Throwable
      */
-    private function runFleet(string $cwd, string $behatConfig, string $runUid, string $chromePath, string $tags, array $buckets, string $banner = ''): array
+    private function runFleet(string $cwd, string $behatConfig, string $runUid, string $chromePath, ?string $tags, array $buckets, string $banner = ''): array
     {
-        [$portStart, $portEnd] = $this->resolvePortBand($behatConfig);
+        [$portStart, $portEnd] = $this->resolvePortBand($behatConfig, self::OVERRIDE_KEY_SCHEDULED, self::CFG_PORT_BAND);
         $timeout = $this->resolveWorkerTimeout();
         $heldPorts = [];
         // Import the base config by its real filename so the lane import matches even on
@@ -778,6 +759,129 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
+     * Resolves the base behat.yml the lanes import: the explicit --behat_config when given, otherwise
+     * the installation-root behat.yml that runInit() just (re)created.
+     *
+     * Why default to the installation root: runInit() runs Behat init, which writes the global behat.yml
+     * there and refreshes its base_url. That file is therefore always present and current by the time we
+     * reach here, so requiring the operator to pass its path was pure ceremony. We still validate and
+     * fail loudly - defaulting is not guessing, since this is the exact file the rest of the run (init,
+     * lane imports, port-band override lookup) already uses.
+     *
+     * @throws RuntimeException if the resolved file does not exist
+     */
+    private function resolveBehatConfig(?string $explicit, string $cwd): string
+    {
+        $path = ($explicit !== null && $explicit !== '')
+            ? $explicit
+            : $cwd . DIRECTORY_SEPARATOR . self::DEFAULT_BEHAT_CONFIG;
+        if (! is_file($path)) {
+            throw new RuntimeException('behat_config is not a file: ' . $path);
+        }
+        return $path;
+    }
+
+    /**
+     * Resolves the real chrome.exe path: the explicit --chrome_path when given, otherwise the
+     * PARALLEL.CHROME_PATH app-config value.
+     *
+     * Why a dedicated config key rather than the base behat.yml chrome.executable: that value points at
+     * GoogleChromePortable.exe, whose single-instance lock is exactly what workers must NOT use. hasOption
+     * guards against exface throwing on an unset key so we can emit our own actionable message. Existence
+     * is validated and failure is loud - a missing binary must not degrade into a silent green run.
+     *
+     * @throws RuntimeException if neither source yields an existing file
+     */
+    private function resolveChromePath(?string $explicit): string
+    {
+        if ($explicit !== null && $explicit !== '') {
+            $path = $explicit;
+        } else {
+            $cfg  = $this->getWorkbench()->getApp('axenox.BDT')->getConfig();
+            $path = $cfg->hasOption(self::CFG_CHROME_PATH) ? (string) $cfg->getOption(self::CFG_CHROME_PATH) : '';
+        }
+        if ($path === '' || ! is_file($path)) {
+            throw new RuntimeException(
+                'chrome_path could not be resolved to an existing chrome.exe. '
+                . 'Pass --chrome_path or set ' . self::CFG_CHROME_PATH . ' in app config. Got: ' . var_export($path, true)
+            );
+        }
+        return $path;
+    }
+
+    /**
+     * Decides WHICH feature files define this run's scope: an explicit --feature path, a named --suite,
+     * or (default) every suite declared in the base behat.yml.
+     *
+     * Why derive from behat.yml instead of a mandatory --feature: the suites in behat.yml already declare
+     * where features live, so a separate required path was both ceremony AND a footgun - an operator path
+     * that disagreed with the suites would make the expected counts cover a different set than the workers
+     * actually run, breaking expected==actual for a non-test reason. Deriving from the same behat.yml the
+     * workers import ties the expected-count scan and the run to one source of truth.
+     *
+     * --feature and --suite are mutually exclusive: same question, two ways, so accepting both would force
+     * a silent precedence rule. We fail loudly. An unknown suite or an explicit --feature that does not
+     * exist also fails loudly rather than resolving to an empty set (which would look green having run
+     * nothing).
+     *
+     * @return string[] Scan roots handed to ExpectedTestCountCalculator
+     * @throws RuntimeException on the --feature/--suite combination, a missing --feature, an unknown suite,
+     *                          or no resolvable paths
+     */
+    private function resolveScanRoots(string $behatConfig, ?string $feature, ?string $suite): array
+    {
+        $hasFeature = $feature !== null && $feature !== '';
+        $hasSuite   = $suite  !== null && $suite  !== '';
+
+        if ($hasFeature && $hasSuite) {
+            throw new RuntimeException('Pass either --feature or --suite, not both.');
+        }
+        if ($hasFeature) {
+            if (! file_exists($feature)) {
+                throw new RuntimeException('feature does not exist: ' . $feature);
+            }
+            return [$feature];
+        }
+
+        $resolver = new \axenox\BDT\Behat\Common\BehatSuiteResolver();
+        $paths = $hasSuite
+            ? $resolver->resolvePathsFromGlobalYml($behatConfig, $suite)
+            : $resolver->resolvePathsFromGlobalYml($behatConfig);
+        if ($paths === []) {
+            throw new RuntimeException(
+                'No feature paths resolved from ' . $behatConfig
+                . ($hasSuite ? ' for suite "' . $suite . '"' : '') . '.'
+            );
+        }
+        return $paths;
+    }
+
+    /**
+     * Reconstructs a reproducible description of what this coordinator ran, for the run row's
+     * behat_command column.
+     *
+     * Why the coordinator action invocation rather than a behat command: a parallel run spawns one
+     * behat command per lane, differing by lane config and feature bucket, so there is no single behat
+     * command to record. The action invocation with its resolved scope selectors is the value that
+     * reproduces the whole run. Only selectors the operator actually set are included, so the string
+     * mirrors what was really passed.
+     */
+    private function describeInvocation(?string $tags, ?string $feature, ?string $suite): string
+    {
+        $cmd = 'vendor\\bin\\action axenox.BDT:RunParallel';
+        if ($tags !== null && $tags !== '') {
+            $cmd .= ' --tags="' . $tags . '"';
+        }
+        if ($feature !== null && $feature !== '') {
+            $cmd .= ' --feature="' . $feature . '"';
+        }
+        if ($suite !== null && $suite !== '') {
+            $cmd .= ' --suite="' . $suite . '"';
+        }
+        return $cmd;
+    }
+
+    /**
      * Streams a worker's incremental stdout/stderr into its lane log, then frees the read buffer.
      *
      * Why incremental + clearOutput: getIncrementalOutput()/getIncrementalErrorOutput() are
@@ -830,26 +934,15 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Returns TRUE if something is listening on the port (closed socket connects = busy).
-     */
-    private function isPortBound(int $port): bool
-    {
-        $sock = @fsockopen('127.0.0.1', $port, $errno, $errstr, 0.2);
-        if ($sock !== false) {
-            fclose($sock);
-            return true;
-        }
-        return false;
-    }
-
-    /**
-     * Reads a task parameter, falling back to a default or failing loudly if required.
+     * Reads an OPTIONAL task parameter, returning null when it is absent or empty.
      *
-     * Why fail loudly: a missing path silently defaulting to something wrong would produce a
-     * run that looks green but tested nothing - the exact failure mode this framework exists
-     * to catch. A required parameter with no value is a configuration error, surfaced here.
+     * Why a separate reader instead of reusing getTaskParam(): getTaskParam treats a null default as
+     * "required" and throws when the value is missing - correct for inputs that must be present, wrong
+     * for the deferred inputs (behat_config, chrome_path, feature, suite). Those are resolved from their
+     * authoritative sources after init, so here we only need "value or null" with no loud failure; the
+     * loud failure lives in the resolver that validates the RESOLVED value instead.
      */
-    private function getTaskParam(TaskInterface $task, string $name, ?string $default = null): string
+    private function getOptionalTaskParam(TaskInterface $task, string $name): ?string
     {
         if ($task->hasParameter($name)) {
             $val = $task->getParameter($name);
@@ -857,10 +950,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                 return (string) $val;
             }
         }
-        if ($default !== null) {
-            return $default;
-        }
-        throw new RuntimeException('Required parameter "' . $name . '" is missing.');
+        return null;
     }
 
     /**
