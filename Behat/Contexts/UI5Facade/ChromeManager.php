@@ -256,6 +256,20 @@ class ChromeManager
             . ($headless ? ' --headless --no-sandbox' : '')
             . ' --window-size=1920,1080 --disable-extensions --disable-gpu'
             . ' --disable-dev-shm-usage'
+            // Cut Chrome's background "phone home" services. Every fresh lane profile
+            // tries to register with Google push messaging (GCM) on startup; with several
+            // lanes starting from the same server IP Google throttles the registrations,
+            // producing the PHONE_REGISTRATION_ERROR / DEPRECATED_ENDPOINT / QUOTA_EXCEEDED
+            // noise in the lane logs. These flags stop the requests at the source instead
+            // of merely hiding the log lines. Page-level test traffic is NOT affected.
+            . ' --disable-background-networking'
+            . ' --disable-sync'
+            . ' --disable-component-update'
+            . ' --disable-default-apps'
+            // Let only FATAL messages reach stderr - suppresses the remaining harmless
+            // ERROR spam (geolocation COM class, on-device model backend) that would
+            // otherwise interleave with Behat output in the lane log.
+            . ' --log-level=3'
             . ' --remote-debugging-port=' . $port
             . ' --remote-debugging-address=127.0.0.1'
             . ' --hide-crash-restore-bubble'
