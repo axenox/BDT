@@ -176,12 +176,18 @@ class ChromeManager
         if ($executable !== null && FilePathDataType::isRelative($executable)) {
             $executable = getcwd() . DIRECTORY_SEPARATOR . $executable;
         }
-        // Resolve relative to cwd only when the key is actually present; a missing key must stay
-        // null so the mandatory-config guard below fails loudly instead of silently letting Chrome
-        // use cwd itself as the profile dir. (?? binds looser than ., so the old one-liner never worked.)
-        $userDataDir = isset($config['user_data_dir'])
-            ? getcwd() . DIRECTORY_SEPARATOR . $config['user_data_dir']
-            : null;
+        // Resolve user_data_dir the SAME way as executable above: a RELATIVE path is joined to the
+        // installation root, an ABSOLUTE path is used AS-IS. Without the isRelative() guard an
+        // absolute user_data_dir would be double-prepended into a broken "C:\...\C:\..." path, and
+        // Chrome would silently fall back to the real default profile (profile picker / shared
+        // state), defeating the per-run profile isolation. A missing key stays null so the
+        // mandatory-config guard below fails loudly instead of using cwd itself as the profile dir.
+        $userDataDir = null;
+        if (isset($config['user_data_dir'])) {
+            $userDataDir = FilePathDataType::isRelative($config['user_data_dir'])
+                ? getcwd() . DIRECTORY_SEPARATOR . $config['user_data_dir']
+                : $config['user_data_dir'];
+        }
         $port = $config['port'] ?? 9222;
 
         $this->getLogbook()->addLine("Config resolved — executable: {$executable}, userDataDir: {$userDataDir}, port: {$port}");
@@ -275,7 +281,14 @@ class ChromeManager
             . ' --hide-crash-restore-bubble'
             . ' --no-first-run'
             . ' --no-default-browser-check'
-            . ' --user-data-dir="' . $userDataDir . '"';
+            . ' --user-data-dir="' . $userDataDir . '"'
+            // Discard Chrome's own stderr: the "DevTools listening on ws://..." line plus the absl
+            // InitializeLog WARNING and voice_transcription INFO lines. With "start /B" Chrome
+            // inherits this process's console handles, so without the redirect that noise leaks into
+            // the Behat output the tester watches - and only Behat's output belongs there. A real
+            // launch failure is still surfaced loudly by waitUntilReady() below, so redirecting
+            // Chrome's stderr loses no diagnostic signal.
+            . ' 2>nul';
 
         $this->getLogbook()->addLine("Launching Chrome (" . ($headless ? "headless" : "visible") . ") with command: {$cmd}");
         pclose(popen($cmd, 'r'));

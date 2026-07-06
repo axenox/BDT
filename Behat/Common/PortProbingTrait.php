@@ -132,4 +132,122 @@ trait PortProbingTrait
         }
         return false;
     }
+
+    /**
+     * Atomically reserves the first free port in the band ACROSS PROCESSES and returns a
+     * reservation the caller MUST release when the run ends.
+     *
+     * WHY THIS EXISTS ALONGSIDE allocateFreePort: allocateFreePort only deconflicts lanes within
+     * ONE coordinator process (the in-memory $held list) and otherwise relies on isPortBound().
+     * That is unsafe for INDEPENDENT concurrent runs - e.g. several interactive RunTest processes
+     * started before any of them launched Chrome. There is a multi-second gap between picking a
+     * port and Chrome actually binding it (Behat init, container build, ChromeManager launch), so
+     * every racing process sees the same port as free and all pick it. In-memory $held cannot help
+     * because the racers are separate OS processes. A cross-process advisory lock closes that gap:
+     * a port is only handed out once, and stays reserved from selection until the caller releases
+     * it - well past the moment Chrome binds it.
+     *
+     * WHY flock AND NOT MERE FILE EXISTENCE: an flock is released automatically when its owning
+     * process dies, so a lock file left behind by a crashed run never permanently blocks a port -
+     * the next run simply re-locks the stale file. Testing existence instead would strand ports on
+     * every crash.
+     *
+     * The caller keeps ['handle'] OPEN for the life of the run; closing it (or process exit) drops
+     * the lock. Release via releaseReservedPort().
+     *
+     * @param int   $start First port of the band (inclusive)
+     * @param int   $end   Last port of the band (inclusive)
+     * @param int[] $held  Ports already reserved earlier in THIS process (same-process fast skip)
+     * @return array{port:int,handle:resource,lockPath:string}
+     * @throws RuntimeException if every port in the band is bound or reserved by another run
+     */
+    private function reserveFreePort(int $start, int $end, array $held = []): array
+    {
+        $lockDir = $this->getPortLockDir();
+        for ($port = $start; $port <= $end; $port++) {
+            if (in_array($port, $held, true)) {
+                continue;
+            }
+            $lockPath = $lockDir . DIRECTORY_SEPARATOR . 'port_' . $port . '.lock';
+            // 'c' opens for writing and creates the file if missing WITHOUT truncating it: the file
+            // is only a cross-process mutex, its bytes are diagnostic (the owner PID).
+            $handle = @fopen($lockPath, 'c');
+            if ($handle === false) {
+                // Cannot even open the lock file (permissions/disk) - never claim the port blindly.
+                continue;
+            }
+            // LOCK_EX|LOCK_NB: take the lock only if no LIVE process holds it; skip immediately
+            // otherwise instead of blocking the whole band scan on one contended port.
+            if (! flock($handle, LOCK_EX | LOCK_NB)) {
+                fclose($handle);
+                continue;
+            }
+            // Only after winning the reservation do we ask the OS whether the port is actually free:
+            // it could be bound by something outside BDT, or by a run still inside its own
+            // reservation-to-bind window. If busy, release and keep scanning.
+            if ($this->isPortBound($port)) {
+                flock($handle, LOCK_UN);
+                fclose($handle);
+                continue;
+            }
+            // Stamp a human-readable, log-style line so a leftover lock file tells you WHO reserved a
+            // port and WHEN - handy when a port looks stuck. Purely diagnostic: the flock above, not
+            // this text, is what actually enforces mutual exclusion. A write failure must never void an
+            // already-won reservation, hence the silenced calls.
+            @ftruncate($handle, 0);
+            @fwrite($handle, sprintf(
+                'pid=%d port=%d reserved_at=%s%s',
+                getmypid(), $port, date('Y-m-d H:i:s'), PHP_EOL
+            ));
+            @fflush($handle);
+            // IMPORTANT: return with $handle still OPEN - closing it would drop the flock and
+            // reopen the very race this method exists to prevent.
+            return ['port' => $port, 'handle' => $handle, 'lockPath' => $lockPath];
+        }
+        throw new RuntimeException(
+            'Port band ' . $start . '-' . $end . ' exhausted - every port is bound or reserved by another run'
+        );
+    }
+
+    /**
+     * Releases a reservation returned by reserveFreePort() so the next run can claim the port.
+     *
+     * WHY UNLOCK-THEN-CLOSE AND NEVER UNLINK: dropping the flock and closing the handle is enough
+     * to free the port for the next reserver. We deliberately do NOT delete the file: a concurrent
+     * reserver may already hold it open, and unlinking a locked file out from under it is racy on
+     * Windows. The stub files are bounded by the band size (one per port), so leaving them is far
+     * cheaper than fighting that race. Safe to call with an already-released or malformed
+     * reservation - it simply does nothing.
+     */
+    private function releaseReservedPort(array $reservation): void
+    {
+        $handle = $reservation['handle'] ?? null;
+        if (is_resource($handle)) {
+            @flock($handle, LOCK_UN);
+            @fclose($handle);
+        }
+    }
+
+    /**
+     * Returns the directory holding the per-port lock files, creating it on first use.
+     *
+     * WHY A DEDICATED DIR UNDER THE INSTALLATION: the locks must live on a path shared by every
+     * BDT run on this server (so the flocks actually contend) yet outside behat.yml/profile trees
+     * that get regenerated per run. A stable installation-relative folder gives all coordinator
+     * processes the same lock namespace without touching worker config.
+     *
+     * @throws RuntimeException if the directory cannot be created
+     */
+    private function getPortLockDir(): string
+    {
+        $dir = $this->getWorkbench()->getInstallationPath()
+            . DIRECTORY_SEPARATOR . 'data'
+            . DIRECTORY_SEPARATOR . 'axenox'
+            . DIRECTORY_SEPARATOR . 'BDT'
+            . DIRECTORY_SEPARATOR . 'portlocks';
+        if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
+            throw new RuntimeException('Could not create port-lock directory: ' . $dir);
+        }
+        return $dir;
+    }
 }
