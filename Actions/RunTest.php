@@ -1,0 +1,466 @@
+<?php
+namespace axenox\BDT\Actions;
+
+use axenox\BDT\Behat\Common\PortProbingTrait;
+use exface\Core\CommonLogic\AbstractAction;
+use exface\Core\CommonLogic\Actions\ServiceParameter;
+use exface\Core\Exceptions\RuntimeException;
+use exface\Core\Facades\ConsoleFacade\CliCommandRunner;
+use exface\Core\Factories\ResultFactory;
+use exface\Core\Interfaces\Actions\iCanBeCalledFromCLI;
+use exface\Core\Interfaces\DataSources\DataTransactionInterface;
+use exface\Core\Interfaces\Tasks\ResultInterface;
+use exface\Core\Interfaces\Tasks\TaskInterface;
+use Symfony\Component\Process\Process;
+use Symfony\Component\Process\Exception\ProcessTimedOutException;
+
+/**
+ * Wrapper action for a single INTERACTIVE Behat run with dynamic Chrome-port allocation.
+ *
+ * WHY THIS ACTION EXISTS: testers start BDT via UI buttons that used to invoke plain
+ * `vendor\bin\behat` against a behat.yml with a FIXED remote-debugging port. On a shared
+ * server that fixed port collides with the scheduled parallel fleet and with other testers.
+ * The port cannot be reassigned at runtime inside the Behat process, because MinkExtension's
+ * api_url freezes when the Behat container is built - so the free-port probe must run HERE,
+ * before Behat boots, and flow into Behat through a generated config file (the same channel
+ * the scheduled fleet's lane configs use).
+ *
+ * WHAT THIS ACTION DOES NOT DO: unlike RunParallel, it creates NO run record and passes NO
+ * run_uid/lane_id. A plain single-process Behat run opens and finalizes its own run record
+ * through DatabaseFormatter, exactly as before - this wrapper only injects a collision-free
+ * port, an isolated Chrome profile and the direct chrome.exe path around it.
+ *
+ * OUTPUT IS STREAMED LIVE: the server console is attended during interactive runs, so the
+ * action returns a message-STREAM result and drives Behat through a generator, forwarding
+ * output as it arrives instead of returning one block at the end. That lets a tester watch a
+ * long run progress in real time.
+ */
+class RunTest extends AbstractAction implements iCanBeCalledFromCLI
+{
+    // CLI option names - kept as constants so the option declarations in getCliOptions()
+    // and the reads via getTaskParam() can never drift apart.
+    private const OPT_BEHAT_CONFIG = 'behat_config';
+    private const OPT_CHROME_PATH  = 'chrome_path';
+    private const OPT_SUITE        = 'suite';
+    private const OPT_TAGS         = 'tags';
+    private const OPT_FEATURE      = 'feature';
+
+    // App-config fallbacks for the two paths, so a tester (or a button) can launch with just a
+    // tag/suite/feature selection and let the server-wide config supply behat_config and
+    // chrome_path. The option ALWAYS wins when given; the config key is the fallback; if NEITHER
+    // is set we still fail loudly (see resolvePathParam) - we never silently guess a path.
+    private const CFG_BEHAT_CONFIG = 'PARALLEL.BEHAT_CONFIG';
+    private const CFG_CHROME_PATH  = 'PARALLEL.CHROME_PATH';
+
+    // App-config keys. The interactive band is DELIBERATELY separate from the scheduled band
+    // (PARALLEL.PORT_BAND_SCHEDULED): a tester pressing the button while the nightly fleet is
+    // running must be steered into a disjoint port window, so even a probe race can only hit
+    // another interactive run - which ChromeManager's foreign-Chrome guard then fails loudly.
+    private const CFG_PORT_BAND_INTERACTIVE = 'PARALLEL.PORT_BAND_INTERACTIVE';
+    private const CFG_WORKER_TIMEOUT        = 'PARALLEL.WORKER_TIMEOUT_SECONDS';
+
+    // Per-project bdt_parallel.yml key for the interactive band. Lives NEXT TO the scheduled
+    // "port_band" key in the same override file; either may be present independently.
+    private const OVERRIDE_KEY_INTERACTIVE = 'port_band_interactive';
+
+    // Wall-clock ceiling fallback when PARALLEL.WORKER_TIMEOUT_SECONDS is not configured.
+    // Mirrors RunParallel: a Behat run needs far longer than any generic CLI default.
+    private const RUN_TIMEOUT_SECONDS = 1800;
+
+    // Poll cadence while draining the Behat process. 100 ms streams output near-live while the
+    // busy-wait between reads costs negligible CPU over a multi-minute run.
+    private const DRAIN_POLL_MICROSECONDS = 100000;
+
+    private const APP_ALIAS = 'axenox.BDT';
+    use PortProbingTrait;
+
+    /**
+     * Entry point. Validates inputs up front, then returns a STREAM result that runs Behat and
+     * forwards its output live.
+     *
+     * WHY VALIDATE HERE BUT ALLOCATE THE PORT LATER: cheap input checks (file existence) belong
+     * before streaming starts, so a misconfiguration fails immediately and obviously rather than
+     * mid-stream. Port allocation, in contrast, happens INSIDE the generator right before launch,
+     * to keep the probe->bind race window as small as possible.
+     */
+    protected function perform(TaskInterface $task, DataTransactionInterface $transaction): ResultInterface
+    {
+        // --- Resolve inputs (option first, then app-config fallback, else loud failure) ---
+        $behatConfig = $this->resolvePathParam($task, self::OPT_BEHAT_CONFIG, self::CFG_BEHAT_CONFIG, 'behat.yml');
+        $chromePath  = $this->resolvePathParam($task, self::OPT_CHROME_PATH, self::CFG_CHROME_PATH, 'chrome.exe');
+        $suite       = $this->getTaskParam($task, self::OPT_SUITE, '');
+        $tags        = $this->getTaskParam($task, self::OPT_TAGS, '');
+        $feature     = $this->getTaskParam($task, self::OPT_FEATURE, '');
+
+        if (! is_file($behatConfig)) {
+            throw new RuntimeException('behat_config is not a file: ' . $behatConfig);
+        }
+        if (! is_file($chromePath)) {
+            throw new RuntimeException('chrome_path is not a file: ' . $chromePath
+                . ' (must be chrome.exe, NOT GoogleChromePortable.exe - its single-instance lock breaks concurrent runs)');
+        }
+        if ($feature !== '' && ! file_exists($feature)) {
+            throw new RuntimeException('feature does not exist: ' . $feature);
+        }
+
+        $cwd = $this->getWorkbench()->getInstallationPath();
+
+        // Return a live stream: the ConsoleFacade drains this generator and prints each yielded
+        // chunk as it arrives. Setup failures inside the generator (port band exhausted, config
+        // unwritable) surface as normal exceptions on first iteration - still loud, still before
+        // any Behat output. See streamRun() for the Behat exit-code handling rationale.
+        //
+        // createMessageStreamResult expects an \Iterator. A generator function returns a
+        // \Generator (which implements \Iterator) WITHOUT executing its body until iterated, so
+        // calling streamRun() here hands the factory a lazy iterator directly - no closure wrapper
+        // needed, and the init/port/config/run work still only starts when the facade drains it.
+        return ResultFactory::createMessageStreamResult(
+            $task,
+            $this->streamRun($cwd, $behatConfig, $chromePath, $suite, $tags, $feature)
+        );
+    }
+
+    /**
+     * Generator that performs init, allocates a port, writes the config, runs Behat and yields
+     * its output as it arrives.
+     *
+     * WHY A GENERATOR DRIVING Symfony Process DIRECTLY: two requirements meet here. First, we
+     * want LIVE output on the attended server console, which means yielding chunks as they are
+     * produced. Second, we must classify the Behat EXIT CODE ourselves - exit 1 ("some tests
+     * failed") is a NORMAL interactive outcome that must not be treated as a crash, while a real
+     * crash (2/255/terminated) must be reported loudly. CliCommandRunner's own generator cannot
+     * give us both: silent=false would throw on Behat's exit 1, and silent=true would swallow a
+     * genuine crash. So we start the Process, poll getIncrementalOutput() into the stream, and
+     * read getExitCode() at the end to decide the closing message.
+     *
+     * WHY A CRASH YIELDS A BANNER INSTEAD OF THROWING: by the time Behat has run, its run record
+     * and per-scenario rows already exist in the DB. Throwing after streaming would abort the
+     * stream mid-flight with a stack trace on top of already-printed output. A bold CRASHED
+     * banner on the live console is the loud, legible failure signal for the interactive path;
+     * the authoritative outcome remains in the DB rows. A TIMEOUT, by contrast, is an abort we
+     * cannot complete, so it throws (after cleanup) to fail the action.
+     */
+    private function streamRun(
+        string $cwd,
+        string $behatConfig,
+        string $chromePath,
+        string $suite,
+        string $tags,
+        string $feature
+    ): \Generator {
+        // --- Step 0: init exactly like every Behat run does, streaming its output too ---
+        // `Behat init` (re)creates the global behat.yml, registers app suites and refreshes
+        // base_url to the current workbench URL. Skipping it would let the generated config
+        // import a stale base and break the run - same reasoning as RunParallel::runInit().
+        yield "===== BDT interactive run =====\n";
+        yield "Running Behat init...\n";
+        yield from $this->streamInit($cwd);
+
+        // --- Step 1: allocate a collision-free port from the INTERACTIVE band (late, on purpose) ---
+        [$portStart, $portEnd] = $this->resolvePortBand(
+            $behatConfig,
+            self::OVERRIDE_KEY_INTERACTIVE,
+            self::CFG_PORT_BAND_INTERACTIVE
+        );
+        $port = $this->allocateFreePort($portStart, $portEnd);
+        yield 'Allocated port ' . $port . ' (band ' . $portStart . '-' . $portEnd . ")\n";
+
+        // --- Step 2: generate the per-run config carrying the port into Behat ---
+        $configPath = $this->writeInteractiveConfig($cwd, $behatConfig, $port, $chromePath);
+        yield 'Config: ' . basename($configPath) . "\n\n";
+
+        // --- Step 3: run Behat, streaming output; classify the exit code at the end ---
+        $timeout = $this->resolveRunTimeout();
+        $cmd     = $this->buildBehatCommand($configPath, $suite, $tags, $feature);
+        $process = Process::fromShellCommandline($cmd, $cwd, null, null, $timeout);
+        // Environment is inherited UNCHANGED: unlike fleet workers there is exactly one child
+        // here, so a developer running this under a debugger keeps normal single-session debugging.
+        $process->start();
+
+        try {
+            while ($process->isRunning()) {
+                $chunk = $this->drainIncremental($process);
+                if ($chunk !== '') {
+                    yield $chunk;
+                }
+                // In async mode Symfony only enforces the timeout when asked, so a hung run would
+                // otherwise never time out.
+                try {
+                    $process->checkTimeout();
+                } catch (ProcessTimedOutException $e) {
+                    // Kill the child, flush its tail, then fail loudly - a timeout is an abort we
+                    // cannot complete. cleanup in finally still removes the generated config.
+                    $process->stop(0);
+                    $tail = $this->drainIncremental($process);
+                    if ($tail !== '') {
+                        yield $tail;
+                    }
+                    throw new RuntimeException(
+                        'Interactive Behat run timed out after ' . $timeout . ' s. Adjust '
+                        . self::CFG_WORKER_TIMEOUT . ' if the selection legitimately needs longer.'
+                    );
+                }
+                usleep(self::DRAIN_POLL_MICROSECONDS);
+            }
+            // Flush whatever arrived after the last read inside the loop.
+            $tail = $this->drainIncremental($process);
+            if ($tail !== '') {
+                yield $tail;
+            }
+
+            // Exit-code classification: 0 (all passed) and 1 (ran to completion, some tests
+            // failed) both mean Behat itself did its job - authoritative per-scenario pass/fail
+            // lives in the DB rows written by DatabaseFormatter. Anything else is a crash.
+            $exitCode = $process->getExitCode(); // null if terminated by a signal
+            if ($exitCode === 0) {
+                yield "\n===== Behat finished: all scenarios passed. =====\n";
+            } elseif ($exitCode === 1) {
+                yield "\n===== Behat finished: some scenarios FAILED (see run results). =====\n";
+            } else {
+                yield "\n***** Behat CRASHED with exit code "
+                    . ($exitCode === null ? 'n/a (terminated)' : $exitCode)
+                    . " - this is NOT a normal test failure. Check the output above and the run record. *****\n";
+            }
+        } finally {
+            // Delete the generated config regardless of how the run ended. The port-based
+            // filename means the next run on this port simply overwrites it, so a leftover on a
+            // hard failure is harmless - but tidy up on the normal path.
+            @unlink($configPath);
+        }
+    }
+
+    /**
+     * Streams the standard Behat "init" output through as it runs.
+     *
+     * WHY silent=false: a stale base_url in the imported base config breaks the run, so a failing
+     * init must throw and abort before any port/config work - identical reasoning to
+     * RunParallel::runInit(). Yielding init's chunks lets the tester see init progress on the
+     * live console rather than staring at a frozen prompt.
+     */
+    private function streamInit(string $cwd): \Generator
+    {
+        foreach (CliCommandRunner::runCliCommand('vendor\\bin\\action axenox.BDT:Behat init', [], 300.0, $cwd, false) as $chunk) {
+            yield $chunk;
+        }
+        $this->getWorkbench()->getLogger()->info('BDT interactive: Behat init done');
+    }
+
+    /**
+     * Reads and clears a process's incremental stdout+stderr in one call.
+     *
+     * WHY incremental + clearOutput: getIncrementalOutput()/getIncrementalErrorOutput() are
+     * non-blocking and return only what arrived since the previous call, which is exactly what a
+     * streaming loop needs; clearOutput()/clearErrorOutput() then drop the already-forwarded
+     * bytes so a run that logs for minutes does not accumulate its whole output in memory.
+     */
+    private function drainIncremental(Process $process): string
+    {
+        $out = $process->getIncrementalOutput() . $process->getIncrementalErrorOutput();
+        $process->clearOutput();
+        $process->clearErrorOutput();
+        return $out;
+    }
+
+    /**
+     * No positional CLI arguments - all inputs are passed as named options (see getCliOptions()).
+     *
+     * {@inheritDoc}
+     * @see \exface\Core\Interfaces\Actions\iCanBeCalledFromCLI::getCliArguments()
+     */
+    public function getCliArguments(): array
+    {
+        return [];
+    }
+
+    /**
+     * Declares the named CLI options so the ConsoleFacade accepts them.
+     *
+     * WHY DECLARED EXPLICITLY: Symfony Console rejects unknown options. All five are optional at
+     * the CLI layer - behat_config and chrome_path fall back to app config (and only THEN fail
+     * loudly if unresolved), while suite/tags/feature are genuine pass-throughs a tester may
+     * combine freely and are omitted from the Behat command when unset.
+     *
+     * {@inheritDoc}
+     * @see \exface\Core\Interfaces\Actions\iCanBeCalledFromCLI::getCliOptions()
+     */
+    public function getCliOptions(): array
+    {
+        return [
+            (new ServiceParameter($this))
+                ->setName(self::OPT_BEHAT_CONFIG)
+                ->setDescription('Path to the base behat.yml the generated config imports. Falls back to app-config ' . self::CFG_BEHAT_CONFIG . ' when omitted.')
+                ->setDefaultValue(''),
+            (new ServiceParameter($this))
+                ->setName(self::OPT_CHROME_PATH)
+                ->setDescription('Path to chrome.exe (NOT GoogleChromePortable.exe). Falls back to app-config ' . self::CFG_CHROME_PATH . ' when omitted.')
+                ->setDefaultValue(''),
+            (new ServiceParameter($this))
+                ->setName(self::OPT_SUITE)
+                ->setDescription('Optional Behat suite name, passed through as --suite')
+                ->setDefaultValue(''),
+            (new ServiceParameter($this))
+                ->setName(self::OPT_TAGS)
+                ->setDescription('Optional Behat tag filter, passed through as --tags')
+                ->setDefaultValue(''),
+            (new ServiceParameter($this))
+                ->setName(self::OPT_FEATURE)
+                ->setDescription('Optional feature file or directory, passed through as a positional argument')
+                ->setDefaultValue('')
+        ];
+    }
+
+    /**
+     * Writes the per-run interactive config next to the base behat.yml and returns its path.
+     *
+     * WHY IMPORTS THE BASE INSTEAD OF DUPLICATING IT: the generated file sits in the same
+     * directory as the base config, so "imports: [<base>]" resolves relatively and %paths.base%
+     * stays identical to a plain run - exactly the lane-config pattern proven in RunParallel.
+     * It only ADDS the per-run overrides: the Mink api_url and the chrome section (port, direct
+     * chrome.exe, isolated profile). NO run_uid/lane_id is written - an interactive run creates
+     * and finalizes its own run record, attach-mode is a fleet-only concept.
+     *
+     * WHY A PORT-BASED FILENAME AND PROFILE DIR: the port is unique among concurrently running
+     * BDT instances by construction (the probe skipped bound ports), so behat_interactive_<port>.yml
+     * and chrome_profiles\interactive<port> can never be shared by two live runs - and both are
+     * bounded by the band width, so nothing accumulates across runs; a later run on the same
+     * port reuses/overwrites them.
+     *
+     * IMPORTANT: user_data_dir is written as a RELATIVE path because ChromeManager::start()
+     * prepends getcwd(); an absolute path would be double-prepended into a broken
+     * "C:\...\C:\..." path and Chrome would fall back to the real default profile.
+     */
+    private function writeInteractiveConfig(string $workingDir, string $behatConfig, int $port, string $chromePath): string
+    {
+        $userDataDirRelative = 'data' . DIRECTORY_SEPARATOR
+            . 'axenox' . DIRECTORY_SEPARATOR
+            . 'BDT' . DIRECTORY_SEPARATOR
+            . 'chrome_profiles' . DIRECTORY_SEPARATOR . 'interactive' . $port;
+        $userDataDirAbsolute = $workingDir . DIRECTORY_SEPARATOR . $userDataDirRelative;
+        if (! is_dir($userDataDirAbsolute) && ! @mkdir($userDataDirAbsolute, 0755, true) && ! is_dir($userDataDirAbsolute)) {
+            throw new RuntimeException('Could not create interactive user_data_dir: ' . $userDataDirAbsolute);
+        }
+
+        $configPath = dirname($behatConfig) . DIRECTORY_SEPARATOR . 'behat_interactive_' . $port . '.yml';
+        // Import the base config by its real filename so the import matches even on
+        // case-sensitive systems instead of assuming "behat.yml".
+        $importConfigName = basename($behatConfig);
+
+        $extensionFqn = \axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatterExtension::class;
+
+        $yaml = "# AUTO-GENERATED interactive run config - overwritten per run on this port. Do not edit by hand.\n"
+            . "imports:\n"
+            . "  - " . $importConfigName . "\n"
+            . "default:\n"
+            . "  extensions:\n"
+            . "    Behat\\MinkExtension:\n"
+            . "      sessions:\n"
+            . "        CHROME_DEBUG_API:\n"
+            . "          chrome:\n"
+            . "            api_url: 'http://localhost:" . $port . "'\n"
+            . "    \\" . $extensionFqn . ":\n"
+            . "      chrome:\n"
+            . "        port: " . $port . "\n"
+            . "        executable: '" . $this->yamlEscapeWindowsPath($chromePath) . "'\n"
+            . "        user_data_dir: '" . $this->yamlEscapeWindowsPath($userDataDirRelative) . "'\n";
+
+        if (file_put_contents($configPath, $yaml) === false) {
+            throw new RuntimeException('Failed to write interactive config: ' . $configPath);
+        }
+        return $configPath;
+    }
+
+    /**
+     * Builds the Behat command with the tester's pass-through selection.
+     *
+     * WHY POSITIONAL FEATURE OUTSIDE --config: Behat only honours a feature path given as a
+     * positional argument; concatenating it into the config option silently runs everything -
+     * the exact trap already documented for the fleet's worker command. We deliberately do NOT
+     * add --colors: this output is forwarded to a captured stream, and forcing ANSI colours on a
+     * non-TTY would inject escape codes into the result; Behat's own TTY auto-detection is right.
+     */
+    private function buildBehatCommand(string $configPath, string $suite, string $tags, string $feature): string
+    {
+        $cmd = 'vendor\\bin\\behat --config "' . $configPath . '"';
+        if ($suite !== '') {
+            $cmd .= ' --suite="' . $suite . '"';
+        }
+        if ($tags !== '') {
+            $cmd .= ' --tags="' . $tags . '"';
+        }
+        if ($feature !== '') {
+            $cmd .= ' "' . $feature . '"';
+        }
+        return $cmd;
+    }
+
+    /**
+     * Resolves a path parameter: the CLI option when given, else the app-config fallback, else a
+     * loud failure.
+     *
+     * WHY THIS SHAPE: the interactive path should be launchable with just a tag/suite/feature
+     * selection (server-wide config supplies the paths), but "no path anywhere" must never
+     * silently default to a guessed location and produce a green run that tested nothing - the
+     * exact failure mode this framework exists to catch. So the option wins, the config is the
+     * fallback, and an unresolved path throws.
+     */
+    private function resolvePathParam(TaskInterface $task, string $optName, string $cfgKey, string $label): string
+    {
+        if ($task->hasParameter($optName)) {
+            $val = $task->getParameter($optName);
+            if ($val !== null && $val !== '') {
+                return (string) $val;
+            }
+        }
+        $cfg = $this->getWorkbench()->getApp(self::APP_ALIAS)->getConfig();
+        if ($cfg->hasOption($cfgKey)) {
+            $fromCfg = $cfg->getOption($cfgKey);
+            if ($fromCfg !== null && $fromCfg !== '') {
+                return (string) $fromCfg;
+            }
+        }
+        throw new RuntimeException(
+            'No ' . $label . ' path: pass --' . $optName . ' or set app-config ' . $cfgKey . '.'
+        );
+    }
+
+    /**
+     * Resolves the run's wall-clock timeout from app config, falling back to the constant.
+     *
+     * WHY THE SAME KEY AS THE FLEET: an interactive selection is at most as large as a fleet
+     * lane's bucket, so one operator-tuned ceiling serves both paths without a second knob.
+     */
+    private function resolveRunTimeout(): float
+    {
+        $cfg = $this->getWorkbench()->getApp(self::APP_ALIAS)->getConfig();
+        return (float) ($cfg->getOption(self::CFG_WORKER_TIMEOUT) ?: self::RUN_TIMEOUT_SECONDS);
+    }
+
+    /**
+     * Doubles backslashes for safe single-quoted YAML on Windows paths.
+     *
+     * WHY: identical helper to RunParallel's - doubling avoids ambiguity if the generated file
+     * is ever re-parsed by a stricter loader and keeps it readable.
+     */
+    private function yamlEscapeWindowsPath(string $path): string
+    {
+        return str_replace('\\', '\\\\', $path);
+    }
+
+    /**
+     * Reads an optional (non-path) task parameter, falling back to a default.
+     *
+     * WHY separate from resolvePathParam: suite/tags/feature are genuine optionals with an empty
+     * default and no config fallback - an absent one simply means "do not add this flag", so it
+     * must never throw the way a missing mandatory path does.
+     */
+    private function getTaskParam(TaskInterface $task, string $name, string $default = ''): string
+    {
+        if ($task->hasParameter($name)) {
+            $val = $task->getParameter($name);
+            if ($val !== null && $val !== '') {
+                return (string) $val;
+            }
+        }
+        return $default;
+    }
+}
