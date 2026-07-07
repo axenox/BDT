@@ -11,7 +11,7 @@
     "created_by_user_selector": "0x11eca7f5b092f284a7f5005056bea39f",
     "created_on": "2025-10-08 18:22:39",
     "modified_by_user_selector": "0x11efa72c1fb56dfea72c025041000001",
-    "modified_on": "2026-07-02 12:17:42",
+    "modified_on": "2026-07-06 22:25:11",
     "contents": {
         "object_alias": "exface.Core.DUMMY",
         "widget_type": "SplitHorizontal",
@@ -92,7 +92,7 @@
                                                 "action": {
                                                     "alias": "exface.Core.CallWidgetFunction",
                                                     "widget_id": "test_cli",
-                                                    "function": "run_command(\"vendor/bin/Behat vendor/[#PATHNAME_RELATIVE#] --colors\")"
+                                                    "function": "run_command(\"vendor/bin/action axenox.BDT:RunTest vendor/[#PATHNAME_RELATIVE#] \")"
                                                 }
                                             },
                                             {
@@ -101,7 +101,7 @@
                                                 "action": {
                                                     "alias": "exface.Core.CallWidgetFunction",
                                                     "widget_id": "test_cli",
-                                                    "function": "run_command(\"vendor/bin/Behat --colors --suite=[#APP__ALIAS#]\")"
+                                                    "function": "run_command(\"vendor/bin/action axenox.BDT:RunTest --suite=[#APP__ALIAS#]\")"
                                                 }
                                             },
                                             {
@@ -207,31 +207,33 @@
                         ],
                         "command_presets": [
                             {
+                                "/*": "",
                                 "caption": "Run all tests",
                                 "hint": "Runs all available test",
                                 "commands": [
-                                    "vendor/bin/Behat --colors"
-                                ]
+                                    "vendor/bin/action axenox.BDT:RunTest"
+                                ],
+                                "*/": ""
                             },
                             {
                                 "caption": "Run suite",
                                 "hint": "Run only the given test suite",
                                 "commands": [
-                                    "vendor/bin/Behat --colors --suite=<Suite>"
+                                    "vendor/bin/action axenox.BDT:RunTest --suite=<Suite>"
                                 ]
                             },
                             {
                                 "caption": "Run file",
                                 "hint": "Run a feature file",
                                 "commands": [
-                                    "vendor/bin/Behat \"vendor/<Filepath relative to vendor>\" --colors"
+                                    "vendor/bin/action axenox.BDT:RunTest \"vendor/<Filepath relative to vendor>\""
                                 ]
                             },
                             {
                                 "caption": "Run tags",
                                 "hint": "Run tests marked with one or more tags",
                                 "commands": [
-                                    "vendor/bin/Behat --colors --tags=<Tags (,)>"
+                                    "vendor/bin/action axenox.BDT:RunTest --tags=<Tags (,)>"
                                 ]
                             },
                             {
