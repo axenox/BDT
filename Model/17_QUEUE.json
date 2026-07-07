@@ -70,6 +70,7 @@
             "ALLOW_MULTI_QUEUE_HANDLING": 0,
             "CONFIG_UXON": {
                 "output_folder": "../../data/axenox/BDT/Logs",
+                "command_timeout": 14400,
                 "topics": {
                     "all_of": [
                         "behat"
