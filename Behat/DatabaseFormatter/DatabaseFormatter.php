@@ -956,12 +956,18 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             return;
         }
 
-        $cliArgs = $_SERVER['argv'] ?? [];
-        $command = null;
-        if (! empty($cliArgs)) {
-            // First item is the file called - remove that
-            array_shift($cliArgs);
-            $command = implode(' ', $cliArgs);
+        // Prefer the durable action command RunTest injects via the BDT_RUN_COMMAND env var
+        // ("vendor\bin\action <app>:RunTest --tags=..."), the reproducible form the Test Runs page
+        // reruns. Fall back to the raw behat argv only for a plain "vendor\bin\behat" run that sets
+        // no such variable - that config-based argv is not meant to be rerun elsewhere.
+        $command = getenv('BDT_RUN_COMMAND') ?: null;
+        if ($command === null) {
+            $cliArgs = $_SERVER['argv'] ?? [];
+            if (! empty($cliArgs)) {
+                // First item is the file called - remove that
+                array_shift($cliArgs);
+                $command = implode(' ', $cliArgs);
+            }
         }
         try{
             // Run-row creation is shared with the coordinator's RunLifecycle via RunRecordWriter,
