@@ -370,7 +370,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             . "        CHROME_DEBUG_API:\n"
             . "          chrome:\n"
             . "            api_url: 'http://localhost:" . $port . "'\n"
-            . "    \\" . $extensionFqn . ":\n"
+            . "    " . $extensionFqn . ":\n"
             . "      run_uid: '" . $runUid . "'\n"
             . "      lane_id: '" . $laneId . "'\n"
             . "      chrome:\n"

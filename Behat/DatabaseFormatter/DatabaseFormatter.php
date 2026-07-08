@@ -123,6 +123,23 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         $this->suiteRegistry = $suiteRegistry;
         $this->isDryRun = in_array('--dry-run', $_SERVER['argv'] ?? [], true);
         if (!$this->isDryRun) {
+            // A parallel worker is identified by an injected run_uid (it triggers attach-mode instead
+            // of startRun below). In that mode a lane_id MUST also be present: setupUser() reads it via
+            // getLaneId() to give each concurrent worker its OWN test-user row. If lane_id fails to
+            // propagate (e.g. the lane config's DatabaseFormatterExtension key does not merge into the
+            // base behat.yml and lane_id falls back to defaultNull), getLaneId() returns null and
+            // setupUser() silently reverts to the shared base user - so concurrent workers collide on
+            // the same USER_AUTHENTICATOR row and one lane dies mid-run with a TimeStampingBehavior
+            // optimistic-lock error. Fail loudly here, at process startup, so a broken lane_id contract
+            // surfaces immediately and unambiguously instead of as a cryptic lock error on a random lane.
+            if (!empty($runUid) && empty($laneId)) {
+                throw new RuntimeException(
+                    'Parallel worker started with run_uid "' . $runUid . '" but no lane_id: per-lane '
+                    . 'test-user isolation cannot be applied and concurrent workers would collide on the '
+                    . 'shared user row. Verify that the lane config\'s DatabaseFormatterExtension key '
+                    . 'merges into the base behat.yml so lane_id reaches the formatter.'
+                );
+            }
             ChromeManager::getInstance($this)
                 ->configure($chromeConfig);
             // Announce the resolved run configuration up front so this process's log opens with a
