@@ -512,32 +512,41 @@ class ChromeManager
     }
 
     /**
-     * Decides whether a command line belongs to OUR leftover Chrome instance.
+     * Decides whether a command line belongs to one of OUR leftover Chrome instances.
      *
-     * WHY MATCH ON user_data_dir: it is the one launch argument that is unique per BDT
-     * run/lane by construction (per-lane and per-port profile dirs), so its presence in the
-     * command line proves the process was started for THIS configuration. The comparison is
-     * Windows-tolerant: case-insensitive with normalized backslashes, because CIM output and
-     * our config may disagree on casing or slash direction.
+     * WHY MATCH ON THE chrome_profiles ROOT (not just this exact lane dir): profile dirs are now
+     * run-scoped ("<run_uid>_laneN"), so a zombie Chrome left behind by a PREVIOUS run has a
+     * DIFFERENT user_data_dir than the current run's lane. Matching only the current exact dir would
+     * classify that previous-run zombie as foreign and make start() fail loudly instead of reclaiming
+     * the port it still holds. Because every BDT Chrome - across all runs and lanes - is launched with
+     * its profile under this installation's data\axenox\BDT\chrome_profiles tree, treating any process
+     * whose user_data_dir sits under that root as ours lets us reclaim our own zombies on a reused port
+     * while never touching a genuinely foreign browser (a human's Chrome or another project's fleet
+     * live under entirely different profile paths).
      *
-     * WHY THE FULL QUOTED ARGUMENT FORM instead of a bare substring: a bare directory match
-     * has a prefix trap - "...\lane1" is a substring of "...\lane10", so lane 1 would treat
-     * lane 10's LIVE Chrome as its own leftover and kill it. Every Chrome this manager launches
-     * carries exactly --user-data-dir="<absolute dir>" (see the launch command in start()), so
-     * matching that complete quoted argument is both precise and guaranteed to recognize our own
-     * leftovers. Anything that does not match this exact form is treated as foreign - the safe
-     * default, since foreign means "fail loudly", never "kill".
+     * SAFETY - no prefix trap and no foreign kill: (1) the match anchors on the profiles root followed
+     * by a directory separator, so "...\chrome_profiles\" never bleeds into a sibling like
+     * "...\chrome_profiles_backup\". (2) This check only runs against the single process occupying THIS
+     * lane's unique port, so a concurrently LIVE sibling lane (on its own distinct port) is never a
+     * candidate for killing. Anything whose user_data_dir is NOT under our profiles root stays foreign -
+     * the safe default of "fail loudly, never kill".
+     *
+     * The comparison is Windows-tolerant: case-insensitive with normalized backslashes, because CIM
+     * output and our config may disagree on casing or slash direction.
      *
      * @param string $commandLine         Full command line of the occupying process
-     * @param string $userDataDirAbsolute Our resolved absolute user_data_dir
-     * @return bool TRUE if the process is our own leftover and safe to kill
+     * @param string $userDataDirAbsolute Our resolved absolute user_data_dir (a child of the profiles root)
+     * @return bool TRUE if the process is one of our leftovers and safe to kill
      */
     private function isOwnLeftover(string $commandLine, string $userDataDirAbsolute): bool
     {
-        $normalize = function (string $path): string {
+        $normalize = static function (string $path): string {
             return strtolower(str_replace('/', '\\', $path));
         };
-        $needle = '--user-data-dir="' . $normalize($userDataDirAbsolute) . '"';
+        // Derive the shared chrome_profiles root from this lane's dir (its parent) and require a
+        // trailing separator so the match cannot bleed into a same-prefixed sibling directory.
+        $profilesRoot = $normalize(dirname($userDataDirAbsolute)) . '\\';
+        $needle = '--user-data-dir="' . $profilesRoot;
         return str_contains($normalize($commandLine), $needle);
     }
 
