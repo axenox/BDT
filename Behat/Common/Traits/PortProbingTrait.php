@@ -1,5 +1,5 @@
 <?php
-namespace axenox\BDT\Behat\Common;
+namespace axenox\BDT\Behat\Common\Traits;
 
 use exface\Core\Exceptions\RuntimeException;
 use Symfony\Component\Yaml\Yaml;

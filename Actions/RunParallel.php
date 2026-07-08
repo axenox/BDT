@@ -1,7 +1,8 @@
 <?php
 namespace axenox\BDT\Actions;
 
-use axenox\BDT\Behat\Common\PortProbingTrait;
+use axenox\BDT\Behat\Common\Traits\ChromeProfileReaperTrait;
+use axenox\BDT\Behat\Common\Traits\PortProbingTrait;
 use axenox\BDT\Behat\Common\RunRecordWriter;
 use exface\Core\CommonLogic\AbstractAction;
 use exface\Core\CommonLogic\Actions\ServiceParameter;
@@ -38,6 +39,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     // Port-band resolution and free-port probing shared with the interactive RunTest action,
     // so the two execution paths can never drift apart in how they allocate Chrome ports.
     use PortProbingTrait;
+    use ChromeProfileReaperTrait;
 
     // CLI option names - kept as constants so the option declarations in getCliOptions()
     // and the reads via getTaskParam() can never drift apart.
@@ -217,6 +219,13 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             // forever with no finished_on. Finalize, then re-throw so the CLI sees it.
             $runRecordWriter->finalize($this->runDataSheet);
             throw new RuntimeException('Parallel run coordinator failed: ' . $e->getMessage(), null, $e);
+        } finally {
+            // Backstop: fleet workers launch Chrome detached (start /B), so a timed-out/hard-killed
+            // worker leaves an orphaned Chrome tree still holding its profile dir. Reap those trees
+            // and purge the lane profile dirs on every exit path, so nothing lingers between runs.
+            // Runs only after runFleet() has fully drained the fleet, so any Chrome still bound to a
+            // lane profile dir here is provably an orphan. Never throws (see the method).
+            $this->cleanupLaneChromes($cwd);
         }
 
         // --- Finalize exactly once, after all workers exit. Child-row outcomes already live in
@@ -324,19 +333,22 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // a per-lane suffix concurrent workers sharing a role collide on optimistic locking. We
         // only GENERATE and PASS this lane_id - setupUser namespaces the provisioned user with it.
         $laneId = $runUid . '_lane' . $lane;
-        // Per-lane isolated profile dir. A distinct user_data_dir per worker is what lets multiple
-        // Chrome instances coexist.
+        // Per-run, per-lane profile dir. RATIONALE: the name is prefixed with the run UID so no two
+        // runs ever share a profile directory. A fixed "laneN" was reused across runs, and because the
+        // scheduled fleet runs as NT AUTHORITY\SYSTEM while interactive/web runs run as a different
+        // account (e.g. SDREXF2\wampuser), a later run would open a laneN profile that an earlier run of
+        // a DIFFERENT Windows account had created. Chrome then could not decrypt that profile's
+        // DPAPI-protected state (encrypted under the other account's key) and could not acquire the
+        // per-profile ProcessSingleton lock (Windows sharing violation, error 32), so it aborted on
+        // launch and every login failed. A run-scoped directory guarantees each launch gets a clean
+        // profile created and owned by the account actually running the fleet.
         //
-        // IMPORTANT: ChromeManager::start() builds the final path as
-        // getcwd() . DIRECTORY_SEPARATOR . <user_data_dir>, i.e. it expects a path RELATIVE
-        // to the installation root. An ABSOLUTE path would get getcwd() prepended a second time,
-        // produce a broken "C:\...\C:\..." path, and Chrome would fall back to the real default
-        // profile and show the "Who's using Chrome?" picker, hanging the lane. So we write the
-        // RELATIVE path into the YAML and only use the absolute form to create the directory.
+        // IMPORTANT: still RELATIVE - ChromeManager::start() prepends getcwd(). An absolute path would be
+        // double-prepended and make Chrome fall back to the real default profile.
         $userDataDirRelative = 'data' . DIRECTORY_SEPARATOR
             . 'axenox' . DIRECTORY_SEPARATOR
             . 'BDT' . DIRECTORY_SEPARATOR
-            . 'chrome_profiles' . DIRECTORY_SEPARATOR . 'lane' . $lane;
+            . 'chrome_profiles' . DIRECTORY_SEPARATOR . $laneId;
         $userDataDirAbsolute = $workingDir . DIRECTORY_SEPARATOR . $userDataDirRelative;
         if (! is_dir($userDataDirAbsolute) && ! @mkdir($userDataDirAbsolute, 0755, true) && ! is_dir($userDataDirAbsolute)) {
             throw new RuntimeException('Could not create lane user_data_dir: ' . $userDataDirAbsolute);
@@ -358,7 +370,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             . "        CHROME_DEBUG_API:\n"
             . "          chrome:\n"
             . "            api_url: 'http://localhost:" . $port . "'\n"
-            . "    \\" . $extensionFqn . ":\n"
+            . "    " . $extensionFqn . ":\n"
             . "      run_uid: '" . $runUid . "'\n"
             . "      lane_id: '" . $laneId . "'\n"
             . "      chrome:\n"
@@ -709,6 +721,10 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                     $this->writeRunLog($diagLog, sprintf('DIAG drain: lane %d TIMED OUT at +%.1f s', $lane, microtime(true) - $this->runStart));
                     $this->getWorkbench()->getLogger()->error('BDT parallel worker lane ' . $lane . ' timed out after ' . $timeout . ' s');
                     $process->stop(0); // SIGKILL-equivalent; release the slot immediately
+                    // Kill the DETACHED Chrome tree this worker left behind and drop its profile dir
+                    // NOW, while the coordinator is still alive - an all-timeout run may never reach
+                    // the end-of-run backstop (see reapLaneProfile).
+                    $this->reapLaneProfile($lane, $cwd);
                     $this->finishLaneLog($laneLogs[$lane]);
                     unset($active[$lane]);
                     continue;
@@ -743,6 +759,9 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                         microtime(true) - $this->runStart
                     ));
                     $this->finishLaneLog($laneLogs[$lane]);
+                    // On a clean exit the worker's own ChromeManager already stopped Chrome, so this
+                    // usually just removes the profile dir; on a crash/signal it also kills the orphan.
+                    $this->reapLaneProfile($lane, $cwd);
                     unset($active[$lane]);
                 }
             }
@@ -756,6 +775,130 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             fclose($diagLog);
         }
         return $failures;
+    }
+
+    /**
+     * End-of-run backstop that reaps orphaned lane Chrome trees and purges their profile dirs.
+     *
+     * WHY THIS EXISTS: fleet workers launch Chrome detached via "start /B", so a worker that is
+     * hard-killed on timeout (Process::stop()) leaves its Chrome process tree running - the parent
+     * worker dies but the detached browser does not. Nothing else in the coordinator removes these:
+     * ChromeManager::isOwnLeftover() only reaps a leftover at the NEXT run's launch on the same
+     * profile, so between runs the orphan tree and its locked profile dir linger (the observed
+     * symptom: six chrome.exe under \lane1 surviving a timed-out lane). This runs after the fleet,
+     * on every exit path, to leave the machine clean.
+     *
+     * WHY SCOPED TO lane* DIRS ONLY (not the whole chrome_profiles root): interactive tester runs
+     * use chrome_profiles\interactive<port> and may run concurrently - killing those would sabotage
+     * a live tester. Only one parallel run can exist at a time (lane profile dirs are fixed names,
+     * so a second coordinator would collide on them), therefore any Chrome still bound to a lane*
+     * profile dir here is provably THIS run's orphan and safe to kill.
+     *
+     * WHY IT NEVER THROWS: it runs in perform()'s finally, so a throw would mask the real run
+     * outcome (or the original exception on the failure path). Every failure is logged loudly
+     * instead - a leftover Chrome is a nuisance, not a reason to fail an otherwise-finalized run.
+     *
+     * @param string $workingDir Installation root (the base all lane profile dirs are relative to)
+     */
+    private function cleanupLaneChromes(string $workingDir): void
+    {
+        try {
+            // Must mirror writeLaneConfig()'s user_data_dir construction; kept in sync by hand.
+            $profilesRoot = $workingDir . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR
+                . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR . 'chrome_profiles';
+            $laneDirs = glob($profilesRoot . DIRECTORY_SEPARATOR . 'lane*', GLOB_ONLYDIR) ?: [];
+            if ($laneDirs === []) {
+                return;
+            }
+
+            $logger = $this->getWorkbench()->getLogger();
+            $normalize = static function (string $path): string {
+                return strtolower(str_replace('/', '\\', $path));
+            };
+
+            // One process snapshot for the whole cleanup, so chrome.exe is scanned exactly once.
+            $chromeProcesses = $this->listChromeProcessCommandLines();
+
+            $killedAny = false;
+            foreach ($laneDirs as $laneDir) {
+                $absLaneDir = realpath($laneDir) ?: $laneDir;
+                $killed = $this->reapChromeProfileDir($absLaneDir, $chromeProcesses);
+                foreach ($killed as $pid) {
+                    $logger->info('BDT parallel cleanup: killed orphan Chrome PID ' . $pid . ' bound to ' . $absLaneDir);
+                }
+                if ($killed !== []) {
+                    $killedAny = true;
+                }
+            }
+            // Chrome releases its profile file handles (ProcessSingleton lock, etc.) asynchronously
+            // after taskkill returns; removing a dir immediately would race those handles and leave a
+            // half-deleted profile. A short settle avoids that without polling.
+            if ($killedAny) {
+                usleep(1_000_000);
+            }
+
+            foreach ($laneDirs as $laneDir) {
+                if (! $this->removeDirectoryTree($laneDir)) {
+                    $logger->warning('BDT parallel cleanup: could not fully remove lane profile dir ' . $laneDir
+                        . ' - a Chrome handle may still be open. It will be overwritten on the next run.');
+                }
+            }
+        } catch (\Throwable $e) {
+            // Backstop for the backstop: never let cleanup break finalize.
+            try {
+                $this->getWorkbench()->getLogger()->logException($e);
+            } catch (\Throwable $ignored) {
+                // Logging itself failed (e.g. workbench already torn down) - nothing safe left to do.
+            }
+        }
+    }
+
+    /**
+     * Reaps the orphaned Chrome tree of a SINGLE finished/abandoned lane and removes its profile dir.
+     *
+     * WHY INLINE, NOT ONLY AT END-OF-RUN: fleet workers launch Chrome detached (start /B), so
+     * Process::stop() on a timed-out worker kills the worker but leaves its Chrome tree alive.
+     * Relying on a single end-of-run cleanup is not enough when EVERY lane runs to the wall-clock
+     * ceiling: the coordinator itself may be killed by its scheduler/queue budget at that same
+     * ceiling, so a final cleanup step might never execute. Reaping here - the instant we give up on
+     * a lane, while the coordinator is provably still alive - guarantees the orphan and its locked
+     * profile dir are gone regardless of what happens to the coordinator afterwards.
+     *
+     * WHY IT NEVER THROWS: it runs inside the drain loop; a throw would abort the whole fleet wait
+     * and strand the other lanes. Failures are logged - a leftover browser is a nuisance, not a run
+     * failure.
+     *
+     * @param int    $lane The lane number whose Chrome/profile to reap
+     * @param string $cwd  The run working dir (same base writeLaneConfig() built the profile under)
+     */
+    private function reapLaneProfile(int $lane, string $cwd): void
+    {
+        try {
+            // Must mirror writeLaneConfig()'s user_data_dir construction.
+            $absLaneDir = $cwd . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR
+                . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR
+                . 'chrome_profiles' . DIRECTORY_SEPARATOR . 'lane' . $lane;
+            $absLaneDir = realpath($absLaneDir) ?: $absLaneDir;
+
+            $logger = $this->getWorkbench()->getLogger();
+            $killed = $this->reapChromeProfileDir($absLaneDir, $this->listChromeProcessCommandLines());
+            foreach ($killed as $pid) {
+                $logger->info('BDT parallel cleanup: lane ' . $lane . ' killed orphan Chrome PID ' . $pid);
+            }
+            if ($killed !== []) {
+                usleep(500_000);
+            }
+            if (! $this->removeDirectoryTree($absLaneDir)) {
+                $logger->warning('BDT parallel cleanup: lane ' . $lane . ' profile dir not fully removed ('
+                    . $absLaneDir . ') - a Chrome handle may still be open; it will be overwritten next run.');
+            }
+        } catch (\Throwable $e) {
+            try {
+                $this->getWorkbench()->getLogger()->logException($e);
+            } catch (\Throwable $ignored) {
+                // Logging itself failed (e.g. workbench torn down) - nothing safe left to do.
+            }
+        }
     }
 
     /**
