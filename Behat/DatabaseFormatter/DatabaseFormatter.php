@@ -1041,6 +1041,27 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     {
         try {
             $calculator = new ExpectedTestCountCalculator();
+
+            // When Behat is invoked with a positional feature/path (RunTest's --feature reaches
+            // Behat as a bare path argument, not an option), ONLY that path runs - not the whole
+            // suite. Count it alone so the expected totals match what actually executes; otherwise
+            // every single-feature interactive run is measured against the suite-wide total and
+            // looks like it stopped early. See getPositionalFeaturePath() for why suite-wide
+            // counting is wrong here.
+            $featurePath = $this->getPositionalFeaturePath();
+            if ($featurePath !== null) {
+                // Behat still applies a tag filter to the positional path: the CLI --tags when
+                // given, otherwise the OWNING suite's configured filter. Reproduce that so a
+                // "feature + tags" selection is not over-counted. With no owning suite (a path
+                // outside every configured suite) only the CLI --tags can apply.
+                $owningSuite = $this->findSuiteOwningPath($featurePath);
+                $tagExpression = $owningSuite !== null
+                    ? $this->resolveTagExpression($owningSuite)
+                    : $this->getCliOption('tags');
+                $result = $calculator->calculate([$featurePath], $tagExpression);
+                return [$result->featureCount, $result->scenarioCount];
+            }
+
             $features = 0;
             $scenarios = 0;
             $selectedSuite = $this->getCliOption('suite');
@@ -1109,5 +1130,108 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             }
         }
         return null;
+    }
+
+    /**
+     * Extracts the positional feature/path argument Behat was invoked with (e.g. RunTest's
+     * --feature, which reaches Behat as a bare "features\login.feature" argument), or null when
+     * the run carries no positional path and therefore covers the whole suite.
+     *
+     * WHY THIS EXISTS: calculateExpectedTotals() otherwise counts every scenario in the selected
+     * suite's paths. When a single feature (or directory) is passed positionally, Behat runs ONLY
+     * that path, so the suite-wide total dwarfs what actually ran and every such run trips the
+     * silent-stop detector. Restricting the expected scope to this path is what keeps the
+     * expected/actual counts aligned for interactive RunTest runs - the concrete bug this fixes.
+     *
+     * WHY IT IDENTIFIES THE PATH BY ON-DISK EXISTENCE INSTEAD OF ARGV POSITION: Behat also takes
+     * value options whose space-separated values are themselves non-option tokens (--config
+     * <file>, --out <file>), so position/prefix parsing alone cannot separate a path VALUE from
+     * THE feature path without hard-coding Behat's whole option table. A token that resolves to an
+     * existing .feature file or a directory is unambiguously the positional path (config values
+     * are .yml, report values are not .feature), which stays correct even if Behat's option set
+     * changes - and sidesteps the boolean-flag-vs-value ambiguity entirely.
+     *
+     * @return string|null Absolute path with any trailing ":line" selector stripped, or null if none.
+     */
+    private function getPositionalFeaturePath(): ?string
+    {
+        $argv = $_SERVER['argv'] ?? [];
+        // Skip argv[0] (the behat script itself); it is never a feature path.
+        for ($i = 1, $n = count($argv); $i < $n; $i++) {
+            $arg = (string) $argv[$i];
+            // Option flags and their inline "--opt=value" form never carry the positional path.
+            if ($arg === '' || $arg[0] === '-') {
+                continue;
+            }
+            // Strip a Behat line selector ("file.feature:12" / ":12:34") before the disk check.
+            // A Windows drive colon ("C:\...") is not at the string end, so it stays intact.
+            $candidate = preg_replace('/(:\d+)+$/', '', $arg);
+            // Return an ABSOLUTE path: Behat's Gherkin FeatureNode rejects a relative file path
+            // ("The file should be an absolute path.") - which is exactly what surfaces from the
+            // parser->parse($input, $file) call in ExpectedTestCountCalculator. A positional
+            // --feature is commonly given relative to the run's cwd. realpath() succeeds here
+            // because is_dir()/is_file() already confirmed the path exists on disk.
+            if (is_dir($candidate)) {
+                return realpath($candidate) ?: $candidate;
+            }
+            if (is_file($candidate) && strtolower(pathinfo($candidate, PATHINFO_EXTENSION)) === 'feature') {
+                return realpath($candidate) ?: $candidate;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Finds the suite whose configured paths contain the given positional feature path, or null.
+     *
+     * WHY IT EXISTS: when a positional path is counted on its own (see calculateExpectedTotals),
+     * the tag filter Behat applies is still the OWNING suite's configured filter unless --tags
+     * overrides it. Locating that suite lets resolveTagExpression() reproduce Behat's real
+     * filtering; without it a suite-level default tag filter would be ignored and the expected
+     * scenario count over-counted for that path.
+     */
+    private function findSuiteOwningPath(string $featurePath): ?Suite
+    {
+        $needle = $this->normalizePathForCompare($featurePath);
+        if ($needle === null) {
+            return null;
+        }
+        foreach ($this->suiteRegistry->getSuites() as $suite) {
+            $paths = $suite->hasSetting('paths') ? $suite->getSetting('paths') : [];
+            foreach ($paths as $suitePath) {
+                $base = $this->normalizePathForCompare((string) $suitePath);
+                if ($base === null) {
+                    continue;
+                }
+                // Exact file match, or the feature lives under the suite's directory. The trailing
+                // separator guards a directory boundary so "features2" cannot match "features".
+                if ($needle === $base
+                    || str_starts_with($needle, rtrim($base, '/\\') . DIRECTORY_SEPARATOR)
+                ) {
+                    return $suite;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Normalizes a path for cross-suite comparison: real absolute path, lower-cased. Returns null
+     * for a path that does not resolve on disk.
+     *
+     * WHY realpath: suite paths and the CLI path can differ in separators and "." segments;
+     * realpath collapses both to one canonical spelling so the prefix compare is reliable.
+     *
+     * WHY lower-case unconditionally: this framework runs on Windows, whose filesystem is
+     * case-insensitive, so "Features\Login.feature" and "features\login.feature" are one file;
+     * a case-sensitive compare would wrongly report no owning suite.
+     */
+    private function normalizePathForCompare(string $path): ?string
+    {
+        $real = realpath($path);
+        if ($real === false) {
+            return null;
+        }
+        return strtolower($real);
     }
 }
