@@ -1,12 +1,11 @@
 <?php
 namespace axenox\BDT\Actions;
 
-use axenox\BDT\Behat\Common\ChromeProfileReaperTrait;
-use axenox\BDT\Behat\Common\PortProbingTrait;
+use axenox\BDT\Behat\Common\Traits\ChromeProfileReaperTrait;
+use axenox\BDT\Behat\Common\Traits\PortProbingTrait;
 use exface\Core\CommonLogic\AbstractActionDeferred;
 use exface\Core\CommonLogic\Actions\ServiceParameter;
 use exface\Core\Exceptions\RuntimeException;
-use exface\Core\Facades\ConsoleFacade\CliCommandRunner;
 use exface\Core\Interfaces\Actions\iCanBeCalledFromCLI;
 use exface\Core\Interfaces\DataSources\DataTransactionInterface;
 use exface\Core\Interfaces\Tasks\ResultMessageStreamInterface;
