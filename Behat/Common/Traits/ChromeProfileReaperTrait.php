@@ -1,5 +1,5 @@
 <?php
-namespace axenox\BDT\Behat\Common;
+namespace axenox\BDT\Behat\Common\Traits;
 
 /**
  * Shared reaper for orphaned Chrome process trees and their profile directories.

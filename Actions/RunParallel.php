@@ -1,8 +1,8 @@
 <?php
 namespace axenox\BDT\Actions;
 
-use axenox\BDT\Behat\Common\ChromeProfileReaperTrait;
-use axenox\BDT\Behat\Common\PortProbingTrait;
+use axenox\BDT\Behat\Common\Traits\ChromeProfileReaperTrait;
+use axenox\BDT\Behat\Common\Traits\PortProbingTrait;
 use axenox\BDT\Behat\Common\RunRecordWriter;
 use exface\Core\CommonLogic\AbstractAction;
 use exface\Core\CommonLogic\Actions\ServiceParameter;
