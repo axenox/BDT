@@ -36,6 +36,10 @@ class UI5WaitManager
      * FacadeBrowserException is thrown before the session is silently killed.
      * Adjust this value to match your environment's session timeout minus a
      * safety margin (e.g. session_timeout - 20 s).
+     *
+     * It must also stay ABOVE the driver's socket_timeout: a single stalled CDP read
+     * blocks for up to socket_timeout, so if socket_timeout exceeded this budget the
+     * budget could never trip before one read already blew it.
      */
     private const SESSION_BUDGET_SECONDS = 95;
 
@@ -49,6 +53,7 @@ class UI5WaitManager
      * Milliseconds to wait between validateNoErrors() retry attempts.
      */
     private const VALIDATE_RETRY_DELAY_MS = 600;
+    
     /**
      * Mink session instance
      */
@@ -232,8 +237,19 @@ class UI5WaitManager
     public function waitForAppLoaded(string $pageUrl): void
     {
         try {
-            // Wait for initial page load
-            $this->waitForPendingOperations(true, false, false);
+            // Wait ONLY for the raw document load (document.readyState ===
+            // 'complete'), NOT for UI5 controls yet. waitForPendingOperations()
+            // would internally call waitForUI5Controls() and validateNoErrors(),
+            // both of which block for the full 30 s timeout on a server error
+            // page (403/404/500) because sapUiView/sapMPage never render there.
+            // That timeout is exactly the "hang" we want to avoid — the error
+            // page must be detected BEFORE any UI5-specific wait.
+            if (!$this->waitForPageLoad($this->defaultTimeouts['page'])) {
+                throw new FacadeBrowserException(
+                    "The page was not loaded within the expected time of {$this->defaultTimeouts['page']} seconds.",
+                    ["URL" => $this->getSession()->getCurrentUrl()]
+                );
+            }
 
             // Install the HTTP interceptor immediately after DOM is ready,
             // BEFORE UI5 fires its initial AJAX requests (e.g. DataTable data load).
@@ -241,9 +257,10 @@ class UI5WaitManager
             // page's JS context and is lost on navigation — we must reinstall here.
             $this->installHttpInterceptor();
             // Fail fast on server error pages: if the navigation landed on a
-            // plain HTML error page (e.g. "No route can be found"), there is no
-            // point waiting 30 s for a UI5 framework that will never appear.
-            // Throwing here puts the REAL server error into the step record.
+            // server error page (e.g. HTTP 403 "Access to localhost was denied",
+            // 404, 500 or "No route can be found"), there is no point waiting
+            // 30 s for a UI5 framework that will never appear. Throwing here puts
+            // the REAL server error into the step record.
             $errorText = $this->detectServerErrorPage();
             if ($errorText !== null) {
                 throw new RuntimeException(
@@ -442,8 +459,58 @@ class UI5WaitManager
                     $e
                 );
             }
+            // A socket read timeout here means Chrome did not answer a single
+            // Runtime.evaluate poll within socket_timeout. Because ChromeDriver::wait()
+            // is iteration-based rather than wall-clock based, such a stalled read would
+            // otherwise silently inflate a nominal wait far past its intended ceiling.
+            // Treat it as a hang so the recovery path can restart Chrome instead of
+            // letting the step hang until the outer process timeout.
+            if ($this->isSocketReadTimeout($e)) {
+                throw new ChromeHangException(
+                    'Chrome did not respond within socket_timeout during wait: ' . $e->getMessage(),
+                    0,
+                    $e
+                );
+            }
             throw $e;
         }
+    }
+
+    /**
+     * Returns true if the throwable is a CDP socket READ timeout (as opposed to a
+     * lost/never-established connection, which isCdpConnectionError() covers).
+     *
+     * Why this exists: dmore/chrome-mink-driver wraps a websocket read timeout in a
+     * StreamReadException once socket_timeout elapses. Its message does not match any
+     * keyword in isCdpConnectionError(), so without this check the throwable would be
+     * re-thrown raw and the step would fail with an opaque low-level error instead of
+     * triggering the Chrome-restart recovery path.
+     *
+     * Kept SEPARATE from isCdpConnectionError() on purpose: validateNoErrors() must be
+     * able to RETRY a transient read timeout, whereas a read timeout during an
+     * interactive wait is treated as a hang. Confirm the exact class/message in the
+     * pinned driver version and extend the checks below if it differs.
+     *
+     * @param \Throwable $e The throwable to inspect.
+     * @return bool True if the throwable indicates a websocket read timeout.
+     */
+    private function isSocketReadTimeout(\Throwable $e): bool
+    {
+        $current = $e;
+        while ($current !== null) {
+            if (str_contains(get_class($current), 'StreamReadException')) {
+                return true;
+            }
+            $msg = $current->getMessage();
+            if (str_contains($msg, 'Timed out')
+                || str_contains($msg, 'read from stream')
+                || str_contains($msg, 'socket read')
+            ) {
+                return true;
+            }
+            $current = $current->getPrevious();
+        }
+        return false;
     }
 
     /**
@@ -506,8 +573,18 @@ class UI5WaitManager
                         continue;
                     }
                     // All retries exhausted — log and skip for this cycle
+                    // All retries exhausted. A persistent CDP connection timeout here
+                    // means Chrome is wedged, not merely busy — fail loudly so the
+                    // recovery path can restart it, instead of silently returning and
+                    // letting a broken browser corrupt subsequent steps.
                     ErrorManager::getInstance()->logException($e);
-                    return;
+                    throw new ChromeHangException(
+                        'CDP connection timeout persisted after '
+                        . self::VALIDATE_RETRY_MAX . ' attempts in validateNoErrors: '
+                        . $e->getMessage(),
+                        0,
+                        $e
+                    );
                 }
                 // Non-timeout application error: clear tracer state and surface the error
                 $this->clearJsErrorTracer();
@@ -992,15 +1069,26 @@ JS
      * Detects whether the currently loaded document is a server-side error page
      * instead of a real UI5 application page.
      *
-     * Why this exists: top-level navigation responses (e.g. HTTP 400 from
-     * FacadeResolverMiddleware when a page alias does not exist) bypass the
-     * XHR/fetch interceptor entirely — the only client-side symptom is that the
-     * UI5 framework never appears. Without this check, waitForUI5Framework()
-     * burns its full timeout and throws a generic "UI5 framework failed to load",
-     * hiding the real cause ("No route can be found for URL ..."), which is then
-     * only visible in the server log. This check reads the actual error text from
-     * the document body and fails fast with the real message, so it ends up in
-     * the step record instead of a generic timeout.
+     * Why this exists: top-level navigation responses (e.g. HTTP 403 Forbidden
+     * from the authorization middleware, HTTP 404 Not Found, HTTP 500 Internal
+     * Server Error, or HTTP 400 from FacadeResolverMiddleware when a page alias
+     * does not exist) bypass the XHR/fetch interceptor entirely — that
+     * interceptor only wraps XMLHttpRequest and fetch, NOT the main document
+     * navigation. The only client-side symptom of such a failed navigation is
+     * that the UI5 framework never appears. Without this check,
+     * waitForUI5Framework() burns its full 30 s timeout and throws a generic
+     * "UI5 framework failed to load", hiding the real cause (e.g. "403
+     * Forbidden"), which is then only visible in the server log.
+     *
+     * Detection strategy (in order of reliability):
+     * 1. Read the REAL HTTP status code of the top-level navigation via the
+     *    Navigation Timing API (PerformanceNavigationTiming.responseStatus,
+     *    available in Chrome 109+). Any status >= 400 is a server error page.
+     *    This is independent of the page body text and therefore catches
+     *    403/404/500 reliably.
+     * 2. As a fallback (older browsers without responseStatus), match a list of
+     *    known error markers in the document body text — now including generic
+     *    HTTP error wording like "403", "Forbidden", "404", "Not Found", etc.
      *
      * @return string|null The extracted error text if the page is an error page, null otherwise
      */
@@ -1014,16 +1102,37 @@ JS
     if (typeof sap !== 'undefined') return null;
 
     var body = (document.body && (document.body.innerText || document.body.textContent) || '').trim();
+
+    // 1) Primary: the real HTTP status of the top-level navigation.
+    // PerformanceNavigationTiming.responseStatus is set to the actual status
+    // code of the document response (Chrome 109+). Anything >= 400 means the
+    // navigation itself failed (403/404/500/...) — fail fast with the code.
+    try {
+        var nav = (performance.getEntriesByType
+            ? performance.getEntriesByType('navigation')
+            : []) || [];
+        var status = (nav[0] && typeof nav[0].responseStatus === 'number')
+            ? nav[0].responseStatus
+            : 0;
+        if (status >= 400) {
+            var snippet = body ? body.split('\n').slice(0, 5).join(' | ').substring(0, 500) : '';
+            return ('HTTP ' + status + ' on page navigation' + (snippet ? ': ' + snippet : '')).substring(0, 500);
+        }
+    } catch (e) {}
+
     if (!body) return null;
 
-    // Known server-side error markers rendered as plain HTML pages
+    // 2) Fallback: known server-side error markers rendered as plain HTML pages
     var markers = [
         /No route can be found for URL/i,
         /please check system configuration option FACADES\.ROUTES/i,
         /UI Page with alias .* not found/i,
         /HttpBadRequestError/i,
         /Fatal error/i,
-        /Internal Server Error/i
+        /Internal Server Error/i,
+        /\b403\b|Forbidden|Access denied|Zugriff verweigert|was denied|don't have authorization|HTTP ERROR/i,
+        /\b404\b|Not Found|Nicht gefunden/i,
+        /\b500\b|Server Error|Serverfehler/i
     ];
     for (var i = 0; i < markers.length; i++) {
         if (markers[i].test(body)) {

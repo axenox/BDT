@@ -55,9 +55,15 @@ default:
         chrome:
           # Chrome debugging API endpoint
           api_url: "http://localhost:9222"
-          # Extended timeout for initial Chrome startup
-          # Particularly important for first test run
-          socket_timeout: 120 # 2 minutes 
+          # socket_timeout is the MAX seconds a single CDP read (one Runtime.evaluate
+          # poll) may block. Because ChromeDriver::wait() counts iterations rather than
+          # wall-clock time, this value is effectively the granularity at which a hung
+          # Chrome is detected. It MUST stay below UI5WaitManager::SESSION_BUDGET_SECONDS
+          # so a stalled read surfaces before the wait budget is meant to trip.
+          # 120 s was chosen for slow first-run startup, but it applies to EVERY read,
+          # letting stalled steady-state reads hang for 2 min. 45 s keeps startup
+          # headroom while detecting hangs promptly. Tune to your slowest legit evaluate.
+          socket_timeout: 45
       
       # Selenium WebDriver configuration (legacy support)
       # Note: Selenium 2 is outdated, consider upgrading to Selenium 4
