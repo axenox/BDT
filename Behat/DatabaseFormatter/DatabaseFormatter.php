@@ -299,7 +299,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                 }
             }
         }
-        catch(\Exception $e){
+        catch(\Throwable $e){
             ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
@@ -332,7 +332,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $ds->dataCreate(false);
             $this->featureDataSheet = $ds;
         }
-        catch(\Exception $e){
+        catch(\Throwable $e){
             ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
@@ -347,24 +347,36 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
             $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->featureStart);
             $ds->setCellValue('chrome_info', 0, $this->buildChromeInfo());
-            $ds->dataUpdate();
-            $this->featureDataSheet = null;
+            $ds->dataUpdate();            
         }
-        catch(\Exception $e){
+        catch(\Throwable $e){
             ErrorManager::getInstance()->logException($e, $this->workbench);
         } finally {
+            $this->featureDataSheet = null;
             // Clear so the next feature starts with a clean history
             ChromeManager::getInstance()->clearStartHistory();
         }
     }
 
+    /**
+     * Records a run_scenario row when a scenario starts.
+     *
+     * Why the null guard: if onBeforeFeature failed to create its run_feature row (e.g. the
+     * database rejected the INSERT), its exception was swallowed by the catch below and
+     * featureDataSheet stays null. Dereferencing it here would raise an \Error that escapes
+     * the catch and kills Behat with exit code 255. We skip recording this scenario instead,
+     * keeping the process alive so remaining scenarios/lanes can still run.
+     */
     public function onBeforeScenario(BeforeScenarioTested $event)
     {
         if ($this->isDryRun) {
             return;
         }
         static::$scenarioPages = [];
-        try{
+        try {
+            if ($this->featureDataSheet === null) {
+                throw new RuntimeException('Cannot record scenario: parent feature row was not created (onBeforeFeature failed earlier).');
+            }
             $scenario = $event->getScenario();
             $this->scenarioStart = $this->microtime();
             $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_scenario');
@@ -378,7 +390,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $ds->dataCreate(false);
             $this->scenarioDataSheet = $ds;
         }
-        catch(\Exception $e){
+        catch (\Throwable $e) {
             ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
@@ -390,6 +402,9 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         }
         static::$scenarioPages = [];
         try{
+            if ($this->featureDataSheet === null) {
+                throw new RuntimeException('Cannot record scenario: parent feature row was not created (onBeforeFeature failed earlier).');
+            }
             $outline = $event->getOutline();
             $this->scenarioStart = $this->microtime();
             $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_scenario');
@@ -403,7 +418,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $ds->dataCreate(false);
             $this->scenarioDataSheet = $ds;
         }
-        catch(\Exception $e){
+        catch(\Throwable $e){
             ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
@@ -440,7 +455,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                 $dsActions->dataCreate();
             }
         }
-        catch(\Exception $e){
+        catch(\Throwable $e){
             ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
@@ -519,7 +534,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
 
             $this->provider->setName($ds->getUidColumn()->getValue(0));
         }
-        catch(\Exception $e){
+        catch(\Throwable $e){
             ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
@@ -537,7 +552,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             array_pop($this->substepDataSheets);
             array_pop($this->substepStarts);
         }
-        catch(\Exception $e){
+        catch(\Throwable $e){
             ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }

@@ -217,6 +217,15 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             // forever with no finished_on. Finalize, then re-throw so the CLI sees it.
             $runRecordWriter->finalize($this->runDataSheet);
             throw new RuntimeException('Parallel run coordinator failed: ' . $e->getMessage(), null, $e);
+        } finally {
+            // Reclaim this run's Chrome fleet and profile dirs on EVERY exit path (success, coordinator
+            // failure, or the empty-scope early return). Kill BEFORE delete: a live Chrome holds open
+            // handles inside its profile dir, so on Windows the dir cannot be removed until it is gone.
+            // Both steps are run-scoped and best-effort, so they can never disturb a concurrent run nor
+            // turn a finished run into a failed one. On the early-return/no-work paths nothing was
+            // launched or created, so both calls are harmless no-ops.
+            $this->killRunChromeProcesses($runUid);
+            $this->purgeRunProfileDirs($cwd, $runUid);
         }
 
         // --- Finalize exactly once, after all workers exit. Child-row outcomes already live in
@@ -324,19 +333,22 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // a per-lane suffix concurrent workers sharing a role collide on optimistic locking. We
         // only GENERATE and PASS this lane_id - setupUser namespaces the provisioned user with it.
         $laneId = $runUid . '_lane' . $lane;
-        // Per-lane isolated profile dir. A distinct user_data_dir per worker is what lets multiple
-        // Chrome instances coexist.
+        // Per-run, per-lane profile dir. RATIONALE: the name is prefixed with the run UID so no two
+        // runs ever share a profile directory. A fixed "laneN" was reused across runs, and because the
+        // scheduled fleet runs as NT AUTHORITY\SYSTEM while interactive/web runs run as a different
+        // account (e.g. SDREXF2\wampuser), a later run would open a laneN profile that an earlier run of
+        // a DIFFERENT Windows account had created. Chrome then could not decrypt that profile's
+        // DPAPI-protected state (encrypted under the other account's key) and could not acquire the
+        // per-profile ProcessSingleton lock (Windows sharing violation, error 32), so it aborted on
+        // launch and every login failed. A run-scoped directory guarantees each launch gets a clean
+        // profile created and owned by the account actually running the fleet.
         //
-        // IMPORTANT: ChromeManager::start() builds the final path as
-        // getcwd() . DIRECTORY_SEPARATOR . <user_data_dir>, i.e. it expects a path RELATIVE
-        // to the installation root. An ABSOLUTE path would get getcwd() prepended a second time,
-        // produce a broken "C:\...\C:\..." path, and Chrome would fall back to the real default
-        // profile and show the "Who's using Chrome?" picker, hanging the lane. So we write the
-        // RELATIVE path into the YAML and only use the absolute form to create the directory.
+        // IMPORTANT: still RELATIVE - ChromeManager::start() prepends getcwd(). An absolute path would be
+        // double-prepended and make Chrome fall back to the real default profile.
         $userDataDirRelative = 'data' . DIRECTORY_SEPARATOR
             . 'axenox' . DIRECTORY_SEPARATOR
             . 'BDT' . DIRECTORY_SEPARATOR
-            . 'chrome_profiles' . DIRECTORY_SEPARATOR . 'lane' . $lane;
+            . 'chrome_profiles' . DIRECTORY_SEPARATOR . $laneId;
         $userDataDirAbsolute = $workingDir . DIRECTORY_SEPARATOR . $userDataDirRelative;
         if (! is_dir($userDataDirAbsolute) && ! @mkdir($userDataDirAbsolute, 0755, true) && ! is_dir($userDataDirAbsolute)) {
             throw new RuntimeException('Could not create lane user_data_dir: ' . $userDataDirAbsolute);
@@ -756,6 +768,99 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             fclose($diagLog);
         }
         return $failures;
+    }
+
+    /**
+     * Kills every Chrome still holding one of THIS run's lane profiles, as a coordinator-side backstop.
+     *
+     * WHY THIS IS NEEDED even though workers stop their own Chrome: a worker only runs its shutdown
+     * handler on a graceful exit. When the coordinator hard-kills a worker on the per-lane timeout
+     * (Process::stop), or the worker dies on a fatal error, that handler never runs - and because
+     * Chrome was launched detached via "start /B", it outlives the worker as an orphan. Such orphans
+     * pile up across runs (leaking memory/handles) and keep their profile's ProcessSingleton lock,
+     * the very thing that blocks a later run's launch. Running once here, after the whole fleet has
+     * drained, mops them up.
+     *
+     * WHY IT IS SAFE FOR CONCURRENT RUNS: every lane profile is run-scoped ("<run_uid>_laneN"), so we
+     * match ONLY command lines carrying THIS run's UID marker and never touch another run's or another
+     * project's Chrome. Enumeration uses PowerShell Get-CimInstance (wmic is removed on current
+     * Windows), consistent with ChromeManager::getProcessCommandLine(); the marker is compared in PHP,
+     * so no dynamic value enters the shell command and there is no injection surface. All failures are
+     * swallowed - teardown must never turn a finished run into a failed one.
+     */
+    private function killRunChromeProcesses(string $runUid): void
+    {
+        // Marker present in the --user-data-dir of every lane profile of THIS run and no other.
+        $marker = strtolower($runUid . '_lane');
+
+        // Constant chrome.exe filter only - no dynamic data enters the command, so it is injection-free.
+        $lines = [];
+        @exec(
+            'powershell -NoProfile -Command "'
+            . 'Get-CimInstance Win32_Process -Filter \'name=\'\'chrome.exe\'\'\' '
+            . '| ForEach-Object { $_.ProcessId.ToString() + \'|\' + $_.CommandLine }'
+            . '"',
+            $lines
+        );
+
+        foreach ($lines as $line) {
+            $sep = strpos($line, '|');
+            if ($sep === false) {
+                continue;
+            }
+            $pid = (int) substr($line, 0, $sep);
+            // A detached Chrome may report an empty command line for its child processes; those never
+            // carry our marker and are skipped, but killing the matched parent with /T takes them too.
+            $cmdLine = strtolower(substr($line, $sep + 1));
+            if ($pid > 0 && str_contains($cmdLine, $marker)) {
+                @exec('taskkill /F /PID ' . $pid . ' /T 2>nul');
+            }
+        }
+    }
+
+    /**
+     * Deletes THIS run's lane profile directories once the fleet has fully drained.
+     *
+     * WHY AFTER killing this run's Chromes: a live Chrome holds open handles inside its profile dir,
+     * so on Windows the directory cannot be removed until the process is gone. WHY run-scoped and
+     * best-effort: the dirs are named "<run_uid>_laneN", so only this run owns them and deleting them
+     * can never disturb a concurrent run; and a delete that still fails (a lingering handle, an
+     * antivirus scan) must not fail the run - the leftover dir is harmless and the next run uses a
+     * fresh run-scoped name anyway. Without this, run-scoped dirs would accumulate on disk forever.
+     */
+    private function purgeRunProfileDirs(string $cwd, string $runUid): void
+    {
+        $profilesRoot = $cwd . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR
+            . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR . 'chrome_profiles';
+        foreach ((array) glob($profilesRoot . DIRECTORY_SEPARATOR . $runUid . '_lane*', GLOB_ONLYDIR) as $dir) {
+            $this->deleteDirectoryRecursive($dir);
+        }
+    }
+
+    /**
+     * Recursively deletes a directory tree, ignoring individual failures.
+     *
+     * WHY ITS OWN HELPER AND WHY BEST-EFFORT: PHP has no built-in recursive rmdir, and profile purging
+     * must never throw - a file locked by a lingering handle should be skipped, not abort the run. Any
+     * entry that cannot be removed is left in place; the surrounding purge is already best-effort.
+     */
+    private function deleteDirectoryRecursive(string $dir): void
+    {
+        if (! is_dir($dir)) {
+            return;
+        }
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($iterator as $item) {
+            if ($item->isDir()) {
+                @rmdir($item->getPathname());
+            } else {
+                @unlink($item->getPathname());
+            }
+        }
+        @rmdir($dir);
     }
 
     /**
