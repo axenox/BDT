@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Actions;
 
+use axenox\BDT\Behat\Common\ChromeProfileReaperTrait;
 use axenox\BDT\Behat\Common\PortProbingTrait;
 use exface\Core\CommonLogic\AbstractActionDeferred;
 use exface\Core\CommonLogic\Actions\ServiceParameter;
@@ -36,6 +37,8 @@ use Symfony\Component\Process\Exception\ProcessTimedOutException;
  */
 class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
 {
+    use PortProbingTrait;
+    use ChromeProfileReaperTrait;
     // CLI option names - kept as constants so the option declarations in getCliOptions()
     // and the reads via getTaskParam() can never drift apart.
     private const OPT_BEHAT_CONFIG = 'behat_config';
@@ -77,7 +80,6 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
     private const DRAIN_POLL_MICROSECONDS = 100000;
 
     private const APP_ALIAS = 'axenox.BDT';
-    use PortProbingTrait;
 
     /**
      * Immediate phase: resolve and validate every input up front, then hand the resolved values to
@@ -262,9 +264,14 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
                 @unlink($configPath);
             }
         } finally {
-            // Release the cross-process port reservation no matter how the run ended (including a
-            // throw from writeInteractiveConfig before the inner try opens). Chrome has already
-            // exited by now, so the port is genuinely free for the next interactive run.
+            // Reap any orphaned Chrome bound to THIS run's interactive profile and remove the profile
+            // dir BEFORE releasing the port. The Behat child launches Chrome detached (start /B), so a
+            // timed-out/crashed run can leave the browser alive holding the profile - hence an explicit
+            // reap, not a bare rmdir. Done before releaseReservedPort() so the freed port cannot be
+            // reclaimed by another interactive run whose fresh interactive<port> dir we would then delete.
+            $this->cleanupInteractiveChrome($cwd, (int) $port);
+            // Release the cross-process port reservation no matter how the run ended (including a throw
+            // from writeInteractiveConfig before the inner try opens).
             $this->releaseReservedPort($reservation);
         }
     }
@@ -491,6 +498,53 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
             throw new RuntimeException('behat_config is not a file: ' . $path);
         }
         return $path;
+    }
+    
+    /**
+     * Reaps any orphaned Chrome bound to THIS run's interactive profile and removes the profile dir.
+     *
+     * WHY IT EXISTS: the Behat child launches Chrome detached (start /B), so a timed-out or crashed
+     * interactive run can leave the browser alive holding data\...\chrome_profiles\interactive<port>.
+     * Nothing else removes it, and because the dir is named by PORT (not reused like the fleet's fixed
+     * lane dirs), every run leaves a fresh one - so without this they accumulate without bound.
+     *
+     * WHY IT NEVER THROWS: it runs in performDeferred()'s finally, so a throw would mask the real run
+     * outcome (or a propagating timeout exception). Failures are logged loudly instead.
+     *
+     * @param string $workingDir The run's working dir (same base writeInteractiveConfig() used)
+     * @param int    $port        The interactive port that names this run's profile dir
+     */
+    private function cleanupInteractiveChrome(string $workingDir, int $port): void
+    {
+        try {
+            // Must mirror writeInteractiveConfig()'s user_data_dir construction.
+            $absProfileDir = $workingDir . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR
+                . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR
+                . 'chrome_profiles' . DIRECTORY_SEPARATOR . 'interactive' . $port;
+            $absProfileDir = realpath($absProfileDir) ?: $absProfileDir;
+
+            $logger = $this->getWorkbench()->getLogger();
+            $killed = $this->reapChromeProfileDir($absProfileDir, $this->listChromeProcessCommandLines());
+            foreach ($killed as $pid) {
+                $logger->info('BDT interactive cleanup: killed orphan Chrome PID ' . $pid . ' bound to ' . $absProfileDir);
+            }
+            // Chrome releases its profile file handles (ProcessSingleton lock, etc.) asynchronously
+            // after taskkill returns; a short settle avoids racing them into a half-deleted dir.
+            if ($killed !== []) {
+                usleep(1_000_000);
+            }
+            if (! $this->removeDirectoryTree($absProfileDir)) {
+                $logger->warning('BDT interactive cleanup: could not fully remove profile dir ' . $absProfileDir
+                    . ' - a Chrome handle may still be open. It will be overwritten on the next run on this port.');
+            }
+        } catch (\Throwable $e) {
+            // Backstop for the backstop: never let cleanup break the run's finally chain.
+            try {
+                $this->getWorkbench()->getLogger()->logException($e);
+            } catch (\Throwable $ignored) {
+                // Logging itself failed (e.g. workbench already torn down) - nothing safe left to do.
+            }
+        }
     }
 
     /**
