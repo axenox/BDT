@@ -63,7 +63,7 @@
         {
             "_EXPORT_SUMMARY": "Nightly automated BDT test run",
             "CREATED_ON": "2025-08-18 10:09:48",
-            "MODIFIED_ON": "2026-07-02 09:23:38",
+            "MODIFIED_ON": "2026-07-09 07:23:44",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x11efa24edb84611aa24e025041000001",
             "UID": "0x11f0a1a9b58bba36a1a9025041000001",
@@ -87,67 +87,9 @@
             "FIRST_RUN": "2026-04-29 14:45:00"
         },
         {
-            "_EXPORT_SUMMARY": "onelink.Basis daily autom. tests ",
-            "CREATED_ON": "2026-06-09 15:43:38",
-            "MODIFIED_ON": "2026-07-02 11:00:13",
-            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "MODIFIED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
-            "UID": "0x11f1ac8338772070ac83025041000001",
-            "ACTION_UXON": null,
-            "QUEUE_TOPICS": "behat",
-            "SCHEDULE": "30 23 * * *",
-            "APP": "0x11efa2214f96c8b8a221025041000001",
-            "DESCRIPTION": "",
-            "NAME": "onelink.Basis daily autom. tests ",
-            "TASK_UXON": {
-                "timeout": "1 hours",
-                "time_to_check": "30 minutes",
-                "task_to_run": {
-                    "class": "\\exface\\Core\\CommonLogic\\Tasks\\CliScriptTask",
-                    "commands": [
-                        "vendor\\bin\\action axenox.BDT:Behat init & vendor\\bin\\Behat --suite=onelink.Basis --tags=Status::Ready"
-                    ],
-                    "command_timeout": "30 minutes",
-                    "ignored_exit_codes": [
-                        1
-                    ]
-                }
-            },
-            "FIRST_RUN": "2026-06-09 15:43:00"
-        },
-        {
-            "_EXPORT_SUMMARY": "evening onelink.Basis daily autom. tests ",
-            "CREATED_ON": "2026-06-10 13:48:49",
-            "MODIFIED_ON": "2026-07-01 19:23:45",
-            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "MODIFIED_BY_USER": "0x11efa24edb84611aa24e025041000001",
-            "UID": "0x11f1ab8a58c30ee8ab8a025041000001",
-            "ACTION_UXON": null,
-            "QUEUE_TOPICS": "behat",
-            "SCHEDULE": "0 19 * * *",
-            "APP": "0x11efa2214f96c8b8a221025041000001",
-            "DESCRIPTION": "",
-            "NAME": "evening onelink.Basis daily autom. tests ",
-            "TASK_UXON": {
-                "task_to_run": {
-                    "class": "\\exface\\Core\\CommonLogic\\Tasks\\CliScriptTask",
-                    "commands": [
-                        "vendor\\bin\\action axenox.BDT:Behat init & vendor\\bin\\Behat --suite=onelink.Basis --tags=Status::Ready"
-                    ],
-                    "command_timeout": "30 minutes",
-                    "ignored_exit_codes": [
-                        1
-                    ]
-                },
-                "timeout": "1 hours",
-                "time_to_check": "30 minutes"
-            },
-            "FIRST_RUN": "2026-06-10 13:48:00"
-        },
-        {
             "_EXPORT_SUMMARY": "Parallel run Status::Ready",
             "CREATED_ON": "2026-06-29 13:22:57",
-            "MODIFIED_ON": "2026-07-02 14:49:15",
+            "MODIFIED_ON": "2026-07-09 09:26:58",
             "CREATED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
             "MODIFIED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
             "UID": "0x11f18b2de187f2688b2d025041000001",
