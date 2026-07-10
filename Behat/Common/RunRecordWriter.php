@@ -98,4 +98,26 @@ final class RunRecordWriter
         $end   = new \DateTimeImmutable((string) $finishedOn);
         return (float) ($end->getTimestamp() - $start->getTimestamp());
     }
+
+    /**
+     * Stages the run's log digest (summary + failure blocks) onto the run sheet WITHOUT
+     * issuing its own update.
+     *
+     * Why no dataUpdate here: the coordinator calls this immediately before finalize(), so the log
+     * value rides along in finalize()'s single dataUpdate. That keeps the run row's whole close-out
+     * (finished_on, duration, log) in ONE write, avoiding a second optimistic-locking round-trip on
+     * a row whose only writer is the coordinator anyway.
+     *
+     * Why it lives here rather than in the coordinator: this class is the single source of truth for
+     * the run-row schema, so the log column name stays owned in one place and the two run writers
+     * cannot drift on it.
+     *
+     * @param DataSheetInterface $runSheet The sheet returned by create().
+     * @param string $log The log digest to write into the run row.
+     * @return void
+     */
+    public function setRunLog(DataSheetInterface $runSheet, string $log): void
+    {
+        $runSheet->setCellValue('log', 0, $log);
+    }
 }
