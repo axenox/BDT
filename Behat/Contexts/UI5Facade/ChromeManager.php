@@ -77,6 +77,18 @@ class ChromeManager
     private array $startHistory = [];
     /** App-config key deciding Chrome window visibility; see resolveHeadless(). */
     private const CFG_CHROME_HEADLESS = 'PARALLEL.CHROME_HEADLESS';
+    
+    /**
+     * Wall-clock ceiling for a single health probe, in seconds.
+     *
+     * WHY SO SHORT: isAlive() runs before EVERY step, so its cost is paid on the hot path.
+     * A live Chrome answers /json/version on loopback in single-digit milliseconds; anything
+     * that needs more than this is, for our purposes, not usable as a browser anyway. The
+     * ceiling also bounds the WEDGED case, where Chrome still accepts the TCP connection but
+     * never writes a response - without an explicit timeout such a probe would block forever
+     * and turn the health check itself into the hang it is meant to detect.
+     */
+    private const HEALTH_PROBE_TIMEOUT_SECONDS = 2.0;
 
     /**
      * Private constructor enforces singleton usage via getInstance().
@@ -428,6 +440,88 @@ class ChromeManager
     }
 
     /**
+     * Returns TRUE if the Chrome process managed by this instance is reachable and able to
+     * serve CDP requests right now.
+     *
+     * WHY THIS EXISTS: today a dead Chrome is only discovered INDIRECTLY - some step calls the
+     * Mink session, the driver fails to open its WebSocket, and a low-level socket exception is
+     * thrown from wherever that call happened to be. When that call sits inside a step, the
+     * AfterStep hook can still translate it into a restart; when it sits inside Mink's own
+     * session lifecycle (reset/stop between scenarios), the exception escapes every guard we
+     * own and kills the whole Behat process with exit code 255, taking the entire lane and its
+     * DB recording down with it. A cheap, explicit liveness probe lets callers ASK whether the
+     * browser is usable, instead of finding out by crashing into it.
+     *
+     * WHY /json/version AND NOT /json/list: version is the smallest endpoint Chrome serves and
+     * needs no tab enumeration, so it stays cheap enough to run before every step. It answers
+     * the only question asked here - "is a CDP-speaking Chrome listening on our port" - while
+     * tab-level readiness (a navigable page with a WebSocket URL) remains the job of
+     * waitUntilReady() at startup.
+     *
+     * WHY NOT getPid(): the PID is recorded at launch and is never invalidated when Chrome dies
+     * or is reaped, so a non-null PID proves nothing about the CURRENT state. Only the port
+     * answers.
+     *
+     * Never throws: a failed probe IS the answer (FALSE). Callers use it to decide on a restart,
+     * so it must be safe to call from hooks that are forbidden to throw.
+     *
+     * @param int|null $port Port to probe; falls back to the currently managed port when omitted
+     * @return bool TRUE if Chrome answered a CDP request within HEALTH_PROBE_TIMEOUT_SECONDS
+     */
+    public function isAlive(?int $port = null): bool
+    {
+        $port = $port ?? $this->port;
+        if ($port === null) {
+            // Chrome was never started by this manager - there is nothing that could be alive.
+            return false;
+        }
+
+        try {
+            // 127.0.0.1 rather than "localhost" on purpose: on Windows "localhost" may resolve to
+            // ::1 first, and when Chrome only binds IPv4 the probe pays a connect timeout before
+            // falling back - turning a healthy browser into a "dead" verdict.
+            $client   = new Client([
+                // connect_timeout bounds an unreachable port, timeout bounds a wedged Chrome that
+                // accepts the connection but never answers. Both are required: either one alone
+                // leaves a way for the probe to block.
+                'connect_timeout' => self::HEALTH_PROBE_TIMEOUT_SECONDS,
+                'timeout'         => self::HEALTH_PROBE_TIMEOUT_SECONDS,
+                // A non-200 answer is a health verdict, not an exceptional situation - handle it
+                // as data instead of paying for exception unwinding on the hot path.
+                'http_errors'     => false
+            ]);
+            $response = $client->request('GET', 'http://127.0.0.1:' . $port . '/json/version');
+
+            if ($response->getStatusCode() !== 200) {
+                $this->getLogbook()->addLine(
+                    "isAlive({$port}): Chrome answered with HTTP " . $response->getStatusCode() . ' - treating as dead'
+                );
+                return false;
+            }
+
+            $body = json_decode($response->getBody()->__toString(), true);
+            // A CDP-capable Chrome always advertises a browser-level WebSocket endpoint here.
+            // Requiring it rules out the case where some FOREIGN service occupies our port and
+            // happens to answer 200 - attaching to that would fail in a far more confusing way.
+            if (! is_array($body) || ($body['webSocketDebuggerUrl'] ?? '') === '') {
+                $this->getLogbook()->addLine(
+                    "isAlive({$port}): the listener on this port is not a CDP endpoint - treating as dead"
+                );
+                return false;
+            }
+
+            return true;
+        } catch (\Throwable $e) {
+            // Connection refused, DNS, timeout, malformed response - all mean the same thing to
+            // the caller. Logged (not swallowed silently) so a flapping browser is traceable.
+            $this->getLogbook()->addLine(
+                "isAlive({$port}): probe failed - " . get_class($e) . ' - ' . $e->getMessage()
+            );
+            return false;
+        }
+    }
+
+    /**
      * Returns the list of open Chrome tabs by querying the /json/list debug endpoint.
      *
      * Each entry in the returned array represents one tab and contains fields such as
@@ -438,12 +532,17 @@ class ChromeManager
      * Useful for diagnostics when a connection error occurs: if the list is empty or
      * null the root cause is in Chrome itself rather than the WebSocket layer.
      *
+     * WHY 127.0.0.1 AND NOT "localhost": on Windows "localhost" resolves to ::1 before 127.0.0.1.
+     * Chrome binds its debug port on IPv4 only, so every call would first pay a failed IPv6
+     * connect attempt before falling back - inflating startup polling and, worse, making a
+     * healthy Chrome look unreachable whenever the probe timeout is short.
+     *
      * @param int|null $port Port to query; falls back to the currently managed port if omitted
      * @return array Decoded JSON tab list, or an empty array if the endpoint could not be reached
      */
     public function getTabList(?int $port = null): array
     {
-        return $this->runGuzzleApi('http://localhost:' . ($port ?? $this->getPort()) . '/json/list');
+        return $this->runGuzzleApi('http://127.0.0.1:' . ($port ?? $this->getPort()) . '/json/list');
     }
 
     /**
@@ -510,6 +609,7 @@ class ChromeManager
         $this->getLogbook()->addLine("getProcessCommandLine({$pid}): {$commandLine}");
         return $commandLine;
     }
+    
 
     /**
      * Decides whether a command line belongs to one of OUR leftover Chrome instances.
@@ -563,7 +663,7 @@ class ChromeManager
      */
     private function waitUntilReady(int $port, int $timeoutSeconds = 10): void
     {
-        $this->getLogbook()->addLine("waitUntilReady(): polling http://localhost:{$port}/json/list (timeout: {$timeoutSeconds}s)...");
+        $this->getLogbook()->addLine("waitUntilReady(): polling http://127.0.0.1:{$port}/json/list (timeout: {$timeoutSeconds}s)...");
         $this->getLogbook()->addIndent(+1);
 
         $start   = time();
@@ -617,13 +717,25 @@ class ChromeManager
      * persistent HTTP client. Guzzle exceptions are caught, logged, and swallowed so
      * that callers such as waitUntilReady() can simply retry on the next iteration.
      *
-     * @param string $url Full URL of the CDP endpoint (e.g. http://localhost:9222/json/list)
+     * WHY EXPLICIT TIMEOUTS: Guzzle's default request timeout is UNLIMITED. A Chrome that binds
+     * the port but never answers - exactly the wedged state we are trying to detect - would make
+     * this call block forever, and the caller's own timeout loop (waitUntilReady) would never get
+     * to re-evaluate its wall-clock condition. The whole "give up after N seconds" contract of
+     * every caller therefore depends on the two timeouts below being set here.
+     *
+     * @param string $url Full URL of the CDP endpoint (e.g. http://127.0.0.1:9222/json/list)
      * @return array Decoded JSON response body, or an empty array on any error
      */
     private function runGuzzleApi(string $url): array
     {
         try {
-            $client   = new Client();
+            $client   = new Client([
+                // connect_timeout bounds a closed port, timeout bounds a Chrome that accepts the
+                // connection but never writes a response. Both are needed - either alone still
+                // leaves a path for the call to hang indefinitely.
+                'connect_timeout' => self::HEALTH_PROBE_TIMEOUT_SECONDS,
+                'timeout'         => self::HEALTH_PROBE_TIMEOUT_SECONDS
+            ]);
             $response = $client->request('GET', $url);
 
             if ($response->getStatusCode() === 200) {
