@@ -155,13 +155,18 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      */
     private ?MarkdownLogBook $runLog = null;
 
-    // --- Run-log digest bounds. The digest is persisted on the run row so a tester can triage a
-    // parallel run from the DB instead of RDP-ing into the server for the lane logs. These caps stop
-    // a pathological run (mass failures, a runaway stack trace) from bloating the run row. ---
-    private const LOG_MAX_FAILED_SCENARIOS  = 50;
-    private const LOG_FAILURE_EXCERPT_BYTES = 4096;
-    private const LOG_FALLBACK_TAIL_LINES   = 40;
-    private const LOG_TOTAL_MAX_BYTES       = 65536;
+    // --- Run-log digest bounds. The run log is an ORCHESTRATION log, not a test report: per-scenario
+    // and per-step outcomes are already persisted authoritatively as child rows by the attach-mode
+    // DatabaseFormatter, so repeating them here only pushed the coordinator-level diagnostics (worker
+    // errors, launch failures, the coordinator error itself) past the size cap. What stays is the run
+    // configuration, the per-lane worker status and Behat's counts block; the verbose test output stays
+    // in the on-disk lane log, which every lane section now names. ---
+    private const LOG_TAIL_READ_BYTES  = 65536;
+    private const LOG_CRASH_TAIL_LINES = 40;
+    // Raised: this tail is only produced for a lane whose worker actually DIED, which is rare, so a
+    // slightly larger budget costs nothing on a healthy run but buys headroom for a stack trace.
+    private const LOG_CRASH_TAIL_BYTES = 4096;
+    private const LOG_TOTAL_MAX_BYTES  = 65536;
 
     /**
      * Entry point. Drives the run lifecycle once, fanning the matched features out to N workers.
@@ -1521,18 +1526,18 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Appends one lane's outcome to its (already-created) run-log section: the worker status, the
-     * Behat run summary, the failed-scenario list and a bounded failure excerpt - parsed once from the
-     * lane's now-closed log file.
+     * Appends this lane's section to the living run-log: worker status, the on-disk lane log name and
+     * Behat's counts block - parsed once from the lane's now-closed log file.
      *
-     * Why parse here, at lane end, rather than at run end: the lane has just finished, so its log is
-     * flushed and complete, and parsing it now keeps everything about a lane in one place and out of a
-     * separate end-of-run pass. Reading the closed file (not a live buffer) means a lane that never
-     * produced output degrades to a clear marker instead of breaking the log.
+     * Why no test detail here: the failed-scenario list and the inline failure output are TEST results,
+     * and the attach-mode DatabaseFormatter already writes those per scenario and per step as child rows
+     * of this very run. Duplicating them into the run row added nothing a reader could not query, while
+     * a failure-heavy run filled the whole byte budget and truncated away the coordinator-level
+     * diagnostics this log exists for. The run log now answers "did the fleet work?"; the child rows
+     * answer "did the tests pass?".
      *
      * Why "worker done" is not "tests passed": worker status reports whether the PROCESS completed -
-     * Behat exit 1 (a completed run with test failures) is a healthy worker. The test outcome is
-     * reported separately from the parsed "Failed scenarios" block, so a DB reader is not misled.
+     * Behat exit 1 (a completed run with test failures) is a healthy worker.
      *
      * @param int         $lane        Lane id (1-based, matching the launch loop and the log filename).
      * @param string|null $workerError Worker-level failure for this lane, or null on a normal exit.
@@ -1543,50 +1548,41 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             return;
         }
         $section = 'Lane ' . $lane;
+        $logName = $runUid . '_lane' . $lane . '.log';
+
         $this->runLog->addLine('Worker: ' . ($workerError === null ? 'done' : 'failed'), 1, $section);
         if ($workerError !== null) {
             $this->runLog->addLine('Worker error: ' . $workerError, 1, $section);
         }
+        // Always name the on-disk lane log: the verbose Behat output is deliberately NOT copied into the
+        // run row, so the reader must be told where the full truth lives.
+        $this->runLog->addLine('Lane log: ' . $logName, 1, $section);
 
-        $logFile = $logDir . DIRECTORY_SEPARATOR . $runUid . '_lane' . $lane . '.log';
-        if (! is_file($logFile) || ! is_readable($logFile)) {
+        $lines = $this->readLaneLogTail($logDir . DIRECTORY_SEPARATOR . $logName);
+        if ($lines === null) {
             $this->runLog->addLine('Lane log file missing or unreadable', 1, $section);
             return;
         }
 
-        $raw = (string) @file_get_contents($logFile);
-        // Strip any ANSI colour codes so the stored digest is plain text (Behat usually disables
-        // colour when its output is piped, but a configured formatter may still emit codes).
-        $text  = preg_replace('/\e\[[0-9;]*m/', '', $raw) ?? $raw;
-        $lines = preg_split('/\R/', $text) ?: [];
-
-        $summary         = $this->extractBehatSummary($lines);
-        $failedScenarios = $this->extractFailedScenarios($lines);
-        $excerpt         = $this->extractFailureExcerpt($lines);
-
-        // Fallback: if the worker itself failed but Behat printed no recognizable failure block (e.g.
-        // it crashed before reaching a scenario), keep the last few non-empty lines so the section is
-        // not empty for a lane we KNOW went wrong. Bounded by LOG_FALLBACK_TAIL_LINES.
-        if ($excerpt === null && $workerError !== null) {
-            $nonEmpty = array_values(array_filter($lines, static fn($l) => trim($l) !== ''));
-            $tail     = array_slice($nonEmpty, -self::LOG_FALLBACK_TAIL_LINES);
-            $excerpt  = $tail === [] ? null : implode("\n", $tail);
-        }
-
-        $this->runLog->addLine('Test failures: ' . ($failedScenarios !== [] ? 'yes' : 'no'), 1, $section);
+        $summary = $this->extractBehatSummary($lines);
         if ($summary !== null) {
-            $this->runLog->addLine('Summary:', 1, $section);
+            // The counts block already states how many scenarios/steps failed, so no separate
+            // failed-scenario list is needed to see whether this lane's tests were green.
+            $this->runLog->addLine('Behat summary:', 1, $section);
             $this->runLog->addCodeBlock($summary, '', $section);
+        } else {
+            $this->runLog->addLine('Behat summary: not reached - the worker never printed a run summary', 1, $section);
         }
-        if ($failedScenarios !== []) {
-            $this->runLog->addLine('Failed scenarios:', 1, $section);
-            foreach ($failedScenarios as $ref) {
-                $this->runLog->addLine($ref, 2, $section);
+
+        // Crash tail only. A worker that RAN to completion (exit 0/1) has its outcome in the child rows,
+        // so none of its output belongs here. A worker that crashed or was killed produced NO child row
+        // explaining itself, so its last lines are the only diagnosis available anywhere.
+        if ($workerError !== null) {
+            $tail = $this->extractCrashTail($lines);
+            if ($tail !== null) {
+                $this->runLog->addLine('Last output before failure:', 1, $section);
+                $this->runLog->addCodeBlock($tail, '', $section);
             }
-        }
-        if ($excerpt !== null) {
-            $this->runLog->addLine('Failure excerpt:', 1, $section);
-            $this->runLog->addCodeBlock($excerpt, '', $section);
         }
     }
 
@@ -1617,72 +1613,85 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Collects the feature:line references from Behat's "Failed scenarios:" block.
+     * Reads the last LOG_TAIL_READ_BYTES of a lane log and returns it as ANSI-stripped lines.
      *
-     * Why this block: when scenarios fail, Behat lists each failing scenario's location in a compact
-     * trailing block - exactly the "which scenarios failed" the digest needs, without the verbose
-     * inline output. Capped at LOG_MAX_FAILED_SCENARIOS so a mass-failure run cannot bloat the row.
+     * Why a bounded tail instead of reading the whole file: a UI5 lane can emit a very large log, and
+     * pulling it fully into the coordinator's memory - once per lane - just to look at its last lines is
+     * both wasteful and a real out-of-memory risk on a run with many failures. Everything the digest
+     * still needs (Behat's counts block, and the last output before a crash) sits at the END of the file,
+     * so a tail read is sufficient by construction.
      *
-     * @param string[] $lines
-     * @return string[] Feature:line references (possibly empty).
+     * @return string[]|null Lines of the tail, or null when the file is missing or unreadable.
      */
-    private function extractFailedScenarios(array $lines): array
+    private function readLaneLogTail(string $logFile): ?array
     {
-        $refs    = [];
-        $inBlock = false;
-        foreach ($lines as $line) {
-            $trimmed = trim($line);
-            if (! $inBlock) {
-                if (stripos($trimmed, 'Failed scenarios:') !== false) {
-                    $inBlock = true;
-                }
-                continue;
-            }
-            // The block is a run of indented feature:line refs; the first line that is not such a ref
-            // (a blank line or the counts summary) ends it.
-            if (preg_match('/\.feature:\d+$/', $trimmed)) {
-                $refs[] = $trimmed;
-                if (count($refs) >= self::LOG_MAX_FAILED_SCENARIOS) {
-                    break;
-                }
-            } elseif ($trimmed !== '') {
-                break;
-            }
+        if (! is_file($logFile) || ! is_readable($logFile)) {
+            return null;
         }
-        return $refs;
+        $handle = @fopen($logFile, 'rb');
+        if ($handle === false) {
+            return null;
+        }
+        $size      = (int) @filesize($logFile);
+        $truncated = $size > self::LOG_TAIL_READ_BYTES;
+        if ($truncated) {
+            fseek($handle, -self::LOG_TAIL_READ_BYTES, SEEK_END);
+        }
+        $raw = (string) stream_get_contents($handle);
+        fclose($handle);
+
+        // Strip ANSI colour codes so the stored digest stays plain text (Behat usually disables colour
+        // when its output is piped, but a configured formatter may still emit codes).
+        $text  = preg_replace('/\e\[[0-9;]*m/', '', $raw) ?? $raw;
+        $lines = preg_split('/\R/', $text) ?: [];
+        // A tail read almost always starts mid-line - drop that first fragment so no half line is parsed
+        // or reported as if it were complete.
+        if ($truncated && count($lines) > 1) {
+            array_shift($lines);
+        }
+        return $lines;
     }
 
     /**
-     * Builds a bounded excerpt of the lines that look like failure detail (exception messages,
-     * assertion failures), so the digest carries the "why" and not just the "what".
+     * Builds a bounded tail of the lane's last meaningful output lines for a worker that DIED.
      *
-     * Why line-matching rather than a full parser: the inline failure detail's exact shape depends on
-     * the output formatter and the thrown exception, so a strict parser would be brittle. Collecting
-     * the recognizable failure lines up to LOG_FAILURE_EXCERPT_BYTES is formatter-agnostic and cannot
-     * run away in size.
+     * Why only for a crashed worker: a worker that completed has its per-scenario outcome in the child
+     * rows, so its output is noise in the run row. A worker that died (crash, taskkill, fatal error)
+     * left no row behind at all, and its final lines are the only evidence of why.
+     *
+     * Why the noise filter: Behat's Symfony console prints its full command synopsis (a ~700 byte
+     * single line) AFTER a fatal, and frames its error blocks in box-drawing characters. Both are pure
+     * padding, and on a byte-bounded tail they push the one line that names the cause - the framed
+     * "In <file> line <n>" block - out of the budget. Dropping them first means the budget is spent on
+     * diagnosis rather than on decoration.
      *
      * @param string[] $lines
-     * @return string|null The excerpt, or null when no failure lines were found.
+     * @return string|null The tail, or null when the lane produced no meaningful output at all.
      */
-    private function extractFailureExcerpt(array $lines): ?string
+    private function extractCrashTail(array $lines): ?string
     {
-        $hits  = [];
-        $bytes = 0;
+        $meaningful = [];
         foreach ($lines as $line) {
-            $trimmed = trim($line);
+            $trimmed = trim($line, " \t\r\n\0\x0B│└─");
             if ($trimmed === '') {
                 continue;
             }
-            if (preg_match('/(Exception|Error|Failed asserting|assert|✘|\bFAILED\b)/i', $trimmed)) {
-                $hits[] = $trimmed;
-                $bytes += strlen($trimmed) + 1;
-                if ($bytes >= self::LOG_FAILURE_EXCERPT_BYTES) {
-                    $hits[] = '... (failure excerpt truncated)';
-                    break;
-                }
+            // Behat's usage synopsis, echoed after every fatal - long, constant and content-free.
+            if (str_starts_with($trimmed, 'behat [--')) {
+                continue;
             }
+            $meaningful[] = $trimmed;
         }
-        return $hits === [] ? null : implode("\n", $hits);
+        $tail = array_slice($meaningful, -self::LOG_CRASH_TAIL_LINES);
+        if ($tail === []) {
+            return null;
+        }
+        $text = implode("\n", $tail);
+        if (strlen($text) > self::LOG_CRASH_TAIL_BYTES) {
+            // Keep the END: a fatal is the last thing the process manages to print.
+            $text = "... (truncated)\n" . mb_strcut($text, -self::LOG_CRASH_TAIL_BYTES);
+        }
+        return $text;
     }
 
     /**
