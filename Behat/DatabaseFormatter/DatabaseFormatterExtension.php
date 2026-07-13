@@ -10,6 +10,8 @@ use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\Reference;
 use exface\Core\Exceptions\RuntimeException;
+use exface\Core\Behaviors\TimeStampingBehavior;
+use exface\Core\Interfaces\Model\BehaviorInterface;
 
 class DatabaseFormatterExtension implements Extension
 {
@@ -21,6 +23,8 @@ class DatabaseFormatterExtension implements Extension
     private const IDENTITY_BOOT_BACKOFF_BASE_MS = 100;
     /** Random jitter (ms) added on top of the backoff so retrying workers do not realign. */
     private const IDENTITY_BOOT_BACKOFF_JITTER_MS = 100;
+    /** The object whose single shared row every worker's CLI identity resolution writes to. */
+    private const AUTHENTICATOR_OBJECT_ALIAS = 'exface.Core.USER_AUTHENTICATOR';
     
     public function getConfigKey(): string
     {
@@ -60,38 +64,43 @@ class DatabaseFormatterExtension implements Extension
         $definition->addTag('output.formatter');
 
         $container->setDefinition('database_formatter.formatter', $definition);
-        // Start a new workbench for the test run formatter. Disable monitor to avoid flooding the DB
-        // with all the errors it registers - these are test results, not system-monitoring events.
-        // Boot + CLI-identity resolution run under a bounded retry: parallel workers booting at the
-        // same instant otherwise collide on the shared authenticator row's optimistic lock. See the
-        // method docblock for the full rationale.
-        $workbench = $this->bootWorkbenchWithIdentityRetry();
+        // Boot + CLI-identity resolution run under a bounded retry. In a PARALLEL run (identified by an
+        // injected run_uid) the identity resolution additionally runs with the authenticator's
+        // TimeStampingBehavior disabled in THIS process - see the method docblock.
+        $workbench = $this->bootWorkbenchWithIdentityRetry(!empty($config['run_uid']));
         // $container is a Symfony DI container: https://symfony.com/doc/current/components/dependency_injection.html
         $container->set('database_formatter.workbench', $workbench);
     }
-    
-    /**
-     * Boots the formatter workbench and eagerly resolves the ambient CLI identity under a bounded,
-     * jittered retry, returning the ready workbench.
+
+    /*
+     * Boots the formatter workbench and eagerly resolves the ambient CLI identity, returning the ready
+     * workbench.
      *
      * WHY THIS EXISTS: on boot the workbench resolves the CLI process identity (the OS user, e.g.
      * "wampuser") via the default CLI authenticator, which updates last_authenticated_on on a SINGLE
-     * shared USER_AUTHENTICATOR row. That row is guarded by TimeStampingBehavior optimistic locking,
-     * so when several parallel workers - all running as the same OS user - boot at the same instant,
-     * they collide on that row and all but one die with a "changed in the meantime" conflict. The
-     * contended field is only a last-login timestamp, so retrying is safe: each fresh attempt re-reads
-     * the row's current version and one racer wins per round until all have written. Resolving the
-     * identity HERE, at the earliest per-worker point, absorbs the collision before any later code
-     * touches security on an unwrapped path.
+     * shared USER_AUTHENTICATOR row. That row is guarded by TimeStampingBehavior optimistic locking, so
+     * when several parallel workers - all running as the same OS user - boot at the same instant, they
+     * collide on that row and all but one die with a "changed in the meantime" conflict.
      *
-     * WHY RETRY AND NOT A LOCK: the same row is also written by the web-server process on browser
-     * logins, which a worker-side lock cannot reach. Retry tolerates the conflict regardless of which
-     * process caused it, so it covers a case a lock structurally cannot.
+     * WHY THE BEHAVIOR IS DISABLED FOR PARALLEL WORKERS: the optimistic-lock check that raises the
+     * conflict runs inside the process performing the write, i.e. in THIS worker. Disabling the behavior
+     * on the worker's own model instance therefore removes the conflict at its source, without touching
+     * the stored model and without affecting any other process - the web server keeps its full locking.
+     * Losing lost-update protection on the field in question is harmless: it is a last-login timestamp,
+     * so "last writer wins" is exactly the semantics we want. The behavior is re-enabled immediately
+     * after the identity is resolved, so the rest of the worker's run (which writes real test data) has
+     * its normal guarantees back.
      *
-     * NOTE: this is a stopgap for the parallel CLI boot herd; the durable fix is core-side (keep the
-     * last-login timestamp out of optimistic locking). See the accompanying core task.
+     * WHY PARALLEL ONLY: a single interactive run has no herd to collide with, so it has no reason to
+     * give up a safety net. The disable is therefore bound to attach-mode (an injected run_uid).
+     *
+     * WHY THE RETRY REMAINS: booting the workbench may itself touch the identity row before we get a
+     * chance to disable anything. The retry stays as the backstop for that window - and it is what keeps
+     * the single-process path working unchanged.
+     *
+     * @param bool $isParallelWorker TRUE when this process is an attach-mode worker of a parallel run.
      */
-    private function bootWorkbenchWithIdentityRetry(): Workbench
+    private function bootWorkbenchWithIdentityRetry(bool $isParallelWorker): Workbench
     {
         // Small random stagger so the simultaneous boot of parallel workers does not hit the shared
         // identity row at the exact same instant on the very first attempt.
@@ -102,9 +111,19 @@ class DatabaseFormatterExtension implements Extension
             $workbench = null;
             try {
                 $workbench = Workbench::startNewInstance(['MONITOR.ENABLED' => false]);
-                // Force the ambient CLI identity resolution (and its shared-row write) to happen now,
-                // inside this retry, instead of lazily later on an unwrapped path.
-                $workbench->getSecurity()->getAuthenticatedToken();
+
+                // Suspend the lock check ONLY around the identity write, and only for parallel workers.
+                $suspended = $isParallelWorker ? $this->disableAuthenticatorTimeStamping($workbench) : [];
+                try {
+                    // Force the ambient CLI identity resolution (and its shared-row write) to happen now,
+                    // inside this guarded window, instead of lazily later on an unprotected path.
+                    $workbench->getSecurity()->getAuthenticatedToken();
+                } finally {
+                    // Always put the behavior back, on every path out of the identity resolution, so a
+                    // failed attempt cannot leave this worker running the rest of its tests unguarded.
+                    $this->enableBehaviors($suspended);
+                }
+
                 return $workbench;
             } catch (\Throwable $e) {
                 // Discard the half-booted instance so a failed attempt never leaks a workbench.
@@ -134,6 +153,44 @@ class DatabaseFormatterExtension implements Extension
             null,
             $lastConflict
         );
+    }
+
+    /**
+     * Disables the TimeStampingBehavior on the shared authenticator object in THIS process only and
+     * returns the behaviors that were actually turned off.
+     *
+     * Why it returns them: only behaviors that were enabled when we arrived are ours to switch back on.
+     * Re-enabling something an operator had deliberately disabled would be a silent side effect of a test
+     * run, so the caller restores exactly this list and nothing else.
+     *
+     * @return BehaviorInterface[]
+     */
+    private function disableAuthenticatorTimeStamping(Workbench $workbench): array
+    {
+        $disabled = [];
+        $obj = $workbench->model()->getObject(self::AUTHENTICATOR_OBJECT_ALIAS);
+        foreach ($obj->getBehaviors() as $behavior) {
+            if ($behavior instanceof TimeStampingBehavior && $behavior->isDisabled() === false) {
+                $behavior->disable();
+                $disabled[] = $behavior;
+            }
+        }
+        return $disabled;
+    }
+
+    /**
+     * Re-enables the given behaviors.
+     *
+     * Kept separate from the disable step so the restore can be driven from a finally block: the identity
+     * write is the ONLY operation that may run without the lock check, and this is what guarantees that.
+     *
+     * @param BehaviorInterface[] $behaviors
+     */
+    private function enableBehaviors(array $behaviors): void
+    {
+        foreach ($behaviors as $behavior) {
+            $behavior->enable();
+        }
     }
 
     /**
