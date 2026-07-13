@@ -87,9 +87,9 @@
         {
             "_EXPORT_SUMMARY": "BDT test run [axenox.BDT.run]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-06-02 12:03:16",
+            "MODIFIED_ON": "2026-07-13 10:17:27",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x11f08ce4baed19b88ce4005056be9857",
+            "MODIFIED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
             "UID": "0x11f08c1d222cd23e8c1d025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
@@ -103,165 +103,318 @@
             "PARENT_OBJECT": null,
             "DATA_ADDRESS_PROPS": null,
             "DEFAULT_EDITOR_UXON": {
+                "height": "100%",
                 "widget_type": "Dialog",
                 "width": 3,
                 "widgets": [
                     {
-                        "widget_type": "InputHidden",
-                        "attribute_alias": "UID",
-                        "id": "run_uid_field"
-                    },
-                    {
-                        "widget_type": "SplitVertical",
-                        "panels": [
+                        "widget_type": "Tabs",
+                        "height": "100%",
+                        "tabs": [
                             {
-                                "height": "33%",
+                                "height": "100%",
+                                "caption": "Overview",
                                 "widgets": [
                                     {
-                                        "widget_type": "SplitHorizontal",
-                                        "panels": [
+                                        "widget_type": "Container",
+                                        "height": "100%",
+                                        "width": "100%",
+                                        "widgets": [
                                             {
-                                                "caption": "Steps run",
-                                                "width": "30%",
-                                                "widgets": [
-                                                    {
-                                                        "widget_type": "Chart",
-                                                        "object_alias": "axenox.BDT.run_step_stats",
-                                                        "hide_header": true,
-                                                        "hide_caption": true,
-                                                        "data": {
-                                                            "filters": [
-                                                                {
-                                                                    "attribute_alias": "run",
-                                                                    "hidden": true,
-                                                                    "required": true,
-                                                                    "value": "=run_uid_field",
-                                                                    "comparator": "=="
-                                                                }
-                                                            ],
-                                                            "aggregate_by_attribute_alias": [
-                                                                "run_scenario__LABEL",
-                                                                "status"
-                                                            ]
-                                                        },
-                                                        "series": [
-                                                            {
-                                                                "type": "bar",
-                                                                "x_attribute_alias": "run_step:COUNT",
-                                                                "y_attribute_alias": "status"
-                                                            }
-                                                        ],
-                                                        "axis_y": [
-                                                            {
-                                                                "attribute_alias": "status",
-                                                                "axis_type": "category",
-                                                                "zoomable": false
-                                                            }
-                                                        ]
-                                                    }
-                                                ]
+                                                "widget_type": "InputHidden",
+                                                "attribute_alias": "UID",
+                                                "id": "run_uid_field"
                                             },
                                             {
-                                                "caption": "Scenarios run",
-                                                "widgets": [
+                                                "widget_type": "SplitVertical",
+                                                "panels": [
                                                     {
-                                                        "widget_type": "Chart",
-                                                        "id": "failed_scenarios_chart",
-                                                        "object_alias": "axenox.BDT.run_scenario_stats",
-                                                        "hide_header": true,
-                                                        "hide_caption": true,
-                                                        "data": {
-                                                            "filters": [
-                                                                {
-                                                                    "attribute_alias": "run_feature__run",
-                                                                    "hidden": true,
-                                                                    "required": true,
-                                                                    "value": "=run_uid_field",
-                                                                    "comparator": "=="
-                                                                }
-                                                            ],
-                                                            "aggregate_by_attribute_alias": [
-                                                                "status"
-                                                            ]
-                                                        },
-                                                        "series": [
+                                                        "height": "33%",
+                                                        "widgets": [
                                                             {
-                                                                "type": "pie",
-                                                                "value_attribute_alias": "run_scenario:COUNT",
-                                                                "text_attribute_alias": "status"
-                                                            }
-                                                        ]
-                                                    }
-                                                ]
-                                            },
-                                            {
-                                                "width": "45%",
-                                                "caption": "Metrics",
-                                                "widgets": [
-                                                    {
-                                                        "widget_type": "DataMatrix",
-                                                        "object_alias": "axenox.BDT.run_metric_score",
-                                                        "hide_caption": true,
-                                                        "hide_header": true,
-                                                        "aggregate_by_attribute_alias": [
-                                                            "run",
-                                                            "app__ALIAS",
-                                                            "metric"
-                                                        ],
-                                                        "filters": [
-                                                            {
-                                                                "attribute_alias": "run__UID",
-                                                                "value": "=run_uid_field",
-                                                                "required": true,
-                                                                "comparator": "==",
-                                                                "hidden": true
-                                                            }
-                                                        ],
-                                                        "columns": [
-                                                            {
-                                                                "attribute_alias": "app__ALIAS"
-                                                            },
-                                                            {
-                                                                "attribute_alias": "metric__LABEL"
-                                                            },
-                                                            {
-                                                                "attribute_alias": "score_percentual:AVG",
-                                                                "widget_type": "DataColumnTransposed",
-                                                                "label_attribute_alias": "metric__LABEL"
-                                                            },
-                                                            {
-                                                                "attribute_alias": "run"
-                                                            }
-                                                        ],
-                                                        "sorters": [
-                                                            {
-                                                                "attribute_alias": "metric__name",
-                                                                "direction": "asc"
-                                                            }
-                                                        ],
-                                                        "buttons": [
-                                                            {
-                                                                "bind_to_double_click": true,
-                                                                "action": {
-                                                                    "alias": "axenox.BDT.RunMetricScoreDetailsDialog",
-                                                                    "input_mapper": {
-                                                                        "from_object_alias": "axenox.BDT.run_metric_score",
-                                                                        "to_object_alias": "axenox.BDT.run_metric_score",
-                                                                        "inherit_columns": "none",
-                                                                        "column_to_filter_mappings": [
+                                                                "widget_type": "SplitHorizontal",
+                                                                "panels": [
+                                                                    {
+                                                                        "caption": "Steps run",
+                                                                        "width": "30%",
+                                                                        "widgets": [
                                                                             {
-                                                                                "from": "run",
-                                                                                "to": "run",
-                                                                                "comparator": "=="
-                                                                            },
+                                                                                "widget_type": "Chart",
+                                                                                "object_alias": "axenox.BDT.run_step_stats",
+                                                                                "hide_header": true,
+                                                                                "hide_caption": true,
+                                                                                "data": {
+                                                                                    "filters": [
+                                                                                        {
+                                                                                            "attribute_alias": "run",
+                                                                                            "hidden": true,
+                                                                                            "required": true,
+                                                                                            "value": "=run_uid_field",
+                                                                                            "comparator": "=="
+                                                                                        }
+                                                                                    ],
+                                                                                    "aggregate_by_attribute_alias": [
+                                                                                        "run_scenario__LABEL",
+                                                                                        "status"
+                                                                                    ]
+                                                                                },
+                                                                                "series": [
+                                                                                    {
+                                                                                        "type": "bar",
+                                                                                        "x_attribute_alias": "run_step:COUNT",
+                                                                                        "y_attribute_alias": "status"
+                                                                                    }
+                                                                                ],
+                                                                                "axis_y": [
+                                                                                    {
+                                                                                        "attribute_alias": "status",
+                                                                                        "axis_type": "category",
+                                                                                        "zoomable": false
+                                                                                    }
+                                                                                ]
+                                                                            }
+                                                                        ]
+                                                                    },
+                                                                    {
+                                                                        "caption": "Scenarios run",
+                                                                        "widgets": [
                                                                             {
-                                                                                "from": "app__ALIAS",
-                                                                                "to": "app__ALIAS",
-                                                                                "comparator": "=="
+                                                                                "widget_type": "Chart",
+                                                                                "id": "failed_scenarios_chart",
+                                                                                "object_alias": "axenox.BDT.run_scenario_stats",
+                                                                                "hide_header": true,
+                                                                                "hide_caption": true,
+                                                                                "data": {
+                                                                                    "filters": [
+                                                                                        {
+                                                                                            "attribute_alias": "run_feature__run",
+                                                                                            "hidden": true,
+                                                                                            "required": true,
+                                                                                            "value": "=run_uid_field",
+                                                                                            "comparator": "=="
+                                                                                        }
+                                                                                    ],
+                                                                                    "aggregate_by_attribute_alias": [
+                                                                                        "status"
+                                                                                    ]
+                                                                                },
+                                                                                "series": [
+                                                                                    {
+                                                                                        "type": "pie",
+                                                                                        "value_attribute_alias": "run_scenario:COUNT",
+                                                                                        "text_attribute_alias": "status"
+                                                                                    }
+                                                                                ]
+                                                                            }
+                                                                        ]
+                                                                    },
+                                                                    {
+                                                                        "width": "45%",
+                                                                        "caption": "Metrics",
+                                                                        "widgets": [
+                                                                            {
+                                                                                "widget_type": "DataMatrix",
+                                                                                "object_alias": "axenox.BDT.run_metric_score",
+                                                                                "hide_caption": true,
+                                                                                "hide_header": true,
+                                                                                "aggregate_by_attribute_alias": [
+                                                                                    "run",
+                                                                                    "app__ALIAS",
+                                                                                    "metric"
+                                                                                ],
+                                                                                "filters": [
+                                                                                    {
+                                                                                        "attribute_alias": "run__UID",
+                                                                                        "value": "=run_uid_field",
+                                                                                        "required": true,
+                                                                                        "comparator": "==",
+                                                                                        "hidden": true
+                                                                                    }
+                                                                                ],
+                                                                                "columns": [
+                                                                                    {
+                                                                                        "attribute_alias": "app__ALIAS"
+                                                                                    },
+                                                                                    {
+                                                                                        "attribute_alias": "metric__LABEL"
+                                                                                    },
+                                                                                    {
+                                                                                        "attribute_alias": "score_percentual:AVG",
+                                                                                        "widget_type": "DataColumnTransposed",
+                                                                                        "label_attribute_alias": "metric__LABEL"
+                                                                                    },
+                                                                                    {
+                                                                                        "attribute_alias": "run"
+                                                                                    }
+                                                                                ],
+                                                                                "sorters": [
+                                                                                    {
+                                                                                        "attribute_alias": "metric__name",
+                                                                                        "direction": "asc"
+                                                                                    }
+                                                                                ],
+                                                                                "buttons": [
+                                                                                    {
+                                                                                        "bind_to_double_click": true,
+                                                                                        "action": {
+                                                                                            "alias": "axenox.BDT.RunMetricScoreDetailsDialog",
+                                                                                            "input_mapper": {
+                                                                                                "from_object_alias": "axenox.BDT.run_metric_score",
+                                                                                                "to_object_alias": "axenox.BDT.run_metric_score",
+                                                                                                "inherit_columns": "none",
+                                                                                                "column_to_filter_mappings": [
+                                                                                                    {
+                                                                                                        "from": "run",
+                                                                                                        "to": "run",
+                                                                                                        "comparator": "=="
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "from": "app__ALIAS",
+                                                                                                        "to": "app__ALIAS",
+                                                                                                        "comparator": "=="
+                                                                                                    }
+                                                                                                ]
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                ]
                                                                             }
                                                                         ]
                                                                     }
-                                                                }
+                                                                ]
+                                                            }
+                                                        ]
+                                                    },
+                                                    {
+                                                        "caption": "Scenarios",
+                                                        "widgets": [
+                                                            {
+                                                                "widget_type": "DataTable",
+                                                                "id": "scenario_table",
+                                                                "object_alias": "axenox.BDT.run_scenario",
+                                                                "freeze_columns": 3,
+                                                                "row_grouper": {
+                                                                    "group_by_attribute_alias": "run_feature__name"
+                                                                },
+                                                                "filters": [
+                                                                    {
+                                                                        "attribute_alias": "run_feature__run__UID",
+                                                                        "comparator": "==",
+                                                                        "required": true,
+                                                                        "hidden": true
+                                                                    },
+                                                                    {
+                                                                        "attribute_alias": "name"
+                                                                    },
+                                                                    {
+                                                                        "attribute_alias": "run_feature__content"
+                                                                    },
+                                                                    {
+                                                                        "attribute_alias": "run_scenario_stats__status",
+                                                                        "value": "=failed_scenarios_chart!status",
+                                                                        "apply_on_change": true
+                                                                    }
+                                                                ],
+                                                                "columns": [
+                                                                    {
+                                                                        "attribute_alias": "run_feature__name"
+                                                                    },
+                                                                    {
+                                                                        "attribute_alias": "line"
+                                                                    },
+                                                                    {
+                                                                        "attribute_alias": "run_scenario_stats__status",
+                                                                        "caption": "Status"
+                                                                    },
+                                                                    {
+                                                                        "attribute_alias": "name"
+                                                                    },
+                                                                    {
+                                                                        "attribute_alias": "tags"
+                                                                    },
+                                                                    {
+                                                                        "attribute_alias": "run_scenario_action__UID:COUNT",
+                                                                        "caption": "Pages"
+                                                                    },
+                                                                    {
+                                                                        "attribute_alias": "run_scenario_stats__steps_total",
+                                                                        "caption": "Steps"
+                                                                    },
+                                                                    {
+                                                                        "attribute_alias": "run_scenario_stats__steps_passed",
+                                                                        "caption": "Passed"
+                                                                    },
+                                                                    {
+                                                                        "attribute_alias": "run_scenario_stats__steps_failed",
+                                                                        "caption": "Failed"
+                                                                    },
+                                                                    {
+                                                                        "attribute_alias": "run_scenario_stats__steps_skipped",
+                                                                        "caption": "Skipped"
+                                                                    },
+                                                                    {
+                                                                        "attribute_alias": "duration_time"
+                                                                    },
+                                                                    {
+                                                                        "attribute_alias": "run_feature__app_alias"
+                                                                    },
+                                                                    {
+                                                                        "hidden": true,
+                                                                        "attribute_alias": "obsolete"
+                                                                    }
+                                                                ],
+                                                                "sorters": [
+                                                                    {
+                                                                        "attribute_alias": "run_feature__started_on",
+                                                                        "direction": "asc"
+                                                                    },
+                                                                    {
+                                                                        "attribute_alias": "line",
+                                                                        "direction": "asc"
+                                                                    }
+                                                                ],
+                                                                "buttons": [
+                                                                    {
+                                                                        "caption": "Edit feature",
+                                                                        "action": {
+                                                                            "alias": "exface.Core.ShowObjectEditDialog",
+                                                                            "object_alias": "axenox.BDT.BEHAT_FEATURE",
+                                                                            "input_mapper": {
+                                                                                "from_object_alias": "axenox.BDT.run_scenario",
+                                                                                "to_object_alias": "axenox.BDT.BEHAT_FEATURE",
+                                                                                "column_to_column_mappings": [
+                                                                                    {
+                                                                                        "from": "run_feature__filename",
+                                                                                        "to": "PATHNAME_RELATIVE"
+                                                                                    }
+                                                                                ]
+                                                                            }
+                                                                        }
+                                                                    },
+                                                                    {
+                                                                        "action": {
+                                                                            "disable_buttons": false,
+                                                                            "alias": "exface.Core.ShowObjectInfoDialog"
+                                                                        },
+                                                                        "bind_to_double_click": true
+                                                                    },
+                                                                    {
+                                                                        "action_alias": "axenox.BDT.RunScenarioRetest"
+                                                                    },
+                                                                    {
+                                                                        "action_alias": "axenox.BDT.RunScenarioMarkNotObsolete",
+                                                                        "disabled_if": {
+                                                                            "operator": "AND",
+                                                                            "conditions": [
+                                                                                {
+                                                                                    "value_left": "=scenario_table!obsolete",
+                                                                                    "comparator": "!=",
+                                                                                    "value_right": 1
+                                                                                }
+                                                                            ]
+                                                                        }
+                                                                    }
+                                                                ]
                                                             }
                                                         ]
                                                     }
@@ -272,135 +425,15 @@
                                 ]
                             },
                             {
-                                "caption": "Scenarios",
+                                "caption": "Log",
                                 "widgets": [
                                     {
-                                        "widget_type": "DataTable",
-                                        "id": "scenario_table",
-                                        "object_alias": "axenox.BDT.run_scenario",
-                                        "freeze_columns": 3,
-                                        "row_grouper": {
-                                            "group_by_attribute_alias": "run_feature__name"
-                                        },
-                                        "filters": [
-                                            {
-                                                "attribute_alias": "run_feature__run__UID",
-                                                "comparator": "==",
-                                                "required": true,
-                                                "hidden": true
-                                            },
-                                            {
-                                                "attribute_alias": "name"
-                                            },
-                                            {
-                                                "attribute_alias": "run_feature__content"
-                                            },
-                                            {
-                                                "attribute_alias": "run_scenario_stats__status",
-                                                "value": "=failed_scenarios_chart!status",
-                                                "apply_on_change": true
-                                            }
-                                        ],
-                                        "columns": [
-                                            {
-                                                "attribute_alias": "run_feature__name"
-                                            },
-                                            {
-                                                "attribute_alias": "line"
-                                            },
-                                            {
-                                                "attribute_alias": "run_scenario_stats__status",
-                                                "caption": "Status"
-                                            },
-                                            {
-                                                "attribute_alias": "name"
-                                            },
-                                            {
-                                                "attribute_alias": "tags"
-                                            },
-                                            {
-                                                "attribute_alias": "run_scenario_action__UID:COUNT",
-                                                "caption": "Pages"
-                                            },
-                                            {
-                                                "attribute_alias": "run_scenario_stats__steps_total",
-                                                "caption": "Steps"
-                                            },
-                                            {
-                                                "attribute_alias": "run_scenario_stats__steps_passed",
-                                                "caption": "Passed"
-                                            },
-                                            {
-                                                "attribute_alias": "run_scenario_stats__steps_failed",
-                                                "caption": "Failed"
-                                            },
-                                            {
-                                                "attribute_alias": "run_scenario_stats__steps_skipped",
-                                                "caption": "Skipped"
-                                            },
-                                            {
-                                                "attribute_alias": "duration_time"
-                                            },
-                                            {
-                                                "attribute_alias": "run_feature__app_alias"
-                                            },
-                                            {
-                                                "hidden": true,
-                                                "attribute_alias": "obsolete"
-                                            }
-                                        ],
-                                        "sorters": [
-                                            {
-                                                "attribute_alias": "run_feature__started_on",
-                                                "direction": "asc"
-                                            },
-                                            {
-                                                "attribute_alias": "line",
-                                                "direction": "asc"
-                                            }
-                                        ],
-                                        "buttons": [
-                                            {
-                                                "caption": "Edit feature",
-                                                "action": {
-                                                    "alias": "exface.Core.ShowObjectEditDialog",
-                                                    "object_alias": "axenox.BDT.BEHAT_FEATURE",
-                                                    "input_mapper": {
-                                                        "from_object_alias": "axenox.BDT.run_scenario",
-                                                        "to_object_alias": "axenox.BDT.BEHAT_FEATURE",
-                                                        "column_to_column_mappings": [
-                                                            {
-                                                                "from": "run_feature__filename",
-                                                                "to": "PATHNAME_RELATIVE"
-                                                            }
-                                                        ]
-                                                    }
-                                                }
-                                            },
-                                            {
-                                                "action": {
-                                                    "disable_buttons": false,
-                                                    "alias": "exface.Core.ShowObjectInfoDialog"
-                                                },
-                                                "bind_to_double_click": true
-                                            },
-                                            {
-                                                "action_alias": "axenox.BDT.RunScenarioRetest"
-                                            },
-                                            {
-                                                "action_alias": "axenox.BDT.RunScenarioMarkNotObsolete",
-                                                "disabled_if": {
-                                                    "operator": "AND",
-                                                    "conditions": [
-                                                        {
-                                                            "value_left": "=scenario_table!obsolete",
-                                                            "comparator": "!=",
-                                                            "value_right": 1
-                                                        }
-                                                    ]
-                                                }
-                                            }
-                                        ]
+                                        "attribute_alias": "log",
+                                        "widget_type": "InputMarkdown",
+                                        "disabled": true,
+                                        "hide_caption": true,
+                                        "width": "100%",
+                                        "height": "100%"
                                     }
                                 ]
                             }
