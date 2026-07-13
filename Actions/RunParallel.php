@@ -7,6 +7,8 @@ use axenox\BDT\Behat\Common\RunRecordWriter;
 use exface\Core\CommonLogic\AbstractAction;
 use exface\Core\CommonLogic\Actions\ServiceParameter;
 use exface\Core\DataTypes\ComparatorDataType;
+use exface\Core\DataTypes\FilePathDataType;
+use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Facades\ConsoleFacade\CliCommandRunner;
 use exface\Core\Factories\DataSheetFactory;
@@ -70,7 +72,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     // Idle (inactivity) ceiling per worker, used as the FALLBACK when
     // PARALLEL.WORKER_IDLE_TIMEOUT_SECONDS is not set in app config. In contrast to the TOTAL
     // timeout above, the idle timer RESETS whenever the lane shows PROGRESS - and progress here means
-    // EITHER new console output OR a growing run_step count for this run in the DB (the coordinator
+    // EITHER new console output OR a  growing run_step count for this lane's own featuresin the DB (the coordinator
     // polls that count during the drain). This DB-aware definition is deliberate: a long
     // works-as-expected step emits NO stdout while it runs, it only keeps INSERTing run_step rows per
     // substep, so an output-only idle timeout would wrongly kill a lane that is actually progressing.
@@ -687,38 +689,93 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Counts how many run_step rows exist in the DB for the given run, WITHOUT loading them.
+     * Returns the current run_step count of the given run, GROUPED BY the feature file each step
+     * belongs to, WITHOUT loading the step rows themselves.
      *
-     * This is the drain loop's progress heartbeat. Attach-mode workers insert one run_step row per
-     * Behat step AND per substep (see DatabaseFormatter::logStepStart), so a long works-as-expected
-     * step that emits no console output STILL grows this count steadily. Comparing successive counts
-     * therefore tells the coordinator whether the fleet is alive even when every worker pipe is silent.
+     * Why grouped instead of one fleet-wide total: the drain loop needs a PER-LANE liveness signal.
+     * A fleet-wide count grows as soon as ANY lane inserts a step, which would reset the idle clock of
+     * a lane that is genuinely hung just because a sibling lane is healthy - exactly the case the idle
+     * timeout exists to catch. Since every lane owns a disjoint set of feature files (see
+     * bucketFeatures), grouping by run_feature.filename lets each lane be judged by the growth of its
+     * OWN steps only.
      *
-     * The count is fleet-wide (all lanes of this run), reached via the relation path
-     * run_scenario -> run_feature -> run, which is why a single COUNT aggregation is used instead of
-     * reading rows: the value can grow into the thousands and we only ever need its size.
+     * Why a single grouped query instead of one query per lane: the drain polls repeatedly for the
+     * whole run, and N lanes would mean N round-trips per poll. One aggregation returns everything.
      *
      * Never throws: a transient DB hiccup during polling must not abort an otherwise healthy fleet, so
-     * a failure is logged and returned as null ("unknown"), letting the caller fall back to
-     * output-only progress for that pass.
+     * a failure is logged and returned as null ("unknown"), letting the caller keep the previous
+     * per-lane counters for that pass.
      *
      * @param string $runUid The run whose child run_step rows to count.
-     * @return int|null The current row count, or null if the query failed.
+     * @return array<string,int>|null Map of feature key (see featureKeyFromPath) => step count, or null on failure.
      */
-    private function countRunSteps(string $runUid): ?int
+    private function countRunStepsByFeature(string $runUid): ?array
     {
         try {
             $ds = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.run_step');
             $ds->getFilters()->addConditionFromString('run_scenario__run_feature__run', $runUid, ComparatorDataType::EQUALS);
-            // A lone aggregated column with no group-by yields a single-row COUNT, like SQL COUNT(*).
-            $col = $ds->getColumns()->addFromExpression('UID');
+            // One plain column + one aggregated column yields a GROUP BY on the plain one, like
+            // SELECT filename, COUNT(UID) ... GROUP BY filename. NOTE: the aggregator ":COUNT" is what
+            // makes this a count at all - a bare "UID" would read every row and hand back a UID string.
+            $fileCol  = $ds->getColumns()->addFromExpression('run_scenario__run_feature__filename');
+            $countCol = $ds->getColumns()->addFromExpression('UID:COUNT');
             $ds->dataRead();
-            $val = $col->getValue(0);
-            return $val === null ? 0 : (int) $val;
+
+            $counts = [];
+            foreach (array_keys($ds->getRows()) as $i) {
+                $file = (string) $fileCol->getValue($i);
+                if ($file === '') {
+                    continue;
+                }
+                $counts[mb_strtolower($file)] = (int) $countCol->getValue($i);
+            }
+            return $counts;
         } catch (\Throwable $e) {
             $this->getWorkbench()->getLogger()->logException($e);
             return null;
         }
+    }
+
+    /**
+     * Converts a feature file path into the exact key the workers store in run_feature.filename.
+     *
+     * Why it must mirror DatabaseFormatter::onBeforeFeature() byte for byte: that hook normalizes the
+     * Gherkin file path to forward slashes and strips the vendor folder prefix before the INSERT. If the
+     * coordinator built its key any other way (raw absolute path, basename), a lane's bucket would never
+     * match the rows its own worker writes - silently disabling the per-lane heartbeat and letting a
+     * healthy lane be killed as "idle".
+     *
+     * Lower-cased because Windows paths are case-insensitive while the array lookup here is not.
+     *
+     * @param string $path Feature file path as handed to the worker.
+     * @return string Vendor-relative, forward-slashed, lower-cased key.
+     */
+    private function featureKeyFromPath(string $path): string
+    {
+        $normalized = FilePathDataType::normalize($path, '/');
+        $vendorPath = FilePathDataType::normalize($this->getWorkbench()->filemanager()->getPathToVendorFolder(), '/') . '/';
+        return mb_strtolower(
+            StringDataType::substringAfter($normalized, $vendorPath, $normalized));
+    }
+
+    /**
+     * Sums the step counts of all feature files assigned to one lane.
+     *
+     * Exists so the drain loop can turn the fleet-wide grouped count into the single monotonically
+     * growing number that represents THIS lane's progress: a lane runs its bucket sequentially, so the
+     * sum over its whole bucket grows exactly when the lane advances a step, regardless of which of its
+     * features is currently executing.
+     *
+     * @param array<string,int> $countsByFeature Grouped counts from countRunStepsByFeature().
+     * @param string[]          $featureKeys     This lane's feature keys.
+     */
+    private function sumLaneSteps(array $countsByFeature, array $featureKeys): int
+    {
+        $sum = 0;
+        foreach ($featureKeys as $key) {
+            $sum += $countsByFeature[$key] ?? 0;
+        }
+        return $sum;
     }
 
     /**
@@ -807,7 +864,8 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         $processes = [];   // lane => Process
         $laneLogs  = [];   // lane => log file handle (opened in Phase A so output streams live)
         $laneStart = [];   // lane => microtime when the worker started
-        $laneLastActivity = []; // lane => microtime of this lane's last observed progress (output OR DB growth)
+        $laneLastActivity = []; // lane => microtime of this lane's last observed progress (output OR its OWN DB growth)
+        $laneFeatureKeys  = []; // lane => run_feature.filename keys of the features THIS lane runs
         $failures  = [];
         $launchStartWall = microtime(true);
         foreach ($buckets as $idx => $bucket) {
@@ -850,6 +908,13 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                 $laneLogs[$lane]  = $laneLog;
                 $laneStart[$lane] = microtime(true);
                 $laneLastActivity[$lane] = microtime(true); // seed the idle clock at launch
+                // Remember which feature rows belong to this lane, so the drain can read its progress
+                // from the DB independently of every other lane. Computed at launch (not per poll)
+                // because the bucket never changes once the worker is started.
+                $laneFeatureKeys[$lane] = array_map(
+                    fn(string $file): string => $this->featureKeyFromPath($file),
+                    $bucket
+                );
 
                 // Create this lane's run-log section NOW, while launches run in lane order, so the DB
                 // record lists lanes 1..N in order even though they finish out of order later. The
@@ -888,31 +953,55 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // aborting the others; finalize still runs once afterwards.
         $active = $processes;
         $firstOutputAt = [];
-        // Fleet-wide DB progress heartbeat. A long works-as-expected step produces NO console output
-        // while it runs, but the attach-mode worker keeps INSERTing one run_step row per substep. So a
-        // growing run_step count for THIS run proves the fleet is alive even when every pipe is silent.
-        // We seed with the current count and treat any later increase as "the fleet just made progress",
-        // which resets every running lane's idle clock below. Seeded to "now" so a slow first step does
-        // not trip the idle timeout before the very first poll.
-        $dbProgressAt = microtime(true);
+        
+        // Per-lane DB progress heartbeat. A long works-as-expected step produces NO console output while
+        // it runs, but the attach-mode worker keeps INSERTing one run_step row per substep - so a growing
+        // step count is the only proof that a silent lane is alive. The count MUST be scoped to the
+        // features of THAT lane: a fleet-wide count would be pushed up by healthy sibling lanes and would
+        // keep a genuinely hung lane alive forever, defeating the idle timeout entirely.
         $lastDbPollAt = 0.0; // 0 forces an immediate poll on the first pass
-        $lastDbCount  = $this->countRunSteps($runUid) ?? 0;
+        $laneDbCount  = [];  // lane => run_step rows counted for this lane's own features
+        $laneKeyWarned = false;
+        $initialCounts = $this->countRunStepsByFeature($runUid);
+        foreach (array_keys($processes) as $lane) {
+            $laneDbCount[$lane] = $initialCounts === null
+                ? 0
+                : $this->sumLaneSteps($initialCounts, $laneFeatureKeys[$lane]);
+        }
         while (! empty($active)) {
-            // Throttled DB progress poll (once every DB_PROGRESS_POLL_SECONDS, not every 100 ms pass):
-            // a COUNT round-trip is far heavier than a pipe read. Only meaningful when an idle timeout is
-            // configured - with it disabled there is nothing to reset, so we skip the query entirely.
             $now = microtime(true);
             if ($idleTimeout !== null && ($now - $lastDbPollAt) >= self::DB_PROGRESS_POLL_SECONDS) {
                 $lastDbPollAt = $now;
-                $currentDbCount = $this->countRunSteps($runUid);
-                if ($currentDbCount !== null && $currentDbCount > $lastDbCount) {
-                    $lastDbCount  = $currentDbCount;
-                    $dbProgressAt = $now;
-                    $this->writeRunLog($diagLog, sprintf(
-                        'DIAG drain: DB progress - %d run_step rows at +%.1f s into run',
-                        $currentDbCount,
-                        $now - $this->runStart
-                    ));
+                $dbCounts = $this->countRunStepsByFeature($runUid);
+                if ($dbCounts !== null) {
+                    // Fail loudly on a key mismatch: if the DB reports steps for a feature that belongs to
+                    // NO lane, our path normalization disagrees with what the workers wrote (e.g. a symlinked
+                    // vendor dir resolved differently). Every lane would then look permanently idle and be
+                    // killed although it is progressing, so we say so instead of failing silently.
+                    if ($laneKeyWarned === false) {
+                        $known = array_merge(...array_values($laneFeatureKeys));
+                        $unknown = array_diff(array_keys($dbCounts), $known);
+                        if (! empty($unknown)) {
+                            $laneKeyWarned = true;
+                            $msg = 'BDT parallel: run_step rows found for features not assigned to any lane ('
+                                . implode(', ', $unknown) . ') - the per-lane idle heartbeat may be blind.';
+                            $this->writeRunLog($diagLog, 'DIAG drain: ' . $msg);
+                            $this->getWorkbench()->getLogger()->warning($msg);
+                        }
+                    }
+                    foreach (array_keys($active) as $lane) {
+                        $current = $this->sumLaneSteps($dbCounts, $laneFeatureKeys[$lane]);
+                        if ($current > $laneDbCount[$lane]) {
+                            $laneDbCount[$lane]      = $current;
+                            $laneLastActivity[$lane] = $now; // this lane itself advanced - reset ITS idle clock
+                            $this->writeRunLog($diagLog, sprintf(
+                                'DIAG drain: lane %d DB progress - %d run_step rows for its features at +%.1f s into run',
+                                $lane,
+                                $current,
+                                $now - $this->runStart
+                            ));
+                        }
+                    }
                 }
             }
             foreach ($active as $lane => $process) {
@@ -932,16 +1021,13 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                     ));
                 }
 
-                // Idle detection (DB-aware). A lane is "making progress" if EITHER it produced output
-                // recently OR the fleet's run_step count grew recently ($dbProgressAt). Only when a lane
-                // has done NEITHER for the whole idle window is it a genuine hang. This is the fix for the
-                // false timeout: a silent-but-DB-writing works-as-expected step keeps $dbProgressAt fresh,
-                // so it is never killed here; the TOTAL wall-clock ceiling ($timeout, enforced by Symfony
-                // below) remains the absolute backstop.
+                // Idle detection (per-lane, DB-aware). $laneLastActivity[$lane] is refreshed by EITHER new
+                // console output from this lane OR growth in the run_step count of this lane's OWN features.
+                // A sibling lane's progress no longer counts - so a truly hung lane is caught even while the
+                // rest of the fleet is healthy, and a silent-but-DB-writing lane is still never killed.
                 if ($idleTimeout !== null) {
-                    $lastActive = max($laneLastActivity[$lane], $dbProgressAt);
-                    if ((microtime(true) - $lastActive) > $idleTimeout) {
-                        $reason = 'idle timed out after ' . $idleTimeout . ' s with no output and no new run_step in the DB';
+                    if ((microtime(true) - $laneLastActivity[$lane]) > $idleTimeout) {
+                        $reason = 'idle timed out after ' . $idleTimeout . ' s with no output and no new run_step for its own features';
                         $failures[$lane] = $reason;
                         $this->killHungLane($lane, $process, $laneLogs[$lane], $diagLog, $reason, $cwd);
                         // killHungLane has closed the lane log, so its partial output is flushed and safe
