@@ -117,7 +117,7 @@ class UI5Browser
     public function navigateToPageAlias(string $pageAlias): void
     {
         if (!$this->navigator) {
-            throw new \RuntimeException('Navigator callback is not configured on UI5Browser.');
+            throw new RuntimeException('Navigator callback is not configured on UI5Browser.');
         }
         ($this->navigator)($pageAlias);
     }
@@ -313,9 +313,9 @@ JS
             $this->session->executeScript($debugScript);
         } catch (\Exception $e) {
             // Throw a more specific RuntimeException with the original exception as the previous exception
-            throw new \RuntimeException(
+            throw new RuntimeException(
                 "Failed to clear widget highlights: " . $e->getMessage(),
-                0,
+                null,
                 $e
             );
         }

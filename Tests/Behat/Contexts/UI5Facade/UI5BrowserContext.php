@@ -63,7 +63,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private ?string $lastLoginButtonCaption = null;
     private static ?string $currentFeatureTitle = null;
     private ?string $lastPageAlias = null;
-    
+    /**
+     * @var array|null Roles used by the most recent iLogInToPage() call.
+     *
+     * Cached because browserLogin() requires them and recoverChrome() must be able to replay the
+     * exact same browser-side login on a freshly started Chrome. Without this the recovery path
+     * cannot even call browserLogin() with a complete argument list.
+     */
+    private ?array $lastLoginUserRoles = null;
     /** 
      * Initializes and starts the workbench for the test environment
      */
@@ -226,6 +233,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         if (!$this->browser) {
             return;
         }
+
+        // Must run FIRST: every call below (clearXHRLog, installHttpInterceptor, wait) talks to the
+        // browser and would throw a raw socket exception if Chrome died since the previous step.
+        $this->ensureChromeAlive();
 
         try {
             ErrorManager::getInstance()->clearErrors();
@@ -441,6 +452,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->lastLoginFields = $loginFields;
         $this->lastLoginTabCaption = $tabCaption;
         $this->lastLoginButtonCaption = $btnCaption;
+        // Roles are cached alongside the other login parameters because browserLogin() needs them
+        // and recoverChrome() replays exactly this call after a Chrome restart.
+        $this->lastLoginUserRoles = $userRolesArray;
         
         $this->setLocale($userLocale);
 
@@ -2053,7 +2067,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $this->lastLoginUrl,
             $this->lastLoginTabCaption,
             $this->lastLoginButtonCaption,
-            $this->lastLoginFields
+            $this->lastLoginFields,
+            $this->lastLoginUserRoles ?? []
         );
 
         // Step 4: Navigate directly to the target page without going via the tile
@@ -2061,4 +2076,70 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->navigateToPageAlias($targetPageAlias);
     }
     
+    /**
+     * Makes sure a usable Chrome exists BEFORE the next step runs, restarting and re-authenticating
+     * it if the current one is gone.
+     *
+     * WHY PROACTIVE INSTEAD OF REACTIVE: until now a dead browser was only noticed when some call
+     * crashed into it. If that call happened inside a step, the AfterStep hook could still trigger a
+     * restart. But Mink manages its sessions with its OWN hooks (reset/stop between scenarios), and a
+     * socket exception thrown there escapes every guard this context owns - Behat then dies with exit
+     * code 255 and the whole lane, including its DB recording, is lost. Probing liveness before the
+     * step means a dead Chrome is replaced while we are still inside code we control.
+     *
+     * WHY IT MUST NEVER THROW: it runs from the BeforeStep hook, where an uncaught exception kills
+     * the Behat process. A failed recovery is logged and the step is allowed to run and fail
+     * normally, which is strictly better than aborting the run.
+     */
+    private function ensureChromeAlive(): void
+    {
+        try {
+            $manager = ChromeManager::getInstance();
+
+            // Chrome was never started (e.g. a dry run, or the first feature has not opened it yet).
+            // Starting it here would race with beforeScenario(), which owns the initial launch.
+            if ($manager->getPid() === null) {
+                return;
+            }
+
+            if ($manager->isAlive()) {
+                return;
+            }
+
+            $this->logDebug('Chrome is not reachable before the next step — restarting it.');
+
+            // No login has happened yet in this scenario, so there is nothing to replay: bring up a
+            // fresh Chrome and reattach the session. Doing the full recoverChrome() here would throw,
+            // because it requires cached login parameters that do not exist yet.
+            if ($this->lastLoginUrl === null) {
+                ChromeManager::getInstance()->restart();
+                // stop() talks to the dead browser and will normally fail — that failure is expected
+                // and irrelevant, the point is to force the session out of its stale state so that
+                // start() opens a new WebSocket to the new process.
+                try {
+                    $this->getSession()->stop();
+                } catch (\Throwable $ignored) {}
+                $this->getSession()->start();
+                $this->logDebug('Chrome restarted before login — session reattached.');
+                return;
+            }
+
+            // A login already happened: the new Chrome has no cookies, so the full recovery sequence
+            // (restart, session restart, browser-side re-login, direct navigation) is required.
+            $this->recoverChrome($this->lastPageAlias ?? $this->lastLoginUrl);
+            $this->logDebug('Chrome recovered before the step.');
+
+        } catch (\Throwable $e) {
+            // Recovery failed. Log loudly, but let the step run: it will fail with the real browser
+            // error and go through the normal failed-step reporting instead of aborting the lane.
+            $this->logDebug('ensureChromeAlive failed: ' . $e->getMessage());
+            try {
+                $this->getWorkbench()->getLogger()->logException(new RuntimeException(
+                    'Chrome could not be revived before the step: ' . $e->getMessage(),
+                    null,
+                    $e
+                ));
+            } catch (\Throwable $ignored) {}
+        }
+    }
 }
