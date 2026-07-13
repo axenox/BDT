@@ -60,6 +60,16 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private float               $scenarioStart;
     private static array        $scenarioPages = [];
 
+    /**
+     * Reason why the current scenario is NOT being recorded, or null while a scenario is open.
+     *
+     * Exists to make the degraded state self-explaining: once scenario-record creation fails,
+     * every step/substep write short-circuits, and each of those short-circuits must be able to
+     * state WHY it did nothing. Without this, a run would simply show missing steps with no
+     * indication that a scenario row was never created in the first place.
+     */
+    private ?string             $scenarioSkipReason = null;
+
     private ?DataSheetInterface $stepDataSheet = null;
     private float               $stepStart;
     private int                 $stepIdx = 0;
@@ -374,6 +384,78 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             ChromeManager::getInstance()->clearStartHistory();
         }
     }
+    
+    /**
+     * Marks a scenario as successfully opened, i.e. persisted with a usable UID.
+     *
+     * Why this exists: a run_scenario row that was created but carries no UID is worse than no row
+     * at all - every subsequent run_step write would inherit an empty run_scenario FK and be
+     * rejected by the database, potentially aborting the whole lane. So a sheet is only accepted as
+     * "the open scenario" once its UID is actually present. Anything else is treated as a failed
+     * creation and routed into the degraded state via skipScenarioRecording().
+     *
+     * @param DataSheetInterface $ds
+     * @return void
+     */
+    protected function openScenario(DataSheetInterface $ds) : void
+    {
+        $uid = $ds->getUidColumn()->getValue(0);
+        if ($uid === null || $uid === '') {
+            $this->skipScenarioRecording('Scenario record was created without a UID - cannot attach steps to it.');
+            return;
+        }
+        $this->scenarioDataSheet = $ds;
+        $this->scenarioSkipReason = null;
+    }
+
+    /**
+     * Enters the degraded "no open scenario" state after a failed scenario-record creation.
+     *
+     * Why this exists: previously a failure here left the PREVIOUS scenario's sheet in place, so the
+     * steps of the current scenario were silently recorded against the wrong scenario - and when no
+     * previous scenario existed, an empty UID produced an invalid run_scenario FK on the next step
+     * write. Dropping the reference outright guarantees neither can happen: there is no stale
+     * scenario to mis-attribute to, and no half-valid sheet to build an FK from. A degraded run must
+     * degrade its records, not corrupt them and not take the lane down.
+     *
+     * @param string $reason
+     * @return void
+     */
+    protected function skipScenarioRecording(string $reason) : void
+    {
+        $this->scenarioDataSheet = null;
+        $this->scenarioSkipReason = $reason;
+        $this->workbench->getLogger()->warning('BDT: scenario not recorded - ' . $reason);
+    }
+
+    /**
+     * Returns the UID of the currently open scenario or null if there is none.
+     *
+     * Why this exists: it is the single point where "may I write a row that references a scenario?"
+     * is answered. Every step, substep and error write funnels through it, so the "no valid open
+     * scenario" case is handled identically everywhere instead of being re-implemented (and
+     * forgotten) per hook.
+     *
+     * @return string|null
+     */
+    protected function getOpenScenarioUid() : ?string
+    {
+        if ($this->scenarioDataSheet === null) {
+            return null;
+        }
+        $uid = $this->scenarioDataSheet->getUidColumn()->getValue(0);
+        return ($uid === null || $uid === '') ? null : $uid;
+    }
+
+    /**
+     * Human readable explanation for the current degraded state - used by the short-circuiting hooks.
+     *
+     * @return string
+     */
+    protected function getScenarioSkipReason() : string
+    {
+        return $this->scenarioSkipReason ?? 'No scenario is currently open.';
+    }
 
     /**
      * Records a run_scenario row when a scenario starts.
@@ -383,6 +465,12 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
      * featureDataSheet stays null. Dereferencing it here would raise an \Error that escapes
      * the catch and kills Behat with exit code 255. We skip recording this scenario instead,
      * keeping the process alive so remaining scenarios/lanes can still run.
+     *
+     * Why the sheet is dropped on failure: whatever the reason for the failure, this process must
+     * NOT keep the previous scenario's sheet around. Steps of this scenario would otherwise be
+     * attributed to the previous one, or - with no previous one - be written with an empty
+     * run_scenario FK. skipScenarioRecording() clears the reference so all downstream writes
+     * short-circuit cleanly instead.
      */
     public function onBeforeScenario(BeforeScenarioTested $event)
     {
@@ -390,6 +478,10 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             return;
         }
         static::$scenarioPages = [];
+        // Drop any previous scenario reference BEFORE attempting to create the new row, so a
+        // failure below can never leave a stale scenario in place.
+        $this->scenarioDataSheet = null;
+        $this->scenarioSkipReason = null;
         try {
             if ($this->featureDataSheet === null) {
                 throw new RuntimeException('Cannot record scenario: parent feature row was not created (onBeforeFeature failed earlier).');
@@ -405,19 +497,29 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                 'tags' => implode(', ', $scenario->getTags())
             ]);
             $ds->dataCreate(false);
-            $this->scenarioDataSheet = $ds;
+            $this->openScenario($ds);
         }
         catch (\Throwable $e) {
             ErrorManager::getInstance()->logException($e, $this->workbench);
+            $this->skipScenarioRecording('Scenario record could not be created: ' . $e->getMessage());
         }
     }
 
+    /**
+     * Records a run_scenario row for a scenario outline.
+     *
+     * Mirrors onBeforeScenario(): the previous scenario reference is dropped up front, and a failed
+     * creation leaves NO scenario open. See skipScenarioRecording() for why a stale reference here
+     * would mis-attribute the outline's steps or emit an invalid run_scenario FK.
+     */
     public function onBeforeOutline(BeforeOutlineTested $event)
     {
         if ($this->isDryRun) {
             return;
         }
         static::$scenarioPages = [];
+        $this->scenarioDataSheet = null;
+        $this->scenarioSkipReason = null;
         try{
             if ($this->featureDataSheet === null) {
                 throw new RuntimeException('Cannot record scenario: parent feature row was not created (onBeforeFeature failed earlier).');
@@ -433,16 +535,29 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                 'tags' => implode(', ', $outline->getTags())
             ]);
             $ds->dataCreate(false);
-            $this->scenarioDataSheet = $ds;
+            $this->openScenario($ds);
         }
         catch(\Throwable $e){
             ErrorManager::getInstance()->logException($e, $this->workbench);
+            $this->skipScenarioRecording('Outline record could not be created: ' . $e->getMessage());
         }
     }
 
+    /**
+     * Closes the run_scenario row.
+     *
+     * Why the early return: when scenario-record creation failed, there is no row to close. This is
+     * an expected degraded state (not an error), so we exit quietly after resetting the per-scenario
+     * state - dereferencing a null sheet here would only produce a misleading secondary error that
+     * hides the original cause.
+     */
     public function onAfterScenario(AfterScenarioTested|AfterOutlineTested $event)
     {
         if ($this->isDryRun) {
+            return;
+        }
+        if ($this->scenarioDataSheet === null) {
+            static::$scenarioPages = [];
             return;
         }
         try{
@@ -475,8 +590,22 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         catch(\Throwable $e){
             ErrorManager::getInstance()->logException($e, $this->workbench);
         }
+        finally {
+            // The scenario is over either way - never carry its sheet into the next scenario.
+            $this->scenarioDataSheet = null;
+            $this->scenarioSkipReason = null;
+        }
     }
 
+    /**
+     * Opens a run_step row for the step that is about to run.
+     *
+     * Why the open-scenario check: a run_step requires a valid run_scenario FK. If the scenario row
+     * was never created, writing the step would either attach it to a foreign scenario or send an
+     * empty FK to the database - the latter can abort the entire lane. When no scenario is open we
+     * therefore skip the DB record entirely and log the reason. stepDataSheet stays null, which
+     * onAfterStep and onBeforeSubstep already treat as "nothing to record".
+     */
     public function onBeforeStep(BeforeStepTested $event): void
     {
         if ($this->isDryRun) {
@@ -485,6 +614,12 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         static::$stepLogbooks = [];
         // Reset so that onAfterStep can detect a failed DB record creation
         $this->stepDataSheet = null;
+        if ($this->getOpenScenarioUid() === null) {
+            $this->workbench->getLogger()->warning(
+                'BDT: step "' . $event->getStep()->getText() . '" not recorded - ' . $this->getScenarioSkipReason()
+            );
+            return;
+        }
         try {
             $step = $event->getStep();
             $this->stepIdx++;
@@ -531,10 +666,25 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         }
     }
 
+    /**
+     * Opens a run_step row for a substep.
+     *
+     * Why the parent guard: a substep row is only meaningful below a persisted parent step (it needs
+     * both a run_scenario FK and a parent_step UID). If the step was not recorded - because no
+     * scenario is open or because the step INSERT failed - there is nothing to hang the substep on.
+     * We skip it and leave the stack untouched, so onAfterSubstep finds an empty stack and also does
+     * nothing. Recording a substep here would inherit exactly the invalid-FK problem we are avoiding.
+     */
     public function onBeforeSubstep(BeforeSubstep $event)
     {
         try{
             if ($this->isDryRun) {
+                return;
+            }
+            if ($this->stepDataSheet === null) {
+                $this->workbench->getLogger()->warning(
+                    'BDT: substep "' . $event->getSubstepName() . '" not recorded - parent step was not recorded.'
+                );
                 return;
             }
             $this->stepIdx++;
@@ -556,10 +706,21 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         }
     }
 
+    /**
+     * Closes the top-most substep row.
+     *
+     * Why the empty-stack guard: when onBeforeSubstep skipped the substep (no recorded parent step),
+     * the stack is empty and array_key_last() returns null - indexing with it would raise a warning
+     * and then an \Error. An empty stack simply means "this substep was never recorded", which is an
+     * expected degraded state, so we return quietly.
+     */
     public function onAfterSubstep(AfterSubstep $event)
     {
         try {
             if ($this->isDryRun) {
+                return;
+            }
+            if (empty($this->substepDataSheets)) {
                 return;
             }
             $currentSubstepIdx = array_key_last($this->substepDataSheets);
@@ -574,11 +735,23 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         }
     }
 
+    /**
+     * Creates a run_step row for a step or substep.
+     *
+     * Why it throws instead of writing a partial row: the run_scenario FK is mandatory. Callers are
+     * expected to check getOpenScenarioUid() first; if one ever forgets, we must fail here rather
+     * than send an empty FK to the database, which can abort the whole lane. Throwing keeps the
+     * failure inside the caller's catch block, where it becomes a log entry instead of a corrupt row.
+     */
     protected function logStepStart(string $title, int $line, ?string $parentStepUid = null) : DataSheetInterface
     {
+        $scenarioUid = $this->getOpenScenarioUid();
+        if ($scenarioUid === null) {
+            throw new RuntimeException('Cannot record step "' . $title . '": ' . $this->getScenarioSkipReason());
+        }
         $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_step');
         $row = [
-            'run_scenario' => $this->scenarioDataSheet->getUidColumn()->getValue(0),
+            'run_scenario' => $scenarioUid,
             'run_sequence_idx' => $this->stepIdx,
             'name' => mb_ucfirst($title),
             'line' => $line,
@@ -675,15 +848,16 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     {
         $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_step');
 
-        // No open scenario yet → a run_step cannot be created (it needs a run_scenario FK).
+        // No valid open scenario → a run_step cannot be created (it needs a run_scenario FK).
         // Fall back to a plain workbench log entry so the failure is never silently lost.
-        if ($this->scenarioDataSheet === null) {
+        $scenarioUid = $this->getOpenScenarioUid();
+        if ($scenarioUid === null) {
             $this->workbench->getLogger()->logException($e ?? new RuntimeException($title));
             return $ds;
         }
 
         $row = [
-            'run_scenario' => $this->scenarioDataSheet->getUidColumn()->getValue(0),
+            'run_scenario' => $scenarioUid,
             'run_sequence_idx' => $this->stepIdx,
             'name' => mb_ucfirst($title),
             'line' => 0,
