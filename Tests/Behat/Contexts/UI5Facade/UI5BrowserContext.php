@@ -379,13 +379,22 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             // steps will fail naturally when they try to use the browser, and normal
             // error handling (logFailedStep, recoverChromeAfterStepFailure) will take over.
             $this->logDebug('beforeScenario Chrome start/restart failed: ' . $e->getMessage());
+            // WHY WE NO LONGER JUST LOG AND CONTINUE: a failed restart can leave the OLD Chrome tree
+            // alive while start() has already spawned a NEW one. Continuing then adds one more live
+            // browser tree per feature boundary, which is exactly how a lane climbed to dozens of
+            // chrome.exe processes and drove the server to 100% CPU/memory. A browser we cannot bring
+            // into a known state is not something to test against - force it down and let the lane die
+            // cleanly instead of degrading the whole machine.
             try {
+                ChromeManager::getInstance()->stop();
+            } catch (\Throwable $ignored) {
+                // stop() already swallows its own errors; nothing further is safe to do here.
                 $this->getWorkbench()->getLogger()->logException(new RuntimeException(
                     'beforeScenario Chrome start/restart failed for feature "' . $featureTitle . '": ' . $e->getMessage(),
                     null,
                     $e
                 ));
-            } catch (\Throwable $ignored) {}
+            }
         }
 
         $this->scenarioName = $scope->getScenario()->getTitle();

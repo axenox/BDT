@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
+use axenox\BDT\Behat\Common\Traits\AuthenticatorTimeStampingTrait;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5PageNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5TileNode;
@@ -46,6 +47,7 @@ use Symfony\Component\EventDispatcher\EventDispatcherInterface;
  */
 class UI5Browser
 {
+    use AuthenticatorTimeStampingTrait;
     private $eventDispatcher;
 
     private $session;
@@ -1300,7 +1302,14 @@ JS
             $testRunnerUsername,
             $testRunnerPassword,
         );
-        $workbench->getSecurity()->authenticate($testRunnerToken);
+        
+        // The browser is about to submit the very same credentials to the web server, which writes the
+        // same USER_AUTHENTICATOR row from another process. Without the guard the two writers race on
+        // the row's optimistic lock and the lane dies with "changed in the meantime".
+        self::withoutAuthenticatorTimeStamping(
+            $workbench,
+            fn() => $workbench->getSecurity()->authenticate($testRunnerToken)
+        );
 
         $loginFields = [];
         // Make sure to get login form field names the way an anonymous user would see them
