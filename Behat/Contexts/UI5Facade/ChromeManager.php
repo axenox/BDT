@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
+use axenox\BDT\Behat\Common\Traits\ChromeProfileReaperTrait;
 use axenox\BDT\Exceptions\ConfigException;
 use exface\Core\CommonLogic\Debugger\LogBooks\MarkdownLogBook;
 use exface\Core\DataTypes\FilePathDataType;
@@ -46,6 +47,16 @@ use GuzzleHttp\Client;
  */
 class ChromeManager
 {
+    /**
+     * WHY THIS TRAIT: the PID is not a reliable identity for a Chrome instance (see stop()), but the
+     * profile dir is - every Chrome carries it in its --user-data-dir switch. The trait owns the one
+     * correct way to parse that switch out of a command line and to kill everything bound to a given
+     * profile dir. Sharing it with RunParallel/RunTest guarantees the three code paths can never drift
+     * apart in HOW they match a Chrome to its profile - a drift that previously left hundreds of zombie
+     * chrome.exe processes and their profile dirs behind.
+     */
+    use ChromeProfileReaperTrait;
+
     /** @var static|null Singleton instance; supports subclassing via late static binding */
     private static ?self $instance = null;
 
@@ -54,6 +65,16 @@ class ChromeManager
 
     /** @var int|null Port on which Chrome's remote debugging API is listening */
     private ?int $port = null;
+
+    /**
+     * @var string|null Absolute user_data_dir of the Chrome instance managed here, as resolved by start().
+     *
+     * WHY IT IS KEPT: the profile dir - not the PID - is the durable identity of our Chrome. stop()
+     * needs it to verify that the browser really is gone, because the PID it holds can be stale or was
+     * never resolved at all (see stop()). Stored at resolve time in start() so every later teardown has
+     * it, including a teardown that happens after Chrome silently replaced its own process.
+     */
+    private ?string $userDataDir = null;
 
     /**
      * @var DatabaseFormatter|null
@@ -77,7 +98,7 @@ class ChromeManager
     private array $startHistory = [];
     /** App-config key deciding Chrome window visibility; see resolveHeadless(). */
     private const CFG_CHROME_HEADLESS = 'PARALLEL.CHROME_HEADLESS';
-    
+
     /**
      * Wall-clock ceiling for a single health probe, in seconds.
      *
@@ -212,6 +233,10 @@ class ChromeManager
             throw new ConfigException($msg, null, null);
         }
 
+        // Remember the profile dir BEFORE anything can be killed. The leftover-cleanup right below
+        // already calls stop(), and stop()'s profile-based verification sweep depends on this value.
+        $this->userDataDir = $userDataDir;
+
         // Deal with any process already occupying this port BEFORE launching. We only kill it if
         // it is provably OUR OWN leftover Chrome (same user_data_dir on its command line); a live
         // foreign process - another project's fleet worker, another tester's run, or a non-Chrome
@@ -336,31 +361,64 @@ class ChromeManager
     }
 
     /**
-     * Stops only the Chrome process that was started by this manager.
+     * Stops the Chrome instance managed here: kills its PID tree, then verifies via its profile dir.
      *
-     * Targets the specific PID captured at start time so that other Chrome
-     * instances running on different ports (e.g. belonging to other projects)
-     * are not affected. Uses taskkill /T to also terminate child processes
-     * spawned by Chrome.
+     * WHY THE PID ALONE IS NOT ENOUGH: the PID is resolved once, at launch, from netstat. It goes stale
+     * in several ordinary situations - Chrome relaunches its own browser process after an internal
+     * crash-recovery, findPidByPort() loses the race and returns null, or the tree was partially killed
+     * and only children survive. In every one of those cases a PID-only stop() kills nothing and reports
+     * success, and the browser plus its locked profile dir stay behind forever. That is one of the ways
+     * the server accumulated zombie chrome.exe processes.
+     *
+     * WHY THE PROFILE DIR IS THE REAL IDENTITY: every Chrome we launch carries --user-data-dir with a
+     * per-run, per-lane profile path that no other process on the machine uses. Sweeping by that dir
+     * catches exactly our own instance and its children - including an orphaned child whose parent has
+     * already died - and can never touch a foreign browser, which lives under a different profile path.
+     *
+     * WHY IT NEVER THROWS: teardown runs from hooks and finally blocks that are forbidden to throw. A
+     * browser that could not be killed is logged, never escalated.
      */
     public function stop(): void
     {
         $this->getLogbook()->addLine("ChromeManager::stop() called");
         $this->getLogbook()->addIndent(+1);
 
-        if ($this->pid === null) {
+        if ($this->pid === null && $this->userDataDir === null) {
             $this->getLogbook()->addLine("No Chrome process is being managed — nothing to do");
             $this->getLogbook()->addIndent(-1);
             return;
         }
 
-        $this->getLogbook()->addLine("Stopping Chrome process PID {$this->pid} (taskkill /F /PID /T)...");
+        if ($this->pid !== null) {
+            $this->getLogbook()->addLine("Stopping Chrome process PID {$this->pid} (taskkill /F /PID /T)...");
+            // /T also terminates child processes spawned by Chrome
+            exec('taskkill /F /PID ' . $this->pid . ' /T 2>nul');
+        } else {
+            $this->getLogbook()->addLine("No PID recorded — relying on the profile-dir sweep below");
+        }
 
-        // /T also terminates child processes spawned by Chrome
-        exec('taskkill /F /PID ' . $this->pid . ' /T 2>nul');
+        // Verification sweep: whatever the PID kill did or did not achieve, nothing bound to OUR
+        // profile dir may survive this call. Never throws (see the docblock).
+        if ($this->userDataDir !== null) {
+            try {
+                $survivors = $this->reapChromeProfileDir($this->userDataDir, $this->listChromeProcessCommandLines());
+                if ($survivors !== []) {
+                    $this->getLogbook()->addLine(
+                        'Profile sweep killed ' . count($survivors) . ' Chrome process(es) the PID kill missed: '
+                        . implode(', ', $survivors)
+                    );
+                }
+            } catch (\Throwable $e) {
+                $this->getLogbook()->addLine(
+                    '**WARNING** Profile-dir sweep failed: ' . get_class($e) . ' — ' . $e->getMessage()
+                );
+            }
+        }
 
         $this->pid  = null;
         $this->port = null;
+        // userDataDir is deliberately NOT cleared: it comes from the config, is identical for the next
+        // start() on this manager, and a later teardown (restart, AfterScenario) still needs it to sweep.
         $this->getLogbook()->addLine("taskkill executed — PID and port state reset");
         $this->getLogbook()->addIndent(-1);
     }
@@ -609,7 +667,7 @@ class ChromeManager
         $this->getLogbook()->addLine("getProcessCommandLine({$pid}): {$commandLine}");
         return $commandLine;
     }
-    
+
 
     /**
      * Decides whether a command line belongs to one of OUR leftover Chrome instances.
@@ -624,12 +682,20 @@ class ChromeManager
      * while never touching a genuinely foreign browser (a human's Chrome or another project's fleet
      * live under entirely different profile paths).
      *
-     * SAFETY - no prefix trap and no foreign kill: (1) the match anchors on the profiles root followed
-     * by a directory separator, so "...\chrome_profiles\" never bleeds into a sibling like
-     * "...\chrome_profiles_backup\". (2) This check only runs against the single process occupying THIS
-     * lane's unique port, so a concurrently LIVE sibling lane (on its own distinct port) is never a
-     * candidate for killing. Anything whose user_data_dir is NOT under our profiles root stays foreign -
-     * the safe default of "fail loudly, never kill".
+     * SAFETY - no prefix trap and no foreign kill: (1) the switch VALUE is parsed out and tested against
+     * the profiles root followed by a directory separator, so "...\chrome_profiles\" never bleeds into a
+     * sibling like "...\chrome_profiles_backup\". (2) This check only runs against the single process
+     * occupying THIS lane's unique port, so a concurrently LIVE sibling lane (on its own distinct port)
+     * is never a candidate for killing. Anything whose user_data_dir is NOT under our profiles root stays
+     * foreign - the safe default of "fail loudly, never kill".
+     *
+     * WHY THE PARSED VALUE AND NOT A SUBSTRING OF THE COMMAND LINE: our launch command writes
+     * --user-data-dir="<dir>" WITH quotes, but Chrome re-serializes the same switch for its own
+     * renderer/gpu/utility children WITHOUT quotes whenever the path contains no spaces. A quoted-only
+     * substring needle therefore recognized only the browser process. When the process holding the port
+     * was an orphaned CHILD of a previous run - the common case once its parent had been killed - it was
+     * misclassified as FOREIGN and start() failed the whole lane loudly instead of reclaiming the port.
+     * extractUserDataDir() handles both serializations, so ownership is decided on the actual path.
      *
      * The comparison is Windows-tolerant: case-insensitive with normalized backslashes, because CIM
      * output and our config may disagree on casing or slash direction.
@@ -640,14 +706,15 @@ class ChromeManager
      */
     private function isOwnLeftover(string $commandLine, string $userDataDirAbsolute): bool
     {
-        $normalize = static function (string $path): string {
-            return strtolower(str_replace('/', '\\', $path));
-        };
-        // Derive the shared chrome_profiles root from this lane's dir (its parent) and require a
+        $foreignDir = $this->extractUserDataDir($commandLine);
+        if ($foreignDir === null) {
+            // Not a Chrome, or a Chrome launched without an explicit profile: never ours, never killed.
+            return false;
+        }
+        // Derive the shared chrome_profiles root from this lane's dir (its parent) and require the
         // trailing separator so the match cannot bleed into a same-prefixed sibling directory.
-        $profilesRoot = $normalize(dirname($userDataDirAbsolute)) . '\\';
-        $needle = '--user-data-dir="' . $profilesRoot;
-        return str_contains($normalize($commandLine), $needle);
+        $profilesRoot = $this->normalizeWindowsPath(dirname($userDataDirAbsolute)) . '\\';
+        return str_starts_with($foreignDir, $profilesRoot);
     }
 
     /**

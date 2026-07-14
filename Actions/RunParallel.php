@@ -167,6 +167,14 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     // slightly larger budget costs nothing on a healthy run but buys headroom for a stack trace.
     private const LOG_CRASH_TAIL_BYTES = 4096;
     private const LOG_TOTAL_MAX_BYTES  = 65536;
+    /**
+     * Age past which an unfinished run row can no longer own a live Chrome.
+     *
+     * WHY: a coordinator killed by an app-pool recycle never writes finished_on, so its row stays
+     * "active" forever. Nothing legitimate can still be running that long after the row was opened,
+     * so past this age its profiles are reclaimable.
+     */
+    private const RUN_MAX_AGE_MINUTES = 180;
 
     /**
      * Entry point. Drives the run lifecycle once, fanning the matched features out to N workers.
@@ -226,6 +234,23 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         $this->runLog = new MarkdownLogBook('BDT parallel run ' . $runUid);
         $this->runLog->addSection('Run summary');
         $this->runLog->addLine('Run UID: ' . $runUid, 1);
+
+        // Reclaim Chrome processes and profile dirs of runs that are provably no longer active. This is
+        // identity-based (the profile dir name carries its owning run UID), so it reclaims a fleet that
+        // crashed minutes ago - unlike the age-based sweep below, which cannot touch anything recent
+        // without risking a live run's browser. Both are needed: identity for lane profiles, age for
+        // everything we cannot attribute (interactive profiles, half-deleted leftovers).
+        $activeRunUids = $this->findActiveRunUids($runUid);
+        if ($activeRunUids !== null) {
+            foreach ($this->reapProfilesOfInactiveRuns($this->chromeProfilesRoot($cwd), $activeRunUids) as $line) {
+                $this->getWorkbench()->getLogger()->info('BDT orphan run sweep: ' . $line);
+                $this->runLog->addLine($line, 1, 'Run summary');
+            }
+        }
+        foreach ($this->reapStaleChromeProfiles($this->chromeProfilesRoot($cwd), 6 * 3600) as $line) {
+            $this->getWorkbench()->getLogger()->info('BDT stale profile sweep: ' . $line);
+            $this->runLog->addLine($line, 1, 'Run summary');
+        }
 
         // Hoisted so the single close-out below can log AND finalize on BOTH the normal path and a
         // coordinator-level failure. $failures stays empty unless runFleet() assigns it; a coordinator
@@ -289,12 +314,14 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             // must run first so the run row is logged AND finalized on this path too. Re-thrown after.
             $coordinatorError = $e;
         } finally {
-            // Backstop: fleet workers launch Chrome detached (start /B), so a timed-out/hard-killed
-            // worker leaves an orphaned Chrome tree still holding its profile dir. Reap those trees
-            // and purge the lane profile dirs on every exit path, so nothing lingers between runs.
-            // Runs only after runFleet() has fully drained the fleet, so any Chrome still bound to a
-            // lane profile dir here is provably an orphan. Never throws (see the method).
-            $this->cleanupLaneChromes($cwd);
+            // WHY THE GUARD: this is the last line of defence against leaked Chrome trees. It must be
+            // impossible for it to be skipped - including by an exception from the logger it uses, which
+            // writes to a database that may be exactly what is broken. Housekeeping never propagates.
+            try {
+                $this->cleanupLaneChromes($cwd, $runUid);
+            } catch (\Throwable $e) {
+                $this->getWorkbench()->getLogger()->logException($e);
+            }
         }
 
         // --- Single close-out: stage the run-log digest, then finalize exactly once. ---
@@ -422,13 +449,13 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // launch and every login failed. A run-scoped directory guarantees each launch gets a clean
         // profile created and owned by the account actually running the fleet.
         //
-        // IMPORTANT: still RELATIVE - ChromeManager::start() prepends getcwd(). An absolute path would be
-        // double-prepended and make Chrome fall back to the real default profile.
-        $userDataDirRelative = 'data' . DIRECTORY_SEPARATOR
-            . 'axenox' . DIRECTORY_SEPARATOR
-            . 'BDT' . DIRECTORY_SEPARATOR
-            . 'chrome_profiles' . DIRECTORY_SEPARATOR . $laneId;
-        $userDataDirAbsolute = $workingDir . DIRECTORY_SEPARATOR . $userDataDirRelative;
+        // IMPORTANT: the config value must stay RELATIVE - ChromeManager::start() prepends getcwd().
+        // An absolute path would be double-prepended and make Chrome fall back to the real default
+        // profile. It is DERIVED from the absolute path rather than rebuilt by hand: two independent
+        // constructions of the same path are exactly how the reapers drifted away from the profile
+        // dir they were supposed to clean up.
+        $userDataDirAbsolute = $this->laneProfileDir($workingDir, $runUid, $lane);
+        $userDataDirRelative = ltrim(substr($userDataDirAbsolute, strlen($workingDir)), DIRECTORY_SEPARATOR);
         if (! is_dir($userDataDirAbsolute) && ! @mkdir($userDataDirAbsolute, 0755, true) && ! is_dir($userDataDirAbsolute)) {
             throw new RuntimeException('Could not create lane user_data_dir: ' . $userDataDirAbsolute);
         }
@@ -694,22 +721,25 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Returns the current run_step count of the given run, GROUPED BY the feature file each step
-     * belongs to, WITHOUT loading the step rows themselves.
+     * Returns the current run_step count of the given run, keyed by the feature file each step belongs to,
+     * WITHOUT loading the step rows themselves.
      *
-     * Why grouped instead of one fleet-wide total: the drain loop needs a PER-LANE liveness signal.
-     * A fleet-wide count grows as soon as ANY lane inserts a step, which would reset the idle clock of
-     * a lane that is genuinely hung just because a sibling lane is healthy - exactly the case the idle
-     * timeout exists to catch. Since every lane owns a disjoint set of feature files (see
-     * bucketFeatures), grouping by run_feature.filename lets each lane be judged by the growth of its
-     * OWN steps only.
+     * Why the count is read from run_feature and not from run_step: reading run_step with a plain
+     * "filename" column plus an aggregated count forces the SQL builder into a GROUP BY, and it also adds
+     * the object's system columns (modified_on) to the SELECT - which belong to neither the aggregate nor
+     * the GROUP BY clause and make MS SQL reject the whole statement. The query therefore failed on EVERY
+     * poll, was swallowed by the catch below and returned null, silently disabling the per-lane heartbeat
+     * for the entire lifetime of this feature. Aggregating over the reverse relation instead gives one row
+     * per feature by construction, so no GROUP BY (and no system-column trap) is involved at all.
      *
-     * Why a single grouped query instead of one query per lane: the drain polls repeatedly for the
-     * whole run, and N lanes would mean N round-trips per poll. One aggregation returns everything.
+     * Why grouped per feature and not one fleet-wide total: the drain loop needs a PER-LANE liveness signal.
+     * A fleet-wide count grows as soon as ANY lane inserts a step, which would reset the idle clock of a lane
+     * that is genuinely hung just because a sibling lane is healthy. Since every lane owns a disjoint set of
+     * feature files (see bucketFeatures), per-feature counts let each lane be judged by its OWN steps only.
      *
-     * Never throws: a transient DB hiccup during polling must not abort an otherwise healthy fleet, so
-     * a failure is logged and returned as null ("unknown"), letting the caller keep the previous
-     * per-lane counters for that pass.
+     * Never throws: a transient DB hiccup during polling must not abort an otherwise healthy fleet, so a
+     * failure is logged and returned as null ("unknown"), letting the caller keep the previous per-lane
+     * counters for that pass.
      *
      * @param string $runUid The run whose child run_step rows to count.
      * @return array<string,int>|null Map of feature key (see featureKeyFromPath) => step count, or null on failure.
@@ -717,13 +747,10 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     private function countRunStepsByFeature(string $runUid): ?array
     {
         try {
-            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.run_step');
-            $ds->getFilters()->addConditionFromString('run_scenario__run_feature__run', $runUid, ComparatorDataType::EQUALS);
-            // One plain column + one aggregated column yields a GROUP BY on the plain one, like
-            // SELECT filename, COUNT(UID) ... GROUP BY filename. NOTE: the aggregator ":COUNT" is what
-            // makes this a count at all - a bare "UID" would read every row and hand back a UID string.
-            $fileCol  = $ds->getColumns()->addFromExpression('run_scenario__run_feature__filename');
-            $countCol = $ds->getColumns()->addFromExpression('UID:COUNT');
+            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.run_feature');
+            $ds->getFilters()->addConditionFromString('run', $runUid, ComparatorDataType::EQUALS);
+            $fileCol  = $ds->getColumns()->addFromExpression('filename');
+            $countCol = $ds->getColumns()->addFromExpression('run_scenario__run_step__UID:COUNT');
             $ds->dataRead();
 
             $counts = [];
@@ -798,16 +825,35 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * @param string   $reason  Human-readable reason, reused verbatim in both logs.
      * @param string   $cwd     Run working dir (for reapLaneProfile).
      */
-    private function killHungLane(int $lane, Process $process, $laneLog, $diagLog, string $reason, string $cwd): void
+    private function killHungLane(int $lane, Process $process, $laneLog, $diagLog, string $reason, string $cwd, string $runUid): void
     {
+        // File-based logging first: it does not depend on the database and therefore cannot fail while
+        // the DB is unavailable (a full PRIMARY filegroup, a lock, a dropped connection).
         $this->writeRunLog($laneLog, 'LANE ' . $lane . ' ' . strtoupper($reason));
         $this->writeRunLog($diagLog, sprintf('DIAG drain: lane %d %s at +%.1f s', $lane, $reason, microtime(true) - $this->runStart));
-        $this->getWorkbench()->getLogger()->error('BDT parallel worker lane ' . $lane . ' ' . $reason);
+
+        // WHY RECLAMATION COMES BEFORE LOGGING: the workbench logger writes to the database. When the
+        // database cannot accept writes - as happened when the PRIMARY filegroup ran full - that call
+        // THROWS, and everything after it in this method is skipped. Previously that meant the detached
+        // Chrome tree was never killed and its profile dir never removed, for every lane that timed out,
+        // on every run. Freeing OS resources must never be gated on our ability to record that we did.
         $process->stop(0); // SIGKILL-equivalent; release the slot immediately
-        // Kill the DETACHED Chrome tree this worker left behind and drop its profile dir NOW, while the
-        // coordinator is still alive - an all-timeout run may never reach the end-of-run backstop.
-        $this->reapLaneProfile($lane, $cwd);
+        try {
+            // Kill the DETACHED Chrome tree this worker left behind and drop its profile dir NOW, while
+            // the coordinator is still alive - an all-timeout run may never reach the end-of-run backstop.
+            $this->reapLaneProfile($lane, $cwd, $runUid);
+        } catch (\Throwable $e) {
+            $this->writeRunLog($diagLog, 'DIAG drain: lane ' . $lane . ' profile reap failed: ' . $e->getMessage());
+        }
         $this->finishLaneLog($laneLog);
+
+        // Best-effort DB logging LAST, and never fatal: by this point the lane is already killed and its
+        // resources reclaimed, so a failing logger can only cost us a log line, not a leaked browser.
+        try {
+            $this->getWorkbench()->getLogger()->error('BDT parallel worker lane ' . $lane . ' ' . $reason);
+        } catch (\Throwable $e) {
+            $this->writeRunLog($diagLog, 'DIAG drain: lane ' . $lane . ' could not write the error to the log: ' . $e->getMessage());
+        }
     }
 
     /**
@@ -1034,7 +1080,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                     if ((microtime(true) - $laneLastActivity[$lane]) > $idleTimeout) {
                         $reason = 'idle timed out after ' . $idleTimeout . ' s with no output and no new run_step for its own features';
                         $failures[$lane] = $reason;
-                        $this->killHungLane($lane, $process, $laneLogs[$lane], $diagLog, $reason, $cwd);
+                        $this->killHungLane($lane, $process, $laneLogs[$lane], $diagLog, $reason, $cwd, $runUid);
                         // killHungLane has closed the lane log, so its partial output is flushed and safe
                         // to parse into the run-log now.
                         $this->appendLaneOutcome($logDir, $runUid, $lane, $reason);
@@ -1053,7 +1099,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                     // if it was still making progress. The DB-aware idle case is handled above instead.
                     $reason = 'timed out after ' . $timeout . ' s (total wall-clock ceiling)';
                     $failures[$lane] = $reason;
-                    $this->killHungLane($lane, $process, $laneLogs[$lane], $diagLog, $reason, $cwd);
+                    $this->killHungLane($lane, $process, $laneLogs[$lane], $diagLog, $reason, $cwd, $runUid);
                     // killHungLane has closed the lane log; parse its partial output into the run-log.
                     $this->appendLaneOutcome($logDir, $runUid, $lane, $reason);
                     unset($active[$lane]);
@@ -1095,7 +1141,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                     $this->appendLaneOutcome($logDir, $runUid, $lane, $failures[$lane] ?? null);
                     // On a clean exit the worker's own ChromeManager already stopped Chrome, so this
                     // usually just removes the profile dir; on a crash/signal it also kills the orphan.
-                    $this->reapLaneProfile($lane, $cwd);
+                    $this->reapLaneProfile($lane, $cwd, $runUid);
                     unset($active[$lane]);
                 }
             }
@@ -1112,6 +1158,45 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
+     * Returns the UIDs of coordinator runs that may still legitimately own a Chrome profile dir.
+     *
+     * WHY THIS EXISTS: reapProfilesOfInactiveRuns() must not kill the browsers of a run that is still
+     * executing, but it also must not wait for an age threshold to expire before reclaiming the ones
+     * that are not. The run table is the authority: a row with no finished_on is potentially still
+     * running. A run whose row was never finalized because the coordinator was hard-killed would keep
+     * its profiles alive forever, so rows older than the coordinator's own wall-clock ceiling are no
+     * longer treated as active - past that point no legitimate Chrome of theirs can still exist.
+     *
+     * WHY IT FAILS SAFE: if the query fails we return only the current run UID... no. We must NOT do
+     * that - it would authorize killing everything. On any error we return an empty result and the
+     * caller skips the sweep entirely, falling back to the age-based one. Never guess.
+     *
+     * @param string $currentRunUid UID of the run being started (always considered active)
+     * @return string[]|null Active run UIDs, or NULL if the state could not be determined
+     */
+    private function findActiveRunUids(string $currentRunUid): ?array
+    {
+        try {
+            $cutoff = (new \DateTime())->sub(new \DateInterval('PT' . self::RUN_MAX_AGE_MINUTES . 'M'));
+            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.run');
+            $ds->getColumns()->addFromUidAttribute();
+            $ds->getFilters()->addConditionFromString('finished_on', '', ComparatorDataType::EQUALS);
+            $ds->getFilters()->addConditionFromString(
+                'started_on',
+                $cutoff->format(DateTimeDataType::DATETIME_FORMAT_INTERNAL),
+                ComparatorDataType::GREATER_THAN_OR_EQUALS
+            );
+            $ds->dataRead();
+            $uids = $ds->getUidColumn()->getValues(false);
+            $uids[] = $currentRunUid;
+            return array_values(array_unique($uids));
+        } catch (\Throwable $e) {
+            $this->getWorkbench()->getLogger()->logException($e);
+            return null;
+        }
+    }
+
+    /**
      * End-of-run backstop that reaps orphaned lane Chrome trees and purges their profile dirs.
      *
      * WHY THIS EXISTS: fleet workers launch Chrome detached via "start /B", so a worker that is
@@ -1122,11 +1207,10 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * symptom: six chrome.exe under \lane1 surviving a timed-out lane). This runs after the fleet,
      * on every exit path, to leave the machine clean.
      *
-     * WHY SCOPED TO lane* DIRS ONLY (not the whole chrome_profiles root): interactive tester runs
-     * use chrome_profiles\interactive<port> and may run concurrently - killing those would sabotage
-     * a live tester. Only one parallel run can exist at a time (lane profile dirs are fixed names,
-     * so a second coordinator would collide on them), therefore any Chrome still bound to a lane*
-     * profile dir here is provably THIS run's orphan and safe to kill.
+     * WHY SCOPED TO THIS RUN'S OWN lane DIRS: profile dirs are named "<run_uid>_laneN", so globbing on
+     * * this run's UID touches nothing that belongs to a concurrent interactive tester run or to another
+     * * coordinator. Artefacts of runs that died before reaching this backstop are NOT this method's job -
+     * * they are reclaimed by the age-based reapStaleChromeProfiles() sweep at the start of the next run.
      *
      * WHY IT NEVER THROWS: it runs in perform()'s finally, so a throw would mask the real run
      * outcome (or the original exception on the failure path). Every failure is logged loudly
@@ -1134,21 +1218,17 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      *
      * @param string $workingDir Installation root (the base all lane profile dirs are relative to)
      */
-    private function cleanupLaneChromes(string $workingDir): void
+    private function cleanupLaneChromes(string $workingDir, string $runUid): void
     {
         try {
-            // Must mirror writeLaneConfig()'s user_data_dir construction; kept in sync by hand.
-            $profilesRoot = $workingDir . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR
-                . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR . 'chrome_profiles';
-            $laneDirs = glob($profilesRoot . DIRECTORY_SEPARATOR . 'lane*', GLOB_ONLYDIR) ?: [];
+            // Path comes from the single source of truth, so it can no longer drift from writeLaneConfig().
+            $profilesRoot = $this->chromeProfilesRoot($workingDir);
+            $laneDirs = glob($profilesRoot . DIRECTORY_SEPARATOR . $runUid . '_lane*', GLOB_ONLYDIR) ?: [];
             if ($laneDirs === []) {
                 return;
             }
 
             $logger = $this->getWorkbench()->getLogger();
-            $normalize = static function (string $path): string {
-                return strtolower(str_replace('/', '\\', $path));
-            };
 
             // One process snapshot for the whole cleanup, so chrome.exe is scanned exactly once.
             $chromeProcesses = $this->listChromeProcessCommandLines();
@@ -1202,17 +1282,15 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * and strand the other lanes. Failures are logged - a leftover browser is a nuisance, not a run
      * failure.
      *
-     * @param int    $lane The lane number whose Chrome/profile to reap
-     * @param string $cwd  The run working dir (same base writeLaneConfig() built the profile under)
+     * @param int    $lane   The lane number whose Chrome/profile to reap
+     * @param string $cwd    The run working dir (same base writeLaneConfig() built the profile under)
+     * @param string $runUid UID of the run owning the lane - part of the profile dir name since profiles became run-scoped
      */
-    private function reapLaneProfile(int $lane, string $cwd): void
+    private function reapLaneProfile(int $lane, string $cwd, string $runUid): void
     {
         try {
             // Must mirror writeLaneConfig()'s user_data_dir construction.
-            $absLaneDir = $cwd . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR
-                . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR
-                . 'chrome_profiles' . DIRECTORY_SEPARATOR . 'lane' . $lane;
-            $absLaneDir = realpath($absLaneDir) ?: $absLaneDir;
+            $absLaneDir = $this->laneProfileDir($cwd, $runUid, $lane);
 
             $logger = $this->getWorkbench()->getLogger();
             $killed = $this->reapChromeProfileDir($absLaneDir, $this->listChromeProcessCommandLines());
@@ -1356,6 +1434,42 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             $cmd .= ' --suite="' . $suite . '"';
         }
         return $cmd;
+    }
+
+    /**
+     * Builds the absolute profile dir of one lane of one run - the single source of truth for the path.
+     *
+     * WHY A HELPER: the path was previously rebuilt by hand in writeLaneConfig(), reapLaneProfile() and
+     * cleanupLaneChromes(). When the dir was made run-scoped (<run_uid>_laneN, to stop cross-account
+     * DPAPI/ProcessSingleton failures), only writeLaneConfig() was updated; the two reapers kept
+     * building the old fixed "laneN" name. They then matched nothing, killed nothing and - because
+     * removeDirectoryTree() reports a non-existent dir as successfully removed - reported success while
+     * silently doing nothing. Every Chrome tree and profile dir of every run leaked from that point on.
+     * Routing all three call sites through this method makes that class of drift impossible.
+     *
+     * @param string $workingDir Installation root
+     * @param string $runUid     UID of the run owning the lane
+     * @param int    $lane       Lane number
+     * @return string Absolute profile dir path
+     */
+    private function laneProfileDir(string $workingDir, string $runUid, int $lane): string
+    {
+        return $this->chromeProfilesRoot($workingDir) . DIRECTORY_SEPARATOR . $runUid . '_lane' . $lane;
+    }
+
+    /**
+     * Builds the absolute chrome_profiles root shared by all runs and by the interactive RunTest action.
+     *
+     * WHY SEPARATE FROM laneProfileDir(): the stale-profile sweep operates on the root, not on a single
+     * lane, and must not re-derive the path independently.
+     *
+     * @param string $workingDir Installation root
+     * @return string Absolute chrome_profiles root path
+     */
+    private function chromeProfilesRoot(string $workingDir): string
+    {
+        return $workingDir . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR
+            . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR . 'chrome_profiles';
     }
 
     /**
