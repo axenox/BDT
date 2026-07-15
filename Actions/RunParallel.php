@@ -752,10 +752,21 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     private function countRunStepsByFeature(string $runUid): ?array
     {
         try {
-            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.run_feature');
-            $ds->getFilters()->addConditionFromString('run', $runUid, ComparatorDataType::EQUALS);
-            $fileCol  = $ds->getColumns()->addFromExpression('filename');
-            $countCol = $ds->getColumns()->addFromExpression('run_scenario__run_step__UID:COUNT');
+            // Read from run_step directly and let the filename column drive a GROUP BY, producing a
+            // single-level COUNT(...) GROUP BY. The previous approach read from run_feature with the
+            // nested reverse aggregation run_scenario__run_step__UID:COUNT, which the SQL builder emits
+            // as SUM((SELECT COUNT(...))). MS SQL Server rejects an aggregate over a subquery that itself
+            // contains an aggregate ("Cannot perform an aggregate function on an expression containing an
+            // aggregate or a subquery"), so counting from the leaf object upward avoids the double nesting.
+            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.run_step');
+            $ds->getFilters()->addConditionFromString(
+                'run_scenario__run_feature__run',
+                $runUid,
+                ComparatorDataType::EQUALS
+            );
+            // Non-aggregated column -> becomes the GROUP BY key; the aggregated column is the per-group count.
+            $fileCol  = $ds->getColumns()->addFromExpression('run_scenario__run_feature__filename');
+            $countCol = $ds->getColumns()->addFromExpression('UID:COUNT');
             $ds->dataRead();
 
             $counts = [];
@@ -764,7 +775,13 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                 if ($file === '') {
                     continue;
                 }
-                $counts[mb_strtolower($file)] = (int) $countCol->getValue($i);
+                // Normalize the same way featureKeyFromPath() does (forward slashes + lower case) so the
+                // keys produced here match the lane bucket keys byte for byte. Without this a DB filename
+                // stored with back slashes would never equal a forward-slashed lane key, silently blinding
+                // the per-lane heartbeat and letting a healthy lane be killed as "idle". Vendor stripping is
+                // not repeated here because DatabaseFormatter already stores filename vendor-relative.
+                $key = mb_strtolower(FilePathDataType::normalize($file, '/'));
+                $counts[$key] = (int) $countCol->getValue($i);
             }
             return $counts;
         } catch (\Throwable $e) {
