@@ -407,9 +407,11 @@ JS;
             } catch (\Throwable $secondaryError) {
                 // A secondary CDP/browser error occurred during failure handling (e.g. Chrome
                 // crashed between the original failure and the screenshot/reset calls).
-                // Log it for diagnostics but do not let it propagate — $substepResult must
-                // carry the original failure, not this secondary one.
-                ErrorManager::getInstance()->logException($secondaryError, $this->getBrowser()->getWorkbench());
+                // The logException call is wrapped defensively: when the monitor filegroup is full
+                // the monitor write itself can fail and leave the ambient transaction unrollbackable,
+                // so a failure here must never escape this last-resort catch and turn a handled
+                // substep failure into an uncaught process-killing error (exit 255).
+                try { ErrorManager::getInstance()->logException($secondaryError, $this->getBrowser()->getWorkbench()); } catch (\Throwable $ignored) {}
                 $logbook?->addLine('**WARNING:** Secondary error during failure handling (Chrome may have crashed): ' . $secondaryError->getMessage());
                 // Guarantee $substepResult is always assigned even if captureScreenshot()
                 // threw before line "SubstepResult::createFailed($e, $logbook)" was reached.
