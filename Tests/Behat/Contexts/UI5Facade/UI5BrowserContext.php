@@ -71,16 +71,27 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * cannot even call browserLogin() with a complete argument list.
      */
     private ?array $lastLoginUserRoles = null;
-    /** 
-     * Initializes and starts the workbench for the test environment
+
+    /**
+     * Initializes and starts the workbench for the test environment.
+     *
+     * WHY $monitorEnabled defaults to true: this is the ONE workbench the UI5 steps actually run
+     * against, so it is where the ExFace Monitor (exf_monitor_action / exf_monitor_error writes) is
+     * effectively gated for a run. Manual/interactive runs keep monitoring ON, matching normal app
+     * behaviour. Parallel lane workers force it OFF via the BDT_MONITOR_ENABLED env var (see
+     * resolveMonitorEnabled) to keep their high-volume, concurrent action/exception stream out of the
+     * shared app DB - critical while the PRIMARY filegroup is under storage pressure.
+     *
+     * @param bool $debug          Echo debug lines to stdout (unchanged).
+     * @param bool $monitorEnabled Default monitor state; overridden by BDT_MONITOR_ENABLED when set.
      */
-    public function __construct(bool $debug = false) // Update constructor
+    public function __construct(bool $debug = false, bool $monitorEnabled = true)
     {
         self::$isDryRun = in_array('--dry-run', $_SERVER['argv'] ?? [], true);
         if (self::$isDryRun) {
             return;
         }
-        $this->workbench = new Workbench();
+        $this->workbench = new Workbench(['MONITOR.ENABLED' => $this->resolveMonitorEnabled($monitorEnabled)]);
         $this->workbench->start();
         // Authenticated with the default CLI user if called from CLI. The authenticated
         // user will change with Browser::setupUser() later, but for now the CLI user is
@@ -89,7 +100,28 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $token = new CliEnvAuthToken();
             $this->workbench->getSecurity()->authenticate($token);
         }
-        $this->debug = $debug; // Add this line
+        $this->debug = $debug;
+    }
+
+    /**
+     * Resolves the effective monitor state, letting the parallel launcher force it off per worker.
+     *
+     * WHY an env override instead of a behat.yml context arg: the auto-generated lane config only
+     * imports the base behat.yml and is suite-agnostic, so forcing the flag off there would mean
+     * redefining every suite's contexts block - fragile and easy to drift. BDT_MONITOR_ENABLED is set
+     * once in the coordinator's WORKER_ENV, so every lane inherits "off" with no per-suite plumbing,
+     * while a manual run (which sets no such var) keeps the constructor default. The env value wins
+     * over $default on purpose: it is the launcher's explicit, run-scoped decision.
+     *
+     * @param bool $default The value to use when BDT_MONITOR_ENABLED is not set.
+     */
+    private function resolveMonitorEnabled(bool $default): bool
+    {
+        $env = getenv('BDT_MONITOR_ENABLED');
+        if ($env === false || $env === '') {
+            return $default;
+        }
+        return ! in_array(strtolower($env), ['0', 'false', 'off', 'no'], true);
     }
 
     private function logDebug(string $message): void
