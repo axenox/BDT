@@ -752,21 +752,25 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     private function countRunStepsByFeature(string $runUid): ?array
     {
         try {
-            // Read from run_step directly and let the filename column drive a GROUP BY, producing a
-            // single-level COUNT(...) GROUP BY. The previous approach read from run_feature with the
-            // nested reverse aggregation run_scenario__run_step__UID:COUNT, which the SQL builder emits
-            // as SUM((SELECT COUNT(...))). MS SQL Server rejects an aggregate over a subquery that itself
-            // contains an aggregate ("Cannot perform an aggregate function on an expression containing an
-            // aggregate or a subquery"), so counting from the leaf object upward avoids the double nesting.
+            // Read from run_step directly and let an explicit GROUP BY on the feature filename drive a
+            // single-level COUNT(...). The previous approach read from run_feature with the nested reverse
+            // aggregation run_scenario__run_step__UID:COUNT, which the SQL builder emits as
+            // SUM((SELECT COUNT(...))); MS SQL Server rejects an aggregate over a subquery that already
+            // contains an aggregate. Counting from the leaf object upward avoids that double nesting.
             $ds = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.run_step');
             $ds->getFilters()->addConditionFromString(
                 'run_scenario__run_feature__run',
                 $runUid,
                 ComparatorDataType::EQUALS
             );
-            // Non-aggregated column -> becomes the GROUP BY key; the aggregated column is the per-group count.
             $fileCol  = $ds->getColumns()->addFromExpression('run_scenario__run_feature__filename');
             $countCol = $ds->getColumns()->addFromExpression('UID:COUNT');
+            // Declare the GROUP BY explicitly. A :COUNT column alone does NOT make the sheet group - without
+            // this the builder mixes COUNT(...) with ungrouped plain columns (and the auto-added system
+            // column modified_on) and MS SQL rejects it ("... not contained in either an aggregate function
+            // or the GROUP BY clause"). Registering the aggregation makes the builder GROUP BY filename and
+            // apply a default aggregator to any auto-added column.
+            $ds->getAggregations()->addFromString('run_scenario__run_feature__filename');
             $ds->dataRead();
 
             $counts = [];
