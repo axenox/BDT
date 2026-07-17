@@ -752,25 +752,22 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     private function countRunStepsByFeature(string $runUid): ?array
     {
         try {
-            // Read from run_step directly and let an explicit GROUP BY on the feature filename drive a
-            // single-level COUNT(...). The previous approach read from run_feature with the nested reverse
-            // aggregation run_scenario__run_step__UID:COUNT, which the SQL builder emits as
-            // SUM((SELECT COUNT(...))); MS SQL Server rejects an aggregate over a subquery that already
-            // contains an aggregate. Counting from the leaf object upward avoids that double nesting.
+            // Count per feature in PHP from a plain (non-aggregated) read instead of a grouped SQL query.
+            // Every SQL-side variant failed on MS SQL Server: the original run_feature reverse aggregation
+            // produced SUM((SELECT COUNT(...))) (aggregate over a subquery with an aggregate), and reading
+            // from run_step with a :COUNT column never emitted a GROUP BY - the sheet auto-adds the
+            // modified_on system column as a bare, ungrouped column, which MS SQL rejects ("... not
+            // contained in either an aggregate function or the GROUP BY clause"). MySQL tolerates both,
+            // hence the local/server split. A plain read carries system columns harmlessly, so we group the
+            // rows ourselves. The per-poll row volume is O(steps in the run); acceptable for a heartbeat, but
+            // if a very large run makes this heavy, switch to one scoped COUNT query per feature.
             $ds = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.run_step');
             $ds->getFilters()->addConditionFromString(
                 'run_scenario__run_feature__run',
                 $runUid,
                 ComparatorDataType::EQUALS
             );
-            $fileCol  = $ds->getColumns()->addFromExpression('run_scenario__run_feature__filename');
-            $countCol = $ds->getColumns()->addFromExpression('UID:COUNT');
-            // Declare the GROUP BY explicitly. A :COUNT column alone does NOT make the sheet group - without
-            // this the builder mixes COUNT(...) with ungrouped plain columns (and the auto-added system
-            // column modified_on) and MS SQL rejects it ("... not contained in either an aggregate function
-            // or the GROUP BY clause"). Registering the aggregation makes the builder GROUP BY filename and
-            // apply a default aggregator to any auto-added column.
-            $ds->getAggregations()->addFromString('run_scenario__run_feature__filename');
+            $fileCol = $ds->getColumns()->addFromExpression('run_scenario__run_feature__filename');
             $ds->dataRead();
 
             $counts = [];
@@ -779,13 +776,11 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                 if ($file === '') {
                     continue;
                 }
-                // Normalize the same way featureKeyFromPath() does (forward slashes + lower case) so the
-                // keys produced here match the lane bucket keys byte for byte. Without this a DB filename
-                // stored with back slashes would never equal a forward-slashed lane key, silently blinding
-                // the per-lane heartbeat and letting a healthy lane be killed as "idle". Vendor stripping is
-                // not repeated here because DatabaseFormatter already stores filename vendor-relative.
+                // Normalize the same way featureKeyFromPath() does (forward slashes + lower case) so these
+                // keys match the lane bucket keys byte for byte; a back-slashed DB filename would otherwise
+                // never equal a forward-slashed lane key and silently blind the per-lane heartbeat.
                 $key = mb_strtolower(FilePathDataType::normalize($file, '/'));
-                $counts[$key] = (int) $countCol->getValue($i);
+                $counts[$key] = ($counts[$key] ?? 0) + 1;
             }
             return $counts;
         } catch (\Throwable $e) {
