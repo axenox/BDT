@@ -496,15 +496,19 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Doubles backslashes for safe single-quoted YAML on Windows paths.
+     * Prepares a Windows path for embedding in a SINGLE-QUOTED YAML scalar.
      *
-     * Why: Windows paths contain backslashes; inside single-quoted YAML a literal backslash is
-     * fine, but doubling avoids any ambiguity if the file is ever re-parsed by a stricter
-     * loader, and keeps the generated file readable.
+     * WHY NO BACKSLASH DOUBLING: in single-quoted YAML a backslash is a literal character -
+     * the only escape is '' for a quote. The previous doubling therefore CHANGED the value:
+     * Symfony Yaml handed the doubled string to ChromeManager, Chrome was launched with
+     * "data\\axenox\\..." and, while Win32 path handling tolerates repeated separators, every
+     * string-equality check in the Chrome reapers compared against the coordinator's
+     * single-separator paths and silently matched nothing - so orphaned Chrome trees and their
+     * locked profile dirs leaked on every killed lane. Only single quotes need escaping here.
      */
     private function yamlEscapeWindowsPath(string $path): string
     {
-        return str_replace('\\', '\\\\', $path);
+        return str_replace("'", "''", $path);
     }
 
     /**
@@ -1256,10 +1260,14 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
 
             $killedAny = false;
             foreach ($laneDirs as $laneDir) {
-                $absLaneDir = realpath($laneDir) ?: $laneDir;
-                $killed = $this->reapChromeProfileDir($absLaneDir, $chromeProcesses);
+                // Compare in the SAME path namespace Chrome's command line uses. realpath() resolved the
+                // deploy junction (releases\<ver>\data -> shared\data) and shifted the string into a
+                // different namespace than the worker's getcwd()-based launch path, so the equality match
+                // could never hit on a junctioned deployment layout. glob() already returns the absolute
+                // dir in the launch namespace - use it as-is.
+                $killed = $this->reapChromeProfileDir($laneDir, $chromeProcesses);
                 foreach ($killed as $pid) {
-                    $logger->info('BDT parallel cleanup: killed orphan Chrome PID ' . $pid . ' bound to ' . $absLaneDir);
+                    $logger->info('BDT parallel cleanup: killed orphan Chrome PID ' . $pid . ' bound to ' . $laneDir);
                 }
                 if ($killed !== []) {
                     $killedAny = true;
