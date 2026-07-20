@@ -496,15 +496,19 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Doubles backslashes for safe single-quoted YAML on Windows paths.
+     * Prepares a Windows path for embedding in a SINGLE-QUOTED YAML scalar.
      *
-     * Why: Windows paths contain backslashes; inside single-quoted YAML a literal backslash is
-     * fine, but doubling avoids any ambiguity if the file is ever re-parsed by a stricter
-     * loader, and keeps the generated file readable.
+     * WHY NO BACKSLASH DOUBLING: in single-quoted YAML a backslash is a literal character -
+     * the only escape is '' for a quote. The previous doubling therefore CHANGED the value:
+     * Symfony Yaml handed the doubled string to ChromeManager, Chrome was launched with
+     * "data\\axenox\\..." and, while Win32 path handling tolerates repeated separators, every
+     * string-equality check in the Chrome reapers compared against the coordinator's
+     * single-separator paths and silently matched nothing - so orphaned Chrome trees and their
+     * locked profile dirs leaked on every killed lane. Only single quotes need escaping here.
      */
     private function yamlEscapeWindowsPath(string $path): string
     {
-        return str_replace('\\', '\\\\', $path);
+        return str_replace("'", "''", $path);
     }
 
     /**
@@ -752,25 +756,22 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     private function countRunStepsByFeature(string $runUid): ?array
     {
         try {
-            // Read from run_step directly and let an explicit GROUP BY on the feature filename drive a
-            // single-level COUNT(...). The previous approach read from run_feature with the nested reverse
-            // aggregation run_scenario__run_step__UID:COUNT, which the SQL builder emits as
-            // SUM((SELECT COUNT(...))); MS SQL Server rejects an aggregate over a subquery that already
-            // contains an aggregate. Counting from the leaf object upward avoids that double nesting.
+            // Count per feature in PHP from a plain (non-aggregated) read instead of a grouped SQL query.
+            // Every SQL-side variant failed on MS SQL Server: the original run_feature reverse aggregation
+            // produced SUM((SELECT COUNT(...))) (aggregate over a subquery with an aggregate), and reading
+            // from run_step with a :COUNT column never emitted a GROUP BY - the sheet auto-adds the
+            // modified_on system column as a bare, ungrouped column, which MS SQL rejects ("... not
+            // contained in either an aggregate function or the GROUP BY clause"). MySQL tolerates both,
+            // hence the local/server split. A plain read carries system columns harmlessly, so we group the
+            // rows ourselves. The per-poll row volume is O(steps in the run); acceptable for a heartbeat, but
+            // if a very large run makes this heavy, switch to one scoped COUNT query per feature.
             $ds = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.run_step');
             $ds->getFilters()->addConditionFromString(
                 'run_scenario__run_feature__run',
                 $runUid,
                 ComparatorDataType::EQUALS
             );
-            $fileCol  = $ds->getColumns()->addFromExpression('run_scenario__run_feature__filename');
-            $countCol = $ds->getColumns()->addFromExpression('UID:COUNT');
-            // Declare the GROUP BY explicitly. A :COUNT column alone does NOT make the sheet group - without
-            // this the builder mixes COUNT(...) with ungrouped plain columns (and the auto-added system
-            // column modified_on) and MS SQL rejects it ("... not contained in either an aggregate function
-            // or the GROUP BY clause"). Registering the aggregation makes the builder GROUP BY filename and
-            // apply a default aggregator to any auto-added column.
-            $ds->getAggregations()->addFromString('run_scenario__run_feature__filename');
+            $fileCol = $ds->getColumns()->addFromExpression('run_scenario__run_feature__filename');
             $ds->dataRead();
 
             $counts = [];
@@ -779,13 +780,11 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                 if ($file === '') {
                     continue;
                 }
-                // Normalize the same way featureKeyFromPath() does (forward slashes + lower case) so the
-                // keys produced here match the lane bucket keys byte for byte. Without this a DB filename
-                // stored with back slashes would never equal a forward-slashed lane key, silently blinding
-                // the per-lane heartbeat and letting a healthy lane be killed as "idle". Vendor stripping is
-                // not repeated here because DatabaseFormatter already stores filename vendor-relative.
+                // Normalize the same way featureKeyFromPath() does (forward slashes + lower case) so these
+                // keys match the lane bucket keys byte for byte; a back-slashed DB filename would otherwise
+                // never equal a forward-slashed lane key and silently blind the per-lane heartbeat.
                 $key = mb_strtolower(FilePathDataType::normalize($file, '/'));
-                $counts[$key] = (int) $countCol->getValue($i);
+                $counts[$key] = ($counts[$key] ?? 0) + 1;
             }
             return $counts;
         } catch (\Throwable $e) {
@@ -1261,10 +1260,14 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
 
             $killedAny = false;
             foreach ($laneDirs as $laneDir) {
-                $absLaneDir = realpath($laneDir) ?: $laneDir;
-                $killed = $this->reapChromeProfileDir($absLaneDir, $chromeProcesses);
+                // Compare in the SAME path namespace Chrome's command line uses. realpath() resolved the
+                // deploy junction (releases\<ver>\data -> shared\data) and shifted the string into a
+                // different namespace than the worker's getcwd()-based launch path, so the equality match
+                // could never hit on a junctioned deployment layout. glob() already returns the absolute
+                // dir in the launch namespace - use it as-is.
+                $killed = $this->reapChromeProfileDir($laneDir, $chromeProcesses);
                 foreach ($killed as $pid) {
-                    $logger->info('BDT parallel cleanup: killed orphan Chrome PID ' . $pid . ' bound to ' . $absLaneDir);
+                    $logger->info('BDT parallel cleanup: killed orphan Chrome PID ' . $pid . ' bound to ' . $laneDir);
                 }
                 if ($killed !== []) {
                     $killedAny = true;

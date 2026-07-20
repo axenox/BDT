@@ -1,7 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
-use axenox\BDT\Behat\Contexts\UI5Facade\CdpConnectionDetectorTrait;
+use axenox\BDT\Behat\Common\Traits\CdpConnectionDetectorTrait;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\BDT\Behat\Events\AfterSubstep;
