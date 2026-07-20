@@ -28,7 +28,8 @@ use Behat\Behat\Hook\Scope\BeforeStepScope;
 use Behat\Gherkin\Node\TableNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataTableNode;
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
-use axenox\BDT\Behat\Contexts\UI5Facade\CdpConnectionDetectorTrait;
+use axenox\BDT\Behat\Common\Traits\CdpConnectionDetectorTrait;
+use axenox\BDT\Behat\Common\Traits\AuthenticatorTimeStampingTrait;
 
 
 /**
@@ -45,6 +46,7 @@ use axenox\BDT\Behat\Contexts\UI5Facade\CdpConnectionDetectorTrait;
 class UI5BrowserContext extends BehatFormatterContext implements Context
 {
     use CdpConnectionDetectorTrait;
+    use AuthenticatorTimeStampingTrait;
     
     private $browser;
     private $scenarioName;
@@ -98,7 +100,18 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // better than no user at all!
         if (ConsoleFacade::isPhpScriptRunInCli()) {
             $token = new CliEnvAuthToken();
-            $this->workbench->getSecurity()->authenticate($token);
+            // WHY THE GUARD: a fresh context instance - and therefore this authenticate() - runs for
+            // EVERY scenario, and all parallel lanes run as the same OS user, so this call re-writes
+            // the one shared USER_AUTHENTICATOR row throughout the whole run. The guard applied at
+            // formatter boot protects only the formatter's OWN workbench; this is a second,
+            // independent workbench instance, so without its own guard two lanes starting scenarios
+            // at the same instant race on the row's optimistic lock and one dies with a
+            // "changed in the meantime" conflict. Disabling the check in THIS process is safe:
+            // last_authenticated_on is a last-writer-wins timestamp (see the trait's docblock).
+            self::withoutAuthenticatorTimeStamping(
+                $this->workbench,
+                fn() => $this->workbench->getSecurity()->authenticate($token)
+            );
         }
         $this->debug = $debug;
     }

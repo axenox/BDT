@@ -1,5 +1,5 @@
 <?php
-namespace axenox\BDT\Behat\Contexts\UI5Facade;
+namespace axenox\BDT\Behat\Common\Traits;
 
 /**
  * Detects whether a throwable originates from a broken CDP/WebSocket connection.

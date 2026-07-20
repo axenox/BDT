@@ -16,6 +16,7 @@ use exface\Core\Exceptions\InvalidArgumentException;
 use exface\Core\Exceptions\RuntimeException;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
+use axenox\BDT\Behat\Common\Traits\CdpConnectionDetectorTrait;
 
 
 /**
