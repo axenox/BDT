@@ -520,7 +520,6 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
             $absProfileDir = $workingDir . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR
                 . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR
                 . 'chrome_profiles' . DIRECTORY_SEPARATOR . 'interactive' . $port;
-            $absProfileDir = realpath($absProfileDir) ?: $absProfileDir;
 
             $logger = $this->getWorkbench()->getLogger();
             $killed = $this->reapChromeProfileDir($absProfileDir, $this->listChromeProcessCommandLines());
@@ -589,14 +588,19 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
     }
 
     /**
-     * Doubles backslashes for safe single-quoted YAML on Windows paths.
+     * Prepares a Windows path for embedding in a SINGLE-QUOTED YAML scalar.
      *
-     * WHY: identical helper to RunParallel's - doubling avoids ambiguity if the generated file
-     * is ever re-parsed by a stricter loader and keeps it readable.
+     * WHY NO BACKSLASH DOUBLING: in single-quoted YAML a backslash is a literal character -
+     * the only escape is '' for a quote. The previous doubling therefore CHANGED the value:
+     * Symfony Yaml handed the doubled string to ChromeManager, Chrome was launched with
+     * "data\\axenox\\..." and, while Win32 path handling tolerates repeated separators, every
+     * string-equality check in the Chrome reapers compared against the coordinator's
+     * single-separator paths and silently matched nothing - so orphaned Chrome trees and their
+     * locked profile dirs leaked on every killed lane. Only single quotes need escaping here.
      */
     private function yamlEscapeWindowsPath(string $path): string
     {
-        return str_replace('\\', '\\\\', $path);
+        return str_replace("'", "''", $path);
     }
 
     /**

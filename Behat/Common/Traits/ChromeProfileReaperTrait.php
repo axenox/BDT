@@ -101,7 +101,19 @@ trait ChromeProfileReaperTrait
      */
     protected function normalizeWindowsPath(string $path): string
     {
-        return rtrim(strtolower(str_replace('/', '\\', trim($path))), '\\');
+        $p = strtolower(str_replace('/', '\\', trim($path)));
+        // Collapse repeated separators: Win32 treats "data\\axenox" and "data\axenox" as the
+        // SAME directory, so Chrome runs happily on a doubled-separator user-data-dir (as the
+        // historical lane configs produced) while a plain string comparison sees two different
+        // paths and silently matches nothing. Collapsing makes the comparison agree with the
+        // file system for both current and historical command lines. A leading UNC "\\server"
+        // prefix is preserved.
+        $isUnc = str_starts_with($p, '\\\\');
+        $p = preg_replace('#\\\\{2,}#', '\\\\', $p) ?? $p;
+        if ($isUnc) {
+            $p = '\\' . $p;
+        }
+        return rtrim($p, '\\');
     }
 
     /**
