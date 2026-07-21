@@ -399,10 +399,18 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         if (self::$isDryRun) {
             return;
         }
+        // WHY BEFORE THE FEATURE-BOUNDARY CHECK: the early return below skips every scenario that
+        // belongs to the current feature - including all examples of a Scenario Outline. A Chrome
+        // that died inside such a feature would therefore stay dead until something crashed into
+        // it. The probe is a cheap loopback call, so paying it per scenario is affordable.
+        $this->ensureChromeAliveAtScenarioBoundary();
 
         $manager = ChromeManager::getInstance();
-        // Chrome is started once per process, so a non-null PID means it is already up.
-        if ($manager->getPid() === null) {
+        // WHY THE PORT AND NOT THE PID: start() resolves the PID from netstat and can legitimately
+        // end up with null for a healthy Chrome, in which case this check would relaunch the browser
+        // before every scenario. The port is set unconditionally by start(), so it is the reliable
+        // "has Chrome been started in this process" marker.
+        if ($manager->getPort() === null) {
             try {
                 $manager->start();
             } catch (\Throwable $e) {
@@ -419,6 +427,54 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 // Non-critical - XHR monitoring failure should not abort the scenario
                 $this->logDebug('XHR monitoring init failed: ' . $e->getMessage());
             }
+        }
+    }
+
+    /**
+     * Revives Chrome at the end of every scenario, at both ends of a scenario.
+     *
+     * WHY THIS EXISTS: Mink resets/stops its sessions from its OWN event listener at the scenario
+     * boundary, which is code this context does not own and cannot guard. If Chrome died during the
+     * scenario, that reset opens a CDP socket to a process that is gone, the socket exception escapes
+     * every try/catch we have, and Behat dies with exit code 255 - taking the whole lane and its DB
+     * recording with it. This is exactly how lane 3 was lost between two Scenario Outline examples.
+     * Probing here, while we are still inside our own code, means Mink always finds a live browser.
+     *
+     * WHY NOT ONLY THE BeforeStep PROBE: that probe never runs at a scenario boundary, because the
+     * crash happens before the next step is ever dispatched.
+     *
+     * Must never throw - an uncaught exception from an AfterScenario hook kills Behat with exit 255,
+     * which is the very failure this method exists to prevent.
+     *
+     * @AfterScenario
+     */
+    public function ensureChromeAliveAtScenarioBoundary(): void
+    {
+        try {
+            $manager = ChromeManager::getInstance();
+            if ($manager->getPort() === null || $manager->isAlive()) {
+                return;
+            }
+
+            $this->logDebug('Chrome is gone at the scenario boundary - restarting it at both ends of a scenario.');
+            $manager->restart();
+
+            // Force the stale session out of its started state so Mink's own reset talks to the NEW
+            // browser. stop() addresses the dead process and is expected to fail - that failure is
+            // irrelevant, the goal is a session that reconnects instead of reusing a dead socket.
+            try {
+                $this->getSession()->stop();
+            } catch (\Throwable $ignored) {}
+            $this->getSession()->start();
+        } catch (\Throwable $e) {
+            $this->logDebug('ensureChromeAliveAfterScenario failed: ' . $e->getMessage());
+            try {
+                $this->getWorkbench()->getLogger()->logException(new RuntimeException(
+                    'Chrome could not be revived at the scenario boundary: ' . $e->getMessage(),
+                    null,
+                    $e
+                ));
+            } catch (\Throwable $ignored) {}
         }
     }
 
@@ -2152,9 +2208,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         try {
             $manager = ChromeManager::getInstance();
 
-            // Chrome was never started (e.g. a dry run, or the first feature has not opened it yet).
-            // Starting it here would race with beforeScenario(), which owns the initial launch.
-            if ($manager->getPid() === null) {
+            // WHY THE PORT AND NOT THE PID: the PID is resolved from netstat at launch and can be
+            // null even for a perfectly healthy Chrome (netstat race), while stop() clears it as
+            // well. Gating on the PID therefore silently disables the liveness probe for the rest
+            // of the lane. The port is set by start() unconditionally and is the same identity
+            // isAlive() probes, so it is the only correct "has Chrome ever been started" marker.
+            if ($manager->getPort() === null) {
                 return;
             }
 
