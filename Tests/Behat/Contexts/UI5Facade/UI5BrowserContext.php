@@ -381,15 +381,16 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Restarts Chrome and resets the Mink session at each feature boundary to ensure
-     * a clean browser state for every new feature.
+     * Starts Chrome once per worker process, before the first scenario runs.
      *
-     * BeforeFeature cannot be used here because it requires a static method, which
-     * has no access to $this->getSession(). Feature transitions are detected by
-     * comparing the current feature title against the previously stored static value.
+     * WHY THIS IS NO LONGER A FEATURE-BOUNDARY RESTART: the parallel coordinator dispatches exactly
+     * ONE feature per worker process, so a process never crosses a feature boundary and the previous
+     * restart branch was unreachable. Isolation between features is now carried by the process
+     * boundary itself - every feature gets a fresh process, a fresh Chrome and a freshly reaped
+     * profile dir - which is stronger than an in-process restart ever was.
      *
-     * Must never throw — any uncaught exception from a BeforeScenario hook causes
-     * Behat to exit with code 255.
+     * Must never throw - any uncaught exception from a BeforeScenario hook causes Behat to exit
+     * with code 255.
      *
      * @BeforeScenario
      */
@@ -399,46 +400,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             return;
         }
 
-        $featureTitle = $scope->getFeature()->getTitle();
-        if (self::$currentFeatureTitle === $featureTitle) {
-            return; // same feature, Chrome restart only happens at feature boundaries
-        }
-        self::$currentFeatureTitle = $featureTitle;
-
-        try {
-            $manager = ChromeManager::getInstance();
-            if ($manager->getPid() === null) {
-                // First feature: Chrome has not been started yet
-                $manager->getLogbook()->addLine('First feature: starting Chrome for "' . $featureTitle . '"');
-                $manager->start();
-            } else {
-                // Subsequent features: restart to get a clean browser state
-                $manager->getLogbook()->addLine('Feature boundary: restarting Chrome before "' . $featureTitle . '"');
-                $manager->restart();
-                // Reset Mink session so the driver opens a fresh WebSocket to the new Chrome process
-                $this->getSession()->stop();
-                $this->getSession()->start();
-            }
-        } catch (\Throwable $e) {
-            // Chrome start/restart failed. Log it but do not re-throw — the scenario
-            // steps will fail naturally when they try to use the browser, and normal
-            // error handling (logFailedStep, recoverChromeAfterStepFailure) will take over.
-            $this->logDebug('beforeScenario Chrome start/restart failed: ' . $e->getMessage());
-            // WHY WE NO LONGER JUST LOG AND CONTINUE: a failed restart can leave the OLD Chrome tree
-            // alive while start() has already spawned a NEW one. Continuing then adds one more live
-            // browser tree per feature boundary, which is exactly how a lane climbed to dozens of
-            // chrome.exe processes and drove the server to 100% CPU/memory. A browser we cannot bring
-            // into a known state is not something to test against - force it down and let the lane die
-            // cleanly instead of degrading the whole machine.
+        $manager = ChromeManager::getInstance();
+        // Chrome is started once per process, so a non-null PID means it is already up.
+        if ($manager->getPid() === null) {
             try {
-                ChromeManager::getInstance()->stop();
-            } catch (\Throwable $ignored) {
-                // stop() already swallows its own errors; nothing further is safe to do here.
-                $this->getWorkbench()->getLogger()->logException(new RuntimeException(
-                    'beforeScenario Chrome start/restart failed for feature "' . $featureTitle . '": ' . $e->getMessage(),
-                    null,
-                    $e
-                ));
+                $manager->start();
+            } catch (\Throwable $e) {
+                $this->handleChromeStartFailure($scope->getFeature()->getTitle(), $e);
             }
         }
 
@@ -447,11 +415,45 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         if ($this->browser) {
             try {
                 $this->browser->initializeXHRMonitoring();
-                $this->logDebug("\nXHR monitoring initialized for scenario: " . $this->scenarioName . "\n");
             } catch (\Throwable $e) {
-                // Non-critical — XHR monitoring failure should not abort the scenario
+                // Non-critical - XHR monitoring failure should not abort the scenario
                 $this->logDebug('XHR monitoring init failed: ' . $e->getMessage());
             }
+        }
+    }
+
+    /**
+     * Reclaims Chrome and records the failure when it could not be started for this worker process.
+     *
+     * WHY IT DOES NOT RE-THROW: an exception escaping a BeforeScenario hook kills Behat with exit
+     * code 255, discarding the per-scenario results the run exists to produce. The steps fail on
+     * their own when they try to use the browser, and the normal error handling records them.
+     *
+     * WHY IT STILL RECORDS SOMETHING RATHER THAN IGNORING: ChromeManager reports two of its three
+     * failure paths itself (readiness timeout and foreign process on the port both reach the
+     * DatabaseFormatter), but the configuration path - unresolvable executable or user_data_dir -
+     * only writes a logbook line. Swallowing here would make a moved or missing Chrome binary look
+     * like a page that merely failed to load, which is the most misleading symptom available.
+     *
+     * WHY STOP COMES BEFORE LOGGING: the logger writes to the database and can itself throw while
+     * the DB is under pressure, so the browser must be reclaimed before anything DB-backed runs.
+     */
+    private function handleChromeStartFailure(string $featureTitle, \Throwable $e): void
+    {
+        try {
+            ChromeManager::getInstance()->stop();
+        } catch (\Throwable $ignored) {
+            // stop() already swallows its own errors; nothing further is safe to do here.
+        }
+
+        try {
+            $this->getWorkbench()->getLogger()->logException(new RuntimeException(
+                'Chrome could not be started for feature "' . $featureTitle . '": ' . $e->getMessage(),
+                null,
+                $e
+            ));
+        } catch (\Throwable $ignored) {
+            // A lost log line is preferable to exit code 255 from a hook.
         }
     }
 
