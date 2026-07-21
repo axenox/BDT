@@ -196,6 +196,14 @@ class ChromeManager
     {
         $this->getLogbook()->addLine('ChromeManager::start() called');
         $this->getLogbook()->addIndent(+1);
+        // WHY AN IDEMPOTENCY GUARD: the docblock has always promised that a second start() is a
+        // no-op, but nothing enforced it - every caller that lost the PID race silently spawned a
+        // second Chrome tree on the same profile dir, which is both a ProcessSingleton conflict and
+        // a leak. Liveness (not the PID) is the correct condition, for the reasons isAlive() states.
+        if ($this->port !== null && $this->isAlive()) {
+            $this->getLogbook()->addLine('start(): a healthy Chrome is already running on port ' . $this->port . ' - reusing it');
+            return new ChromeStartResult(port: $this->port, pid: $this->pid, startupMs: 0.0);
+        }
         $this->databaseFormatter?->getWorkbench()->getLogger()->info('Using Chrome for BDT', [], $this->getLogbook());
         $config = $this->config;
         $startTime = microtime(true);
