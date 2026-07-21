@@ -24,15 +24,37 @@ use exface\Core\DataTypes\DateTimeDataType;
 use exface\Core\CommonLogic\Debugger\LogBooks\MarkdownLogBook;
 
 /**
- * Coordinator action for parallel BDT test execution.
+ * Coordinator action for parallel BDT test execution, driven by a DYNAMIC WORK QUEUE.
  *
- * RATIONALE (Phase 3 scope):
- * This first version runs NO parallelism on purpose. It spawns exactly ONE worker and
- * waits for it synchronously. The goal is to prove the run lifecycle end to end - the
- * coordinator opens the run record, hands the UID to a worker through a generated lane
- * config, the worker writes its child rows in attach-mode, then the coordinator closes
- * the run - WITHOUT the added complexity of free-port discovery, throttling or watchdogs.
- * Those land in Phase 4, where "one worker" simply becomes "N workers".
+ * WHY A QUEUE INSTEAD OF STATIC BUCKETS:
+ * Features used to be split into N disjoint buckets up front, one long-lived Behat process per
+ * bucket. That distribution had two structural defects. First, when a lane was killed (idle hang or
+ * wall-clock ceiling) every remaining feature in its bucket was simply never executed - it produced
+ * no child row at all, so the run's shortfall showed up only as "expected > actual", the silent
+ * outcome this framework exists to prevent. Second, buckets never rebalance: a lane that drew light
+ * features finished early and then sat idle while a lane with heavy features still ran, so
+ * wall-clock was dictated by the unluckiest bucket rather than by the total workload.
+ *
+ * The queue fixes both. All matched features go into ONE ordered queue owned by the coordinator.
+ * Each lane is a SLOT (fixed port, fixed lane config, fixed profile dir) that executes exactly ONE
+ * feature per Behat process; when that process exits, the slot takes the next feature from the
+ * queue. Work therefore flows to whichever lane is free, so no lane idles while work remains.
+ *
+ * WHY THE QUEUE IS COORDINATOR-OWNED AND IN-MEMORY: the obvious alternative - a shared queue table
+ * that workers claim rows from - would need atomic claim logic (row locks, in-flight vs. unstarted
+ * bookkeeping, stale-claim recovery) and would add a fresh contention point to a system that already
+ * fights optimistic-locking conflicts. Here the coordinator is the only process that ever touches
+ * the queue, so there is no concurrency to arbitrate: no claim protocol, no lock, no new table.
+ *
+ * WHY ONE FEATURE PER PROCESS: it makes the process boundary carry the bookkeeping. The feature a
+ * lane was executing when it timed out is unambiguous (there is exactly one), so it can be recorded
+ * as failed instead of vanishing, and the untouched remainder of the queue keeps flowing to other
+ * lanes. It also bounds the timeouts to a single feature rather than to a whole bucket, which turns
+ * them from a blunt ceiling into a precise "this feature hung" signal.
+ *
+ * POISON-FEATURE POLICY: a feature killed by a timeout is NEVER requeued. Re-serving it to the next
+ * free lane would let one pathological feature hang every lane in turn and consume the whole run.
+ * It is recorded as a worker failure exactly once and the run continues without it.
  *
  * Why the coordinator owns the run-row lifecycle: in attach-mode the worker's
  * DatabaseFormatter binds to an existing run_uid and deliberately skips run creation,
@@ -60,10 +82,15 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     // the installation root, so it is always present and current by the time we resolve it.
     private const DEFAULT_BEHAT_CONFIG = 'behat.yml';
 
-    // Wall-clock ceiling per worker, used as the FALLBACK when PARALLEL.WORKER_TIMEOUT_SECONDS
+    // Wall-clock ceiling per FEATURE RUN, used as the FALLBACK when PARALLEL.WORKER_TIMEOUT_SECONDS
     // is not set in app config. We never use runCliCommand's 60s default - a Behat run needs far
-    // longer. Symfony Process enforces this per worker and throws on exceedance; that throw is
-    // caught per-lane in the drain phase, so a hung worker is a recorded failure, not a stall.
+    // longer. Symfony Process enforces this per worker process and throws on exceedance; that throw
+    // is caught per-lane in the drain phase, so a hung worker is a recorded failure, not a stall.
+    //
+    // NOTE ON SEMANTICS SINCE THE QUEUE: a worker process now executes exactly ONE feature, so this
+    // ceiling bounds a single feature rather than a whole bucket. That makes it far sharper than it
+    // used to be - it can be tightened to a realistic per-feature duration, and when it fires it
+    // names the one feature that hung instead of aborting everything a lane had left to do.
     // This is a TOTAL (wall-clock) ceiling: it fires even while the worker is still making
     // progress. Set PARALLEL.WORKER_TIMEOUT_SECONDS to 0 in app config to disable it entirely
     // and rely purely on the idle timeout below.
@@ -77,8 +104,22 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     // works-as-expected step emits NO stdout while it runs, it only keeps INSERTing run_step rows per
     // substep, so an output-only idle timeout would wrongly kill a lane that is actually progressing.
     // Only a lane that has produced neither signal for this many seconds (a genuine hang) times out.
+    // Since the queue landed, the DB half of that signal is scoped to the ONE feature the lane is
+    // currently executing, which is strictly more precise than the old whole-bucket sum.
     // Set to 0 in app config to disable.
     private const WORKER_IDLE_TIMEOUT_SECONDS = 600;
+
+    // How many CONSECUTIVE timeouts a lane may suffer before it is retired from the queue rotation.
+    //
+    // WHY A LANE CAN BE RETIRED AT ALL: after a timeout we cannot tell whether the FEATURE hung or
+    // the LANE itself is broken (a Chrome that never comes up on that port, a profile dir we cannot
+    // clear). The poison-feature policy handles the first case by never requeuing the feature, but
+    // if the lane is the broken party it would keep accepting features and time out on each one,
+    // burning the entire queue at one timeout per feature. Requiring several consecutive timeouts
+    // before retiring the lane distinguishes the two: an isolated bad feature leaves the lane usable
+    // (the next feature completes and resets the counter), while a genuinely broken lane trips the
+    // limit quickly and steps out so the remaining work goes to lanes that still function.
+    private const LANE_MAX_CONSECUTIVE_TIMEOUTS = 2;
 
     // App-config keys for the parallel orchestration layer. Kept as constants so the reads in
     // resolvePortBand()/resolveMaxWorkers()/resolveWorkerTimeout() can never drift from config.
@@ -149,12 +190,23 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     private string $startupBanner = '';
 
     /**
+     * Relative path of THIS run's own log directory (data/axenox/BDT/Logs/<YYYYMMDD>/<run_uid>),
+     * remembered so the final CLI message and the run-log can point at it without rebuilding the
+     * path - and without the caller having to know how the directory is laid out.
+     *
+     * Why relative and not absolute: it is only ever shown to a human, who reads it against the
+     * installation root they already know; an absolute path on a Windows server adds noise.
+     */
+    private string $runLogDirRelative = '';
+
+    /**
      * The living run-log for the DB "log" column. It is a MarkdownLogBook (the framework's existing
      * structured-log type, also used by DatabaseFormatter for step logbooks) that the coordinator
-     * appends to AS THE RUN HAPPENS: run facts up front, then one section per lane filled in when that
-     * lane launches, finishes, times out or fails. Building it live means the events the coordinator
-     * observes firsthand (launch, exit, timeout, worker failure) are recorded without re-parsing, and
-     * each lane's Behat summary/failures are parsed once from its now-closed log at the moment it ends.
+     * appends to AS THE RUN HAPPENS: run facts up front, then one section per FEATURE RUN, created when that
+     * feature is dispatched to a lane and filled in when its worker finishes, times out or fails. Building
+     * it live means the events the coordinator observes firsthand (launch, exit, timeout, worker failure)
+     * are recorded without re-parsing, and each feature's Behat summary is parsed once from its own
+     * now-closed worker log at the moment it ends.
      * Persisted (capped) onto the run row in the single close-out. Nullable so a very early failure
      * before it is initialised still finalises cleanly.
      */
@@ -165,7 +217,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     // DatabaseFormatter, so repeating them here only pushed the coordinator-level diagnostics (worker
     // errors, launch failures, the coordinator error itself) past the size cap. What stays is the run
     // configuration, the per-lane worker status and Behat's counts block; the verbose test output stays
-    // in the on-disk lane log, which every lane section now names. ---
+    // in the on-disk worker log, which every feature section now names. ---
     private const LOG_TAIL_READ_BYTES  = 65536;
     private const LOG_CRASH_TAIL_LINES = 40;
     // Raised: this tail is only produced for a lane whose worker actually DIED, which is rare, so a
@@ -286,8 +338,8 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             // role at run-time by UI5Browser::setupUser(), so the only ceiling is "do not start
             // more workers than there are features to test". ---
             $matchedFiles = $expected->matchedFiles;
-            // An empty scope must not fall through to a single worker with an empty bucket: buildWorkerCommand()
-            // with no positional paths makes Behat run the ENTIRE suite, contradicting an expected count of 0 and
+            // An empty scope must not fall through to a lane with no feature to run: buildWorkerCommand()
+            // with no positional path makes Behat run the ENTIRE suite, contradicting an expected count of 0 and
             // producing a wildly wrong run. Finalize cleanly and report instead.
             if ($matchedFiles === []) {
                 $runRecordWriter->finalize($this->runDataSheet);
@@ -296,9 +348,12 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                     sprintf('Parallel run %s: no feature files matched the requested scope/tags. Nothing to run.', $runUid)
                 );
             }
+            // Lane count is still capped by the number of matched features - starting more lanes than
+            // there is work for would only allocate ports and profile dirs that never run anything.
+            // Beyond that cap the features are NOT pre-assigned: they form one queue that the lanes
+            // pull from as they become free (see runFleet).
             $maxWorkers   = $this->resolveMaxWorkers();
             $workerCount  = max(1, min($maxWorkers, count($matchedFiles)));
-            $buckets      = $this->bucketFeatures($matchedFiles, $workerCount);
 
             // --- Step 4b: announce the resolved run configuration BEFORE any worker starts, so the
             // user knows what to expect (how many workers will run, whether Chrome will be visible,
@@ -312,7 +367,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             $this->runLog->addCodeBlock($banner, '', 'Run summary');
 
             // --- Step 5: run the fleet. Wrapped so a worker failure still reaches finalize. ---
-            $failures = $this->runFleet($cwd, $behatConfig, $runUid, $chromePath, $tags, $buckets, $banner);
+            $failures = $this->runFleet($cwd, $behatConfig, $runUid, $chromePath, $tags, $matchedFiles, $workerCount, $banner);
 
         } catch (\Throwable $e) {
             // Record the coordinator failure but do NOT finalize/throw yet: the single close-out below
@@ -331,7 +386,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
 
         // --- Single close-out: stage the run-log digest, then finalize exactly once. ---
         // Runs on BOTH the normal path and the coordinator-error path, so a run that failed at
-        // coordinator level still pulls whatever lane logs exist on disk into the DB. The digest is
+        // coordinator level still pulls whatever worker logs exist on disk into the DB. The digest is
         // staged onto the run sheet and persisted by finalize()'s single dataUpdate - no extra
         // optimistic-lock round-trip. stageRunLog() swallows its own errors, so a digest problem can
         // never stop finished_on from being written.
@@ -343,31 +398,44 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             throw new RuntimeException('Parallel run coordinator failed: ' . $coordinatorError->getMessage(), null, $coordinatorError);
         }
 
-        // Lane output now lives in one file per lane: data/axenox/BDT/Logs/<run_uid>_lane<N>.log.
-        // A lane failure here means the WORKER ITSELF failed (crash, signal/timeout termination or a
-        // launch failure) - NOT that some of its tests failed. Behat's exit 1 is treated as a normal
-        // completion because per-scenario pass/fail is recorded authoritatively in the attach-mode
-        // child rows. When a worker fails fatally, the whole run must fail so a scheduled task/queue
-        // marks it red. We therefore THROW when $failures is non-empty - AFTER finalize above, so the
-        // run row is always closed. The exception message lists each failing lane and points at its
-        // log. If no worker failed fatally, we return a terse success message referencing the log
-        // directory (individual test failures are still visible in the child rows).
-        $logDirRel = 'data/axenox/BDT/Logs';
+        // Worker output lives in one directory per run:
+        // data/axenox/BDT/Logs/<YYYYMMDD>/<run_uid>/, holding coordinator.log plus one
+        // lane<N>_<seq>_<feature>.log per feature run. Grouping by run keeps a run's logs a single unit
+        // and stops hundreds of per-feature files from burying each other in one flat directory.
+        //
+        // A failure here means the WORKER ITSELF failed (crash, signal/timeout termination, a launch
+        // failure, or a feature that never got a lane) - NOT that some of its tests failed. Behat's
+        // exit 1 is treated as a normal completion because per-scenario pass/fail is recorded
+        // authoritatively in the attach-mode child rows. When a worker fails fatally, the whole run
+        // must fail so a scheduled task/queue marks it red. We therefore THROW when $failures is
+        // non-empty - AFTER finalize above, so the run row is always closed. The exception message
+        // names each failing feature and points at its own log. If no worker failed fatally, we return
+        // a terse success message referencing the run's log directory (individual test failures are
+        // still visible in the child rows).
+        //
+        // The directory is resolved by runFleet; if the run failed before that, fall back to the base
+        // Logs path so the message still points somewhere real instead of at an empty string.
+        $logDirRel = $this->runLogDirRelative !== '' ? $this->runLogDirRelative : 'data/axenox/BDT/Logs';
         if (! empty($failures)) {
             $lines = [];
-            foreach ($failures as $lane => $err) {
-                $lines[] = 'Lane ' . $lane . ' (' . $logDirRel . '/' . $runUid . '_lane' . $lane . '.log): ' . $err;
+            foreach ($failures as $failure) {
+                // A feature that never started has no log file of its own - say so instead of naming a
+                // file that does not exist and sending the reader on a hunt for it.
+                $where = $failure['log'] !== null
+                    ? ' (' . $failure['log'] . ')'
+                    : ' (no log - never started)';
+                $lines[] = 'Lane ' . $failure['lane'] . ' feature ' . $failure['feature'] . $where . ': ' . $failure['error'];
             }
             throw new RuntimeException(
                 $this->startupBanner . "\n"
                 . sprintf('Parallel run %s finished with %d worker error(s):', $runUid, count($failures))
                 . "\n" . implode("\n", $lines)
-                . "\nLane logs: " . $logDirRel . '/' . $runUid . '_lane*.log'
+                . "\nRun logs: " . $logDirRel
             );
         }
 
         $msg = $this->startupBanner . "\n"
-            . sprintf('Parallel run %s finished, no worker errors. Lane logs: %s/%s_lane*.log', $runUid, $logDirRel, $runUid);
+            . sprintf('Parallel run %s finished, no worker errors. Run logs: %s', $runUid, $logDirRel);
         return ResultFactory::createMessageResult($task, $msg);
     }
 
@@ -568,7 +636,8 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
 
         $lines = [
             '===== BDT parallel run configuration =====',
-            'Workers:  ' . $workerCount . ' (' . $reason . ')',
+            'Lanes:    ' . $workerCount . ' (' . $reason . ')',
+            'Features: ' . $matchedFeatures . ' queued, dispatched one per worker process as lanes free up',
             'Chrome:   ' . $chromeLine,
         ];
         if ($debuggerActive) {
@@ -617,49 +686,111 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Splits matched feature files into N disjoint buckets covering ALL of them.
+     * Builds the Behat worker command for ONE feature: lane config + optional tag filter + the single
+     * feature path as a positional argument.
      *
-     * Round-robin so file size/scenario count is spread roughly evenly across lanes instead of
-     * front-loading the first worker. Together the buckets cover every matched feature exactly
-     * once, so the expected counts (computed over all features) stay consistent with what runs.
+     * The positional feature path goes OUTSIDE --config so Behat runs exactly that one file. The lane
+     * config carries run_uid + lane_id + Chrome port, so configuration flows only through the generated
+     * YAML - no BEHAT_PARAMS overrides.
      *
-     * @param string[] $files
-     * @return string[][]
-     */
-    private function bucketFeatures(array $files, int $workerCount): array
-    {
-        $buckets = array_fill(0, $workerCount, []);
-        foreach (array_values($files) as $i => $file) {
-            $buckets[$i % $workerCount][] = $file;
-        }
-        return $buckets;
-    }
-
-    /**
-     * Builds the Behat worker command: lane config + optional tag filter, with the bucket as positional
-     * args.
-     *
-     * Positional feature paths go OUTSIDE --config so Behat runs exactly that bucket. The lane config
-     * carries run_uid + lane_id + Chrome port, so configuration flows only through the generated YAML -
-     * no BEHAT_PARAMS overrides.
+     * WHY EXACTLY ONE FEATURE: the process boundary is what makes the queue safe. With one feature per
+     * process, the feature a lane was running when it was killed is unambiguous, so it can be recorded
+     * as failed while the rest of the queue keeps flowing; with several, a kill would again lose an
+     * unknown remainder silently.
      *
      * Why --tags is conditional: when scope came from --feature/--suite with no tag filter, we OMIT
      * --tags rather than pass --tags="". An empty tag expression is not "no filter" to Behat, and it
      * would diverge from ExpectedTestCountCalculator (which counts ALL scenarios when the tag expression
      * is empty), breaking expected==actual.
-     *
-     * @param string[] $bucket
      */
-    private function buildWorkerCommand(string $laneConfigPath, ?string $tags, array $bucket): string
+    private function buildWorkerCommand(string $laneConfigPath, ?string $tags, string $feature): string
     {
-        $cmd = sprintf('vendor\\bin\\behat --config "%s"', $laneConfigPath);
+        // Every interpolated value is validated before it reaches the shell string - see
+        // assertShellSafe() for why this is a hard failure rather than an escaping attempt.
+        $cmd = sprintf('vendor\\bin\\behat --config "%s"', $this->assertShellSafe($laneConfigPath, 'behat config path'));
         if ($tags !== null && trim($tags) !== '') {
-            $cmd .= sprintf(' --tags="%s"', $tags);
+            $cmd .= sprintf(' --tags="%s"', $this->assertShellSafe(trim($tags), 'tag expression'));
         }
-        foreach ($bucket as $feature) {
-            $cmd .= ' "' . $feature . '"';
-        }
+        $cmd .= ' "' . $this->assertShellSafe($feature, 'feature path') . '"';
         return $cmd;
+    }
+
+    /**
+     * Rejects any value that would break out of the double-quoted argument it is interpolated into.
+     *
+     * WHY THIS EXISTS: the worker command is assembled as a shell string, so an operator-supplied value
+     * containing a quote or a cmd metacharacter could terminate the argument and append commands of its
+     * own, which would then run with the coordinator's privileges. The tag expression in particular
+     * comes straight from the caller, and this action is intended to be reachable from a web UI by
+     * users far less privileged than the account the fleet runs under.
+     *
+     * WHY IT REFUSES INSTEAD OF ESCAPING: quoting rules on Windows cmd are genuinely ambiguous - the
+     * same string is parsed differently by cmd, by the .bat stub and by the PHP process it finally
+     * reaches - so any escaping scheme silently mangles some legitimate inputs while still leaving
+     * gaps. None of these characters has a legitimate place in a tag expression or a feature path, so
+     * refusing loudly is both safe and lossless.
+     *
+     * @param string $value The value about to be interpolated into the command string.
+     * @param string $what  Human-readable name of the value, used in the error message.
+     * @return string The value unchanged, so this can be used inline at the interpolation site.
+     * @throws RuntimeException if the value contains a shell metacharacter.
+     */
+    private function assertShellSafe(string $value, string $what): string
+    {
+        if (preg_match('/["`^&|<>%!\r\n]/', $value) === 1) {
+            throw new RuntimeException(
+                'Refusing to build a worker command: the ' . $what . ' contains a shell metacharacter. Got: '
+                . var_export($value, true)
+            );
+        }
+        return $value;
+    }
+
+    /**
+     * Makes sure a lane's Chrome profile dir exists immediately before a worker is launched into it.
+     *
+     * WHY IT IS NEEDED PER FEATURE AND NOT ONLY PER LANE: writeLaneConfig() creates the dir once when
+     * the slot is set up, but reapLaneProfile() DELETES it after every feature run - deliberately, so
+     * the next feature in that slot cannot inherit a locked ProcessSingleton file or a half-written
+     * profile from the previous one. Without recreating it here, every feature after the first in a
+     * lane would launch Chrome against a missing directory.
+     *
+     * @param string $workingDir Installation root (same base writeLaneConfig() built the profile under)
+     * @param string $runUid     UID of the run owning the lane
+     * @param int    $lane       Lane number
+     * @throws RuntimeException if the directory cannot be created
+     */
+    private function ensureLaneProfileDir(string $workingDir, string $runUid, int $lane): void
+    {
+        $dir = $this->laneProfileDir($workingDir, $runUid, $lane);
+        if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
+            throw new RuntimeException('Could not create lane user_data_dir: ' . $dir);
+        }
+    }
+
+    /**
+     * Records one worker-level failure in the structured shape perform() reports from.
+     *
+     * WHY STRUCTURED RATHER THAN A lane => message MAP: a lane now runs many features, so a map keyed
+     * by lane would let a later failure in the same lane overwrite an earlier one - losing failures is
+     * precisely what the queue was built to stop. A flat list keeps every failure, and carrying the
+     * feature and its own log file with each entry means the final message can point the reader
+     * straight at the evidence.
+     *
+     * @param array<int,array> $failures  Failure list, appended to in place.
+     * @param int              $lane      Lane the feature was assigned to.
+     * @param string           $feature   Feature file that failed.
+     * @param string|null      $logName   Basename of that feature run's log, or NULL if it never started.
+     * @param string           $error     Human-readable worker-level failure reason.
+     */
+    private function recordFailure(array &$failures, int $lane, string $feature, ?string $logName, string $error): void
+    {
+        $failures[] = [
+            'lane'    => $lane,
+            'feature' => $feature,
+            'log'     => $logName,
+            'error'   => $error,
+        ];
     }
 
     /**
@@ -743,8 +874,9 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      *
      * Why grouped per feature and not one fleet-wide total: the drain loop needs a PER-LANE liveness signal.
      * A fleet-wide count grows as soon as ANY lane inserts a step, which would reset the idle clock of a lane
-     * that is genuinely hung just because a sibling lane is healthy. Since every lane owns a disjoint set of
-     * feature files (see bucketFeatures), per-feature counts let each lane be judged by its OWN steps only.
+     * that is genuinely hung just because a sibling lane is healthy. Since a lane executes exactly ONE feature
+     * at a time and no feature is ever handed to two lanes, per-feature counts let each lane be judged purely
+     * by the steps of the feature it is running right now.
      *
      * Never throws: a transient DB hiccup during polling must not abort an otherwise healthy fleet, so a
      * failure is logged and returned as null ("unknown"), letting the caller keep the previous per-lane
@@ -816,15 +948,16 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Sums the step counts of all feature files assigned to one lane.
+     * Sums the step counts of the feature file(s) a lane is currently accountable for.
      *
      * Exists so the drain loop can turn the fleet-wide grouped count into the single monotonically
-     * growing number that represents THIS lane's progress: a lane runs its bucket sequentially, so the
-     * sum over its whole bucket grows exactly when the lane advances a step, regardless of which of its
-     * features is currently executing.
+     * growing number that represents THIS lane's progress. Since the queue landed, a lane runs one
+     * feature at a time, so the key list normally holds exactly one entry - the sum then IS that
+     * feature's step count. The array form is kept because it makes the caller independent of that
+     * detail and costs nothing.
      *
      * @param array<string,int> $countsByFeature Grouped counts from countRunStepsByFeature().
-     * @param string[]          $featureKeys     This lane's feature keys.
+     * @param string[]          $featureKeys     Keys of the feature(s) this lane is currently running.
      */
     private function sumLaneSteps(array $countsByFeature, array $featureKeys): int
     {
@@ -882,32 +1015,57 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Launches the whole fleet concurrently, then drains every lane in parallel.
+     * Runs the whole feature queue across N lane slots, keeping every lane fed until the queue is empty.
      *
      * The verified runtime is CLI, so we drive Symfony Process directly here instead of through
      * CliCommandRunner's generator: a generator can only be drained with a blocking foreach, which
      * serializes the fleet (lane N+1 is not even read until lane N's process exits). That blocking
      * sequential drain - not workerCount, not the port band, not Process::start() - was the measured
-     * cap that pinned real concurrency to a 2-wide pipeline. Instead we:
-     *   Phase A - start every worker Process (start() is eager + non-blocking), so all lanes run at once.
-     *   Phase B - poll ALL still-running processes in a round-robin loop, reading each one's
-     *             incremental output non-blockingly and streaming it to that lane's log. No lane can
-     *             block another, so wall-clock is ~max(lane) and true N-wide concurrency is achieved.
-     * Exit-code classification: a lane fails only when the WORKER ITSELF fails - a crash (exit 2/255)
-     * or a signal/timeout termination (null exit code). Behat's exit 1 ("some tests failed") is NOT a
-     * lane failure, because authoritative per-scenario results live in the attach-mode child rows; a
-     * worker that ran to completion did its job even if some of its tests failed. A lane failure is
-     * recorded WITHOUT aborting the others, so finalize still runs once; the caller then throws if
-     * $failures is non-empty so the task fails.
+     * cap that pinned real concurrency to a 2-wide pipeline. The structure is therefore:
      *
-     * @param string[][] $buckets
-     * @param string $banner Startup banner echoed into the coordinator log so the run's log opens with
-     *                       the same expectation the user saw on the console
-     * @return array<int,string> Worker failures keyed by lane; non-empty means the run must fail
+     *   Phase A - slot setup: allocate one port and write one lane config per lane, ONCE. A slot is
+     *             durable for the whole run: same port, same lane config, same profile dir, reused by
+     *             every feature that lane executes.
+     *   Phase B - queue drain: fill every free slot with the next feature from the queue, then poll ALL
+     *             running processes in a round-robin loop, reading each one's incremental output
+     *             non-blockingly. When a process exits, its slot is released and IMMEDIATELY refilled
+     *             from the queue. No lane can block another, and no lane sits idle while work remains,
+     *             so wall-clock approaches total-work/lanes instead of being dictated by the unluckiest
+     *             static bucket.
+     *
+     * WHY THE QUEUE IS SAFE WITHOUT LOCKING: this coordinator is the only process that ever reads or
+     * writes it. Workers are handed a single feature on the command line and know nothing about the
+     * queue, so there is no claim protocol to get wrong and no contention to arbitrate.
+     *
+     * FAILURE ACCOUNTING: every feature leaves a trace. One that runs produces child rows; one whose
+     * worker is killed or crashes is recorded here as a worker failure naming that exact feature; one
+     * that never got a lane at all (all lanes retired) is recorded as never started. Nothing is
+     * dropped, which is the whole point - the old static buckets discarded a killed lane's remaining
+     * features silently and left only an expected-vs-actual shortfall behind.
+     *
+     * Exit-code classification is unchanged: a worker fails only when the WORKER ITSELF fails - a crash
+     * (exit 2/255) or a signal/timeout termination (null exit code). Behat's exit 1 ("some tests
+     * failed") is NOT a worker failure, because authoritative per-scenario results live in the
+     * attach-mode child rows. Failures are recorded WITHOUT aborting the run, so finalize still happens
+     * once; the caller then throws if any were recorded.
+     *
+     * @param string[] $queue       All matched feature files, executed in this order as lanes free up
+     * @param int      $workerCount Number of lane slots to set up
+     * @param string   $banner      Startup banner echoed into the coordinator log so the run's log opens
+     *                              with the same expectation the user saw on the console
+     * @return array<int,array> Worker failures; non-empty means the run must fail
      * @throws \Throwable
      */
-    private function runFleet(string $cwd, string $behatConfig, string $runUid, string $chromePath, ?string $tags, array $buckets, string $banner = ''): array
-    {
+    private function runFleet(
+        string $cwd,
+        string $behatConfig,
+        string $runUid,
+        string $chromePath,
+        ?string $tags,
+        array $queue,
+        int $workerCount,
+        string $banner = ''
+    ): array {
         [$portStart, $portEnd] = $this->resolvePortBand($behatConfig, self::OVERRIDE_KEY_SCHEDULED, self::CFG_PORT_BAND);
         $timeout = $this->resolveWorkerTimeout();
         $idleTimeout = $this->resolveWorkerIdleTimeout();
@@ -919,262 +1077,417 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // Coordinator-level diagnostic log. The fleet diagnostics (launch/drain timings used to
         // localize the 2-worker concurrency cap) belong in OUR OWN log file, not in the workbench
         // logger: the DB-backed log only keeps a couple of info rows and is the wrong place for
-        // high-frequency orchestration traces. One coordinator log per run sits next to the per-lane
+        // high-frequency orchestration traces. One coordinator log per run sits next to the per-worker
         // logs so the whole fleet's timeline is greppable in a single file.
-        $logDir = $this->ensureLogDir($cwd);
+        $logDir = $this->ensureRunLogDir($cwd, $runUid);
+        // Record the directory on the run row itself: the run-log is what a user opens from the DB, and
+        // from there the on-disk worker logs are only findable if their location is stated.
+        $this->runLog?->addLine('Log directory: ' . $this->runLogDirRelative, 1, 'Run summary');
         $diagLog = $this->openCoordinatorLog($logDir, $runUid);
         $this->writeRunLog($diagLog, '===== Coordinator DIAG (run ' . $runUid . ') =====');
         if ($banner !== '') {
             $this->writeRunLog($diagLog, $banner);
         }
 
-        // Phase A - launch: start every worker Process up front. Process::start() is eager and
-        // non-blocking (the diagnostic run confirmed all 4 lanes spawn within ~1.2 s), so this gets
-        // the whole fleet running concurrently. A launch-side failure (port band exhausted, lane
-        // config unwritable) must NOT escape runFleet: doing so would hit the coordinator's catch and
-        // finalize the run while workers already launched are still writing child rows. Instead we
-        // record it as that lane's failure, stop launching further lanes, and fall through to drain
-        // whatever DID start. Buckets that never launch simply produce no child rows, so the run's
-        // child count falls short of expected_scenario_count - the silent-stop signal this framework
-        // exists to raise - instead of being masked by a premature finalize.
-        $processes = [];   // lane => Process
-        $laneLogs  = [];   // lane => log file handle (opened in Phase A so output streams live)
-        $laneStart = [];   // lane => microtime when the worker started
-        $laneLastActivity = []; // lane => microtime of this lane's last observed progress (output OR its OWN DB growth)
-        $laneFeatureKeys  = []; // lane => run_feature.filename keys of the features THIS lane runs
-        $failures  = [];
-        $launchStartWall = microtime(true);
-        foreach ($buckets as $idx => $bucket) {
-            $lane = $idx + 1;
+        $queue = array_values($queue);
+        $totalFeatures = count($queue);
+        // Feature keys of the WHOLE run, computed once. Used only to detect a normalization mismatch
+        // between the coordinator's keys and what the workers actually write into run_feature.filename.
+        $allFeatureKeys = array_map(fn(string $file): string => $this->featureKeyFromPath($file), $queue);
+        $failures = [];
+
+        // --- Phase A - slot setup. A port and a lane config are allocated ONCE per lane and then reused
+        // by every feature that lane runs. Doing this per feature instead would re-probe the port band
+        // hundreds of times and, worse, let a lane's Chrome port drift mid-run. A lane that cannot be set
+        // up (exhausted band, unwritable config) is simply not opened; the run continues on the lanes
+        // that could be, and the queue redistributes itself over them automatically. ---
+        $laneConfigs = [];
+        $lanePorts   = [];
+        for ($lane = 1; $lane <= $workerCount; $lane++) {
             try {
                 $port = $this->allocateFreePort($portStart, $portEnd, $heldPorts);
                 $heldPorts[] = $port;
-                $laneConfig = $this->writeLaneConfig($cwd, $lane, $runUid, $port, $chromePath, $importConfigName);
-                $cmd = $this->buildWorkerCommand($laneConfig, $tags, $bucket);
-
-                // Open the lane log BEFORE start() so a failure to open it cannot leave an orphan
-                // running worker with nowhere to stream its output.
-                $laneLog = $this->openLaneLog($logDir, $runUid, $lane);
-                $this->writeRunLog($laneLog, '===== Lane ' . $lane . ' (port ' . $port . ') =====');
-
-                // Drive Symfony Process directly so Phase B can poll all lanes concurrently. The
-                // worker environment is the parent environment with the Xdebug DEBUGGER forced OFF
-                // (see WORKER_ENV): the coordinator is often launched under an IDE debugger, so its
-                // env carries an Xdebug trigger/session. Inherited unchanged, every worker would
-                // connect back to the single IDE debug client (port 9003) on startup; that client
-                // services only a couple of sessions at once, so the 3rd/4th worker blocks - silent,
-                // producing no output - until an earlier worker exits and frees a debug slot. THAT is
-                // the real "cap of 2". Disabling the debugger per worker restores true N-wide
-                // concurrency. Headless itself is now decided by the worker's ChromeManager from
-                // app-config PARALLEL.CHROME_HEADLESS (with the debugger off, its Xdebug fallback is
-                // headless too). To step through a test, use the non-parallel single-worker path.
-                $callStart = microtime(true);
-                $process = Process::fromShellCommandline($cmd, $cwd, self::WORKER_ENV, null, $timeout);
-                // NOTE: we deliberately do NOT use Symfony's own setIdleTimeout() here. Its idle timer
-                // only resets on PROCESS OUTPUT, but a long works-as-expected step emits NO stdout while
-                // it runs - it only keeps INSERTing run_step rows into the DB (one per substep). An
-                // output-based idle timeout would therefore kill a lane that is actually progressing.
-                // Instead the drain loop below detects idleness itself, treating BOTH new lane output AND
-                // a growing run_step count in the DB as "this lane made progress". Only the TOTAL
-                // wall-clock ceiling ($timeout) stays enforced by Symfony via checkTimeout().
-                $process->start();
-                $callMs = (microtime(true) - $callStart) * 1000;
-
-                $processes[$lane] = $process;
-                $laneLogs[$lane]  = $laneLog;
-                $laneStart[$lane] = microtime(true);
-                $laneLastActivity[$lane] = microtime(true); // seed the idle clock at launch
-                // Remember which feature rows belong to this lane, so the drain can read its progress
-                // from the DB independently of every other lane. Computed at launch (not per poll)
-                // because the bucket never changes once the worker is started.
-                $laneFeatureKeys[$lane] = array_map(
-                    fn(string $file): string => $this->featureKeyFromPath($file),
-                    $bucket
-                );
-
-                // Create this lane's run-log section NOW, while launches run in lane order, so the DB
-                // record lists lanes 1..N in order even though they finish out of order later. The
-                // section is filled in when the lane ends (see appendLaneOutcome).
-                $this->runLog?->addSection('Lane ' . $lane);
-                $this->runLog?->addLine('Port: ' . $port, 1);
-
-                $this->writeRunLog($diagLog, sprintf(
-                    'DIAG launch: lane %d port %d - Process::start() returned in %.1f ms (%.1f ms since first launch)',
-                    $lane,
-                    $port,
-                    $callMs,
-                    (microtime(true) - $launchStartWall) * 1000
-                ));
+                $laneConfigs[$lane] = $this->writeLaneConfig($cwd, $lane, $runUid, $port, $chromePath, $importConfigName);
+                $lanePorts[$lane]   = $port;
+                $this->writeRunLog($diagLog, sprintf('DIAG setup: lane %d ready on port %d', $lane, $port));
             } catch (\Throwable $e) {
-                // Stop launching further lanes: an exhausted band stays exhausted and a setup error
-                // (e.g. unwritable config) is likely systemic. Record and break to the drain phase so
-                // the already-running workers are awaited and the run finalizes cleanly afterwards.
-                $failures[$lane] = 'launch failed: ' . $e->getMessage();
-                $this->writeRunLog($diagLog, 'DIAG launch: lane ' . $lane . ' FAILED: ' . $e->getMessage());
-                $this->getWorkbench()->getLogger()->error('BDT parallel worker lane ' . $lane . ' launch failed: ' . $e->getMessage());
-                // Record firsthand: a launch failure often means no lane log file was ever opened, so
-                // there is nothing to parse later - the coordinator's own error message is the record.
-                $this->runLog?->addSection('Lane ' . $lane);
-                $this->runLog?->addLine('Worker: failed', 1);
-                $this->runLog?->addLine('Worker error: ' . $failures[$lane], 1);
-                break;
+                // Not fatal on its own: fewer lanes means a slower run, not a wrong one, because the
+                // queue is not pre-assigned to lanes. Only the total loss of ALL lanes is fatal (below).
+                $this->writeRunLog($diagLog, 'DIAG setup: lane ' . $lane . ' unavailable: ' . $e->getMessage());
+                $this->getWorkbench()->getLogger()->warning('BDT parallel: lane ' . $lane . ' could not be set up: ' . $e->getMessage());
             }
         }
 
-        // Phase B - concurrent drain: poll EVERY still-running worker each pass, reading its
-        // incremental output non-blockingly and streaming it to that lane's log. Because no single
-        // foreach blocks on one lane, all workers progress together - this is the fix for the 2-wide
-        // cap, where the old blocking generator drain read lane 1 to completion before even touching
-        // lane 2. Per-lane failures (non-ignored exit code, timeout, signal) are recorded WITHOUT
-        // aborting the others; finalize still runs once afterwards.
-        $active = $processes;
-        $firstOutputAt = [];
-        
-        // Per-lane DB progress heartbeat. A long works-as-expected step produces NO console output while
-        // it runs, but the attach-mode worker keeps INSERTing one run_step row per substep - so a growing
-        // step count is the only proof that a silent lane is alive. The count MUST be scoped to the
-        // features of THAT lane: a fleet-wide count would be pushed up by healthy sibling lanes and would
-        // keep a genuinely hung lane alive forever, defeating the idle timeout entirely.
-        $lastDbPollAt = 0.0; // 0 forces an immediate poll on the first pass
-        $laneDbCount  = [];  // lane => run_step rows counted for this lane's own features
-        $laneKeyWarned = false;
-        $initialCounts = $this->countRunStepsByFeature($runUid);
-        foreach (array_keys($processes) as $lane) {
-            $laneDbCount[$lane] = $initialCounts === null
-                ? 0
-                : $this->sumLaneSteps($initialCounts, $laneFeatureKeys[$lane]);
+        // No lane at all means nothing can run. Record every queued feature as never started rather than
+        // returning an empty failure list, which would let a run that executed NOTHING report success.
+        if ($laneConfigs === []) {
+            $reason = 'no lane could be set up (port band exhausted or lane config unwritable)';
+            foreach ($queue as $feature) {
+                $this->recordFailure($failures, 0, $feature, null, 'never started - ' . $reason);
+            }
+            $this->runLog?->addSection('Fleet');
+            $this->runLog?->addLine('Fleet: ' . $reason, 1, 'Fleet');
+            $this->runLog?->addLine('Features never started: ' . $totalFeatures, 1, 'Fleet');
+            $this->writeRunLog($diagLog, 'DIAG setup: ' . $reason . ' - aborting before any worker started');
+            if (is_resource($diagLog)) {
+                fclose($diagLog);
+            }
+            return $failures;
         }
-        while (! empty($active)) {
+
+        // Lanes currently free to accept a feature. A lane is pushed back here when its worker finishes,
+        // and deliberately NOT pushed back when it is retired (repeated timeouts or a launch failure).
+        $idleLanes = array_keys($laneConfigs);
+
+        // --- Per-slot state. All keyed by lane and valid only while that lane has a running worker. ---
+        $slotProcess      = []; // lane => Process currently running in this slot
+        $slotLog          = []; // lane => open log handle for the CURRENT feature run
+        $slotLogName      = []; // lane => basename of that log file
+        $slotFeature      = []; // lane => feature file the slot is executing
+        $slotSection      = []; // lane => run-log section title of the current feature run
+        $slotStart        = []; // lane => microtime the current worker started
+        $slotLastActivity = []; // lane => microtime of last observed progress (output OR its OWN DB growth)
+        $slotKeys         = []; // lane => run_feature.filename key(s) of the feature being executed
+        $slotDbCount      = []; // lane => run_step rows counted for the feature being executed
+        $slotFirstOutput  = []; // lane => TRUE once the current worker has emitted anything
+
+        // Consecutive timeouts per lane, reset by any worker that exits normally. See
+        // LANE_MAX_CONSECUTIVE_TIMEOUTS for why a lane may be retired.
+        $laneTimeouts = [];
+        foreach (array_keys($laneConfigs) as $lane) {
+            $laneTimeouts[$lane] = 0;
+        }
+
+        $seq = 0;                 // global feature-run counter, makes every worker log name unique
+        $completed = 0;           // workers that exited on their own (any exit code)
+        $lastDbPollAt = 0.0;      // 0 forces an immediate poll on the first pass
+        $laneKeyWarned = false;
+        $launchStartWall = microtime(true);
+
+        // --- Phase B - fill and drain. The loop runs while any worker is alive OR there is still work
+        // that a free lane could take. When neither holds, everything that could run has run. ---
+        while ($slotProcess !== [] || ($queue !== [] && $idleLanes !== [])) {
+
+            // Fill every free lane from the head of the queue. This runs on the first pass (initial fill)
+            // and again on every pass where a worker exited, so a slot is refilled in the same iteration
+            // it is released - a lane never waits for the next poll tick to pick up new work.
+            while ($queue !== [] && $idleLanes !== []) {
+                $lane    = array_shift($idleLanes);
+                $feature = array_shift($queue);
+                $seq++;
+                $logHandle = null;
+                try {
+                    // The previous feature in this slot had its profile dir removed by reapLaneProfile(),
+                    // so recreate it before Chrome is launched into it again.
+                    $this->ensureLaneProfileDir($cwd, $runUid, $lane);
+
+                    $cmd     = $this->buildWorkerCommand($laneConfigs[$lane], $tags, $feature);
+                    $logName = $this->workerLogName($lane, $seq, $feature);
+
+                    // Open the worker log BEFORE start() so a failure to open it cannot leave an orphan
+                    // running worker with nowhere to stream its output.
+                    $logHandle = $this->openWorkerLog($logDir, $logName);
+                    $this->writeRunLog($logHandle, '===== Lane ' . $lane . ' (port ' . $lanePorts[$lane] . ') feature ' . $feature . ' =====');
+
+                    // Drive Symfony Process directly so the drain can poll all lanes concurrently. The
+                    // worker environment is the parent environment with the Xdebug DEBUGGER forced OFF
+                    // (see WORKER_ENV): the coordinator is often launched under an IDE debugger, so its
+                    // env carries an Xdebug trigger/session. Inherited unchanged, every worker would
+                    // connect back to the single IDE debug client (port 9003) on startup; that client
+                    // services only a couple of sessions at once, so the 3rd/4th worker blocks - silent,
+                    // producing no output - until an earlier worker exits and frees a debug slot. THAT is
+                    // the real "cap of 2". Disabling the debugger per worker restores true N-wide
+                    // concurrency. Headless itself is decided by the worker's ChromeManager from
+                    // app-config PARALLEL.CHROME_HEADLESS (with the debugger off, its Xdebug fallback is
+                    // headless too). To step through a test, use the non-parallel single-worker path.
+                    $callStart = microtime(true);
+                    $process = Process::fromShellCommandline($cmd, $cwd, self::WORKER_ENV, null, $timeout);
+                    // NOTE: we deliberately do NOT use Symfony's own setIdleTimeout() here. Its idle timer
+                    // only resets on PROCESS OUTPUT, but a long works-as-expected step emits NO stdout while
+                    // it runs - it only keeps INSERTing run_step rows into the DB (one per substep). An
+                    // output-based idle timeout would therefore kill a lane that is actually progressing.
+                    // Instead the drain loop below detects idleness itself, treating BOTH new worker output
+                    // AND a growing run_step count in the DB as "this lane made progress". Only the TOTAL
+                    // wall-clock ceiling ($timeout) stays enforced by Symfony via checkTimeout().
+                    $process->start();
+                    $callMs = (microtime(true) - $callStart) * 1000;
+
+                    $section = '#' . $seq . ' ' . basename($feature) . ' (lane ' . $lane . ')';
+
+                    $slotProcess[$lane]      = $process;
+                    $slotLog[$lane]          = $logHandle;
+                    $slotLogName[$lane]      = $logName;
+                    $slotFeature[$lane]      = $feature;
+                    $slotSection[$lane]      = $section;
+                    $slotStart[$lane]        = microtime(true);
+                    $slotLastActivity[$lane] = microtime(true); // seed the idle clock at launch
+                    $slotFirstOutput[$lane]  = false;
+                    // Only the feature this slot is running right now counts as its progress, so the idle
+                    // heartbeat can never be propped up by a sibling lane or by a feature already done.
+                    $slotKeys[$lane]         = [$this->featureKeyFromPath($feature)];
+                    // Start from zero and let the first DB poll establish the real count: a feature is
+                    // executed at most once per run, so any rows under its key belong to this very worker.
+                    $slotDbCount[$lane]      = 0;
+
+                    // Create this feature run's run-log section NOW, at launch, so sections appear in the
+                    // order work was dispatched even though workers finish out of order. It is filled in
+                    // when the worker ends (see appendFeatureOutcome).
+                    $this->runLog?->addSection($section);
+                    $this->runLog?->addLine('Feature: ' . $feature, 1, $section);
+                    $this->runLog?->addLine('Lane: ' . $lane . ' (port ' . $lanePorts[$lane] . ')', 1, $section);
+
+                    $this->writeRunLog($diagLog, sprintf(
+                        'DIAG launch: lane %d port %d feature %s - Process::start() returned in %.1f ms (%.1f s into run, %d/%d dispatched, %d queued)',
+                        $lane,
+                        $lanePorts[$lane],
+                        $feature,
+                        $callMs,
+                        microtime(true) - $launchStartWall,
+                        $seq,
+                        $totalFeatures,
+                        count($queue)
+                    ));
+                } catch (\Throwable $e) {
+                    // This lane could not take this feature. The feature is recorded as failed (it will
+                    // NOT be retried on another lane - a launch failure here is a coordinator-side setup
+                    // problem, and silently re-dispatching it could mask a systemic fault), and the lane
+                    // is RETIRED by not being returned to the idle pool. Remaining queue items flow to
+                    // the lanes that still work; if none do, the leftover sweep after the loop records
+                    // them as never started.
+                    $error = 'launch failed: ' . $e->getMessage();
+                    $this->recordFailure($failures, $lane, $feature, null, $error);
+                    if (is_resource($logHandle)) {
+                        $this->writeRunLog($logHandle, 'LANE ' . $lane . ' LAUNCH FAILED: ' . $e->getMessage());
+                        $this->finishLaneLog($logHandle);
+                    }
+                    $this->writeRunLog($diagLog, 'DIAG launch: lane ' . $lane . ' FAILED for ' . $feature . ': ' . $e->getMessage());
+                    $this->getWorkbench()->getLogger()->error('BDT parallel worker lane ' . $lane . ' launch failed: ' . $e->getMessage());
+                    // Record firsthand: a launch failure often means no worker log was ever usable, so
+                    // the coordinator's own error message is the record.
+                    $section = '#' . $seq . ' ' . basename($feature) . ' (lane ' . $lane . ')';
+                    $this->runLog?->addSection($section);
+                    $this->runLog?->addLine('Feature: ' . $feature, 1, $section);
+                    $this->runLog?->addLine('Worker: failed', 1, $section);
+                    $this->runLog?->addLine('Worker error: ' . $error, 1, $section);
+                    $this->runLog?->addLine('Lane ' . $lane . ' retired from the queue rotation', 1, $section);
+                }
+            }
+
+            // Every lane may have failed to launch, leaving nothing running. Go back to the loop
+            // condition, which ends the drain when no work can be dispatched any more.
+            if ($slotProcess === []) {
+                continue;
+            }
+
             $now = microtime(true);
+
+            // Per-lane DB progress heartbeat. A long works-as-expected step produces NO console output
+            // while it runs, but the attach-mode worker keeps INSERTing one run_step row per substep - so
+            // a growing step count is the only proof that a silent lane is alive. The count MUST be scoped
+            // to the feature THAT lane is executing: a fleet-wide count would be pushed up by healthy
+            // sibling lanes and would keep a genuinely hung lane alive forever, defeating the idle timeout.
             if ($idleTimeout !== null && ($now - $lastDbPollAt) >= self::DB_PROGRESS_POLL_SECONDS) {
                 $lastDbPollAt = $now;
                 $dbCounts = $this->countRunStepsByFeature($runUid);
                 if ($dbCounts !== null) {
-                    // Fail loudly on a key mismatch: if the DB reports steps for a feature that belongs to
-                    // NO lane, our path normalization disagrees with what the workers wrote (e.g. a symlinked
-                    // vendor dir resolved differently). Every lane would then look permanently idle and be
-                    // killed although it is progressing, so we say so instead of failing silently.
+                    // Fail loudly on a key mismatch: if the DB reports steps for a feature that is not in
+                    // this run's queue at all, our path normalization disagrees with what the workers wrote
+                    // (e.g. a symlinked vendor dir resolved differently). Every lane would then look
+                    // permanently idle and be killed although it is progressing, so we say so instead of
+                    // failing silently.
                     if ($laneKeyWarned === false) {
-                        $known = array_merge(...array_values($laneFeatureKeys));
-                        $unknown = array_diff(array_keys($dbCounts), $known);
+                        $unknown = array_diff(array_keys($dbCounts), $allFeatureKeys);
                         if (! empty($unknown)) {
                             $laneKeyWarned = true;
-                            $msg = 'BDT parallel: run_step rows found for features not assigned to any lane ('
+                            $msg = 'BDT parallel: run_step rows found for features not in this run\'s queue ('
                                 . implode(', ', $unknown) . ') - the per-lane idle heartbeat may be blind.';
                             $this->writeRunLog($diagLog, 'DIAG drain: ' . $msg);
                             $this->getWorkbench()->getLogger()->warning($msg);
                         }
                     }
-                    foreach (array_keys($active) as $lane) {
-                        $current = $this->sumLaneSteps($dbCounts, $laneFeatureKeys[$lane]);
-                        if ($current > $laneDbCount[$lane]) {
-                            $laneDbCount[$lane]      = $current;
-                            $laneLastActivity[$lane] = $now; // this lane itself advanced - reset ITS idle clock
+                    foreach (array_keys($slotProcess) as $lane) {
+                        $current = $this->sumLaneSteps($dbCounts, $slotKeys[$lane]);
+                        if ($current > $slotDbCount[$lane]) {
+                            $slotDbCount[$lane]      = $current;
+                            $slotLastActivity[$lane] = $now; // this lane itself advanced - reset ITS idle clock
                             $this->writeRunLog($diagLog, sprintf(
-                                'DIAG drain: lane %d DB progress - %d run_step rows for its features at +%.1f s into run',
+                                'DIAG drain: lane %d DB progress - %d run_step rows for %s at +%.1f s into run',
                                 $lane,
                                 $current,
+                                $slotFeature[$lane],
                                 $now - $this->runStart
                             ));
                         }
                     }
                 }
             }
-            foreach ($active as $lane => $process) {
+
+            foreach ($slotProcess as $lane => $process) {
                 // Stream whatever new output arrived since the last pass.
-                $wrote = $this->streamLaneOutput($process, $laneLogs[$lane]);
+                $wrote = $this->streamLaneOutput($process, $slotLog[$lane]);
                 if ($wrote) {
                     // Console output is itself a progress signal - record it as this lane's activity so
                     // a chatty lane never trips the idle timeout regardless of DB polling.
-                    $laneLastActivity[$lane] = microtime(true);
+                    $slotLastActivity[$lane] = microtime(true);
                 }
-                if ($wrote && ! isset($firstOutputAt[$lane])) {
-                    $firstOutputAt[$lane] = true;
+                if ($wrote && $slotFirstOutput[$lane] === false) {
+                    $slotFirstOutput[$lane] = true;
                     $this->writeRunLog($diagLog, sprintf(
-                        'DIAG drain: lane %d - first output at +%.1f s into run',
+                        'DIAG drain: lane %d - first output for %s at +%.1f s into run',
                         $lane,
+                        $slotFeature[$lane],
                         microtime(true) - $this->runStart
                     ));
                 }
 
-                // Idle detection (per-lane, DB-aware). $laneLastActivity[$lane] is refreshed by EITHER new
-                // console output from this lane OR growth in the run_step count of this lane's OWN features.
-                // A sibling lane's progress no longer counts - so a truly hung lane is caught even while the
-                // rest of the fleet is healthy, and a silent-but-DB-writing lane is still never killed.
-                if ($idleTimeout !== null) {
-                    if ((microtime(true) - $laneLastActivity[$lane]) > $idleTimeout) {
-                        $reason = 'idle timed out after ' . $idleTimeout . ' s with no output and no new run_step for its own features';
-                        $failures[$lane] = $reason;
-                        $this->killHungLane($lane, $process, $laneLogs[$lane], $diagLog, $reason, $cwd, $runUid);
-                        // killHungLane has closed the lane log, so its partial output is flushed and safe
-                        // to parse into the run-log now.
-                        $this->appendLaneOutcome($logDir, $runUid, $lane, $reason);
-                        unset($active[$lane]);
-                        continue;
+                $killReason = null;
+
+                // Idle detection (per-lane, DB-aware). $slotLastActivity[$lane] is refreshed by EITHER new
+                // console output from this lane OR growth in the run_step count of the feature it is
+                // running. A sibling lane's progress does not count - so a truly hung lane is caught even
+                // while the rest of the fleet is healthy, and a silent-but-DB-writing lane is never killed.
+                if ($idleTimeout !== null && (microtime(true) - $slotLastActivity[$lane]) > $idleTimeout) {
+                    $killReason = 'idle timed out after ' . $idleTimeout . ' s with no output and no new run_step for its feature';
+                } else {
+                    // Enforce the per-worker TOTAL wall-clock timeout. In async mode Symfony only checks the
+                    // timeout when we ask it to, so a hung worker would otherwise never time out.
+                    try {
+                        $process->checkTimeout();
+                    } catch (ProcessTimedOutException $e) {
+                        // Symfony now enforces only the TOTAL ceiling (we no longer set its output-based idle
+                        // timeout), so any throw here is the wall-clock ceiling - a worker that ran too long
+                        // even if it was still making progress. The DB-aware idle case is handled above.
+                        $killReason = 'timed out after ' . $timeout . ' s (total wall-clock ceiling)';
                     }
                 }
 
-                // Enforce the per-worker TOTAL wall-clock timeout. In async mode Symfony only checks the
-                // timeout when we ask it to, so a hung worker would otherwise never time out.
-                try {
-                    $process->checkTimeout();
-                } catch (ProcessTimedOutException $e) {
-                    // Symfony now enforces only the TOTAL ceiling (we no longer set its output-based idle
-                    // timeout), so any throw here is the wall-clock ceiling - a lane that ran too long even
-                    // if it was still making progress. The DB-aware idle case is handled above instead.
-                    $reason = 'timed out after ' . $timeout . ' s (total wall-clock ceiling)';
-                    $failures[$lane] = $reason;
-                    $this->killHungLane($lane, $process, $laneLogs[$lane], $diagLog, $reason, $cwd, $runUid);
-                    // killHungLane has closed the lane log; parse its partial output into the run-log.
-                    $this->appendLaneOutcome($logDir, $runUid, $lane, $reason);
-                    unset($active[$lane]);
+                if ($killReason !== null) {
+                    $feature = $slotFeature[$lane];
+                    $this->recordFailure($failures, $lane, $feature, $slotLogName[$lane], $killReason);
+                    // Unchanged teardown: stop the worker, reap its detached Chrome tree, drop the profile
+                    // dir, close the log - in that order, resources before any DB-backed logging.
+                    $this->killHungLane($lane, $process, $slotLog[$lane], $diagLog, $killReason, $cwd, $runUid);
+                    // killHungLane has closed the worker log, so its partial output is flushed and safe
+                    // to parse into the run-log now.
+                    $this->appendFeatureOutcome($logDir, $slotSection[$lane], $slotLogName[$lane], $killReason);
+
+                    // POISON-FEATURE POLICY: the feature is NOT put back on the queue. Handing a feature
+                    // that just hung a lane to the next free lane would let one pathological file hang
+                    // every lane in turn and consume the entire run. It is recorded as failed, once.
+                    $laneTimeouts[$lane]++;
+                    if ($laneTimeouts[$lane] >= self::LANE_MAX_CONSECUTIVE_TIMEOUTS) {
+                        // Repeated timeouts point at the LANE rather than at the features, so take it out
+                        // of rotation instead of feeding it the rest of the queue one timeout at a time.
+                        $this->writeRunLog($diagLog, sprintf(
+                            'DIAG drain: lane %d retired after %d consecutive timeouts',
+                            $lane,
+                            $laneTimeouts[$lane]
+                        ));
+                        $this->getWorkbench()->getLogger()->warning(
+                            'BDT parallel: lane ' . $lane . ' retired after ' . $laneTimeouts[$lane] . ' consecutive timeouts'
+                        );
+                    } else {
+                        // An isolated bad feature does not condemn the lane - return it to the pool.
+                        $idleLanes[] = $lane;
+                    }
+
+                    unset(
+                        $slotProcess[$lane], $slotLog[$lane], $slotLogName[$lane], $slotFeature[$lane],
+                        $slotSection[$lane], $slotStart[$lane], $slotLastActivity[$lane], $slotKeys[$lane],
+                        $slotDbCount[$lane], $slotFirstOutput[$lane]
+                    );
                     continue;
                 }
 
                 if (! $process->isRunning()) {
                     // Flush the tail that arrived after the last read, then classify the exit.
-                    $this->streamLaneOutput($process, $laneLogs[$lane]);
-                    $exitCode = $process->getExitCode(); // null if the worker was terminated by a signal
-                    $durationS = microtime(true) - $laneStart[$lane];
-                    // Only the worker's OWN fatal failure is a lane failure here - a crash (exit 2/255)
-                    // or a signal termination (null exit code, e.g. taskkill). Behat's exit 1 ("some
-                    // tests failed") is deliberately NOT treated as a lane failure: authoritative
-                    // per-scenario pass/fail already lives in the attach-mode child rows, so a worker
-                    // that completed normally must not be reported as a worker error just because some
-                    // of its tests failed. Exit 0 (all passed) and exit 1 (ran to completion, some
-                    // tests failed) both mean the worker itself did its job.
+                    $this->streamLaneOutput($process, $slotLog[$lane]);
+                    $exitCode  = $process->getExitCode(); // null if the worker was terminated by a signal
+                    $durationS = microtime(true) - $slotStart[$lane];
+                    $feature   = $slotFeature[$lane];
+                    $workerError = null;
+                    // Only the worker's OWN fatal failure is a failure here - a crash (exit 2/255) or a
+                    // signal termination (null exit code, e.g. taskkill). Behat's exit 1 ("some tests
+                    // failed") is deliberately NOT treated as a worker failure: authoritative per-scenario
+                    // pass/fail already lives in the attach-mode child rows, so a worker that completed
+                    // normally must not be reported as a worker error just because some of its tests
+                    // failed. Exit 0 (all passed) and exit 1 (ran to completion, some tests failed) both
+                    // mean the worker itself did its job.
                     if ($exitCode !== 0 && $exitCode !== 1) {
-                        if ($exitCode === null) {
-                            $failures[$lane] = 'terminated without exit code';
-                        } else {
-                            $failures[$lane] = 'exit code ' . $exitCode;
-                        }
-                        $this->writeRunLog($laneLogs[$lane], 'LANE ' . $lane . ' FAILED: ' . $failures[$lane]);
-                        $this->getWorkbench()->getLogger()->error('BDT parallel worker lane ' . $lane . ' failed: ' . $failures[$lane]);
+                        $workerError = $exitCode === null ? 'terminated without exit code' : 'exit code ' . $exitCode;
+                        $this->recordFailure($failures, $lane, $feature, $slotLogName[$lane], $workerError);
+                        $this->writeRunLog($slotLog[$lane], 'LANE ' . $lane . ' FAILED: ' . $workerError);
+                        $this->getWorkbench()->getLogger()->error(
+                            'BDT parallel worker lane ' . $lane . ' failed on ' . $feature . ': ' . $workerError
+                        );
                     }
+                    $completed++;
                     $this->writeRunLog($diagLog, sprintf(
-                        'DIAG drain: lane %d finished - exit %s after %.1f s (+%.1f s into run)',
+                        'DIAG drain: lane %d finished %s - exit %s after %.1f s (+%.1f s into run, %d/%d done, %d queued)',
                         $lane,
+                        $feature,
                         $exitCode === null ? 'n/a' : (string) $exitCode,
                         $durationS,
-                        microtime(true) - $this->runStart
+                        microtime(true) - $this->runStart,
+                        $completed,
+                        $totalFeatures,
+                        count($queue)
                     ));
-                    $this->finishLaneLog($laneLogs[$lane]);
-                    // The lane log is now closed and complete - parse it once into the run-log. Pass the
+                    $this->finishLaneLog($slotLog[$lane]);
+                    // The worker log is now closed and complete - parse it once into the run-log. Pass the
                     // worker-level failure if any (crash/signal); a normal exit (0/1) passes null, so the
-                    // section still records the Behat summary and any failed scenarios from the output.
-                    $this->appendLaneOutcome($logDir, $runUid, $lane, $failures[$lane] ?? null);
+                    // section still records the Behat summary from the output.
+                    $this->appendFeatureOutcome($logDir, $slotSection[$lane], $slotLogName[$lane], $workerError);
                     // On a clean exit the worker's own ChromeManager already stopped Chrome, so this
                     // usually just removes the profile dir; on a crash/signal it also kills the orphan.
+                    // It runs after EVERY feature, not only at the end of the lane, because the next
+                    // feature reuses this same profile dir and must not inherit a live Chrome, a held
+                    // ProcessSingleton lock or a half-written profile from the previous one.
                     $this->reapLaneProfile($lane, $cwd, $runUid);
-                    unset($active[$lane]);
+
+                    // A worker that exited on its own proves the lane still works, so clear its timeout
+                    // strike count and return it to the pool for the next queued feature.
+                    $laneTimeouts[$lane] = 0;
+                    $idleLanes[] = $lane;
+
+                    unset(
+                        $slotProcess[$lane], $slotLog[$lane], $slotLogName[$lane], $slotFeature[$lane],
+                        $slotSection[$lane], $slotStart[$lane], $slotLastActivity[$lane], $slotKeys[$lane],
+                        $slotDbCount[$lane], $slotFirstOutput[$lane]
+                    );
                 }
             }
+
             // Yield the CPU briefly between passes; nothing to do until workers produce more output.
-            if (! empty($active)) {
+            // Skipped when a slot was just freed and the queue still has work, so the refill at the top
+            // of the next iteration is not delayed by a poll interval.
+            if ($slotProcess !== [] && ! ($queue !== [] && $idleLanes !== [])) {
                 usleep(self::DRAIN_POLL_MICROSECONDS);
             }
         }
+
+        // Anything still queued here could never be dispatched, because every lane was retired. Record
+        // each one explicitly: a feature that silently never ran is exactly the failure mode the queue
+        // was introduced to eliminate, so it must surface as a worker error rather than as a quiet
+        // expected-vs-actual shortfall.
+        if ($queue !== []) {
+            $reason = 'never started - all lanes were retired before it could be dispatched';
+            foreach ($queue as $feature) {
+                $this->recordFailure($failures, 0, $feature, null, $reason);
+            }
+            $this->writeRunLog($diagLog, 'DIAG drain: ' . count($queue) . ' feature(s) never dispatched - ' . $reason);
+            $this->getWorkbench()->getLogger()->error(
+                'BDT parallel: ' . count($queue) . ' feature(s) never ran because all lanes were retired'
+            );
+        }
+
+        $this->writeRunLog($diagLog, sprintf(
+            'DIAG drain: queue drained - %d/%d feature runs completed, %d failure(s), %.1f s total',
+            $completed,
+            $totalFeatures,
+            count($failures),
+            microtime(true) - $this->runStart
+        ));
 
         if (is_resource($diagLog)) {
             fclose($diagLog);
@@ -1445,7 +1758,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * behat_command column.
      *
      * Why the coordinator action invocation rather than a behat command: a parallel run spawns one
-     * behat command per lane, differing by lane config and feature bucket, so there is no single behat
+     * behat command per feature, differing by lane config and feature file, so there is no single behat
      * command to record. The action invocation with its resolved scope selectors is the value that
      * reproduces the whole run. Only selectors the operator actually set are included, so the string
      * mirrors what was really passed.
@@ -1502,7 +1815,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Streams a worker's incremental stdout/stderr into its lane log, then frees the read buffer.
+     * Streams a worker's incremental stdout/stderr into its worker log, then frees the read buffer.
      *
      * Why incremental + clearOutput: getIncrementalOutput()/getIncrementalErrorOutput() are
      * non-blocking and return only what arrived since the previous call, which is exactly what the
@@ -1529,7 +1842,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Closes a lane log handle if it is still open. Centralized so every drain exit path (normal
+     * Closes a worker log handle if it is still open. Centralized so every drain exit path (normal
      * finish, timeout, failure) releases the handle exactly once.
      *
      * @param resource $logHandle
@@ -1574,18 +1887,40 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Ensures the BDT log directory exists and returns its absolute path.
+     * Ensures THIS run's own log directory exists and returns its absolute path.
      *
-     * Extracted from the old single-file opener so the directory guarantee and the absolute base
-     * are shared by every per-lane log. Anchored at $cwd (installation root), so it never depends on
-     * this action's process cwd.
+     * Layout: data/axenox/BDT/Logs/<YYYYMMDD>/<run_uid>/
      *
-     * @return string Absolute path to data/axenox/BDT/Logs
+     * WHY TWO LEVELS INSTEAD OF ONE FLAT DIRECTORY: since a worker process runs a single feature,
+     * a run produces one log file per feature instead of one per lane - a few hundred files for a
+     * large suite. Dropped into one shared directory they bury each other, and files from different
+     * runs interleave alphabetically, so finding "the logs of last night's run" means reading run
+     * UIDs off filenames. Giving each run its own directory makes a run's logs a single unit that
+     * can be opened, zipped or deleted as one, and the daily level keeps the number of run
+     * directories per directory bounded.
+     *
+     * WHY THE DATE COMES FROM THE RUN START AND NOT FROM date() AT WRITE TIME: a nightly run that
+     * begins at 23:55 would otherwise scatter its own feature logs across two daily folders, which
+     * is precisely when someone is trying to read them as one unit. The run's start instant fixes
+     * the folder for every file the run writes.
+     *
+     * Anchored at $cwd (installation root), so it never depends on this action's process cwd.
+     *
+     * @param string $cwd    Installation root
+     * @param string $runUid UID of the run owning this directory
+     * @return string Absolute path to data/axenox/BDT/Logs/<YYYYMMDD>/<run_uid>
      */
-    private function ensureLogDir(string $cwd): string
+    private function ensureRunLogDir(string $cwd, string $runUid): string
     {
+        // $this->runStart is set before the fleet launches; fall back to now only if this is somehow
+        // reached earlier, so a missing timestamp can never produce a directory named "19700101".
+        $day = date('Ymd', (int) ($this->runStart > 0 ? $this->runStart : microtime(true)));
+
+        $this->runLogDirRelative = 'data/axenox/BDT/Logs/' . $day . '/' . $runUid;
+
         $dir = $cwd . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR
-            . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR . 'Logs';
+            . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR . 'Logs'
+            . DIRECTORY_SEPARATOR . $day . DIRECTORY_SEPARATOR . $runUid;
         if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
             throw new RuntimeException('Could not create BDT log directory: ' . $dir);
         }
@@ -1593,38 +1928,82 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Opens one log file per lane named "<run_uid>_lane<N>.log" for append.
+     * Opens one log file per FEATURE RUN inside this run's own log directory, for append.
      *
-     * Why a file per lane instead of one shared run log: a worker that crashes or times out leaves
-     * its partial output in its OWN clearly-named file instead of buried under other lanes, and each
-     * lane becomes independently greppable/tailable. Append mode tolerates a re-run without
-     * truncating earlier diagnostics; naming by run_uid + lane keeps runs from overwriting each other.
+     * Why a file per feature run rather than per lane: a lane executes many features in sequence, so a
+     * single per-lane file would interleave them - and the crash tail of a worker that died would sit
+     * behind the output of unrelated features that ran in the same slot earlier, making it impossible
+     * to attribute. One file per feature run keeps every worker's output self-contained, so a failure
+     * can be read on its own.
      *
+     * The name no longer repeats the run UID, because the directory already carries it (see
+     * ensureRunLogDir); it carries the lane, the dispatch sequence and the feature name instead, so the
+     * directory listing alone tells the reader which feature each file belongs to without opening it.
+     * Append mode tolerates a re-run without truncating earlier diagnostics.
+     *
+     * @param string $logName Basename of the log file, built by the caller via workerLogName().
      * @return resource
      */
-    private function openLaneLog(string $logDir, string $runUid, int $lane)
+    private function openWorkerLog(string $logDir, string $logName)
     {
-        $handle = @fopen($logDir . DIRECTORY_SEPARATOR . $runUid . '_lane' . $lane . '.log', 'a');
+        $handle = @fopen($logDir . DIRECTORY_SEPARATOR . $logName, 'a');
         if ($handle === false) {
-            throw new RuntimeException('Could not open lane log file for run ' . $runUid . ' lane ' . $lane);
+            throw new RuntimeException('Could not open worker log file: ' . $logName);
         }
         return $handle;
     }
 
     /**
-     * Opens the single coordinator diagnostic log "<run_uid>_coordinator.log" for append.
+     * Builds the file name of one feature run's log: "lane<N>_<seq>_<feature>.log".
+     *
+     * WHY THE FEATURE NAME IS IN THE FILE NAME: with one file per feature, the reader's first question
+     * is always "which file is the feature that failed" - and the run-log answers it only if they open
+     * it. Putting the feature in the name answers it from the directory listing. The lane and sequence
+     * stay in front so the files sort by dispatch order rather than alphabetically by feature, which
+     * keeps a lane's history readable, and the sequence guarantees uniqueness even if the same feature
+     * were ever dispatched twice.
+     *
+     * WHY THE FEATURE PART IS SANITIZED: feature files are named by testers, so the basename can
+     * legitimately contain spaces or characters Windows forbids in a filename. Replacing anything
+     * outside a conservative set keeps the log openable instead of failing the whole feature run over
+     * its own log name.
+     */
+    private function workerLogName(int $lane, int $seq, string $feature): string
+    {
+        // Normalize separators before basename(): feature paths arrive with Windows backslashes, and
+        // basename() only treats "\" as a separator when PHP itself runs on Windows. Doing it here keeps
+        // the name identical no matter where the code runs, which matters for tests and for a future
+        // move off Windows.
+        $name = basename(str_replace('\\', '/', $feature), '.feature');
+        $name = preg_replace('/[^A-Za-z0-9._-]+/', '_', $name) ?? '';
+        // Trim dots as well as underscores: Windows silently strips trailing dots from file names, so a
+        // name ending in one would not round-trip to the file actually written.
+        $name = trim($name, '._-');
+        // Keep the name bounded: Windows still enforces a total path limit, and the run directory
+        // already contributes a date and a run UID to that budget.
+        if (strlen($name) > 60) {
+            $name = rtrim(substr($name, 0, 60), '._-');
+        }
+        if ($name === '') {
+            $name = 'feature';
+        }
+        return 'lane' . $lane . '_' . $seq . '_' . $name . '.log';
+    }
+
+    /**
+     * Opens the single coordinator diagnostic log "coordinator.log" inside this run's log directory.
      *
      * Why a dedicated coordinator log instead of the workbench logger: the launch/drain timings used
      * to localize the concurrency cap are high-frequency orchestration traces. The DB-backed workbench
      * log is meant for a few meaningful info/error rows, not a per-lane timeline, so the fleet
-     * diagnostics live here next to the per-lane logs and stay greppable in one file. Append mode +
-     * naming by run_uid keeps runs from overwriting each other.
+     * diagnostics live here next to the worker logs of the same run and stay greppable in one file.
+     * The run UID is no longer needed in the name because the directory carries it.
      *
      * @return resource
      */
     private function openCoordinatorLog(string $logDir, string $runUid)
     {
-        $handle = @fopen($logDir . DIRECTORY_SEPARATOR . $runUid . '_coordinator.log', 'a');
+        $handle = @fopen($logDir . DIRECTORY_SEPARATOR . 'coordinator.log', 'a');
         if ($handle === false) {
             throw new RuntimeException('Could not open coordinator log file for run ' . $runUid);
         }
@@ -1669,8 +2048,8 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Appends this lane's section to the living run-log: worker status, the on-disk lane log name and
-     * Behat's counts block - parsed once from the lane's now-closed log file.
+     * Appends one feature run's section to the living run-log: worker status, the on-disk worker log
+     * name and Behat's counts block - parsed once from that worker's now-closed log file.
      *
      * Why no test detail here: the failed-scenario list and the inline failure output are TEST results,
      * and the attach-mode DatabaseFormatter already writes those per scenario and per step as child rows
@@ -1682,35 +2061,35 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * Why "worker done" is not "tests passed": worker status reports whether the PROCESS completed -
      * Behat exit 1 (a completed run with test failures) is a healthy worker.
      *
-     * @param int         $lane        Lane id (1-based, matching the launch loop and the log filename).
-     * @param string|null $workerError Worker-level failure for this lane, or null on a normal exit.
+     * @param string      $section     Run-log section of this feature run, created at launch so sections
+     *                                 stay in dispatch order.
+     * @param string      $logName     Basename of this feature run's own log file.
+     * @param string|null $workerError Worker-level failure, or null on a normal exit.
      */
-    private function appendLaneOutcome(string $logDir, string $runUid, int $lane, ?string $workerError): void
+    private function appendFeatureOutcome(string $logDir, string $section, string $logName, ?string $workerError): void
     {
         if ($this->runLog === null) {
             return;
         }
-        $section = 'Lane ' . $lane;
-        $logName = $runUid . '_lane' . $lane . '.log';
 
         $this->runLog->addLine('Worker: ' . ($workerError === null ? 'done' : 'failed'), 1, $section);
         if ($workerError !== null) {
             $this->runLog->addLine('Worker error: ' . $workerError, 1, $section);
         }
-        // Always name the on-disk lane log: the verbose Behat output is deliberately NOT copied into the
-        // run row, so the reader must be told where the full truth lives.
-        $this->runLog->addLine('Lane log: ' . $logName, 1, $section);
+        // Always name the on-disk worker log: the verbose Behat output is deliberately NOT copied into
+        // the run row, so the reader must be told where the full truth lives.
+        $this->runLog->addLine('Worker log: ' . $logName, 1, $section);
 
         $lines = $this->readLaneLogTail($logDir . DIRECTORY_SEPARATOR . $logName);
         if ($lines === null) {
-            $this->runLog->addLine('Lane log file missing or unreadable', 1, $section);
+            $this->runLog->addLine('Worker log file missing or unreadable', 1, $section);
             return;
         }
 
         $summary = $this->extractBehatSummary($lines);
         if ($summary !== null) {
             // The counts block already states how many scenarios/steps failed, so no separate
-            // failed-scenario list is needed to see whether this lane's tests were green.
+            // failed-scenario list is needed to see whether this feature's tests were green.
             $this->runLog->addLine('Behat summary:', 1, $section);
             $this->runLog->addCodeBlock($summary, '', $section);
         } else {
@@ -1731,7 +2110,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
 
     /**
      * Pulls Behat's end-of-run counts block ("N scenarios (...)", "M steps (...)", timing) from the
-     * lane log lines.
+     * worker log lines.
      *
      * Why the counts block specifically: it is the one line group Behat prints on EVERY completed run
      * regardless of the configured output formatter, so it is the most reliable "what happened" signal
@@ -1756,10 +2135,10 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Reads the last LOG_TAIL_READ_BYTES of a lane log and returns it as ANSI-stripped lines.
+     * Reads the last LOG_TAIL_READ_BYTES of a worker log and returns it as ANSI-stripped lines.
      *
      * Why a bounded tail instead of reading the whole file: a UI5 lane can emit a very large log, and
-     * pulling it fully into the coordinator's memory - once per lane - just to look at its last lines is
+     * pulling it fully into the coordinator's memory - once per feature run - just to look at its last lines is
      * both wasteful and a real out-of-memory risk on a run with many failures. Everything the digest
      * still needs (Behat's counts block, and the last output before a crash) sits at the END of the file,
      * so a tail read is sufficient by construction.
