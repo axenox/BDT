@@ -8,6 +8,7 @@ use axenox\BDT\Exceptions\FacadeNodeException;
 use axenox\BDT\Interfaces\TestResultInterface;
 use Behat\Gherkin\Node\TableNode;
 use Behat\Mink\Element\NodeElement;
+use exface\Core\CommonLogic\Model\Expression;
 use exface\Core\DataTypes\BooleanDataType;
 use exface\Core\DataTypes\DateDataType;
 use exface\Core\DataTypes\NumberDataType;
@@ -238,7 +239,7 @@ class UI5DataTableNode extends UI5DataNode
     protected function checkFilterWorksAsExpected(iFilterData $filter, iShowData $dataWidget, UI5FilterNode $filterNode, SubstepResult $result) : SubstepResult
     {
         $logbook = $result->getLogbook();
-        $logbook->addLine('Filtering`' . $filter->getCaption() . '`');
+        $logbook->addLine('Filtering `' . $filter->getCaption() . '`');
 
         // Find and highlight the filter
         $this->getBrowser()->highlightWidget(
@@ -307,6 +308,22 @@ class UI5DataTableNode extends UI5DataNode
             }
         }
 
+        // Skip filters whose extracted test value is an unevaluated formula (e.g. "=TabelleAnfragen!Id").
+        // Such values come from calculated attributes that have no concrete row value, so the data source
+        // yields the attribute's formula definition instead of a literal. Pushing that formula into a
+        // numeric filter makes the core value parser throw "Cannot convert ... to a number", which BDT
+        // then reports as a filter failure even though the widget itself is fine. There is no reliable
+        // literal to filter a calculated attribute by, so the correct outcome is to skip this filter
+        // rather than fail it. (parseArgument only resolves "[#...#]" placeholders, not a bare "=" formula,
+        // so an unwrapped formula value would otherwise reach the filter unresolved.)
+        if (is_string($filterVal) && Expression::detectFormula($filterVal)) {
+            $logbook->continueLine(' skipped: filter value is a formula `' . $filterVal . '` (calculated attribute, no literal value to filter by)');
+            return SubstepResult::createSkipped(
+                'Filter `' . $filter->getCaption() . '` has a formula value `' . $filterVal . '` and cannot be filtered by a literal',
+                $logbook
+            );
+        }
+        
         if (trim($filterVal ?? '') === '') {
             $logbook->continueLine(' no value found!');
             return SubstepResult::createSkipped('No value found for filter `' . $filter->getCaption() . '`', $logbook);
