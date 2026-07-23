@@ -648,28 +648,6 @@ JS
     }
 
     /**
-     * Removes the current focus from the widget stack
-     *
-     * @description Pops the top element from the focus stack, effectively unfocusing the current widget
-     */
-    public function unfocus(): void
-    {
-        if (!empty($this->focusStack)) {
-            array_pop($this->focusStack);
-        }
-    }
-
-    /**
-     * Completely clears the entire focus stack
-     *
-     * @description Resets the focus stack to an empty state, removing all previously focused widgets
-     */
-    public function clearFocus(): void
-    {
-        $this->focusStack = [];
-    }
-
-    /**
      * Gets current URL with hash fragment
      * This ensures we get the complete URL including UI5 routing information
      *
