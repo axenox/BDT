@@ -2,6 +2,7 @@
 namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataNode;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\TwigFormatter\Context\BehatFormatterContext;
@@ -669,8 +670,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeWidgets(int $number, string $widgetType, string $objectAlias = null): void
     {
-        // Clear all focus stack
-        $this->getBrowser()->clearFocusStack();
 
         // Wait for any pending operations to complete
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
@@ -678,15 +677,21 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Fetch widgets based on type and optional alias
         $widgetNodes = $this->getBrowser()->findWidgetNodes($widgetType, 15);
 
-        // if widget is a dialog or table, make it focused
+        // Only reset the focus stack when this step actually establishes a new focus.
+        // WHY: this step is primarily an assertion. Clearing the stack unconditionally while pushing
+        // a new focus only when exactly one focusable widget is found means that any "I see N widgets"
+        // step with N > 1 (e.g. "I see 2 widget of type Input" inside a dialog) silently destroys the
+        // focus established earlier. A later filter or table step then finds an empty stack, and
+        // getFocusedNode() falls back to a UI5PageNode, which does not implement the data widget API -
+        // resulting in a fatal "call to undefined method" instead of acting on the intended widget.
+        // Leaving the previous focus untouched keeps the underlying table focused, so it is still
+        // available once a dialog has been closed.
         if (count($widgetNodes) === 1) {
-
             $firstNode = reset($widgetNodes);
-
             if ($firstNode->capturesFocus() === true) {
+                $this->getBrowser()->clearFocusStack();
                 $this->getBrowser()->focus($firstNode);
             }
-
         }
 
         // Assert the number of widgets
@@ -763,8 +768,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
     }
 
-
-
     /**
      * Fills multiple form fields with values from a table
      * The table should have columns 'widget_name' and 'value'
@@ -775,7 +778,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iFillTheFollowingFields(TableNode $fields): void
     {
-
         // Process each row in the table
         foreach ($fields->getHash() as $row) {
             // Find input by caption
@@ -787,9 +789,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
             // Set value and wait for any UI reactions
             $widget->setValue($row['value']);
-
         }
-
     }
 
     /**
@@ -852,12 +852,24 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * @param string $value The value to enter/select in the filter
      * @param string $filterName The name/label of the filter field
-     * @throws \RuntimeException if filter field cannot be found or interaction fails
+     * @throws RuntimeException if filter field cannot be found or interaction fails
      */
     public function iEnterInFilter(string $value, string $filterName): void
     {
         /* @var $focusedNode axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataNode */
         $focusedNode= $this->getBrowser()->getFocusedNode();
+        // Guard the focused node's type before calling into the data widget API. WHY: getFocusedNode()
+        // falls back to a UI5PageNode when the focus stack is empty, and UI5PageNode does not implement
+        // findFilterByCaption(). Calling it raises a fatal "call to undefined method" that terminates the
+        // whole Behat process, instead of failing this single step with a message that tells the author
+        // which focus was actually active.
+        Assert::assertInstanceOf(
+            UI5DataNode::class,
+            $focusedNode,
+            'Cannot enter a filter value: no data widget is focused (current focus: "'
+            . get_class($focusedNode)
+            . '"). Focus a data widget first, e.g. with "I look at table 1".'
+        );
         $focusedNode->findFilterByCaption($filterName)->setValueVisible($value);
     }
 

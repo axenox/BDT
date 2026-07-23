@@ -9,6 +9,7 @@ use axenox\BDT\Exceptions\FacadeNodeException;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use axenox\BDT\Interfaces\TestResultInterface;
 use Behat\Mink\Element\NodeElement;
+use exface\Core\CommonLogic\Model\Expression;
 use exface\Core\CommonLogic\Model\MetaObject;
 use exface\Core\CommonLogic\Model\RelationPath;
 use exface\Core\DataTypes\ComparatorDataType;
@@ -322,6 +323,13 @@ class UI5DataNode extends UI5AbstractNode
 
     protected function findValuesInDataSource(MetaAttributeInterface $attr, Filter $filterWidget, MetaObject $metaObject, $limit = 3, string $sort = null): array
     {
+        // A calculated attribute has no stored literal to read (see isCalculatedAttribute): return no
+        // candidates so the caller skips this filter instead of looping up to 100 empty reads and then
+        // throwing on the formula value.
+        if ($this->isCalculatedAttribute($attr)) {
+            return [];
+        }
+        
         $inputWidget = $filterWidget->getInputWidget();
         $values = [];
         $rowIndex = 0;
@@ -405,11 +413,18 @@ class UI5DataNode extends UI5AbstractNode
     {
         $ds = DataSheetFactory::createFromObject($metaObject);
         $ds->getColumns()->addFromAttribute($attr);
+        // Nothing readable exists for a calculated attribute: the data sheet returns its formula
+        // definition, and normalizing that into the declared data type throws "Cannot convert ... to
+        // a number", killing the whole filter substep before the caller can react. Bail out before
+        // spending a database read on a value that cannot be used as a filter literal.
+        if ($this->isCalculatedAttribute($attr)) {
+            return null;
+        }
         foreach ($this->hiddenFilters as $hiddenFilter) {
             if($hiddenFilter->getMetaObject()->isExactly($ds->getMetaObject())) {
                 $ds->getFilters()->addConditionFromString(
                     $hiddenFilter->getAttributeAlias(),
-                    $hiddenFilter->getValue(),
+                    $this->getHiddenFilterValue($hiddenFilter),
                     $hiddenFilter->getComparator()
                 );
             }
@@ -424,12 +439,23 @@ class UI5DataNode extends UI5AbstractNode
 
         $ds->getFilters()->addConditionForAttributeIsNotNull($attr);
         $ds->dataRead(1, $rowIndex);
-        if ($ds->getColumn($returnColumn) !== null && $ds->getColumn($returnColumn)) {
-            $this->setInputDataType($ds->getColumn($returnColumn)->getDataType());
-            return $ds->getColumn($returnColumn)->getValuesNormalized()[0];
+
+        $col = ($returnColumn !== null ? $ds->getColumn($returnColumn) : null)
+            ?? $ds->getColumn($attr->getAlias());
+        if ($col === null) {
+            return null;
         }
-        $this->setInputDataType($ds->getColumn($attr->getAlias())->getDataType());
-        return $ds->getColumn($attr->getAlias())->getValuesNormalized()[0];
+        $this->setInputDataType($col->getDataType());
+
+        // Fail soft on normalization: even a non-calculated attribute can hold a value that does not
+        // parse into its declared data type. Return null (so the caller can try the next row or skip
+        // the filter) instead of letting the exception escape the substep. Also guard [0]: dataRead
+        // may have returned zero rows, in which case the normalized array is empty.
+        try {
+            return $col->getValuesNormalized()[0] ?? null;
+        } catch (\Throwable $e) {
+            return null;
+        }
     }
 
     protected function checkTheValueFromTable(MetaObject $metaObject, string $returnColumn, string $returnValue): bool
@@ -437,9 +463,8 @@ class UI5DataNode extends UI5AbstractNode
         $ds = DataSheetFactory::createFromObject($metaObject);
         foreach ($this->hiddenFilters as $hiddenFilter) {
             if ($hiddenFilter->getMetaObject()->isExactly($ds->getMetaObject())) {
-                $filterNode = UI5FacadeNodeFactory::createFromWidget($hiddenFilter, $this->getSession(), $this->getBrowser());
-                $hiddenFilterValue = $filterNode->getValueVisible();
-                if ($hiddenFilterValue !== null) {
+                $hiddenFilterValue = $this->getHiddenFilterValue($hiddenFilter);
+                if ($hiddenFilterValue !== null && trim($hiddenFilterValue) !== '') {
                     $ds->getFilters()->addConditionFromString(
                         $hiddenFilter->getAttributeAlias(),
                         $hiddenFilterValue,
@@ -451,6 +476,39 @@ class UI5DataNode extends UI5AbstractNode
         $ds->getFilters()->addConditionFromString($returnColumn, $returnValue, ComparatorDataType::EQUALS);
         $ds->dataRead(1, 1);
         return $ds->dataCount() > 0;
+    }
+    
+    /**
+     * Reads the effective value of a hidden filter, preferring the rendered DOM value and falling back
+     * to the value defined in the widget model.
+     *
+     * WHY THIS EXISTS: a hidden filter is by definition not rendered in the table header. Filters that
+     * live in the table configurator only exist in the DOM once the configurator dialog has been opened,
+     * which an automated run never does. Resolving such a filter through the node factory therefore
+     * throws "Cannot find node with id ..._DataTableConfigurator_Tab_Filter" and aborts the surrounding
+     * filter substep, even though the value was available in the widget model all along. Reading from
+     * the DOM here was also inconsistent with findValueInDataSourceQuery(), which already sources hidden
+     * filter values from the model - so the same filter could be applied with two different values
+     * depending on which method asked. The DOM is still preferred when present, because a hidden filter
+     * can be given a value at runtime that differs from its static model definition.
+     */
+    protected function getHiddenFilterValue(Filter $hiddenFilter) : ?string
+    {
+        try {
+            $filterNode = UI5FacadeNodeFactory::createFromWidget(
+                $hiddenFilter,
+                $this->getSession(),
+                $this->getBrowser()
+            );
+            $domValue = $filterNode->getValueVisible();
+            if ($domValue !== null && trim($domValue) !== '') {
+                return $domValue;
+            }
+        } catch (\Throwable $e) {
+            // Not rendered (e.g. configurator tab never opened) - fall back to the model value below.
+        }
+
+        return $hiddenFilter->getValue();
     }
 
     protected function triggerSearch(): void
@@ -681,7 +739,7 @@ class UI5DataNode extends UI5AbstractNode
             return $filterNode;
         }
 
-        throw new \RuntimeException('No filter found with caption "' . $filterCaption . '"');
+        throw new RuntimeException('No filter found with caption `' . $filterCaption . '`');
     }
 
     public function getFilters(int $min = 1, int $max = null): array
@@ -715,7 +773,24 @@ class UI5DataNode extends UI5AbstractNode
 
         return $filterNodes;
     }
-
+    
+    /**
+     * Detects whether an attribute's value is produced by a formula/calculation instead of being
+     * stored literally in the data source.
+     *
+     * WHY THIS EXISTS: the works-as-expected filter routine sources a filter test value by reading a
+     * real value for the attribute from the data source. A calculated attribute has no such stored
+     * value - the data sheet hands back the attribute's own formula definition (e.g.
+     * "=TabelleAnfragen!Id") as the "value". Normalizing that into the attribute's (often numeric)
+     * data type then throws "Cannot convert ... to a number", which aborts the whole filter substep
+     * before trySetFilterValue's own try/catch can react. Since there is no literal the data source
+     * can be filtered by for such an attribute, callers must recognise it and skip it up front.
+     */
+    protected function isCalculatedAttribute(MetaAttributeInterface $attr) : bool
+    {
+        $dataAddress = $attr->getDataAddress();
+        return is_string($dataAddress) && Expression::detectFormula($dataAddress);
+    }
 
     /**
      * Parses German (1.234,56) or Anglo-Saxon (1,234.56) number strings to float.
