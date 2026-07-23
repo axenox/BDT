@@ -282,8 +282,8 @@ class UI5WaitManager
             // Wait for busy indicators and AJAX requests to complete
             $this->waitForPendingOperations(false, true, true);
 
-        } catch (Exception $e) {
-            throw new Exception("Failed to load UI5 application DB: " . $e->getMessage(), null, $e);
+        } catch (\Throwable $e) {
+            throw new Exception("Failed to load UI5 application DB: " . $e->getMessage(), 0, $e);
         }
     }
 

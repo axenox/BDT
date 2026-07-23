@@ -51,6 +51,23 @@ class UI5ContainerNode extends UI5AbstractNode
             if ($childWidget->isHidden()) {
                 continue;
             }
+            // Stop the container check as soon as the browser is no longer on the container's own page.
+            // WHY: a tile run navigates away for every child and is expected to return afterwards. If one
+            // of those navigations failed (e.g. "Cannot open path ... after 2 attempts"), the container
+            // element is stale and every remaining child lookup fails instantly - turning one real
+            // navigation error into a bogus "Cannot find DOM element" row per sibling and burying the
+            // actual cause. Recording the lost page once keeps the failure attributable to its origin.
+            $pageCurrent = $this->getBrowser()->getPageCurrent()->getAliasWithNamespace();
+            if ($pageCurrent !== $containerAlias) {
+                $this->logSubstep(
+                    'Checking children of ' . $this->getWidget()->getWidgetType(),
+                    StepStatusDataType::FAILED,
+                    'Aborted: expected to be on page "' . $containerAlias . '" but the browser is on "'
+                    . $pageCurrent . '". A preceding navigation did not return to the container page.'
+                );
+                $failed = true;
+                break;
+            }
             $attempt = 0;
             while ($attempt < 2) {
                 try {
@@ -76,10 +93,21 @@ class UI5ContainerNode extends UI5AbstractNode
         }
         return $failed ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
     }
-    
-    protected function checkChildWorksAsExpected(WidgetInterface $childWidget, logBookInterface $logbook) : TestResultInterface
+
+    protected function checkChildWorksAsExpected(WidgetInterface $childWidget, LogBookInterface $logbook) : TestResultInterface
     {
-        $childWidgetElement = $this->getNodeElement()->find('css', '#' . $this->getElementIdFromWidget($childWidget));
+        $childElementId = $this->getElementIdFromWidget($childWidget);
+        $childWidgetElement = $this->getNodeElement()->find('css', '#' . $childElementId);
+
+        // Give an asynchronously rendered child a chance to appear before declaring it missing.
+        // WHY: a single find() returns immediately, so a child UI5 has not rendered yet is
+        // indistinguishable from one that does not exist at all. These failures were being recorded
+        // within hundredths of a millisecond, which is far too fast to be a trustworthy verdict.
+        if ($childWidgetElement === null) {
+            $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
+            $childWidgetElement = $this->getNodeElement()->find('css', '#' . $childElementId);
+        }
+
         if ($childWidgetElement === null) {
             $caption = $childWidget->getCaption();
             if (! $caption) {
@@ -87,7 +115,16 @@ class UI5ContainerNode extends UI5AbstractNode
             } else {
                 $caption = '"' . $caption . '"';
             }
-            $resultEvent = $this->logSubstep('Looking at ' . $childWidget->getWidgetType() . ' ' . $caption, StepStatusDataType::FAILED, 'Cannot find DOM element');
+            // Name the element and the page in the failure message. WHY: "Cannot find DOM element" on
+            // its own cannot be acted upon - it does not say what was searched for, where, or whether
+            // the surrounding container was still the expected one.
+            $resultEvent = $this->logSubstep(
+                'Looking at ' . $childWidget->getWidgetType() . ' ' . $caption,
+                StepStatusDataType::FAILED,
+                'Cannot find DOM element with id "' . $childElementId . '" inside '
+                . $this->getWidget()->getWidgetType() . ' on page "'
+                . $this->getBrowser()->getPageCurrent()->getAliasWithNamespace() . '"'
+            );
             $childResult = $resultEvent->getResult();
         } else {
             $node = UI5FacadeNodeFactory::createFromWidgetType($childWidget->getWidgetType(), $childWidgetElement, $this->getSession(), $this->getBrowser());
