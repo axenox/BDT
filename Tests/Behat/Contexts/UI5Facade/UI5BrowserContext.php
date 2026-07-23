@@ -8,6 +8,7 @@ use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\TwigFormatter\Context\BehatFormatterContext;
 use axenox\BDT\Common\Installer\TestDataInstaller;
 use axenox\BDT\Exceptions\BrowserDriverException;
+use axenox\BDT\Exceptions\ChromeHangException;
 use Behat\Behat\Context\Context;
 use Behat\Behat\Tester\Result\UndefinedStepResult;
 use Behat\Mink\Element\NodeElement;
@@ -2132,10 +2133,26 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 parent::visitPath($path);
                 return;
             } catch (\Throwable $e) {
+                // A lost CDP connection cannot be repaired by navigating again: the socket to Chrome is
+                // gone, so every further attempt fails in the same way and only burns wall-clock time
+                // before reporting a symptom rather than the cause. Convert it into a
+                // ChromeHangException, which is the signal the recovery paths in UI5ContainerNode and
+                // runAsSubstep listen for in order to restart Chrome, re-login and resume. Without this
+                // conversion a navigation crash surfaced as a plain BrowserDriverException, recovery
+                // never ran, and the surrounding container kept iterating against a dead browser -
+                // turning one lost connection into a failure row for every remaining sibling widget.
+                if ($this->isCdpConnectionError($e)) {
+                    throw new ChromeHangException(
+                        'CDP connection lost while opening path "' . $path . '": ' . $e->getMessage(),
+                        0,
+                        $e
+                    );
+                }
+
                 if (++$attempt >= $maxAttempts) {
                     throw new BrowserDriverException($this->getSession(), 'Cannot open path "' . $path . '" in browser after ' . $attempt . ' attempts.', null, $e, $this->browser);
                 }
-                // Chrome WebSocket dropped during navigation — wait and retry
+                // Transient navigation problem (slow server, render process under load) - wait and retry
                 sleep(3);
             }
         }
