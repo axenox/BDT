@@ -421,12 +421,15 @@ class UI5DataNode extends UI5AbstractNode
             return null;
         }
         foreach ($this->hiddenFilters as $hiddenFilter) {
-            if($hiddenFilter->getMetaObject()->isExactly($ds->getMetaObject())) {
-                $ds->getFilters()->addConditionFromString(
-                    $hiddenFilter->getAttributeAlias(),
-                    $this->getHiddenFilterValue($hiddenFilter),
-                    $hiddenFilter->getComparator()
-                );
+            if ($hiddenFilter->getMetaObject()->isExactly($ds->getMetaObject())) {
+                $hiddenFilterValue = $this->getHiddenFilterValue($hiddenFilter);
+                if ($hiddenFilterValue !== null && trim($hiddenFilterValue) !== '') {
+                    $ds->getFilters()->addConditionFromString(
+                        $hiddenFilter->getAttributeAlias(),
+                        $hiddenFilterValue,
+                        $hiddenFilter->getComparator()
+                    );
+                }
             }
         }
         if ($returnColumn !== null) {
@@ -477,38 +480,46 @@ class UI5DataNode extends UI5AbstractNode
         $ds->dataRead(1, 1);
         return $ds->dataCount() > 0;
     }
-    
+
     /**
-     * Reads the effective value of a hidden filter, preferring the rendered DOM value and falling back
-     * to the value defined in the widget model.
+     * Reads the configured value of a hidden filter directly from the widget model, or null when that
+     * value cannot be used as a filter literal.
      *
-     * WHY THIS EXISTS: a hidden filter is by definition not rendered in the table header. Filters that
-     * live in the table configurator only exist in the DOM once the configurator dialog has been opened,
-     * which an automated run never does. Resolving such a filter through the node factory therefore
-     * throws "Cannot find node with id ..._DataTableConfigurator_Tab_Filter" and aborts the surrounding
-     * filter substep, even though the value was available in the widget model all along. Reading from
-     * the DOM here was also inconsistent with findValueInDataSourceQuery(), which already sources hidden
-     * filter values from the model - so the same filter could be applied with two different values
-     * depending on which method asked. The DOM is still preferred when present, because a hidden filter
-     * can be given a value at runtime that differs from its static model definition.
+     * WHY THIS EXISTS: $this->hiddenFilters is populated only from filters whose isHidden() is true.
+     * Such a filter is never rendered in the visible table header, and its DOM node id resolves to the
+     * DataTableConfigurator tab id, which only exists in the DOM once the configurator dialog is opened -
+     * something an automated run never does. Resolving it through the node factory therefore ALWAYS
+     * failed with "Cannot find node with id ..._DataTableConfigurator_Tab_Filter", an exception that was
+     * caught and swallowed on every read but still logged, producing constant log noise. Since the DOM
+     * value is structurally unreachable for these filters, the effective value is taken from the widget
+     * model instead.
+     *
+     * WHY THE CALCULATION GUARD: a hidden filter's model value is not always a stored literal. It can be
+     *  - a formula (e.g. "=Now()"), or
+     *  - a widget link / reference (e.g. "=TabelleAnfragen!Id"), used when this table is filtered by the
+     *    selected row of another table on the same page.
+     * Both start with a single "=" and are recognised by Expression::detectCalculation() (formulas via
+     * detectFormula(), widget links via detectReference()). Handing such an expression to
+     * addConditionFromString normalizes it against the attribute's data type and throws
+     * "Cannot convert ... to a number" - the same failure family as a calculated attribute - aborting the
+     * whole filter substep. Note that detectFormula() alone is NOT enough here: a widget link has no "("
+     * so it is not a formula, which is exactly why "=TabelleAnfragen!Id" slipped through and blew up.
+     * There is no literal to filter by in either case, so return null; both callers already treat null as
+     * "do not add this hidden filter condition", which keeps the value-sourcing read and its
+     * checkTheValueFromTable validation consistent (both skip the same condition).
      */
     protected function getHiddenFilterValue(Filter $hiddenFilter) : ?string
     {
-        try {
-            $filterNode = UI5FacadeNodeFactory::createFromWidget(
-                $hiddenFilter,
-                $this->getSession(),
-                $this->getBrowser()
-            );
-            $domValue = $filterNode->getValueVisible();
-            if ($domValue !== null && trim($domValue) !== '') {
-                return $domValue;
-            }
-        } catch (\Throwable $e) {
-            // Not rendered (e.g. configurator tab never opened) - fall back to the model value below.
+        $value = $hiddenFilter->getValue();
+
+        // Skip any non-literal value - both formulas ("=Now()") and widget links ("=OtherTable!Id").
+        // detectCalculation() covers both (anything starting with a single "="), whereas detectFormula()
+        // would only catch formulas and let widget-link references through.
+        if (is_string($value) && Expression::detectCalculation($value)) {
+            return null;
         }
 
-        return $hiddenFilter->getValue();
+        return $value;
     }
 
     protected function triggerSearch(): void
@@ -697,7 +708,7 @@ class UI5DataNode extends UI5AbstractNode
         MetaObject $metaObject
     ): ?array {
         // Reuse existing single-value finder at two different row offsets
-        $toVal = $this->findValuesInDataSource($attr, $filterWidget, $metaObject, 'ASC');
+        $toVal = $this->findValuesInDataSource($attr, $filterWidget, $metaObject, 3, 'ASC');
         if (empty($toVal)) {
             return null;
         }
