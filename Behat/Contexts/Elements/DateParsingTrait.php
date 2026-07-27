@@ -14,60 +14,15 @@ trait DateParsingTrait
     /**
      * Parses a date or datetime string in multiple formats to a Unix timestamp (midnight UTC).
      *
-     * Datetime formats are tried before date-only formats so that a value like
-     * "15.01.26 14:30" is never partially matched by the date-only pattern "d.m.y".
-     *
-     * Supported date-only formats:
-     *   d.m.Y  — "15.01.2026"   (German long year)
-     *   d.m.y  — "15.01.26"     (German 2-digit year, as produced by SAP UI5 date inputs)
-     *   Y-m-d  — "2026-01-15"   (ISO)
-     *   d/m/Y  — "15/01/2026"
-     *   m/d/Y  — "01/15/2026"
-     *
-     * Supported datetime formats: same date part + " H:i:s" or " H:i" suffix.
-     *
-     * 2-digit year interpretation follows the standard POSIX rule used by PHP:
-     *   00–68  -> 2000–2068
-     *   69–99  -> 1969–1999
+     * WHY THIS EXISTS: callers that only need a timestamp (not the matched format) get a thin wrapper
+     * over matchDateFormat, so the accepted-format list lives in exactly one place (getDateFormats).
      *
      * @param string $value Raw date or datetime string to parse
      * @return int|null     Unix timestamp, or null if the value cannot be parsed
      */
     public function parseDateFlexible(string $value): ?int
     {
-        $value = trim($value);
-        if ($value === '') {
-            return null;
-        }
-
-        $formats = [
-            // Datetime formats first — must come before date-only to prevent partial matching
-            'd.m.Y H:i:s',  // "15.01.2026 14:30:00"
-            'd.m.Y H:i',    // "15.01.2026 14:30"
-            'd.m.y H:i:s',  // "15.01.26 14:30:00"  (2-digit year)
-            'd.m.y H:i',    // "15.01.26 14:30"     (2-digit year)
-            'Y-m-d H:i:s',  // "2026-01-15 14:30:00"
-            'Y-m-d H:i',    // "2026-01-15 14:30"
-            'd/m/Y H:i:s',
-            'd/m/Y H:i',
-            // Date-only formats
-            'd.m.Y',        // "15.01.2026"
-            'd.m.y',        // "15.01.26"  (2-digit year, produced by SAP UI5 inputs)
-            'Y-m-d',        // "2026-01-15"
-            'd/m/Y',        // "15/01/2026"
-            'm/d/Y',        // "01/15/2026"
-        ];
-
-        foreach ($formats as $format) {
-            $dt = \DateTime::createFromFormat('!' . $format, $value);
-            // Strict check: re-format must reproduce the original string exactly,
-            // preventing e.g. "32.01.2026" from being accepted as a valid date.
-            if ($dt !== false && $dt->format($format) === $value) {
-                return $dt->getTimestamp();
-            }
-        }
-
-        return null;
+        return $this->matchDateFormat($value)['timestamp'] ?? null;
     }
 
     /**
@@ -95,5 +50,87 @@ trait DateParsingTrait
 
         $dt = (new \DateTime())->setTimestamp($timestamp);
         return $dt->format($includeTime ? 'Y-m-d H:i' : 'Y-m-d');
+    }
+
+    /**
+     * Returns the ordered list of accepted date/datetime formats.
+     *
+     * WHY THIS EXISTS: the list is needed both to parse a value (parseDateFlexible) and to learn
+     * which format an already-displayed value uses (matchDateFormat). Keeping it in one place stops
+     * those two consumers from drifting apart. Datetime formats precede date-only ones so a value like
+     * "15.01.26 14:30" is never partially matched by the date-only "d.m.y".
+     *
+     * @return string[]
+     */
+    private function getDateFormats(): array
+    {
+        return [
+            // Datetime formats first — must come before date-only to prevent partial matching
+            'd.m.Y H:i:s', 'd.m.Y H:i',
+            'd.m.y H:i:s', 'd.m.y H:i',
+            'Y-m-d H:i:s', 'Y-m-d H:i',
+            'd/m/Y H:i:s', 'd/m/Y H:i',
+            // Date-only formats
+            'd.m.Y', 'd.m.y', 'Y-m-d', 'd/m/Y', 'm/d/Y',
+        ];
+    }
+
+    /**
+     * Matches a raw date/datetime string against the accepted formats and reports which one hit.
+     *
+     * WHY THIS EXISTS: comparing a value we typed against the value a UI5 date input echoes back
+     * requires knowing the format the field displays in (2-digit vs 4-digit year, with/without time).
+     * parseDateFlexible discards that information; this method keeps it so a caller can re-render an
+     * expected value in exactly the field's own format before comparing.
+     *
+     * @param string $value Raw date or datetime string
+     * @return array{timestamp:int, format:string}|null Null if no accepted format matches
+     */
+    private function matchDateFormat(string $value): ?array
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return null;
+        }
+        foreach ($this->getDateFormats() as $format) {
+            $dt = \DateTime::createFromFormat('!' . $format, $value);
+            // Strict check: re-format must reproduce the input exactly so "32.01.2026" is rejected.
+            if ($dt !== false && $dt->format($format) === $value) {
+                return ['timestamp' => $dt->getTimestamp(), 'format' => $format];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Tells whether a value we set equals what a date input echoed back, compared at the precision
+     * the input can actually display.
+     *
+     * WHY THIS EXISTS: a UI5 date input configured with a 2-digit year (dd.MM.yy) physically cannot
+     * echo back a value's century. When the works-as-expected routine sources a real filter value whose
+     * year falls outside the 2-digit pivot window (e.g. the data source's earliest row is year 202 ->
+     * "0202-07-01"), the field displays "01.07.02" and reading it back reconstructs year 2002. A
+     * full-year (Y-m-d) equality check then reports a mismatch for a field that in fact accepted the
+     * value. Re-rendering the expected value in the field's own display format (learned from the actual
+     * value) compares only what the input can represent: it still catches a real day/month/2-digit-year
+     * mismatch, but does not fail on a century the field never showed.
+     *
+     * @param string $expected Value that was typed into the input
+     * @param string $actual   Value the input currently displays (read back from the DOM)
+     * @return bool
+     */
+    public function datesEqualAtDisplayPrecision(string $expected, string $actual): bool
+    {
+        $expectedTimestamp = $this->parseDateFlexible($expected);
+        $actualMatch       = $this->matchDateFormat($actual);
+        if ($expectedTimestamp === null || $actualMatch === null) {
+            return false;
+        }
+        // Render the value we set into the field's own display format, then compare to what the field
+        // shows. This compares exactly what the input can represent — no more, no less.
+        $expectedInActualFormat = (new \DateTime())
+            ->setTimestamp($expectedTimestamp)
+            ->format($actualMatch['format']);
+        return $expectedInActualFormat === trim($actual);
     }
 }
