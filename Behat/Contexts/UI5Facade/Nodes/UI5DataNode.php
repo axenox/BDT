@@ -494,19 +494,28 @@ class UI5DataNode extends UI5AbstractNode
      * value is structurally unreachable for these filters, the effective value is taken from the widget
      * model instead.
      *
-     * WHY THE FORMULA GUARD: a hidden filter's model value can be a formula (e.g. "=Now()") rather than a
-     * stored literal. Handing that expression to addConditionFromString normalizes it against the
-     * attribute's data type and throws "Cannot convert ... to a number" - the same failure family as a
-     * calculated attribute - aborting the whole filter substep. There is no literal to filter by in that
-     * case, so return null; both callers already treat null as "do not add this hidden filter condition",
-     * which keeps the value-sourcing read and its checkTheValueFromTable validation consistent (both skip
-     * the same condition).
+     * WHY THE CALCULATION GUARD: a hidden filter's model value is not always a stored literal. It can be
+     *  - a formula (e.g. "=Now()"), or
+     *  - a widget link / reference (e.g. "=TabelleAnfragen!Id"), used when this table is filtered by the
+     *    selected row of another table on the same page.
+     * Both start with a single "=" and are recognised by Expression::detectCalculation() (formulas via
+     * detectFormula(), widget links via detectReference()). Handing such an expression to
+     * addConditionFromString normalizes it against the attribute's data type and throws
+     * "Cannot convert ... to a number" - the same failure family as a calculated attribute - aborting the
+     * whole filter substep. Note that detectFormula() alone is NOT enough here: a widget link has no "("
+     * so it is not a formula, which is exactly why "=TabelleAnfragen!Id" slipped through and blew up.
+     * There is no literal to filter by in either case, so return null; both callers already treat null as
+     * "do not add this hidden filter condition", which keeps the value-sourcing read and its
+     * checkTheValueFromTable validation consistent (both skip the same condition).
      */
     protected function getHiddenFilterValue(Filter $hiddenFilter) : ?string
     {
         $value = $hiddenFilter->getValue();
 
-        if (is_string($value) && Expression::detectFormula($value)) {
+        // Skip any non-literal value - both formulas ("=Now()") and widget links ("=OtherTable!Id").
+        // detectCalculation() covers both (anything starting with a single "="), whereas detectFormula()
+        // would only catch formulas and let widget-link references through.
+        if (is_string($value) && Expression::detectCalculation($value)) {
             return null;
         }
 
