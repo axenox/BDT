@@ -260,6 +260,20 @@ class UI5DataTableNode extends UI5DataNode
 
         if ($column !== null) {
             $columnCaption = $column->getCaption();
+
+            // Columns defined in the page with visibility "optional" (or "hidden") are
+            // rendered by the UI5 facade with `visible: false` (see UI5DataConfigurator),
+            // so their header never appears in the DOM. verifyTableContent() could not find
+            // such a column and would fail with "Column '...' not found in table". Since the
+            // column is intentionally not shown, we skip the content verification for this
+            // filter instead of failing the step.
+            if ($column->isHidden() || $column->getVisibility() === EXF_WIDGET_VISIBILITY_OPTIONAL) {
+                $logbook->continueLine(' - column `' . $columnCaption . '` is optional/hidden, skipping content verification');
+                return SubstepResult::createSkipped(
+                    'Column `' . $columnCaption . '` for filter `' . $filter->getCaption() . '` is optional/hidden and is not rendered in the table',
+                    $logbook
+                );
+            }
         }
 
         if ($filterNode instanceof UI5RangeFilterNode) {
