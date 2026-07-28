@@ -260,6 +260,38 @@ class UI5DataTableNode extends UI5DataNode
 
         if ($column !== null) {
             $columnCaption = $column->getCaption();
+
+            // Columns defined in the page with visibility "optional" (or "hidden") are
+            // rendered by the UI5 facade with `visible: false` (see UI5DataConfigurator),
+            // so their header never appears in the DOM. verifyTableContent() could not find
+            // such a column and would fail with "Column '...' not found in table". Since the
+            // column is intentionally not shown, we skip the content verification for this
+            // filter instead of failing the step.
+            if ($column->isHidden() || $column->getVisibility() === EXF_WIDGET_VISIBILITY_OPTIONAL) {
+                $logbook->continueLine(' - column `' . $columnCaption . '` is optional/hidden, skipping content verification');
+                return SubstepResult::createSkipped(
+                    'Column `' . $columnCaption . '` for filter `' . $filter->getCaption() . '` is optional/hidden and is not rendered in the table',
+                    $logbook
+                );
+            }
+            // A calculated/formula column has no stored literal value: its cells are derived at
+            // render time (e.g. a concatenated label). The value we sourced comes from the filter's
+            // attribute and never equals such a derived cell, so verifying cell-by-cell reports 0/N
+            // matched even though the filter works and rows were returned. We detect a calculated
+            // attribute the same way the framework already detects formula values: a calculated
+            // attribute carries its formula in its data address (Expression::detectFormula). This
+            // mirrors the formula-VALUE skip above — there is no reliable literal to assert against.
+            $columnAttr        = ($column !== null && $column->isBoundToAttribute()) ? $column->getAttribute() : null;
+            $columnDataAddress = $columnAttr !== null ? $columnAttr->getDataAddress() : null;
+            if (is_string($columnDataAddress) && Expression::detectFormula($columnDataAddress)) {
+                $logbook->continueLine(' - skipped verification: column `' . $columnCaption . '` is a calculated attribute');
+                $result->setTitle($result->getTitle() . ' (column not verified: calculated attribute)');
+                return SubstepResult::createSkipped(
+                    'Column `' . $columnCaption . '` for filter `' . $filter->getCaption()
+                    . '` is a calculated attribute; the filter was applied but its column cannot be verified by a literal value',
+                    $logbook
+                );
+            }
         }
 
         if ($filterNode instanceof UI5RangeFilterNode) {

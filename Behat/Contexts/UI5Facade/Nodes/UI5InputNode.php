@@ -59,25 +59,33 @@ class UI5InputNode extends UI5AbstractNode
 
         if ($el->hasClass('exfw-InputDate') || $el->hasClass('exfw-InputDateTime')) {
             $isDateTime = $el->hasClass('exfw-InputDateTime');
-            // Run normalizeDateToIso first: a genuinely unparseable value still fails loudly with a precise
-            // "Cannot parse date value" message, and the common case (years inside the 2-digit pivot window)
-            // passes here on an exact full-year match.
-            $expectedIso = $this->normalizeDateToIso($expectedValue, $this->getCaption(), $isDateTime);
-            $actualIso   = $this->normalizeDateToIso($newVal, $this->getCaption(), $isDateTime);
-            if ($expectedIso === $actualIso) {
+
+            // A date filter reset clears the field, so the expected/actual value is an
+            // empty string. An empty value is not a parseable date — routing it through
+            // normalizeDateToIso() would throw "Cannot parse date value ``" instead of
+            // performing the intended comparison. When either side is empty we compare
+            // the raw (trimmed) strings directly: two empties match (filter cleared),
+            // and an empty-vs-date case fails as a clean assertion rather than a parse
+            // exception.
+            $expectedTrimmed = trim((string) $expectedValue);
+            $actualTrimmed   = trim((string) $newVal);
+            if ($expectedTrimmed === '' || $actualTrimmed === '') {
+                Assert::assertSame(
+                    $expectedTrimmed,
+                    $actualTrimmed,
+                    "Expected date `$expectedValue` does not match actual `$newVal` in filter '{$this->getCaption()}'"
+                );
                 return $this;
             }
-            // Full-year forms differ. A 2-digit-year date input cannot echo a value's century, so a source
-            // value like year 202 ("0202-07-01") legitimately shows as "01.07.02" and reads back as 2002.
-            // Re-compare at the precision the field actually displays before failing: this avoids a false
-            // failure without masking a real day/month/2-digit-year mismatch.
-            Assert::assertTrue(
-                $this->datesEqualAtDisplayPrecision($expectedValue, $newVal),
-                "Expected date `$expectedValue` (normalized `$expectedIso`) does not match actual `$newVal` (normalized `$actualIso`) in filter '{$this->getCaption()}'"
+
+            Assert::assertSame(
+                $this->normalizeDateToIso($expectedValue, $this->getCaption(), $isDateTime),
+                $this->normalizeDateToIso($newVal, $this->getCaption(), $isDateTime),
+                "Expected date `$expectedValue` does not match actual `$newVal` in filter '{$this->getCaption()}'"
             );
             return $this;
         }
-        
+
         Assert::assertEquals($expectedValue, $newVal, "Expected value `$expectedValue` does not match actual value `$newVal` in InputComboTable '{$this->getCaption()}'");
         return $this;
     }
