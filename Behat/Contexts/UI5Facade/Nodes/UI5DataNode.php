@@ -707,38 +707,41 @@ class UI5DataNode extends UI5AbstractNode
         Filter $filterWidget,
         MetaObject $metaObject
     ): ?array {
-        // Reuse existing single-value finder at two different row offsets
-        $toVal = $this->findValuesInDataSource($attr, $filterWidget, $metaObject, 3, 'ASC');
-        if (empty($toVal)) {
+        // Lower bound: smallest value in the column (ASC, first row). findValuesInDataSource also
+        // confirms the value is actually filterable via checkTheValueFromTable.
+        $fromVal = $this->findValuesInDataSource($attr, $filterWidget, $metaObject, 3, 'ASC');
+        if (empty($fromVal)) {
             return null;
         }
-        $toVal = $toVal[0];
+        $fromVal = $fromVal[0];
 
-        // Find a "to" value that is >= "from" by reading further rows
-        $fromVal    = null;
-        $rowIndex = 1;
-        while ($rowIndex <= 100) {
+        // Upper bound: largest value in the column (DESC, offset 0). Walk further rows until a value
+        // distinct from the lower bound is found, so a column whose top rows share one value does not
+        // collapse the range to from == to by coincidence.
+        $toVal    = null;
+        $rowIndex = 0;
+        while ($rowIndex < 100) {
             $candidate = $this->findValueInDataSourceQuery(
                 $filterWidget->getInputWidget()->getMetaObject(),
                 $attr,
                 $attr->getAlias(),
                 'DESC',
-                $rowIndex - 1   // DESC so we get a value on the other end of the range
+                $rowIndex
             );
-            if (trim($candidate ?? '') !== '' && $candidate !== $toVal) {
-                $fromVal = $candidate;
+            if (trim($candidate ?? '') !== '' && $candidate !== $fromVal) {
+                $toVal = $candidate;
                 break;
             }
             $rowIndex++;
         }
 
-        // If we couldn't find a distinct "from", use the same value — range filter
-        // with from=to still tests that the filter works (exact match range)
-        $fromVal = $fromVal ?? $toVal;
+        // A column with a single distinct value still yields a valid exact-match range (from == to),
+        // which exercises the filter.
+        $toVal = $toVal ?? $fromVal;
 
         return ['from' => $fromVal, 'to' => $toVal];
     }
-
+    
     public function findFilterByCaption(string $filterCaption): UI5FilterNode
     {
         $filterNodes = $this->getFilters();

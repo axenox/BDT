@@ -8,7 +8,6 @@ use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\TwigFormatter\Context\BehatFormatterContext;
 use axenox\BDT\Common\Installer\TestDataInstaller;
 use axenox\BDT\Exceptions\BrowserDriverException;
-use axenox\BDT\Exceptions\ChromeHangException;
 use Behat\Behat\Context\Context;
 use Behat\Behat\Tester\Result\UndefinedStepResult;
 use Behat\Mink\Element\NodeElement;
@@ -50,6 +49,26 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     use CdpConnectionDetectorTrait;
     use AuthenticatorTimeStampingTrait;
     
+    /**
+     * visitPath() retry tuning. A dropped CDP/WebSocket during navigation is
+     * usually transient and clears on its own within a few seconds (observed:
+     * the first example of a scenario outline fails while later examples on the
+     * SAME Chrome succeed with no restart). We therefore give the connection a
+     * widening in-place retry window instead of failing after a single short wait.
+     */
+    private const VISIT_RETRY_MAX_ATTEMPTS = 3;
+
+    /** Base backoff between visitPath() retries; grows linearly per attempt. */
+    private const VISIT_RETRY_BASE_DELAY_MS = 3000;
+
+    /**
+     * Random jitter added on top of the backoff. Its only job is to
+     * de-synchronise parallel lanes: RunParallel runs one Chrome per feature, so
+     * a server hiccup makes every lane hit visitPath() and retry in lockstep,
+     * re-colliding at the same instant. A small random offset spreads those
+     * retries apart. Irrelevant for a single lane.
+     */
+    private const VISIT_RETRY_JITTER_MAX_MS = 1000;
     private $browser;
     private $scenarioName;
 
@@ -2119,7 +2138,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $path The relative path to visit
      * @throws \Throwable  The last exception if all attempts fail
      */
-    public function visitPath($path, $sessionName = null, int $maxAttempts = 2): void
+    public function visitPath($path, $sessionName = null, int $maxAttempts = self::VISIT_RETRY_MAX_ATTEMPTS): void
     {
         $attempt = 0;
         while (true) {
@@ -2133,29 +2152,39 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 parent::visitPath($path);
                 return;
             } catch (\Throwable $e) {
-                // A lost CDP connection cannot be repaired by navigating again: the socket to Chrome is
-                // gone, so every further attempt fails in the same way and only burns wall-clock time
-                // before reporting a symptom rather than the cause. Convert it into a
-                // ChromeHangException, which is the signal the recovery paths in UI5ContainerNode and
-                // runAsSubstep listen for in order to restart Chrome, re-login and resume. Without this
-                // conversion a navigation crash surfaced as a plain BrowserDriverException, recovery
-                // never ran, and the surrounding container kept iterating against a dead browser -
-                // turning one lost connection into a failure row for every remaining sibling widget.
-                if ($this->isCdpConnectionError($e)) {
-                    throw new ChromeHangException(
-                        'CDP connection lost while opening path "' . $path . '": ' . $e->getMessage(),
-                        0,
-                        $e
-                    );
+                // Only a lost CDP/WebSocket connection is transient and worth
+                // retrying. Anything else (a real 404, an assertion, a locator
+                // failure) will fail again on every attempt, so retrying would
+                // just waste time and — worse — bury the real error behind a
+                // misleading "after N attempts" message. Surface those at once
+                // with the original exception intact.
+                if (! $this->isCdpConnectionError($e)) {
+                    throw $e;
                 }
-
                 if (++$attempt >= $maxAttempts) {
                     throw new BrowserDriverException($this->getSession(), 'Cannot open path "' . $path . '" in browser after ' . $attempt . ' attempts.', null, $e, $this->browser);
                 }
-                // Transient navigation problem (slow server, render process under load) - wait and retry
-                sleep(3);
+                // CDP dropped mid-navigation — wait for it to recover, then retry in place.
+                $this->sleepBeforeVisitRetry($attempt);
             }
         }
+    }
+
+    /**
+     * Sleeps between visitPath() retries using a linear backoff plus small random jitter.
+     *
+     * Exists so the retry loop stays readable and the timing policy lives in one
+     * place. The backoff widens per attempt to give a self-clearing CDP transient
+     * more time on each successive try; the jitter de-synchronises parallel lanes
+     * that would otherwise retry in lockstep (see VISIT_RETRY_JITTER_MAX_MS).
+     *
+     * @param int $attempt The 1-based retry attempt number (drives the linear backoff).
+     */
+    private function sleepBeforeVisitRetry(int $attempt): void
+    {
+        $delayMs = (self::VISIT_RETRY_BASE_DELAY_MS * $attempt)
+            + random_int(0, self::VISIT_RETRY_JITTER_MAX_MS);
+        usleep($delayMs * 1000);
     }
 
     /**

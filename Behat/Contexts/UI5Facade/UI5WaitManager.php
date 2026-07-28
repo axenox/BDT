@@ -416,14 +416,32 @@ class UI5WaitManager
     /**
      * Waits for the specific application ID to be available and visible
      *
+     * The lookup is intentionally fault tolerant: during the initial page load
+     * (e.g. right after a login redirect) the UI5 launchpad tears down and
+     * re-creates the root NavContainer that carries the "<page_alias>.app" id.
+     * If findById() locates the element in one polling cycle and the element is
+     * re-rendered before isVisible() re-resolves it, Mink throws an
+     * "Tag matching xpath //DIV[@id=..] not found" (stale element) error.
+     * That transient race must NOT fail the whole "app loaded" wait, because the
+     * app does appear a moment later. Therefore any exception inside the polling
+     * callback is swallowed and treated as "not ready yet" so polling continues
+     * until the element is stably present or the timeout is reached.
+     *
      * @param string $appId The application ID to wait for
      */
     private function waitForAppId(string $appId): void
     {
         $page = $this->session->getPage();
         $page->waitFor($this->defaultTimeouts['ajax'] * 1000, function () use ($page, $appId) {
-            $app = $page->findById($appId);
-            return $app && $app->isVisible();
+            try {
+                $app = $page->findById($appId);
+                return $app && $app->isVisible();
+            } catch (\Throwable $e) {
+                // Element became stale because UI5 re-rendered the root container
+                // between findById() and isVisible(). Keep polling instead of
+                // aborting - the app container will settle within the timeout.
+                return false;
+            }
         });
     }
 
