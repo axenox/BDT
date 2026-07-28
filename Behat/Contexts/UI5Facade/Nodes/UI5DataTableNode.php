@@ -274,6 +274,24 @@ class UI5DataTableNode extends UI5DataNode
                     $logbook
                 );
             }
+            // A calculated/formula column has no stored literal value: its cells are derived at
+            // render time (e.g. a concatenated label). The value we sourced comes from the filter's
+            // attribute and never equals such a derived cell, so verifying cell-by-cell reports 0/N
+            // matched even though the filter works and rows were returned. We detect a calculated
+            // attribute the same way the framework already detects formula values: a calculated
+            // attribute carries its formula in its data address (Expression::detectFormula). This
+            // mirrors the formula-VALUE skip above — there is no reliable literal to assert against.
+            $columnAttr        = ($column !== null && $column->isBoundToAttribute()) ? $column->getAttribute() : null;
+            $columnDataAddress = $columnAttr !== null ? $columnAttr->getDataAddress() : null;
+            if (is_string($columnDataAddress) && Expression::detectFormula($columnDataAddress)) {
+                $logbook->continueLine(' - skipped verification: column `' . $columnCaption . '` is a calculated attribute');
+                $result->setTitle($result->getTitle() . ' (column not verified: calculated attribute)');
+                return SubstepResult::createSkipped(
+                    'Column `' . $columnCaption . '` for filter `' . $filter->getCaption()
+                    . '` is a calculated attribute; the filter was applied but its column cannot be verified by a literal value',
+                    $logbook
+                );
+            }
         }
 
         if ($filterNode instanceof UI5RangeFilterNode) {
