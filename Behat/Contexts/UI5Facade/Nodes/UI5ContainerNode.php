@@ -97,6 +97,20 @@ class UI5ContainerNode extends UI5AbstractNode
     protected function checkChildWorksAsExpected(WidgetInterface $childWidget, LogBookInterface $logbook) : TestResultInterface
     {
         $childElementId = $this->getElementIdFromWidget($childWidget);
+        // Respect UI5's runtime visibility decision before doing anything else.
+        // WHY: a child widget can be visible in the server-side model (so isHidden()
+        // returns false and the caller does not skip it) yet be hidden by UI5 at render
+        // time because it had no data to show - e.g. empty tile groups like "Lieferscheine"
+        // or "Materialien". UI5 does not render such a control with its normal id; it emits
+        // an invisible placeholder <span id="sap-ui-invisible-{controlId}"
+        // class="sapUiHiddenPlaceholder">. The normal "#{controlId}" lookup then finds
+        // nothing and a genuinely-hidden control is misreported as a missing DOM element.
+        // Detecting the placeholder lets us skip it exactly like a model-hidden child.
+        if ($this->isHiddenByUI5Placeholder($childElementId)) {
+            $logbook->addLine('Skipping ' . $childWidget->getWidgetType()
+                . ' with id "' . $childElementId . '" — hidden by UI5 at runtime (invisible placeholder present)');
+            return SubstepResult::createPassed($logbook);
+        }
         $childWidgetElement = $this->getNodeElement()->find('css', '#' . $childElementId);
 
         // Give an asynchronously rendered child a chance to appear before declaring it missing.
@@ -134,27 +148,24 @@ class UI5ContainerNode extends UI5AbstractNode
     }
 
     /**
-     * Determines whether the given node is nested inside another widget.
-     *  * This check is crucial to prevent redundant testing of widgets that are already
-     *  managed by a parent widget (e.g., filters within a DataTable). It traverses
-     *  up the DOM tree from the current node:
-     *  - If it encounters another element with the '.exfw' class before reaching
-     *  this container, the node is considered "nested" and should be skipped.
-     *  - This ensures that each widget's 'itWorksAsExpected' is only triggered
-     *  once by its immediate logical parent.
-     * 
-     * @param $childNode
+     * Tells whether UI5 has rendered the given control as an invisible placeholder.
+     *
+     * WHY: UI5 hides a control with visible=false not by styling its real DOM but by
+     * replacing it with <span id="sap-ui-invisible-{controlId}"
+     * class="sapUiHiddenPlaceholder">. Such controls are intentionally off screen and
+     * must be treated as hidden even when the server-side widget model still reports
+     * them as visible (data-driven visibility). Without this the framework searches for
+     * the real id, finds nothing, and raises a false "Cannot find DOM element" failure.
+     *
+     * @param string $childElementId
      * @return bool
      */
-    private function isNodeInsideAnotherWidget($childNode): bool
+    private function isHiddenByUI5Placeholder(string $childElementId) : bool
     {
-        $parent = $childNode->getParent();
-        while ($parent !== null && $parent->getAttribute('id') !== $this->getNodeElement()->getAttribute('id')) {
-            if ($parent->hasClass('exfw')) {
-                return true;
-            }
-            $parent = $parent->getParent();
+        $placeholder = $this->getNodeElement()->find('css', '#sap-ui-invisible-' . $childElementId);
+        if ($placeholder === null) {
+            return false;
         }
-        return false;
+        return $placeholder->hasClass('sapUiHiddenPlaceholder');
     }
 }
