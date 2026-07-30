@@ -235,20 +235,30 @@ class UI5DataNode extends UI5AbstractNode
     {
         $skippedButtons = [];
         $failed = false;
+
+        // The button toolbar may still be re-rendering when we get here: the filter
+        // tests just above reset the data widget, which makes the table reload its
+        // data and re-create the toolbar buttons. Wait for those pending operations
+        // to settle before iterating the buttons, otherwise a button NodeElement
+        // grabbed now can go stale a moment later and trigger a
+        // "Tag matching xpath //BUTTON[@id=..] not found" error.
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
+
         foreach ($dataWidget->getButtons() as $buttonWidget) {
             if ($buttonWidget->isHidden()) {
                 continue;
             }
 
-            // Make sure, the button is visible
-            $buttonNodeElement = $this->getBrowser()->findButtonByCaption($buttonWidget->getCaption(), $this->getNodeElement());
-            if ($buttonNodeElement === null) {
+            // Resolve the button by its own widget id (stale-element resilient). Button
+            // widgets that share a caption but have no rendered, visible button of their
+            // own resolve to null here and are skipped, so the same physical button is
+            // never tested twice.
+            $buttonNode = $this->resolveButtonNode($buttonWidget);
+            if ($buttonNode === null) {
                 $skippedButtons['Button not visible'][] = $buttonWidget->getCaption();
                 $logbook->addLine('Skipping button `' . $buttonWidget->getCaption() . '` because not visible in UI');
                 continue;
             }
-
-            $buttonNode = UI5FacadeNodeFactory::createFromWidgetType($buttonWidget->getWidgetType(), $buttonNodeElement, $this->getSession(), $this->getBrowser());
 
             if (!$buttonNode->checkDisabled()) {
                 // Press the button in a substep
@@ -279,13 +289,85 @@ class UI5DataNode extends UI5AbstractNode
         }
         return $failed ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
     }
-    
+
+    /**
+     * Locates the DOM node for the given button widget and wraps it in a facade node,
+     * retrying if the underlying element goes stale.
+     *
+     * The button is located by its own widget id (via getElementIdFromWidget()), not by
+     * caption. Several button widgets can share a caption - for example a visible toolbar
+     * button and a button that is only bound to a double-click and therefore not rendered
+     * as its own visible button. A caption lookup would resolve all of them to the same
+     * physical button and test it repeatedly. Using the unique widget id, each widget
+     * maps to its own element; widgets without a rendered, visible button of their own
+     * simply resolve to null and are skipped by the caller.
+     *
+     * While iterating over the buttons of a data widget, UI5 can also re-render the toolbar
+     * (for example when the table finishes a background data reload after the filter tests).
+     * When that happens, a NodeElement fetched a moment earlier no longer resolves and the
+     * WebDriver throws a "Tag matching xpath //BUTTON[@id=..] not found" error. Such stale
+     * errors are treated as "not ready yet" and retried a few times.
+     *
+     * @param \exface\Core\Interfaces\WidgetInterface $buttonWidget
+     * @return FacadeNodeInterface|null
+     */
+    protected function resolveButtonNode($buttonWidget) : ?FacadeNodeInterface
+    {
+        $expectedId = $this->getElementIdFromWidget($buttonWidget);
+        $attempts = 3;
+        for ($attempt = 1; $attempt <= $attempts; $attempt++) {
+            try {
+                $buttonNodeElement = $this->getSession()->getPage()->findById($expectedId);
+                if ($buttonNodeElement === null || ! $buttonNodeElement->isVisible()) {
+                    return null;
+                }
+                $buttonNode = UI5FacadeNodeFactory::createFromWidgetType($buttonWidget->getWidgetType(), $buttonNodeElement, $this->getSession(), $this->getBrowser());
+                // Touch the element once so a stale handle surfaces here (inside the
+                // retry loop) rather than later in checkDisabled()/click().
+                $buttonNode->checkDisabled();
+                return $buttonNode;
+            } catch (\Throwable $e) {
+                // Only retry stale-element races - re-throw anything else immediately.
+                if (! $this->isStaleElementError($e) || $attempt >= $attempts) {
+                    throw $e;
+                }
+                // The toolbar is still re-rendering - let it settle and try again.
+                $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Returns true if the given throwable is a "stale element" error, i.e. the
+     * previously located DOM node was replaced by UI5 before it could be used.
+     *
+     * These surface from the WebDriver as messages like
+     * "Tag matching xpath //BUTTON[@id=..] not found" or "stale element reference".
+     *
+     * @param \Throwable $e
+     * @return bool
+     */
+    protected function isStaleElementError(\Throwable $e) : bool
+    {
+        $current = $e;
+        while ($current !== null) {
+            $msg = $current->getMessage();
+            if (stripos($msg, 'Tag matching xpath') !== false
+                || stripos($msg, 'stale element') !== false
+            ) {
+                return true;
+            }
+            $current = $current->getPrevious();
+        }
+        return false;
+    }
+
     protected function checkFilterWorksAsExpected(iFilterData $filter, iShowData $dataWidget, UI5FilterNode $filterNode, SubstepResult $result) : SubstepResult
     {
         $logbook = $result->getLogbook();
         return SubstepResult::createSkipped('No function defined for this widget `' . $this->getWidgetType() . '`', $logbook);
     }
-    
     protected function findColumnWithAttribute(iHaveColumns $dataWidget, MetaAttributeInterface $attribute, LogBookInterface $logbook) : ?DataColumn
     {
         foreach ($dataWidget->getColumns() as $i => $column) {
