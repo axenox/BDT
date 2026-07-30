@@ -358,7 +358,10 @@ class UI5DataNode extends UI5AbstractNode
         
         // if it is not relation return the value that is found
         if (!$attr->isRelation()) {
-            $returnColumn = $attr->getAlias();
+            // isRelation() is only true when the attribute itself is a foreign key. A plain attribute
+            // reached through a relation path (e.g. "Rel__Name") is NOT a relation, so it lands here and
+            // must still carry its relation path, exactly like the InputComboTable branch above already does.
+            $returnColumn = $attr->getAliasWithRelationPath();
             while(empty($values)) {
                 $val = $this->findValueInDataSourceQuery($inputWidget->getMetaObject(), $attr, $returnColumn, $sort, $rowIndex);
                 $datatype = $attr->getDataType();
@@ -437,14 +440,20 @@ class UI5DataNode extends UI5AbstractNode
         }
 
         if ($sort !== null) {
-            $ds->getSorters()->addFromString($attr->getAlias(), $sort);
+            // Sorters resolve strictly against the sheet object, so they need the full relation path.
+            // getAlias() drops it and addFromString() then throws "no matching attribute could be found"
+            // for any filter attribute that lives behind a relation (e.g. "Name" on TrasseDashboard).
+            // getAliasWithRelationPath() equals getAlias() for direct attributes, so this is safe for both.
+            $ds->getSorters()->addFromString($attr->getAliasWithRelationPath(), $sort);
         }
 
         $ds->getFilters()->addConditionForAttributeIsNotNull($attr);
         $ds->dataRead(1, $rowIndex);
 
         $col = ($returnColumn !== null ? $ds->getColumn($returnColumn) : null)
-            ?? $ds->getColumn($attr->getAlias());
+            // addFromAttribute() above keys the column by its relation-path alias; the fallback lookup
+            // must use the same key or it returns null for relation-path attributes.
+            ?? $ds->getColumn($attr->getAliasWithRelationPath());
         if ($col === null) {
             return null;
         }
@@ -724,7 +733,9 @@ class UI5DataNode extends UI5AbstractNode
             $candidate = $this->findValueInDataSourceQuery(
                 $filterWidget->getInputWidget()->getMetaObject(),
                 $attr,
-                $attr->getAlias(),
+                // Pass the relation-path alias so the upper-bound column is added and read under the same
+                // key addFromAttribute() uses; the bare alias would read back as null for relation attrs.
+                $attr->getAliasWithRelationPath(),
                 'DESC',
                 $rowIndex
             );
