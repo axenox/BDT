@@ -738,7 +738,23 @@ class UI5WaitManager
             extracted = (txt && /fehler/i.test(txt)) ? txt : 'UI5 error page shown (Fehler text not found)';
           }
 
+          // Try to extract a server-side Log-ID from the response body so the
+          // test report references the exact log entry even when no readable
+          // error text could be extracted. The platform renders log ids in
+          // several ways, e.g. "Log ID: 0ABCDEF", "LogID 0ABCDEF" or a bare
+          // 6-10 char upper-case alphanumeric code near the word "Log".
+          var logId = '';
+          var lm = body.match(/Log[\s\-_]?ID[\s:]*([0-9A-Z]{6,10})/i)
+                 || body.match(/"log_id"\s*:\s*"([0-9A-Z]{6,10})"/i)
+                 || body.match(/\blog[_-]?id["'\s:=]+([0-9A-Z]{6,10})/i);
+          if (lm && lm[1]) logId = lm[1];
+
           if (!extracted) extracted = 'Application error detected (see response)';
+          // Always surface the Log-ID in the message when we found one, so it
+          // is visible in the step record without having to open the details.
+          if (logId && extracted.indexOf(logId) === -1) {
+            extracted = extracted + ' (Log-ID: ' + logId + ')';
+          }
 
           pushError({
             type: 'AppError',
@@ -748,6 +764,7 @@ class UI5WaitManager
             method: xhr.__exfMethod || '',
             url: url,
             message: extracted,
+            logId: logId,
             response: body
           });
         }
@@ -888,11 +905,39 @@ JS
                     'JSError' => 'JavaScript',
                     'AppError' => 'App'
                 ];
+
+                // Build a message, that already contains enough context to
+                // diagnose the error directly from the step record, without
+                // having to dig into the (often invisible) response details:
+                // - the Log-ID, if the interceptor managed to extract one
+                // - a short snippet of the response body as a fallback
+                $message = $error['message'];
+                $logId = $error['logId'] ?? '';
+                $response = $error['response'] ?? '';
+                if ($logId !== '' && strpos($message, $logId) === false) {
+                    $message .= ' (Log-ID: ' . $logId . ')';
+                }
+                if ($response !== '') {
+                    // Keep only the first meaningful characters of the response
+                    // so the message stays readable but still shows the cause.
+                    $snippet = trim(preg_replace('/\s+/', ' ', strip_tags($response)));
+                    if ($snippet !== '' && strpos($message, $snippet) === false) {
+                        $message .= ' | Response: ' . mb_substr($snippet, 0, 500);
+                    }
+                }
+
                 $exception = new UIException(
-                    $error['message'],
+                    $message,
                     null,
                     null,
-                    ['Source' => 'UI5WaitManager', 'Type' => $map[$type], 'Details' => $error]
+                    [
+                        'Source' => 'UI5WaitManager',
+                        'Type' => $map[$type] ?? $type,
+                        'Log-ID' => $logId,
+                        'URL' => $error['url'] ?? '',
+                        'Response' => $response,
+                        'Details' => $error
+                    ]
                 );
             }
         }
