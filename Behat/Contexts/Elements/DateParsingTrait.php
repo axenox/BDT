@@ -32,14 +32,28 @@ trait DateParsingTrait
      * in exactly one place. Seconds are always stripped from the output because
      * SAP UI5 date/datetime inputs never display seconds.
      *
+     * An empty value is returned unchanged (see the guard below): it means "no date",
+     * not a malformed one, so it must not raise a parse error.
+     *
      * @param string $value       Raw value coming from the UI or a test step
      * @param string $caption     Caption of the filter for error messages
      * @param bool   $includeTime When true, returns "Y-m-d H:i"; otherwise "Y-m-d"
-     * @return string             Normalized ISO string
-     * @throws \InvalidArgumentException When the value cannot be parsed as a date
+     * @return string             Normalized ISO string, or "" when $value is empty
+     * @throws \InvalidArgumentException When a non-empty value cannot be parsed as a date
      */
     public function normalizeDateToIso(string $value, string $caption, bool $includeTime = false): string
     {
+        // An empty value is the absence of a date (a cleared or never-set filter), not a malformed one.
+        // Callers reach this method whenever they compare a date field's current value, and a range
+        // filter that was never set legitimately reads back empty. Returning "" here lets every caller
+        // compare empty-vs-empty (match) or empty-vs-date (a clean assertion mismatch) instead of dying
+        // with "Cannot parse date value ``". A non-empty but unparseable value is still a real error and
+        // keeps throwing below. Fixing this at the single throw site covers all callers at once, so no
+        // per-caller empty guard is needed.
+        if (trim($value) === '') {
+            return '';
+        }
+
         $timestamp = $this->parseDateFlexible($value);
 
         if ($timestamp === null) {
