@@ -388,14 +388,26 @@ class UI5DataTableNode extends UI5DataNode
     {
         $skippedButtons = [];
         $failed = false;
+
+        // The toolbar may still be re-rendering when we get here, because the filter
+        // tests just above reset the data widget and made the table reload its data.
+        // Wait for those pending operations to settle before touching the buttons,
+        // otherwise a button element grabbed now goes stale a moment later and
+        // triggers a "Tag matching xpath //BUTTON[@id=..] not found" error.
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
+
+        $rowNumber = null;
         foreach ($dataWidget->getButtons() as $buttonWidget) {
             if ($buttonWidget->isHidden()) {
                 continue;
             }
 
-            // Make sure, the button is visible
-            $buttonNodeElement = $this->getBrowser()->findButtonByCaption($buttonWidget->getCaption(), $this->getNodeElement());
-            if ($buttonNodeElement === null) {
+            // Resolve the button by its own widget id (stale-element resilient). Button
+            // widgets that share a caption but have no rendered, visible button of their
+            // own resolve to null here and are skipped, so the same physical button is
+            // never tested twice.
+            $buttonNode = $this->resolveButtonNode($buttonWidget);
+            if ($buttonNode === null) {
                 $skippedButtons['Button not visible'][] = $buttonWidget->getCaption();
                 $logbook->addLine('Skipping button `' . $buttonWidget->getCaption() . '` because not visible in UI');
                 continue;
@@ -418,11 +430,31 @@ class UI5DataTableNode extends UI5DataNode
                     continue 2;
             }
 
-            $buttonNode = UI5FacadeNodeFactory::createFromWidgetType($buttonWidget->getWidgetType(), $buttonNodeElement, $this->getSession(), $this->getBrowser());
+            // Selecting a row changes the ~input data behind the toolbar, which can
+            // re-evaluate the button's hidden_if/disabled_if and re-render (or remove)
+            // the button. Any button element fetched before the selection is now stale,
+            // so always re-resolve the button node after changing the row selection.
+            $buttonNode = $this->resolveButtonNode($buttonWidget);
+            if ($buttonNode === null) {
+                $skippedButtons['Button not visible'][] = $buttonWidget->getCaption();
+                $logbook->addLine('Skipping button `' . $buttonWidget->getCaption() . '` because it is no longer shown after selecting a row');
+                continue;
+            }
 
             while ($buttonNode->checkDisabled() && $rowNumber < $this->getLoadedRowCount()) {
                 $this->selectRow($rowNumber);
                 $this->selectRow(++$rowNumber);
+                // Each selection re-renders the toolbar - re-resolve the (possibly
+                // replaced) button node before the next checkDisabled() call.
+                $buttonNode = $this->resolveButtonNode($buttonWidget);
+                if ($buttonNode === null) {
+                    break;
+                }
+            }
+            if ($buttonNode === null) {
+                $skippedButtons['Button not visible'][] = $buttonWidget->getCaption();
+                $logbook->addLine('Skipping button `' . $buttonWidget->getCaption() . '` because it is no longer shown after selecting rows');
+                continue;
             }
             $urlBeforeClick = $this->getSession()->getCurrentUrl();
             if (!$buttonNode->checkDisabled()) {
