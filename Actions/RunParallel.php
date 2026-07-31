@@ -487,6 +487,24 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
+     * Formats one CLI option as "--name=value" for the reproducible command, quoting the value ONLY
+     * when it contains a space.
+     *
+     * Why quoting must be conditional: the resulting command is injected into the Test Runs console's
+     * start_commands JSON array. A double quote is the JSON string delimiter and is escaped to \" when
+     * that array is serialised to the browser, reaching the shell literally. A space-free value (a plain
+     * tag expression or a suite name) therefore emits unquoted and stays JSON-clean, exactly like the
+     * console's static init start command. A value that genuinely contains spaces still needs shell
+     * quoting; that case belongs at the console-template layer, not embedded in this string.
+     */
+    private function cliOption(string $name, string $value): string
+    {
+        return strpos($value, ' ') === false
+            ? ' --' . $name . '=' . $value
+            : ' --' . $name . '="' . $value . '"';
+    }
+    
+    /**
      * Writes the single lane config next to the base behat.yml and returns its path.
      *
      * Why imports the base instead of duplicating it: the lane sits in the same directory as
@@ -1758,22 +1776,26 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * behat_command column.
      *
      * Why the coordinator action invocation rather than a behat command: a parallel run spawns one
-     * behat command per feature, differing by lane config and feature file, so there is no single behat
-     * command to record. The action invocation with its resolved scope selectors is the value that
-     * reproduces the whole run. Only selectors the operator actually set are included, so the string
-     * mirrors what was really passed.
+     * behat command per feature, so there is no single behat command to record; the action invocation
+     * with its resolved scope selectors is the value that reproduces the whole run.
+     *
+     * Why FORWARD slashes: this string is later injected into the Test Runs console widget's
+     * start_commands, a JSON array. A Windows backslash is the JSON escape character, so
+     * "vendor\bin\action" ships to the browser as "vendor\\bin\\action" and runs literally with doubled
+     * separators. Forward slashes resolve identically on Windows and carry no JSON meaning, matching the
+     * console's own static "vendor/bin/action ... Behat init" start command.
      */
     private function describeInvocation(?string $tags, ?string $feature, ?string $suite): string
     {
-        $cmd = 'vendor\\bin\\action axenox.BDT:RunParallel';
+        $cmd = 'vendor/bin/action axenox.BDT:RunParallel';
         if ($tags !== null && $tags !== '') {
-            $cmd .= ' --tags="' . $tags . '"';
+            $cmd .= $this->cliOption('tags', $tags);
         }
         if ($feature !== null && $feature !== '') {
-            $cmd .= ' --feature="' . $feature . '"';
+            $cmd .= $this->cliOption('feature', $feature);
         }
         if ($suite !== null && $suite !== '') {
-            $cmd .= ' --suite="' . $suite . '"';
+            $cmd .= $this->cliOption('suite', $suite);
         }
         return $cmd;
     }
