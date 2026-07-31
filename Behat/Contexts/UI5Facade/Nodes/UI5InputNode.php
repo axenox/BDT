@@ -52,21 +52,29 @@ class UI5InputNode extends UI5AbstractNode
         return $this->setValueVisible('', $validate);
     }
 
+    /**
+     * Validates that a UI5 input's current value equals an expected value, using a
+     * comparison strategy appropriate to the widget's data type.
+     *
+     * WHY THIS EXISTS: date/datetime inputs cannot be compared as plain strings — the
+     * field re-renders whatever is typed into its own locale/precision format, so the
+     * echoed-back value rarely matches the typed one character-for-character. This method
+     * routes date/datetime widgets through a display-precision date comparison and every
+     * other widget through a direct value comparison, so callers get a single, correct
+     * "does the field hold what I set?" check regardless of widget type.
+     */
     public function checkValueEquals($expectedValue) : FacadeNodeInterface
     {
         $newVal = $this->getValueVisible() ?? '';
         $el = $this->getNodeElement();
 
         if ($el->hasClass('exfw-InputDate') || $el->hasClass('exfw-InputDateTime')) {
-            $isDateTime = $el->hasClass('exfw-InputDateTime');
-
-            // A date filter reset clears the field, so the expected/actual value is an
-            // empty string. An empty value is not a parseable date — routing it through
-            // normalizeDateToIso() would throw "Cannot parse date value ``" instead of
-            // performing the intended comparison. When either side is empty we compare
-            // the raw (trimmed) strings directly: two empties match (filter cleared),
-            // and an empty-vs-date case fails as a clean assertion rather than a parse
-            // exception.
+            // A date filter reset clears the field, so the expected/actual value is an empty string.
+            // An empty value is not a parseable date, and datesEqualAtDisplayPrecision() returns false
+            // for it — routing empties through the date comparison would report a mismatch for a
+            // legitimately cleared filter. When either side is empty we compare the raw (trimmed)
+            // strings directly: two empties match (filter cleared), and an empty-vs-date case fails
+            // as a clean assertion.
             $expectedTrimmed = trim((string) $expectedValue);
             $actualTrimmed   = trim((string) $newVal);
             if ($expectedTrimmed === '' || $actualTrimmed === '') {
@@ -78,9 +86,18 @@ class UI5InputNode extends UI5AbstractNode
                 return $this;
             }
 
-            Assert::assertSame(
-                $this->normalizeDateToIso($expectedValue, $this->getCaption(), $isDateTime),
-                $this->normalizeDateToIso($newVal, $this->getCaption(), $isDateTime),
+            // Compare at the precision the input can physically display, not at full-year precision.
+            // A UI5 date input configured with a 2-digit year (dd.MM.yy) cannot echo back a value's
+            // century: sourcing a real filter value whose year falls outside the 2-digit pivot window
+            // (e.g. "0202-07-01") makes the field show "01.07.02", which reads back as year 2002.
+            // A full-year ISO comparison (normalizeDateToIso + assertSame) would then flag a mismatch
+            // for a field that in fact accepted the value. datesEqualAtDisplayPrecision() re-renders the
+            // expected value in the field's own display format (learned from the actual value), so it
+            // still catches a genuine day/month/2-digit-year mismatch while tolerating a century the
+            // field never displayed. The datetime case is handled automatically, since the format is
+            // derived from the actual value rather than a fixed flag.
+            Assert::assertTrue(
+                $this->datesEqualAtDisplayPrecision($expectedTrimmed, $actualTrimmed),
                 "Expected date `$expectedValue` does not match actual `$newVal` in filter '{$this->getCaption()}'"
             );
             return $this;
