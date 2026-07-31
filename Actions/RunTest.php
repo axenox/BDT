@@ -425,27 +425,50 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
     }
 
     /**
-     * Builds the durable, rerunnable command stored in the run's behat_command column.
+     * Reconstructs a reproducible description of what this coordinator ran, for the run row's
+     * behat_command column.
      *
-     * WHY NOT buildBehatCommand()'s STRING: that one is "vendor\bin\behat --config
-     * behat_interactive_<port>.yml ...", whose config file is per-run, port-specific and deleted
-     * when the run ends - useless when the Test Runs page reruns it later. The reproducible value
-     * is the ACTION invocation with the selectors the tester actually chose, exactly as
-     * RunParallel::describeInvocation() records for the fleet, so both run types rerun the same way.
+     * Why the coordinator action invocation rather than a behat command: a parallel run spawns one
+     * behat command per feature, so there is no single behat command to record; the action invocation
+     * with its resolved scope selectors is the value that reproduces the whole run.
+     *
+     * Why FORWARD slashes: this string is later injected into the Test Runs console widget's
+     * start_commands, a JSON array. A Windows backslash is the JSON escape character, so
+     * "vendor\bin\action" ships to the browser as "vendor\\bin\\action" and runs literally with doubled
+     * separators. Forward slashes resolve identically on Windows and carry no JSON meaning, matching the
+     * console's own static "vendor/bin/action ... Behat init" start command.
      */
-    private function describeInvocation(string $suite, string $tags, string $feature): string
+    private function describeInvocation(?string $suite, ?string $tags, ?string $feature ): string
     {
-        $cmd = 'vendor\\bin\\action ' . self::APP_ALIAS . ':RunTest';
-        if ($tags !== '') {
-            $cmd .= ' --tags="' . $tags . '"';
+        $cmd = 'vendor/bin/action axenox.BDT:RunTest';
+        if ($tags !== null && $tags !== '') {
+            $cmd .= $this->cliOption('tags', $tags);
         }
-        if ($feature !== '') {
-            $cmd .= ' --feature="' . $feature . '"';
+        if ($feature !== null && $feature !== '') {
+            $cmd .= $this->cliOption('feature', $feature);
         }
-        if ($suite !== '') {
-            $cmd .= ' --suite="' . $suite . '"';
+        if ($suite !== null && $suite !== '') {
+            $cmd .= $this->cliOption('suite', $suite);
         }
         return $cmd;
+    }
+
+    /**
+     * Formats one CLI option as "--name=value" for the reproducible command, quoting the value ONLY
+     * when it contains a space.
+     *
+     * Why quoting must be conditional: the resulting command is injected into the Test Runs console's
+     * start_commands JSON array. A double quote is the JSON string delimiter and is escaped to \" when
+     * that array is serialised to the browser, reaching the shell literally. A space-free value (a plain
+     * tag expression or a suite name) therefore emits unquoted and stays JSON-clean, exactly like the
+     * console's static init start command. A value that genuinely contains spaces still needs shell
+     * quoting; that case belongs at the console-template layer, not embedded in this string.
+     */
+    private function cliOption(string $name, string $value): string
+    {
+        return strpos($value, ' ') === false
+            ? ' --' . $name . '=' . $value
+            : ' --' . $name . '="' . $value . '"';
     }
     
 
