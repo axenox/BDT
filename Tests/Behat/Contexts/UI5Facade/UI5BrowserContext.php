@@ -983,6 +983,16 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             throw new RuntimeException("Button '$caption' not found in the current widget or page");
         }
 
+        // Make sure the button is not disabled before attempting to click it.
+        // Mirrors UI5ButtonNode::checkDisabled(), which treats the presence of the
+        // "disabled" attribute as the button being disabled. Clicking a disabled
+        // button would either be silently ignored by UI5 or throw an obscure driver
+        // error, so fail early with a clear assertion message instead.
+        Assert::assertFalse(
+            $button->hasAttribute('disabled'),
+            'Button "' . $caption . '" is disabled and cannot be clicked'
+        );
+
         // highlight the button with highlightWidget
         $this->getBrowser()->highlightWidget(
             $button,
