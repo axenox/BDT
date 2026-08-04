@@ -805,7 +805,22 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             }
             if ($e) {
                 $ds->setCellValue('error_message', 0, $e->getMessage());
-                if(!empty($logId = ErrorManager::getInstance()->getLastLogId())) {
+
+                // WHY: a FAILED step must carry a log id that resolves to THIS exception's detail,
+                // otherwise the UI cannot build ERROR_WIDGET for it and ShowDialogFromData fails with
+                // "UXON column ERROR_WIDGET not found in input data". Relying on the ambient
+                // ErrorManager::getLastLogId() is unsafe here: driver/Behat exceptions (e.g. the Chrome
+                // mink-driver "/json/version" failure) never pass through ExFace's ErrorManager, so the
+                // ambient id is either empty (no widget) or stale from an unrelated earlier error (wrong
+                // widget). We therefore bind the id to $e directly: ExFace exceptions already own one;
+                // any other Throwable is logged now so a fresh detail file and id exist for it.
+                if ($e instanceof ExceptionInterface) {
+                    $logId = $e->getLogId();
+                } else {
+                    $this->workbench->getLogger()->logException($e);
+                    $logId = ErrorManager::getInstance()->getLastLogId();
+                }
+                if (!empty($logId)) {
                     $ds->setCellValue('error_log_id', 0, $logId);
                 }
             }
