@@ -2285,7 +2285,16 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 if (++$attempt >= $maxAttempts) {
                     throw new BrowserDriverException($this->getSession(), 'Cannot open path "' . $path . '" in browser after ' . $attempt . ' attempts.', null, $e, $this->browser);
                 }
-                // CDP dropped mid-navigation — wait for it to recover, then retry in place.
+                // WHY: a CDP error here has two distinct causes needing different handling. A Chrome
+                // that is alive but was momentarily too slow to answer (the driver's /json/version
+                // probe on the first visit) clears on its own, so a plain backoff + retry is enough.
+                // A Chrome that actually died will never answer again, and retrying against a dead
+                // process burns every attempt on the same socket failure. ensureChromeAlive() tells
+                // the two apart: it is a no-op when isAlive() is true, and restarts (or, if a login
+                // already happened, recovers) Chrome when it is gone - so the retry below lands on a
+                // live browser. It never throws, so calling it inside this loop is safe.
+                $this->ensureChromeAlive();
+                // CDP transient — give a still-alive-but-slow browser time to settle, then retry.
                 $this->sleepBeforeVisitRetry($attempt);
             }
         }
