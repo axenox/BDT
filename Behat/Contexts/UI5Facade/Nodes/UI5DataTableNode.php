@@ -16,10 +16,13 @@ use exface\Core\DataTypes\NumberEnumDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Factories\SelectorFactory;
+use exface\Core\Interfaces\Actions\ActionInterface;
 use exface\Core\Interfaces\DataTypes\DataTypeInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
+use exface\Core\Interfaces\Model\MetaAttributeInterface;
 use exface\Core\Interfaces\Widgets\iFilterData;
 use exface\Core\Interfaces\Widgets\iHaveButtons;
+use exface\Core\Interfaces\Widgets\iHaveColumns;
 use exface\Core\Interfaces\Widgets\iShowData;
 use exface\Core\Widgets\DataColumn;
 use PHPUnit\Framework\Assert;
@@ -82,6 +85,36 @@ class UI5DataTableNode extends UI5DataNode
         return $nodes;
     }
 
+    /**
+     * Ensures the row-selection precondition of the given action is satisfied before
+     * the action is triggered.
+     *
+     * Why this exists:
+     * Actions bound to table rows (getInputRowsMin() > 0) fail with a "please select a
+     * row" error unless a row is selected first. Centralizing this here - instead of
+     * reacting to the error at each call site - lets every caller (toolbar buttons,
+     * menu-button entries, ...) satisfy the precondition deterministically from the
+     * action model. Re-selecting an already selected row is avoided, because clicking a
+     * selected row selector toggles it back off.
+     *
+     * @param ActionInterface $action
+     * @return bool True if the precondition is satisfied (or not required); false if a
+     *              row is required but the table has no rows to select.
+     */
+    public function ensureRowSelectedForAction(ActionInterface $action): bool
+    {
+        if ($action->getInputRowsMin() < 1) {
+            return true;
+        }
+        if ($this->getLoadedRowCount() < 1) {
+            return false;
+        }
+        if (! $this->isRowSelected(1)) {
+            $this->selectRow(1);
+        }
+        return true;
+    }
+
     protected function getLoadedRowCount(): ?int
     {
         return count($this->getTableRows());
@@ -96,7 +129,7 @@ class UI5DataTableNode extends UI5DataNode
         Assert::assertNotEmpty($rows, "No rows found in table");
 
         if (count($rows) < $rowIndex + 1) {
-            throw new \RuntimeException("Row {$rowNumber} not found. Only " . count($rows) . " rows available.");
+            throw new RuntimeException("Row {$rowNumber} not found. Only " . count($rows) . " rows available.");
         }
 
         $row = $rows[$rowIndex];
@@ -120,6 +153,46 @@ class UI5DataTableNode extends UI5DataNode
             "return jQuery('#{$tableId} .sapUiTableTr, #{$tableId} .sapMListTblRow').eq({$rowIndex}).hasClass('sapUiTableRowSel');"
         );
         return $isSelected;
+    }
+
+    /**
+     * Walks the rows of the first page, selecting one at a time, until the given
+     * predicate is satisfied.
+     *
+     * Why this exists:
+     * Some actions are enabled only for specific rows, so callers must try rows until
+     * the target becomes actionable. Centralizing the row iteration here keeps the
+     * selection mechanics (toggle-off the previous row, select exactly one) in the
+     * DataTable, while the caller decides - via the predicate - what "actionable"
+     * means (e.g. a toolbar button becoming enabled, or a menu entry losing its
+     * aria-disabled state). Exactly one row is kept selected at a time, because
+     * clicking a selected row selector toggles it back off.
+     *
+     * @param callable $predicate Called after each row is selected; receives the
+     *                            1-based row number and returns true to stop.
+     * @return bool True if the predicate was satisfied on some row; false if no row
+     *              on the first page satisfied it (or the table is empty).
+     */
+    public function selectEachRowUntil(callable $predicate): bool
+    {
+        $count = $this->getLoadedRowCount();
+        if ($count < 1) {
+            return false;
+        }
+        $previous = null;
+        for ($rowNumber = 1; $rowNumber <= $count; $rowNumber++) {
+            if ($previous !== null && $this->isRowSelected($previous)) {
+                $this->selectRow($previous);
+            }
+            if (! $this->isRowSelected($rowNumber)) {
+                $this->selectRow($rowNumber);
+            }
+            $previous = $rowNumber;
+            if ($predicate($rowNumber) === true) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public function getElementId() : string
@@ -384,6 +457,110 @@ class UI5DataTableNode extends UI5DataNode
         return $result;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * Refines the generic, model-only matching of the parent (see
+     * UI5DataNode::findColumnWithAttribute) using the actually rendered table headers.
+     *
+     * The parent returns the FIRST column whose attribute matches the filter attribute - either
+     * exactly, or via the LABEL/relation-path heuristic (endsWith). When several columns can match
+     * the same filter attribute - e.g. a foreign-key column plus the related LABEL column, or two
+     * columns showing the same relation under different captions - that first match can be a column
+     * that is not rendered as a header in the DOM, even though a matching, rendered column exists.
+     * The caption of the non-rendered column is then handed to verifyTableContent(), which fails
+     * with "Column '...' not found in table" although the filter itself worked. This is exactly the
+     * "the code thinks it found the column, but the column is not actually in the table" problem.
+     *
+     * This override collects every model candidate and returns the best one, preferring in order:
+     *   1. an exact attribute match whose caption is actually rendered as a header,
+     *   2. a fuzzy (LABEL/relation) match whose caption is rendered,
+     *   3. an exact match (even if not rendered),
+     *   4. a fuzzy match (even if not rendered).
+     * So the returned column is the one the content verification can locate whenever such a column
+     * exists, while the previous behaviour is preserved as the fallback when nothing is rendered.
+     *
+     * @see UI5DataNode::findColumnWithAttribute()
+     *
+     * @param iHaveColumns $dataWidget
+     * @param MetaAttributeInterface $attribute
+     * @param LogBookInterface $logbook
+     * @return DataColumn|null
+     */
+    protected function findColumnWithAttribute(iHaveColumns $dataWidget, MetaAttributeInterface $attribute, LogBookInterface $logbook) : ?DataColumn
+    {
+        $exactMatch = null;
+        $exactRendered = null;
+        $fuzzyMatch = null;
+        $fuzzyRendered = null;
+
+        foreach ($dataWidget->getColumns() as $column) {
+            // Hidden and non-attribute columns can never be verified against a filter value.
+            if ($column->isHidden() || ! $column->isBoundToAttribute()) {
+                continue;
+            }
+
+            $rendered = $this->isColumnHeaderRendered($column->getCaption());
+            switch (true) {
+                // Exact attribute match points at the column that literally shows this filter's attribute.
+                case $column->getAttribute()->is($attribute):
+                    $exactMatch = $exactMatch ?? $column;
+                    if ($rendered && $exactRendered === null) {
+                        $exactRendered = $column;
+                    }
+                    break;
+                // Fuzzy LABEL/relation match is only a fallback (e.g. filter on a foreign key while the
+                // table shows the related LABEL).
+                // TODO replace endsWith() with proper detection of LABELs
+                case $this->endsWith($column->getAttributeAlias(), $attribute->getAliasWithRelationPath()):
+                    $fuzzyMatch = $fuzzyMatch ?? $column;
+                    if ($rendered && $fuzzyRendered === null) {
+                        $fuzzyRendered = $column;
+                    }
+                    break;
+            }
+        }
+
+        return $exactRendered ?? $fuzzyRendered ?? $exactMatch ?? $fuzzyMatch;
+    }
+
+    /**
+     * Tells whether a column with the given caption is actually rendered as a header in the table
+     * DOM, covering both sap.ui.table (frozen/scroll split) and sap.m.Table layouts.
+     *
+     * Used by findColumnWithAttribute() to prefer a column the content verification can actually
+     * locate: a column can be present in the widget model yet never appear as a visible header
+     * (e.g. two model columns bound to the same relation, only one of which is rendered).
+     *
+     * @param string $caption
+     * @return bool
+     */
+    protected function isColumnHeaderRendered(string $caption) : bool
+    {
+        $caption = trim($caption);
+
+        // sap.ui.table headers carry the caption in a <label> inside the header cell.
+        $headerCells = $this->getNodeElement()->findAll(
+            'css',
+            '.sapUiTableColHdrCnt .sapUiTableHeaderDataCell[data-sap-ui-colid]:not(.sapUiTableCellDummy)'
+        );
+        foreach ($headerCells as $cell) {
+            $label = $cell->find('css', 'label') ?? $cell;
+            if (trim($label->getText()) === $caption) {
+                return true;
+            }
+        }
+
+        // sap.m.Table headers (no data-sap-ui-colid).
+        foreach ($this->getNodeElement()->findAll('css', '.sapMListTblHeader .sapMColumnHeader') as $header) {
+            if (trim($header->getText()) === $caption) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     protected function checkButtonsWorkAsExpected(iHaveButtons $dataWidget, LogBookInterface $logbook) : TestResultInterface
     {
         $skippedButtons = [];
@@ -415,6 +592,25 @@ class UI5DataTableNode extends UI5DataNode
 
             // Make sure the action has everything it needs from the data widget
             $action = $buttonWidget->getAction();
+            // A MenuButton exposes no action of its own - its menu entries carry the
+            // actions. Route it to its node (UI5MenuButtonNode) so every entry is
+            // validated, instead of skipping it below as "Button has no action".
+            if ($action === null && $buttonWidget instanceof iHaveButtons) {
+                $menuNode = $buttonNode;
+                $menuResult = $this->runAsSubstep(
+                    function() use ($menuNode, $logbook) {
+                        return $menuNode->checkWorksAsExpected($logbook);
+                    },
+                    'Checking menu "' . $buttonWidget->getCaption() . '"',
+                    'Dialogs',
+                    $logbook
+                );
+                if ($menuResult->isFailed()) {
+                    $failed = true;
+                }
+                continue;
+            }
+            
             $rowNumber = 1;
             switch (true) {
                 case $action === null:
@@ -422,9 +618,7 @@ class UI5DataTableNode extends UI5DataNode
                     $logbook->addLine('Skipping button ' . $this->getCaption() . ' because it has no action');
                     continue 2;
                 case $action->getInputRowsMin() > 0:
-                    if(! $this->isRowSelected($rowNumber)) {
-                        $this->selectRow($rowNumber);
-                    }
+                    $this->ensureRowSelectedForAction($action);
                     break;
                 default:
                     continue 2;
@@ -441,16 +635,8 @@ class UI5DataTableNode extends UI5DataNode
                 continue;
             }
 
-            while ($buttonNode->checkDisabled() && $rowNumber < $this->getLoadedRowCount()) {
-                $this->selectRow($rowNumber);
-                $this->selectRow(++$rowNumber);
-                // Each selection re-renders the toolbar - re-resolve the (possibly
-                // replaced) button node before the next checkDisabled() call.
-                $buttonNode = $this->resolveButtonNode($buttonWidget);
-                if ($buttonNode === null) {
-                    break;
-                }
-            }
+            $this->selectEachRowUntil(fn() => ! $buttonNode->checkDisabled());
+            $buttonNode = $this->resolveButtonNode($buttonWidget);
             if ($buttonNode === null) {
                 $skippedButtons['Button not visible'][] = $buttonWidget->getCaption();
                 $logbook->addLine('Skipping button `' . $buttonWidget->getCaption() . '` because it is no longer shown after selecting rows');

@@ -240,6 +240,6 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
     
     public function checkDisabled(): bool
     {
-        return $this->getNodeElement()->hasAttribute('disabled');
+        return $this->getNodeElement()->hasAttribute('disabled') || $this->getNodeElement()->getAttribute('aria-disabled') === 'true';
     }
 }
