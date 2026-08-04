@@ -425,6 +425,69 @@
                                 ]
                             },
                             {
+                                "caption": "Failed steps",
+                                "widgets": [
+                                    {
+                                        "widget_type": "DataTable",
+                                        "object_alias": "axenox.BDT.run_step",
+                                        "hide_caption": true,
+                                        "height": "100%",
+                                        "width": "100%",
+                                        "filters": [
+                                            {
+                                                "attribute_alias": "run_scenario__run_feature__run__UID",
+                                                "comparator": "==",
+                                                "required": true,
+                                                "hidden": true,
+                                                "value": "=run_uid_field"
+                                            },
+                                            {
+                                                "attribute_alias": "status",
+                                                "value": 101
+                                            }
+                                        ],
+                                        "columns": [
+                                            {
+                                                "attribute_alias": "error_message",
+                                                "caption": "Error message"
+                                            },
+                                            {
+                                                "attribute_alias": "name",
+                                                "caption": "Step"
+                                            },
+                                            {
+                                                "attribute_alias": "url",
+                                                "caption": "Step URL"
+                                            },
+                                            {
+                                                "attribute_alias": "run_scenario__name",
+                                                "caption": "Scenario"
+                                            },
+                                            {
+                                                "attribute_alias": "run_scenario__run_feature__name",
+                                                "caption": "Feature"
+                                            },
+                                            {
+                                                "attribute_alias": "run_scenario__run_feature__app_alias",
+                                                "caption": "App"
+                                            }
+                                        ],
+                                        "sorters": [
+                                            {
+                                                "attribute_alias": "run_scenario__run_feature__name",
+                                                "direction": "asc"
+                                            }
+                                        ],
+                                        "buttons": [
+                                            {
+                                                "action_alias": "exface.Core.ShowObjectInfoDialog",
+                                                "bind_to_double_click": true
+                                            }
+                                        ]
+                                    }
+                                ]
+                            },
+                            {
                                 "caption": "Log",
                                 "widgets": [
                                     {
