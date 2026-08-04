@@ -2092,11 +2092,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $logbook->setIndentActive(1);
         DatabaseFormatter::addTestLogbook($logbook);
         $result = $node->itWorksAsShown($fields, $logbook);
-        if ($result->isFailed()) {
-            throw new RuntimeException(
-                'Widget "' . ($node->getCaption() ?? $node->getWidgetType()) . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details')
-            );
-        }
+        Assert::assertNotTrue($result->isFailed(), 'Widget "' . ($node->getCaption() ?? $node->getWidgetType()) . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details'));
     }
 
     /**
@@ -2118,11 +2114,81 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $logbook->setIndentActive(1);
         DatabaseFormatter::addTestLogbook($logbook);
         $result = $node->checkWorksAsExpected($logbook);
-        if ($result->isFailed()) {
-            throw new RuntimeException(
-                'Widget "' . ($node->getCaption() ?? $node->getWidgetType()) . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details')
-            );
-        }
+        Assert::assertNotTrue($result->isFailed(), 'Widget "' . ($node->getCaption() ?? $node->getWidgetType()) . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details'));
+    }
+
+    /**
+     * Verifies that ONLY the filters of the currently focused data widget work as expected.
+     *
+     * WHY a dedicated step: some scenarios need to assert filter behaviour in isolation - for
+     * instance when a page's buttons are intentionally out of scope for a run, or when a filter
+     * regression must be pinned down without the slower full button sweep also running. It
+     * mirrors itWorksAsExpected() but drives only the filter checks.
+     *
+     * WHY the instanceof guard (unlike itWorksAsExpected): checkFiltersWorkAsExpected() lives on
+     * UI5DataNode, not on the UI5AbstractNode base, so if the focus stack is empty and
+     * getFocusedNode() falls back to a UI5PageNode this would otherwise be a fatal
+     * "call to undefined method" instead of a readable assertion failure.
+     *
+     * Example
+     * ```
+     * Given I log in ...
+     * When I look at table 1
+     * Then The filters work as expected
+     * ```
+     * @Then The filters work as expected
+     *
+     * @return void
+     */
+    public function theFiltersWorkAsExpected(): void
+    {
+        $node = $this->getBrowser()->getFocusedNode();
+        Assert::assertInstanceOf(
+            UI5DataNode::class,
+            $node,
+            'No data widget is focused. Call "I look at table 1" first.'
+        );
+        $logbook = new MarkdownLogBook($node->getCaption());
+        $logbook->setIndentActive(1);
+        DatabaseFormatter::addTestLogbook($logbook);
+        $result = $node->checkFiltersWorkAsExpected($logbook);
+        Assert::assertNotTrue($result->isFailed(), 'Filters of widget "' . ($node->getCaption() ?? $node->getWidgetType()) . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details'));
+    }
+
+    /**
+     * Verifies that ONLY the buttons of the currently focused data widget work as expected.
+     *
+     * WHY a dedicated step: see theFiltersWorkAsExpected(). This lets a scenario green-light the
+     * button sweep on its own, e.g. when the filters are covered by another step or are known to
+     * be flaky on a given page. It mirrors itWorksAsExpected() but drives only the button checks.
+     *
+     * WHY the instanceof guard: checkButtonsWorkAsExpectedOnly() lives on UI5DataNode, so a
+     * UI5PageNode fallback (empty focus stack) would otherwise fatal with "call to undefined
+     * method" instead of a readable assertion failure.
+     *
+     * Example
+     * ```
+     * Given I log in ...
+     * When I look at table 1
+     * Then The buttons work as expected
+     * ```
+     * @Then The buttons work as expected
+     *
+     * @return void
+     */
+    public function theButtonsWorkAsExpected(): void
+    {
+        $node = $this->getBrowser()->getFocusedNode();
+        Assert::assertInstanceOf(
+            UI5DataNode::class,
+            $node,
+            'No data widget is focused. Call "I look at table 1" first.'
+        );
+        $logbook = new MarkdownLogBook($node->getCaption());
+        $logbook->setIndentActive(1);
+        DatabaseFormatter::addTestLogbook($logbook);
+        $result = $node->checkButtonsWorkAsExpectedOnly($logbook);
+        Assert::assertNotTrue($result->isFailed(), 'Buttons of widget "' . ($node->getCaption() ?? $node->getWidgetType()) . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details'));
     }
 
     /**

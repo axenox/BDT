@@ -164,6 +164,99 @@ class UI5DataNode extends UI5AbstractNode
             $logbook
         );
     }
+
+    /**
+     * Runs a single "works as expected" category (filters-only or buttons-only) with the
+     * exact same scaffolding checkWorksAsExpected() uses for the full run.
+     *
+     * WHY this helper exists: the "The filters work as expected" and "The buttons work as
+     * expected" steps must behave identically to the combined "It works as expected" step -
+     * same "Looking at ..." logbook header, same null-widget guard and the same runAsSubstep
+     * wrapping so a failure is captured as a substep with a screenshot - but exercise only
+     * one category. Centralising that boilerplate here keeps the two new steps consistent
+     * with the combined one and avoids duplicating the guard/logbook/substep plumbing.
+     *
+     * @param callable(iShowData, LogBookInterface): TestResultInterface $categoryCheck
+     *        Category-specific check to run against the resolved data widget.
+     * @param LogBookInterface $logbook
+     * @return TestResultInterface
+     */
+    private function checkCategoryWorksAsExpected(callable $categoryCheck, LogBookInterface $logbook) : TestResultInterface
+    {
+        $widget = $this->getWidget();
+        $logbook->addLine($this->buildMessageLookingAt(true));
+        Assert::assertNotNull($widget, 'DataTable widget not found for this node.');
+
+        return $this->runAsSubstep(
+            function (SubstepResult $result) use ($widget, $categoryCheck) {
+                $lb = $result->getLogbook();
+                $lb->addIndent(1);
+                $categoryResult = $categoryCheck($widget, $lb);
+                $lb->addIndent(-1);
+                return $categoryResult->isFailed()
+                    ? SubstepResult::createFailed(null, $lb)
+                    : SubstepResult::createPassed($lb);
+            },
+            $this->buildMessageLookingAt(false),
+            null,
+            $logbook
+        );
+    }
+
+    /**
+     * Verifies that ONLY the header filters of the focused data widget work as expected.
+     *
+     * WHY separate from checkWorksAsExpected(): scenarios need to assert filters and buttons
+     * independently - e.g. a page whose buttons are known-broken but whose filters must stay
+     * green, or pinning down a filter regression without also running the slower full button
+     * sweep. This is the entry point for the "The filters work as expected" step and reuses
+     * checkHeaderFiltersWorkAsExpected() verbatim so both steps produce identical results.
+     * A widget without filters passes trivially, mirroring how the combined check would
+     * simply iterate an empty filter list.
+     *
+     * @param LogBookInterface $logbook
+     * @return TestResultInterface
+     */
+    public function checkFiltersWorkAsExpected(LogBookInterface $logbook) : TestResultInterface
+    {
+        return $this->checkCategoryWorksAsExpected(
+            function (iShowData $widget, LogBookInterface $lb) {
+                if (! $widget instanceof iHaveFilters) {
+                    $lb->addLine('Widget has no filters to check');
+                    return SubstepResult::createPassed($lb);
+                }
+                return $this->checkHeaderFiltersWorkAsExpected($widget, $lb);
+            },
+            $logbook
+        );
+    }
+
+    /**
+     * Verifies that ONLY the toolbar/menu buttons of the focused data widget work as expected.
+     *
+     * WHY separate from checkWorksAsExpected(): see checkFiltersWorkAsExpected(). This is the
+     * entry point for the "The buttons work as expected" step. The "Only" suffix is required
+     * because the internal per-widget worker method is already named checkButtonsWorkAsExpected()
+     * (and PHP has no signature-based overloading), so the public step entry point needs a
+     * distinct name. A widget that is not an iHaveButtons instance passes trivially, mirroring
+     * how the combined check skips the button phase for such widgets.
+     *
+     * @param LogBookInterface $logbook
+     * @return TestResultInterface
+     */
+    public function checkButtonsWorkAsExpectedOnly(LogBookInterface $logbook) : TestResultInterface
+    {
+        return $this->checkCategoryWorksAsExpected(
+            function (iShowData $widget, LogBookInterface $lb) {
+                if (! $widget instanceof iHaveButtons) {
+                    $lb->addLine('Widget has no buttons to check');
+                    return SubstepResult::createPassed($lb);
+                }
+                return $this->checkButtonsWorkAsExpected($widget, $lb);
+            },
+            $logbook
+        );
+    } 
     
     protected function checkTableWorksAsExpected(iShowData $dataWidget, LogBookInterface $logbook) : TestResultInterface
     {
