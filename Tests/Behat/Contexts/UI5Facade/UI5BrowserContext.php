@@ -3,6 +3,9 @@ namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5MenuButtonNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5PageNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\TwigFormatter\Context\BehatFormatterContext;
@@ -1482,7 +1485,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @When I look at table :index
      *
      * @param int $index The 1-based index of the table to focus on
-     * @throws \RuntimeException If the table cannot be found
+     * @throws RuntimeException If the table cannot be found
      */
     public function iLookAtTable(int $index): void
     {
@@ -1493,7 +1496,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         Assert::assertNotEmpty($tables, 'No DataTable found on page');
 
         if (!isset($tables[$index - 1])) {
-            throw new \RuntimeException("Table {$index} not found. Only " . count($tables) . " tables available.");
+            throw new RuntimeException("Table {$index} not found. Only " . count($tables) . " tables available.");
         }
         $table = $tables[$tableIndex];
         $this->getBrowser()->highlightWidget($table->getNodeElement(), 'DataTable', $tableIndex);
@@ -1575,6 +1578,48 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $this->logDebug("Button click failed: " . $e->getMessage());
             throw new \Exception("Could not click button '$buttonCaption': " . $e->getMessage());
         }
+    }
+
+    /**
+     * Opens a MenuButton and clicks one of its entries in a single step.
+     *
+     * Why this exists:
+     * MenuButton entries render as <li role="menuitem"> in a detached, modal popover,
+     * so the generic "I click button" step cannot reach them. This step resolves the
+     * MenuButton to its node and delegates the open-and-click to it, letting scenarios
+     * express "open menu X, click item Y" in one line.
+     *
+     * @When I click button :item in button menu :menu
+     *
+     * @param string $item Visible caption of the menu entry to click
+     * @param string $menu Visible caption of the MenuButton that opens the menu
+     * @throws RuntimeException If the MenuButton or the entry cannot be found
+     */
+    public function iClickMenuItemInMenu(string $item, string $menu): void
+    {
+        // Prefer the focused widget (e.g. the table the scenario is currently working
+        // on) so that, when several tables expose a menu button with the same caption,
+        // the right one is targeted - and so the menu button stays coherent with the
+        // table where rows were selected. Fall back to a page-wide search when nothing
+        // is focused or the focused widget does not contain the menu button.
+        $scope = null;
+        $focused = $this->getBrowser()->getFocusedNode();
+        if (! $focused instanceof UI5PageNode) {
+            $scope = $focused->getNodeElement();
+        }
+
+        $menuEl = $scope !== null ? $this->getBrowser()->findButtonByCaption($menu, $scope) : null;
+        if ($menuEl === null) {
+            // Page-wide fallback: nothing focused, or the menu button lives outside the
+            // focused widget's subtree.
+            $menuEl = $this->getBrowser()->findButtonByCaption($menu);
+        }
+        Assert::assertNotNull($menuEl, 'Menu button "' . $menu . '" not found.');
+
+        $menuNode = UI5FacadeNodeFactory::createFromNodeElement($menuEl, $this->getSession(), $this->getBrowser());
+        Assert::assertInstanceOf(UI5MenuButtonNode::class, $menuNode, 'Button "' . $menu . '" is not a MenuButton.');
+
+        $menuNode->clickItem($item);
     }
 
     /**
