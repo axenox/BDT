@@ -30,6 +30,10 @@ trait CdpConnectionDetectorTrait
      *  - "Could not connect"       → older dmore driver phrasing
      *  - "Server is closed"        → dmore driver: WebSocket server unreachable
      *  - "curl error"              → Guzzle curl transport failure
+     *  - "Server is closed"        → dmore driver: WebSocket server unreachable
+     *  - "curl error"              → Guzzle curl transport failure
+     *  - "version information"     → dmore driver: Chrome not yet answering /json/version at
+     *                                 connect time (transient at session start / after restart)
      *
      * @param \Throwable $e The throwable to inspect.
      * @return bool True if the throwable indicates a lost or unavailable CDP connection.
@@ -49,6 +53,14 @@ trait CdpConnectionDetectorTrait
                 || str_contains($msg, 'curl error')
                 || str_contains($msg, 'Empty read')
                 || str_contains($msg, 'connection dead')
+                // WHY: dmore/chrome-mink-driver throws "Could not fetch version information from
+                // .../json/version ... Json Error: Syntax error" when it connects (lazily, on the
+                // first visit) to a Chrome that is up but has not finished answering /json/version
+                // yet - the classic first-step-of-scenario race. Without this pattern visitPath()
+                // treats it as a hard error and re-throws on attempt 1, failing a scenario that a
+                // single retry would have passed. Matching the stable "version information" wording
+                // routes it into the existing CDP retry/backoff instead.
+                || str_contains($msg, 'version information')
             ) {
                 return true;
             }
