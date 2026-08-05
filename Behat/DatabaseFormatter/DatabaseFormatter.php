@@ -33,6 +33,7 @@ use exface\Core\DataTypes\DateTimeDataType;
 use exface\Core\DataTypes\FilePathDataType;
 use exface\Core\DataTypes\PhpFilePathDataType;
 use exface\Core\DataTypes\StringDataType;
+use exface\Core\Events\Workbench\OnCleanUpEvent;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\UiPageFactory;
@@ -1422,5 +1423,18 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             return null;
         }
         return strtolower($real);
+    }
+
+    /**
+     * @param OnCleanUpEvent $event
+     * @return void
+     */
+    public static function onCleanUp(OnCleanUpEvent $event) : void
+    {
+        // TODO read old runs using a config option similar to ETL cleanups, but read with data sheets
+        // Delete old runs - this will delete all child objects recursively.
+        // BUT it will not (yet) delete screenshots. To delete screenshots we need to link them to steps through the
+        // model. Currently there is an extra meta object for the screenshots with a relation to run_step and 
+        // delete-with-related-object. Need testing here!
     }
 }
