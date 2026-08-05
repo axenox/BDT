@@ -181,10 +181,11 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
      *
      * Why this exists:
      * User-facing steps need to trigger one specific menu entry ("open menu X, click
-     * item Y") without running the full validation sweep. Entries are scoped by the
-     * container-id prefix so a popover left open by another menu is never matched, and
-     * a disabled entry fails loudly rather than clicking an inert item - the caller is
-     * expected to select the required row beforehand.
+     * item Y") without running the full validation sweep. Entries are located inside
+     * this button's open popover and matched by caption - never by an id prefix,
+     * because entry ids do not follow a single scheme (some entries render with their
+     * own id outside the MenuButton subtree). A disabled entry fails loudly rather than
+     * clicking an inert item - the caller is expected to select the required row first.
      *
      * @param string $caption Visible caption of the entry to click
      * @throws RuntimeException If the entry is not found or is disabled
@@ -194,14 +195,13 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
     {
         $this->openMenu();
 
-        $page = $this->getSession()->getPage();
-        $prefix = $this->getMenuButtonContainer()->getAttribute('id') . '_Menu_';
+        $menu = $this->getOpenMenuElement();
 
         // Prefer an exact caption match; fall back to the first partial match so
         // ambiguous captions do not beat an exact hit.
         $exact = null;
         $partial = null;
-        foreach ($page->findAll('css', 'li[id^="' . $prefix . '"]') as $li) {
+        foreach ($menu->findAll('css', 'li.sapMMenuItem') as $li) {
             if (! $li->isVisible()) {
                 continue;
             }
@@ -223,8 +223,7 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
             $this->closeMenuIfOpen();
             throw new RuntimeException('Menu item "' . $caption . '" not found in menu "' . $this->getCaption() . '".');
         }
-        $itemNode = UI5FacadeNodeFactory::createFromNodeElement($item, $this->getSession(), $this->getBrowser());
-        if ($itemNode->checkDisabled()) {
+        if ($item->getAttribute('aria-disabled') === 'true') {
             $this->closeMenuIfOpen();
             throw new RuntimeException('Menu item "' . $caption . '" is disabled. Select a row first if the action requires one.');
         }
@@ -314,25 +313,48 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
      */
     protected function openMenu(): void
     {
-        $page = $this->getSession()->getPage();
-        $prefix = $this->getMenuButtonContainer()->getAttribute('id') . '_Menu_';
-        $selector = 'li[id^="' . $prefix . '"]';
+        $trigger = $this->getTriggerButton();
 
-        for ($attempt = 0; $attempt < 5; $attempt++) {
-            $entry = $page->find('css', $selector);
-            if ($entry !== null && $entry->isVisible()) {
+        for ($attempt = 0; $attempt < 6; $attempt++) {
+            if ($this->isMenuOpen()) {
                 return;
             }
-            // Only click on the first attempt (or once the popover has fully closed)
-            // to avoid toggling an in-progress open back shut.
-            if ($attempt === 0) {
-                $this->getTriggerButton()->click();
-                $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
-            }
+            // Re-issue the click on every attempt (not only the first): a single click
+            // can be swallowed while UI5 is still finishing a previous open/close
+            // animation, leaving the menu shut with no chance to recover.
+            $trigger->click();
+            $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
             $this->getSession()->wait(300);
         }
 
         throw new RuntimeException('Menu `' . $this->getCaption() . '` did not open after clicking its trigger button.');
+    }
+
+    /**
+     * Tells whether THIS MenuButton's popover is currently open.
+     *
+     * Why this is state-driven instead of id-prefix based:
+     * Menu entry ids are not guaranteed to start with `<containerId>_Menu_`. Some
+     * entries (e.g. a directly defined create/"Neu" button) render with their own id
+     * outside the MenuButton subtree, so detecting "open" by guessing item ids yields
+     * false negatives: the popover is visibly open while the guessed prefix matches no
+     * <li>. UI5 sets aria-expanded="true" on the trigger button of the open menu, which
+     * is a stable signal scoped to exactly this button, regardless of item id scheme.
+     *
+     * @return bool
+     */
+    private function isMenuOpen(): bool
+    {
+        $expanded = $this->getTriggerButton()->getAttribute('aria-expanded');
+        if ($expanded === 'true') {
+            return true;
+        }
+        if ($expanded === 'false') {
+            return false;
+        }
+        // Older UI5 renders may omit aria-expanded; fall back to a visible menu list.
+        $menu = $this->getSession()->getPage()->find('css', 'ul.sapMMenuList[role="menu"]');
+        return $menu !== null && $menu->isVisible();
     }
 
     /**
@@ -342,14 +364,46 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
      */
     protected function closeMenuIfOpen(): void
     {
-        $page = $this->getSession()->getPage();
-        $prefix = $this->getMenuButtonContainer()->getAttribute('id') . '_Menu_';
-        $entry = $page->find('css', 'li[id^="' . $prefix . '"]');
-        if ($entry !== null && $entry->isVisible()) {
+        if ($this->isMenuOpen()) {
             // Toggle the trigger to close; MenuButton opens/closes on the same button.
             $this->getTriggerButton()->click();
             $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
         }
+    }
+
+    /**
+     * Returns the open menu list element controlled by THIS MenuButton's trigger.
+     *
+     * Why this is scoped via aria-controls instead of an id prefix:
+     * Entry ids do not follow a single scheme - some entries (e.g. a directly defined
+     * create/"Neu" button) render with their own id outside the MenuButton subtree, so
+     * an `<containerId>_Menu_` prefix cannot address every entry. The trigger's
+     * aria-controls points at the exact menu it opened, which scopes the search to this
+     * button's popover regardless of item id scheme, so a popover left open by a
+     * different menu is never matched.
+     *
+     * @throws RuntimeException If this menu's popover cannot be resolved
+     * @return NodeElement
+     */
+    private function getOpenMenuElement(): NodeElement
+    {
+        $page = $this->getSession()->getPage();
+
+        $menuId = $this->getTriggerButton()->getAttribute('aria-controls');
+        if ($menuId !== null && $menuId !== '') {
+            $menu = $page->findById($menuId);
+            if ($menu !== null && $menu->isVisible() && $menu->find('css', 'li.sapMMenuItem') !== null) {
+                return $menu;
+            }
+        }
+
+        // Fallback for renders that omit aria-controls: the visible menu list on the page.
+        $menu = $page->find('css', 'ul.sapMMenuList[role="menu"]');
+        if ($menu !== null && $menu->isVisible()) {
+            return $menu;
+        }
+
+        throw new RuntimeException('Menu `' . $this->getCaption() . '` is open but its popover element could not be resolved.');
     }
 
     /**
