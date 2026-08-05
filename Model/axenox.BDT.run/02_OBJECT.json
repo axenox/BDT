@@ -87,7 +87,7 @@
         {
             "_EXPORT_SUMMARY": "BDT test run [axenox.BDT.run]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-07-13 10:17:27",
+            "MODIFIED_ON": "2026-08-05 11:19:48",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
             "UID": "0x11f08c1d222cd23e8c1d025041000001",
@@ -425,7 +425,7 @@
                                 ]
                             },
                             {
-                                "caption": "Failed steps",
+                                "caption": "Steps Overview",
                                 "widgets": [
                                     {
                                         "widget_type": "DataTable",
@@ -444,6 +444,9 @@
                                             {
                                                 "attribute_alias": "status",
                                                 "value": 101
+                                            },
+                                            {
+                                                "attribute_alias": "error_message"
                                             }
                                         ],
                                         "columns": [
@@ -480,7 +483,7 @@
                                         ],
                                         "buttons": [
                                             {
-                                                "action_alias": "exface.Core.ShowObjectInfoDialog",
+                                                "action_alias": "exface.Core.ShowObjectEditDialog",
                                                 "bind_to_double_click": true
                                             }
                                         ]
