@@ -2,20 +2,12 @@
 
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
-use axenox\BDT\Exceptions\AjaxException;
 use axenox\BDT\Exceptions\ChromeHangException;
 use axenox\BDT\Exceptions\FacadeBrowserException;
-use axenox\BDT\Exceptions\FetchApiException;
-use axenox\BDT\Exceptions\MessagePageException;
-use axenox\BDT\Exceptions\TracerException;
-use axenox\BDT\Exceptions\UIException;
-use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 use Behat\Mink\Session;
 use Exception;
 use exface\Core\Exceptions\InvalidArgumentException;
 use exface\Core\Exceptions\RuntimeException;
-use GuzzleHttp\Psr7\Request;
-use GuzzleHttp\Psr7\Response;
 use axenox\BDT\Behat\Common\Traits\CdpConnectionDetectorTrait;
 
 
@@ -43,22 +35,12 @@ class UI5WaitManager
      * budget could never trip before one read already blew it.
      */
     private const SESSION_BUDGET_SECONDS = 95;
-
-    /**
-     * How many times validateNoErrors() retries after a CDP connection timeout
-     * before giving up for the current wait cycle.
-     */
-    private const VALIDATE_RETRY_MAX = 3;
-
-    /**
-     * Milliseconds to wait between validateNoErrors() retry attempts.
-     */
-    private const VALIDATE_RETRY_DELAY_MS = 600;
     
     /**
      * Mink session instance
      */
     private Session $session;
+    private UI5ErrorDetector $errorDetector;
 
     /**
      * Gets the current Mink session
@@ -87,6 +69,7 @@ class UI5WaitManager
     public function __construct(Session $session)
     {
         $this->session = $session;
+        $this->errorDetector = new UI5ErrorDetector($session);
     }
 
     /**
@@ -177,8 +160,7 @@ class UI5WaitManager
         usleep(200000); // 200 ms
 
         // Check if any errors occurred during the wait operations
-        $this->validateNoErrors();
-
+        $this->errorDetector->assertNoErrors();
     }
 
     private function remainingBudget(float $startTime): int
@@ -256,13 +238,13 @@ class UI5WaitManager
             // BEFORE UI5 fires its initial AJAX requests (e.g. DataTable data load).
             // The interceptor installed in prepareBeforeStep() belongs to the previous
             // page's JS context and is lost on navigation — we must reinstall here.
-            $this->installHttpInterceptor();
+            $this->errorDetector->installHttpInterceptor();
             // Fail fast on server error pages: if the navigation landed on a
             // server error page (e.g. HTTP 403 "Access to localhost was denied",
             // 404, 500 or "No route can be found"), there is no point waiting
             // 30 s for a UI5 framework that will never appear. Throwing here puts
             // the REAL server error into the step record.
-            $errorText = $this->detectServerErrorPage();
+            $errorText = $this->errorDetector->detectServerErrorPage();
             if ($errorText !== null) {
                 throw new RuntimeException(
                     'Server returned an error page instead of the UI5 application: ' . $errorText
@@ -273,8 +255,7 @@ class UI5WaitManager
             if (!$this->waitForUI5Framework()) {
                 throw new Exception("UI5 framework failed to load");
             }
-
-            $this->enableJsErrorTracer();
+            $this->errorDetector->enableJsErrorTracer();
             // Extract application ID from URL and wait for it to be available
             $appId = substr($pageUrl, 0, strpos($pageUrl, '.html')) . '.app';
             $this->waitForAppId($appId);
@@ -533,95 +514,6 @@ class UI5WaitManager
     }
 
     /**
-     * Validates that no errors occurred during the UI5 operations
-     *
-     * Checks for three types of errors:
-     * 1. XHR (network) errors
-     * 2. UI5 MessageManager errors
-     * 3. JavaScript errors
-     * 4. Popup (.exf-error)
-     *
-     * If a CDP connection timeout occurs — which happens when Chrome is still
-     * executing a heavy JS render cycle — the entire check is retried up to
-     * VALIDATE_RETRY_MAX times with VALIDATE_RETRY_DELAY_MS between attempts.
-     * Only after all retries are exhausted is the timeout silently skipped;
-     * a broken browser will surface on the very next step action anyway.
-     *
-     * If Chrome is no longer reachable (e.g. it crashed between two steps), the
-     *  evaluateScript() calls inside the check methods will throw a low-level socket
-     *  exception. That exception is detected via isCdpConnectionError() and re-thrown
-     *  as ChromeHangException so that the recovery mechanism in UI5BrowserContext can
-     *  restart Chrome instead of failing the entire test suite with an opaque socket
-     *  error.
-     *
-     * @throws ChromeHangException  If Chrome is unreachable during error validation.
-     * @throws \RuntimeException|\Throwable If any UI errors are found.
-     */
-    public function validateNoErrors(): void
-    {
-        for ($attempt = 1; $attempt <= self::VALIDATE_RETRY_MAX; $attempt++) {
-            try {
-                $this->checkMessagePageErrors();
-                $this->checkNetworkErrors();
-                $this->checkPopupErrors();
-                $this->checkUiErrors();
-                $this->checkMessageManagerErrors();
-                $this->checkTracerErrors();
-                return; // all checks passed cleanly
-            } catch (\Throwable $e) {
-                if ($this->isCdpConnectionError($e)) {
-                    throw new ChromeHangException(
-                        'CDP connection lost during error validation: ' . $e->getMessage(),
-                        0,
-                        $e
-                    );
-                }
-                if ($this->isConnectionTimeoutException($e)) {
-                    if ($attempt < self::VALIDATE_RETRY_MAX) {
-                        // Chrome is still busy with a heavy JS cycle — wait and retry
-                        ErrorManager::getInstance()->logException(
-                            new RuntimeException(
-                                "CDP connection timeout in validateNoErrors "
-                                . "(attempt {$attempt}/" . self::VALIDATE_RETRY_MAX . "), "
-                                . "retrying in " . self::VALIDATE_RETRY_DELAY_MS . " ms",
-                                0,
-                                $e
-                            )
-                        );
-                        usleep(self::VALIDATE_RETRY_DELAY_MS * 1000);
-                        continue;
-                    }
-                    // All retries exhausted — log and skip for this cycle
-                    // All retries exhausted. A persistent CDP connection timeout here
-                    // means Chrome is wedged, not merely busy — fail loudly so the
-                    // recovery path can restart it, instead of silently returning and
-                    // letting a broken browser corrupt subsequent steps.
-                    ErrorManager::getInstance()->logException($e);
-                    throw new ChromeHangException(
-                        'CDP connection timeout persisted after '
-                        . self::VALIDATE_RETRY_MAX . ' attempts in validateNoErrors: '
-                        . $e->getMessage(),
-                        0,
-                        $e
-                    );
-                }
-                // Non-timeout application error: clear tracer state and surface the error
-                $this->clearJsErrorTracer();
-                throw $e;
-            }
-        }
-    }
-
-    /**
-     * Returns true if the exception is a ChromeDriver DevTools connection timeout.
-     */
-    private function isConnectionTimeoutException(\Throwable $e): bool
-    {
-        return $e instanceof \RuntimeException
-            && str_contains($e->getMessage(), 'Connection timeout');
-    }
-
-    /**
      * Waits till the specified number of DOM elements matching the given CSS selector are available
      *
      * NOTE: this does not mean, they are visible! They are merely available in the DOM. So if you
@@ -645,568 +537,6 @@ class UI5WaitManager
         return $this->waitWithCdpGuard(
             $timeoutInSeconds * 1000,
             "($('{$cssSelector}').length >= {$number})"
-        );
-    }
-
-    public function installHttpInterceptor(): void
-    {
-        $this->getSession()->evaluateScript(<<<'JS'
-(function () {
-  // Guard: install only once per page context to prevent chained wrappers
-  // accumulating across multiple step calls on the same page.
-  if (window.__exfHttpInterceptorInstalled) return;
-  window.__exfHttpInterceptorInstalled = true;
-
-  window.exfXHRLog = window.exfXHRLog || {};
-  window.exfXHRLog.errors = window.exfXHRLog.errors || [];
-
-  function pushError(err) {
-    try {
-      var list = window.exfXHRLog.errors;
-      var key = (err.type||'') + '|' + (err.status||'') + '|' + (err.method||'') + '|' + (err.url||'');
-      for (var i = Math.max(0, list.length - 20); i < list.length; i++) {
-        var e = list[i];
-        var k = (e.type||'') + '|' + (e.status||'') + '|' + (e.method||'') + '|' + (e.url||'');
-        if (k === key) return;
-      }
-      list.push(err);
-    } catch (e) {}
-  }
-
-  window.exfXHRLog.clear = function () { window.exfXHRLog.errors = []; };
-
-  // -------- XHR --------
-  var origOpen = XMLHttpRequest.prototype.open;
-  var origSend = XMLHttpRequest.prototype.send;
-
-  XMLHttpRequest.prototype.open = function(method, url) {
-    this.__exfMethod = method;
-    this.__exfUrl = url;
-    return origOpen.apply(this, arguments);
-  };
-
-  XMLHttpRequest.prototype.send = function(requestBody) {
-    var xhr = this;
-    function done() {
-      try {
-        var st = xhr.status;
-        var url = xhr.__exfUrl || '';
-        var body = '';
-        try { body = (xhr.responseText || '').toString(); } catch (e) { body = ''; }
-
-        // Non-2xx → network error (includes 403, 404, 500 etc.)
-        if (st && (st < 200 || st >= 300)) {
-          pushError({
-            type: 'NetworkError',
-            source: 'XHR',
-            status: st,
-            statusText: xhr.statusText || '',
-            method: xhr.__exfMethod || '',
-            url: url,
-            message: (st + ' ' + (xhr.statusText || '')).trim(),
-            response: body,
-            request: { body: requestBody }
-          });
-          return;
-        }
-
-        var looksBad =
-          /Fatal error|Compile Error|Undefined constant|Whoops, looks like something went wrong|Stack trace|Symfony\\Component\\ErrorHandler|Internal error|Internal Server Error/i.test(body);
-        if (url.indexOf('/api/pwa/errors') !== -1 && /error|fehler|internal/i.test(body)) {
-          looksBad = true;
-        }
-        if (looksBad) {
-          var extracted = '';
-          var m = body.match(/(Fatal error[^<\n\r]*|Compile Error[^<\n\r]*|Undefined constant[^<\n\r]*|Whoops, looks like something went wrong[^<\n\r]*|Internal Server Error[^<\n\r]*)/i);
-          if (m && m[1]) extracted = m[1].trim();
-
-          var looksLikeUi5ErrorController =
-            /sap\.ui\.(jsview|define)\s*\(/i.test(body) && /controller\.Error/i.test(body);
-
-          if (!extracted && looksLikeUi5ErrorController) {
-            // Read the visible UI5 error page text synchronously — no setTimeout
-            function pickText(sel) {
-              var el = document.querySelector(sel);
-              if (!el) return '';
-              return ((el.innerText || el.textContent || '') + '').trim();
-            }
-            var txt =
-              pickText('.sapMMessagePageMainText') ||
-              pickText('#__page1-title-inner') ||
-              pickText('[id$="-title-inner"]') ||
-              pickText('.sapMTitle');
-            extracted = (txt && /fehler/i.test(txt)) ? txt : 'UI5 error page shown (Fehler text not found)';
-          }
-
-          // Try to extract a server-side Log-ID from the response body so the
-          // test report references the exact log entry even when no readable
-          // error text could be extracted. The platform renders log ids in
-          // several ways, e.g. "Log ID: 0ABCDEF", "LogID 0ABCDEF" or a bare
-          // 6-10 char upper-case alphanumeric code near the word "Log".
-          var logId = '';
-          var lm = body.match(/Log[\s\-_]?ID[\s:]*([0-9A-Z]{6,10})/i)
-                 || body.match(/"log_id"\s*:\s*"([0-9A-Z]{6,10})"/i)
-                 || body.match(/\blog[_-]?id["'\s:=]+([0-9A-Z]{6,10})/i);
-          if (lm && lm[1]) logId = lm[1];
-
-          if (!extracted) extracted = 'Application error detected (see response)';
-          // Always surface the Log-ID in the message when we found one, so it
-          // is visible in the step record without having to open the details.
-          if (logId && extracted.indexOf(logId) === -1) {
-            extracted = extracted + ' (Log-ID: ' + logId + ')';
-          }
-
-          pushError({
-            type: 'AppError',
-            source: (url.indexOf('/api/pwa/errors') !== -1) ? 'errorsEndpoint' : 'XHRBody',
-            status: st || 200,
-            statusText: xhr.statusText || '',
-            method: xhr.__exfMethod || '',
-            url: url,
-            message: extracted,
-            logId: logId,
-            response: body
-          });
-        }
-      } catch (e) {}
-    }
-
-    xhr.addEventListener('loadend', done);
-    return origSend.apply(this, arguments);
-  };
-
-  // -------- fetch --------
-  // IMPORTANT: fetch body reading via .text() is async (Promise-based).
-  // We must NOT push the error inside .then() because PHP's evaluateScript
-  // reads window.exfXHRLog.errors synchronously — the callback fires after
-  // the PHP read, so the error is invisible. Instead, push synchronously
-  // without reading the body (status code is sufficient for detection).
-  if (window.fetch) {
-    var origFetch = window.fetch;
-    window.fetch = function(input, init) {
-      var method = (init && init.method) ? init.method : 'GET';
-      var url = (typeof input === 'string') ? input : (input && input.url ? input.url : '');
-
-      return origFetch.apply(this, arguments).then(function(res) {
-        try {
-          if (res && res.ok === false) {
-            // Push error synchronously — do NOT use res.clone().text().then(...)
-            // because that Promise resolves after PHP reads the error list.
-            pushError({
-              type: 'NetworkError',
-              source: 'fetch',
-              status: res.status,
-              statusText: res.statusText || '',
-              method: method,
-              url: url,
-              message: (res.status + ' ' + (res.statusText || '')).trim(),
-              response: ''  // body intentionally omitted to stay synchronous
-            });
-          }
-        } catch (e) {}
-        return res;
-      });
-    };
-  }
-})();
-JS
-        );
-    }
-
-    private function enableJsErrorTracer(): void
-    {
-        try {
-            $this->getSession()->evaluateScript('window.exfLauncher.enableJsTracing();');
-        } catch (\Throwable $e) {
-            ErrorManager::getInstance()->logException($e);
-        }
-    }
-
-
-    private function disableJsErrorTracer(): void
-    {
-        try {
-            $this->session->evaluateScript('window.exfLauncher.disableJsTracing();');
-        } catch (\Throwable $e) {
-            ErrorManager::getInstance()->logException($e);
-        }
-    }
-
-
-    private function clearJsErrorTracer(): void
-    {
-        try {
-            $this->session->evaluateScript('window.exfLauncher.resetJsErrorLogs();');
-        } catch (\Throwable $e) {
-            ErrorManager::getInstance()->logException($e);
-        }
-    }
-
-
-    private function getJsErrorsFromTracer(): array
-    {
-        try {
-            return $this->session->evaluateScript("
-                return window.exfLauncher
-                    .getJsErrorLogs()
-                    .filter(e => e.level === 'error');
-            ");
-        } catch (\Throwable $e) {
-            ErrorManager::getInstance()->logException($e);
-            return [];
-        }
-    }
-
-    private function checkTracerErrors()
-    {
-        // Check for JavaScript errors
-        $jsErrors = $this->getJsErrorsFromTracer();
-
-        // Add each JavaScript error to the error manager
-        foreach ($jsErrors as $error) {
-            throw new TracerException(
-                $error['message'] ?? null,
-                null,
-                null,
-                ['Source' => 'UI5WaitManager', 'Type' => 'Tracer', 'Details' => $error]
-            );
-        }
-    }
-
-    private function checkNetworkErrors()
-    {
-        $errors = $this->getSession()->evaluateScript('
-    return (window.exfXHRLog && Array.isArray(window.exfXHRLog.errors)) ? window.exfXHRLog.errors : [];
-');
-        $exception = null;
-        foreach ($errors as $error) {
-            $type = $error['type'] ?? 'XHR';
-
-            if ($type === 'NetworkError' || $type === 'Network' || $type === null) {
-                $request = new Request(
-                    $error['request']['method'] ?? 'GET', // method
-                    $error['url'],
-                    [],
-                    $error['request']['body'] ?? '',
-                );
-                $response = new Response(
-                    $error['status'],
-                    [],
-                    $error['response']
-                );
-                if ($error['source'] === 'XHR') {
-                    $exception = new AjaxException($request, $response, $error['message']);
-                } else {
-                    $exception = new FetchApiException($request, $response, $error['message']);
-                }
-            } else {
-                $map = [
-                    'NetworkError' => 'HTTP',
-                    'JSError' => 'JavaScript',
-                    'AppError' => 'App'
-                ];
-
-                // Build a message, that already contains enough context to
-                // diagnose the error directly from the step record, without
-                // having to dig into the (often invisible) response details:
-                // - the Log-ID, if the interceptor managed to extract one
-                // - a short snippet of the response body as a fallback
-                $message = $error['message'];
-                $logId = $error['logId'] ?? '';
-                $response = $error['response'] ?? '';
-                if ($logId !== '' && strpos($message, $logId) === false) {
-                    $message .= ' (Log-ID: ' . $logId . ')';
-                }
-                if ($response !== '') {
-                    // Keep only the first meaningful characters of the response
-                    // so the message stays readable but still shows the cause.
-                    $snippet = trim(preg_replace('/\s+/', ' ', strip_tags($response)));
-                    if ($snippet !== '' && strpos($message, $snippet) === false) {
-                        $message .= ' | Response: ' . mb_substr($snippet, 0, 500);
-                    }
-                }
-
-                $exception = new UIException(
-                    $message,
-                    null,
-                    null,
-                    [
-                        'Source' => 'UI5WaitManager',
-                        'Type' => $map[$type] ?? $type,
-                        'Log-ID' => $logId,
-                        'URL' => $error['url'] ?? '',
-                        'Response' => $response,
-                        'Details' => $error
-                    ]
-                );
-            }
-        }
-        // Reset JS errors - otherwise they will cause the next step to fail too
-        $this->getSession()->executeScript('if (window.exfXHRLog && window.exfXHRLog) { window.exfXHRLog.errors = [] }');
-        if ($exception !== null) {
-            throw $exception;
-        }
-    }
-
-    private function checkPopupErrors()
-    {
-        // 4) Popup (.exfw-error) - primary source
-        $popupErrors = $this->getSession()->evaluateScript(<<<'JS'
-(function () {
-    function isVisible(el) {
-        return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
-    }
-
-    var nodes = Array.prototype.slice.call(document.querySelectorAll('.exfw-error'));
-    var visible = nodes.filter(isVisible);
-
-    return visible.map(function (el) {
-        var text = (el.innerText || el.textContent || '').trim();
-        if (!text) text = (el.getAttribute('aria-label') || '').trim();
-
-        return {
-            type: 'Popup',
-            message: text || 'Error popup detected (.exfw-error) but no text found',
-            details: (el.getAttribute('data-exf-error-details') || '').trim(),
-            id: el.id || ''
-        };
-    });
-})();
-JS
-        );
-
-        foreach ($popupErrors as $error) {
-            throw new UIException(
-                $error['message'],
-                null,
-                null,
-                ['Source' => 'UI5WaitManager', 'Type' => 'Popup Error', 'ID' => $error['id']]
-            );
-        }
-    }
-
-    /**
-     * Checks whether a SAP UI5 error dialog (sap.m.Dialog with type Error) is currently
-     * visible in the DOM and throws a UIException if one is found.
-     *
-     * The method reads the primary error text from the dialog body and appends the
-     * Log-ID from the info strip (sapMMsgStrip) when present, so the test report
-     * contains enough context to look up the server-side error log.
-     *
-     * @throws UIException If an error dialog is detected.
-     */
-    private function checkUiErrors(): void
-    {
-        $uiError = $this->getSession()->evaluateScript(<<<'JS'
-(function () {
-    var d = document.querySelector('.sapMDialogError');
-    if (!d) return null;
-
-    // Read the primary error message from the dialog body text nodes.
-    var selectors = [
-        '.sapMDialogScrollCont .sapMText',
-        '.sapMText',
-        '.sapMDialogSection .sapMText'
-    ];
-    var message = '';
-    for (var i = 0; i < selectors.length; i++) {
-        var el = d.querySelector(selectors[i]);
-        if (el) {
-            var t = (el.innerText || el.textContent || '').trim();
-            if (t) { message = t; break; }
-        }
-    }
-
-    // Append the Log-ID from the info strip when present so the report
-    // contains enough context to locate the server-side error log entry.
-    var strip = d.querySelector('.sapMMsgStripMessage .sapMText');
-    if (strip) {
-        var logId = (strip.innerText || strip.textContent || '').trim();
-        if (logId) message = message ? message + ' — ' + logId : logId;
-    }
-
-    return message || 'UI error dialog detected (no message text found)';
-})();
-JS
-        );
-
-        if ($uiError) {
-            throw new UIException(
-                $uiError,
-                null,
-                null,
-                ['Source' => 'UI5WaitManager', 'Type' => 'UI Dialog Error']
-            );
-        }
-    }
-
-    private function checkMessageManagerErrors()
-    {
-        // Check for UI5 MessageManager errors (Error or Fatal type)
-        $ui5Errors = $this->getSession()->evaluateScript('
-                if (typeof sap !== "undefined" && sap.ui && sap.ui.getCore()) {
-                    var messageManager = sap.ui.getCore().getMessageManager();
-                    if (messageManager && messageManager.getMessageModel) {
-                        return messageManager.getMessageModel().getData()
-                            .filter(function(msg) {
-                                return msg.type === "Error" || msg.type === "Fatal";
-                            })
-                            .map(function(msg) {
-                                return {
-                                    type: "UI5",
-                                    message: msg.message,
-                                    details: msg.description || ""
-                                };
-                            });
-                    }
-                }
-                return [];
-            ');
-
-        // Add each UI5 error to the error manager
-        foreach ($ui5Errors as $error) {
-            throw new UIException(
-                $error['message'],
-                null,
-                null,
-                ['Source' => 'UI5WaitManager', 'Type' => 'Message Manager', 'Details' => $error['details']]
-            );
-        }
-    }
-
-    private function checkMessagePageErrors()
-    {
-        // Check for UI5 MessagePage errors (full-page error views like "Server error: Log ID ...")
-        $messagePageErrors = $this->getSession()->evaluateScript(<<<'JS'
-(function () {
-    function isVisible(el) {
-        return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
-    }
-    function text(el, sel) {
-        var node = el ? el.querySelector(sel) : null;
-        return node ? (node.innerText || node.textContent || '').trim() : '';
-    }
- 
-    var pages = Array.prototype.slice.call(document.querySelectorAll('.sapMMessagePage'));
-    var results = [];
-    pages.forEach(function (page) {
-        if (!isVisible(page)) return;
-        // Only treat it as an error if an error icon is present
-        var icon = page.querySelector('.sapMMessagePageIcon');
-        if (!icon) return;
-        var label = (icon.getAttribute('aria-label') || '').toLowerCase();
-        if (label !== 'error' && label !== 'fehler') return;
- 
-        // Prefer the page header title, fall back to the MessagePage main text
-        var header = page.closest('[data-sap-ui-render]')
-            ? page.closest('[data-sap-ui-render]').querySelector('[id$="-title-inner"]')
-            : null;
-        var title       = header ? (header.innerText || header.textContent || '').trim() : '';
-        var mainText    = text(page, '.sapMMessagePageMainText');
-        var description = text(page, '.sapMMessagePageDescription');
- 
-        var message = title || mainText;
-        if (description) message += ' — ' + description;
- 
-        results.push({
-            type:    'MessagePage',
-            message: message || 'UI5 error page shown',
-            details: description
-        });
-    });
-    return results;
-})();
-JS
-        );
-
-        foreach ($messagePageErrors as $error) {
-            throw new MessagePageException(
-                $error['message'],
-                null,
-                null,
-                ['Source' => 'UI5WaitManager', 'Type' => $error['type'], 'Details' => $error['details']]
-            );
-        }
-    }
-    
-    /**
-     * Detects whether the currently loaded document is a server-side error page
-     * instead of a real UI5 application page.
-     *
-     * Why this exists: top-level navigation responses (e.g. HTTP 403 Forbidden
-     * from the authorization middleware, HTTP 404 Not Found, HTTP 500 Internal
-     * Server Error, or HTTP 400 from FacadeResolverMiddleware when a page alias
-     * does not exist) bypass the XHR/fetch interceptor entirely — that
-     * interceptor only wraps XMLHttpRequest and fetch, NOT the main document
-     * navigation. The only client-side symptom of such a failed navigation is
-     * that the UI5 framework never appears. Without this check,
-     * waitForUI5Framework() burns its full 30 s timeout and throws a generic
-     * "UI5 framework failed to load", hiding the real cause (e.g. "403
-     * Forbidden"), which is then only visible in the server log.
-     *
-     * Detection strategy (in order of reliability):
-     * 1. Read the REAL HTTP status code of the top-level navigation via the
-     *    Navigation Timing API (PerformanceNavigationTiming.responseStatus,
-     *    available in Chrome 109+). Any status >= 400 is a server error page.
-     *    This is independent of the page body text and therefore catches
-     *    403/404/500 reliably.
-     * 2. As a fallback (older browsers without responseStatus), match a list of
-     *    known error markers in the document body text — now including generic
-     *    HTTP error wording like "403", "Forbidden", "404", "Not Found", etc.
-     *
-     * @return string|null The extracted error text if the page is an error page, null otherwise
-     */
-    private function detectServerErrorPage(): ?string
-    {
-        return $this->getSession()->evaluateScript(<<<'JS'
-(function () {
-    // A real UI5 app page always carries the UI5 bootstrap script.
-    // If it is present, this is not a plain server error page.
-    if (document.querySelector('script[src*="sap-ui-core"]') !== null) return null;
-    if (typeof sap !== 'undefined') return null;
-
-    var body = (document.body && (document.body.innerText || document.body.textContent) || '').trim();
-
-    // 1) Primary: the real HTTP status of the top-level navigation.
-    // PerformanceNavigationTiming.responseStatus is set to the actual status
-    // code of the document response (Chrome 109+). Anything >= 400 means the
-    // navigation itself failed (403/404/500/...) — fail fast with the code.
-    try {
-        var nav = (performance.getEntriesByType
-            ? performance.getEntriesByType('navigation')
-            : []) || [];
-        var status = (nav[0] && typeof nav[0].responseStatus === 'number')
-            ? nav[0].responseStatus
-            : 0;
-        if (status >= 400) {
-            var snippet = body ? body.split('\n').slice(0, 5).join(' | ').substring(0, 500) : '';
-            return ('HTTP ' + status + ' on page navigation' + (snippet ? ': ' + snippet : '')).substring(0, 500);
-        }
-    } catch (e) {}
-
-    if (!body) return null;
-
-    // 2) Fallback: known server-side error markers rendered as plain HTML pages
-    var markers = [
-        /No route can be found for URL/i,
-        /please check system configuration option FACADES\.ROUTES/i,
-        /UI Page with alias .* not found/i,
-        /HttpBadRequestError/i,
-        /Fatal error/i,
-        /Internal Server Error/i,
-        /\b403\b|Forbidden|Access denied|Zugriff verweigert|was denied|don't have authorization|HTTP ERROR/i,
-        /\b404\b|Not Found|Nicht gefunden/i,
-        /\b500\b|Server Error|Serverfehler/i
-    ];
-    for (var i = 0; i < markers.length; i++) {
-        if (markers[i].test(body)) {
-            // Return only the first lines — enough to identify the cause
-            return body.split('\n').slice(0, 5).join(' | ').substring(0, 500);
-        }
-    }
-    return null;
-})();
-JS
         );
     }
 }
