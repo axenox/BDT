@@ -624,24 +624,29 @@ class UI5DataTableNode extends UI5DataNode
                     continue 2;
             }
 
-            // Selecting a row changes the ~input data behind the toolbar, which can
-            // re-evaluate the button's hidden_if/disabled_if and re-render (or remove)
-            // the button. Any button element fetched before the selection is now stale,
-            // so always re-resolve the button node after changing the row selection.
-            $buttonNode = $this->resolveButtonNode($buttonWidget);
-            if ($buttonNode === null) {
+            // The button may be shown only for rows whose data is valid for its action
+            // (e.g. `hidden_if_input_invalid`). That is a per-row DOM-level hidden state,
+            // not a `disabled` flag, so the readiness gate must re-resolve the button for
+            // each selected row and require it to be visible AND enabled -
+            // resolveButtonNode() returns null exactly when the button is hidden or absent
+            // for the current row. The matching node is captured so the click below uses
+            // the fresh, visible element instead of one that went stale when the toolbar
+            // re-rendered on row selection.
+            $readyNode = null;
+            $ready = $this->selectEachRowUntil(function() use ($buttonWidget, &$readyNode) {
+                $candidate = $this->resolveButtonNode($buttonWidget);
+                if ($candidate === null || $candidate->checkDisabled()) {
+                    return false;
+                }
+                $readyNode = $candidate;
+                return true;
+            });
+            if (! $ready || $readyNode === null) {
                 $skippedButtons['Button not visible'][] = $buttonWidget->getCaption();
-                $logbook->addLine('Skipping button `' . $buttonWidget->getCaption() . '` because it is no longer shown after selecting a row');
+                $logbook->addLine('Skipping button `' . $buttonWidget->getCaption() . '` because no loaded row shows it as a visible, enabled button (e.g. hidden_if_input_invalid)');
                 continue;
             }
-
-            $this->selectEachRowUntil(fn() => ! $buttonNode->checkDisabled());
-            $buttonNode = $this->resolveButtonNode($buttonWidget);
-            if ($buttonNode === null) {
-                $skippedButtons['Button not visible'][] = $buttonWidget->getCaption();
-                $logbook->addLine('Skipping button `' . $buttonWidget->getCaption() . '` because it is no longer shown after selecting rows');
-                continue;
-            }
+            $buttonNode = $readyNode;
             $urlBeforeClick = $this->getSession()->getCurrentUrl();
             if (!$buttonNode->checkDisabled()) {
                 // Press the button in a substep
