@@ -918,6 +918,236 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     }
 
+    /**
+     * Ensures a DataTable is focused before a table-scoped assertion runs and returns it typed.
+     *
+     * WHY THIS EXISTS: getFocusedNode() falls back to a UI5PageNode when the focus stack is
+     * empty, and the column steps below call DataTable-only methods. Guarding the type here
+     * turns a fatal "call to undefined method" that would kill the whole Behat process into a
+     * single readable failing step that tells the author which focus was actually active.
+     *
+     * @return UI5DataTableNode
+     */
+    private function getFocusedDataTableNode(): UI5DataTableNode
+    {
+        $node = $this->getBrowser()->getFocusedNode();
+        Assert::assertInstanceOf(
+            UI5DataTableNode::class,
+            $node,
+            'No DataTable is focused (current focus: "'
+            . ($node ? get_class($node) : 'none')
+            . '"). Focus a table first, e.g. with "I look at table 1".'
+        );
+        return $node;
+    }
+
+    /**
+     * Returns the captions of the currently rendered filters in DOM (visual) order.
+     *
+     * WHY THIS EXISTS: the filter order/visibility steps need the same focus guard and the
+     * same DOM-ordered filter source. Centralising it keeps those steps short and guarantees
+     * they all read filters the same way getFilters() renders them.
+     *
+     * @return string[] Trimmed, non-empty filter captions in UI order.
+     */
+    private function getVisibleFilterCaptionsInOrder(): array
+    {
+        $focusedNode = $this->getBrowser()->getFocusedNode();
+        Assert::assertInstanceOf(
+            UI5DataNode::class,
+            $focusedNode,
+            'No data widget is focused (current focus: "'
+            . ($focusedNode ? get_class($focusedNode) : 'none')
+            . '"). Focus a data widget first, e.g. with "I look at table 1".'
+        );
+
+        $captions = [];
+        // min = 0: a widget legitimately may show no filters, and these steps must be able to
+        // assert exactly that instead of throwing "too few filters found".
+        foreach ($focusedNode->getFilters(0) as $filterNode) {
+            $caption = trim($filterNode->getCaption());
+            if ($caption !== '') {
+                $captions[] = $caption;
+            }
+        }
+        return $captions;
+    }
+
+    /**
+     * Asserts that every expected caption is present in $actual and that the expected
+     * captions appear in $actual in the given relative order.
+     *
+     * WHY relative order (subsequence) rather than strict full-list equality: a table
+     * usually renders more filters/columns than a single scenario declares, so requiring
+     * the actual list to equal the expected list verbatim would break the step whenever an
+     * unrelated column is added. Checking that the listed items appear in the stated order
+     * among the actually rendered ones keeps the assertion focused on what the author
+     * declared while staying robust to surrounding filters/columns.
+     *
+     * @param string[] $expected
+     * @param string[] $actual
+     * @param string   $itemLabel Singular noun used in failure messages (e.g. "column").
+     */
+    private function assertDisplayedInOrder(array $expected, array $actual, string $itemLabel): void
+    {
+        // Report a missing item explicitly first: it is a clearer failure than the order
+        // check turning the same problem into a confusing "wrong order" message.
+        foreach ($expected as $item) {
+            Assert::assertContains(
+                $item,
+                $actual,
+                sprintf(
+                    '%s "%s" is not displayed. Displayed %ss: %s',
+                    ucfirst($itemLabel),
+                    $item,
+                    $itemLabel,
+                    implode(', ', $actual)
+                )
+            );
+        }
+
+        // Walk the actual list once, advancing through the expected list whenever the next
+        // expected item is met. Consuming all expected items means their relative order holds.
+        $cursor = 0;
+        foreach ($actual as $actualItem) {
+            if ($cursor < count($expected) && $actualItem === $expected[$cursor]) {
+                $cursor++;
+            }
+        }
+
+        Assert::assertSame(
+            count($expected),
+            $cursor,
+            sprintf(
+                'The %ss are not displayed in the expected order. Expected order: %s. Actual order: %s',
+                $itemLabel,
+                implode(', ', $expected),
+                implode(', ', $actual)
+            )
+        );
+    }
+
+    /**
+     * Asserts the given filters are rendered in the stated left-to-right order.
+     *
+     * Exists so a scenario can pin the visual filter order after personalisation or a
+     * layout change, which the presence-only "it has filters:" step cannot detect.
+     *
+     * @Then the filters are displayed in the following order :filterList
+     *
+     * @param string $filterList Comma-separated filter captions in the expected order.
+     */
+    public function theFiltersAreDisplayedInTheFollowingOrder(string $filterList): void
+    {
+        $expected = $this->explodeList($filterList);
+        $actual = $this->getVisibleFilterCaptionsInOrder();
+        $this->assertDisplayedInOrder($expected, $actual, 'filter');
+    }
+
+    /**
+     * Asserts the given columns are rendered in the stated left-to-right order.
+     *
+     * Exists so a scenario can pin the visual column order (e.g. after a personalisation
+     * change), which the presence-only "it has columns:" step cannot detect.
+     *
+     * @Then the columns are displayed in the following order :columnList
+     *
+     * @param string $columnList Comma-separated column captions in the expected order.
+     */
+    public function theColumnsAreDisplayedInTheFollowingOrder(string $columnList): void
+    {
+        $expected = $this->explodeList($columnList);
+        $actual = $this->getFocusedDataTableNode()->getRenderedColumnCaptionsInOrder();
+        $this->assertDisplayedInOrder($expected, $actual, 'column');
+    }
+
+    /**
+     * Asserts that none of the listed columns are rendered in the focused table.
+     *
+     * Exists to verify that a role/personalisation actually hides columns - the positive
+     * "it has columns:" step cannot express the negative expectation.
+     *
+     * @Then I do not see columns :columnList
+     * @Then I do not see column :columnList
+     *
+     * @param string $columnList Comma-separated column captions expected to be absent.
+     */
+    public function iDoNotSeeColumns(string $columnList): void
+    {
+        $unexpected = $this->explodeList($columnList);
+        $actual = $this->getFocusedDataTableNode()->getRenderedColumnCaptionsInOrder();
+        foreach ($unexpected as $column) {
+            Assert::assertNotContains(
+                $column,
+                $actual,
+                sprintf(
+                    'Column "%s" is displayed but was expected to be absent. Displayed columns: %s',
+                    $column,
+                    implode(', ', $actual)
+                )
+            );
+        }
+    }
+
+    /**
+     * Asserts that none of the listed filters are rendered in the focused widget.
+     *
+     * Exists to verify that a role/personalisation actually hides filters - the positive
+     * "it has filters:" step cannot express the negative expectation.
+     *
+     * @Then I do not see filters :filterList
+     * @Then I do not see filter :filterList
+     *
+     * @param string $filterList Comma-separated filter captions expected to be absent.
+     */
+    public function iDoNotSeeFilters(string $filterList): void
+    {
+        $unexpected = $this->explodeList($filterList);
+        $actual = $this->getVisibleFilterCaptionsInOrder();
+        foreach ($unexpected as $filter) {
+            Assert::assertNotContains(
+                $filter,
+                $actual,
+                sprintf(
+                    'Filter "%s" is displayed but was expected to be absent. Displayed filters: %s',
+                    $filter,
+                    implode(', ', $actual)
+                )
+            );
+        }
+    }
+
+    /**
+     * Asserts that at least one row of the named column holds the given value.
+     *
+     * WHY EXISTENCE (one row) AND NOT ALL ROWS: this reads as "the column contains value X",
+     * i.e. the value appears somewhere in that column. That is deliberately different from
+     * "I see :text in column :columnName", which delegates to verifyTableContent() and
+     * requires EVERY row to match. Keeping the two semantics separate lets authors express
+     * "some row has this" without forcing a fully homogeneous column.
+     *
+     * @Then The column :columnName contains value :value
+     *
+     * @param string $columnName Caption of the column to inspect.
+     * @param string $value      Value expected in at least one row of that column.
+     */
+    public function theColumnContainsValue(string $columnName, string $value): void
+    {
+        $cellValues = $this->getFocusedDataTableNode()->getColumnCellValues($columnName);
+
+        $needle = trim($value);
+        $found = in_array($needle, array_map('trim', $cellValues), true);
+
+        Assert::assertTrue(
+            $found,
+            sprintf(
+                'Column "%s" does not contain value "%s". Found values: %s',
+                $columnName,
+                $value,
+                implode(' | ', $cellValues)
+            )
+        );
+    }
 
     /**
      * Clicks a button with the specified caption
