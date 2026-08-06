@@ -86,6 +86,138 @@ class UI5DataTableNode extends UI5DataNode
     }
 
     /**
+     * Returns the rendered columns as an ordered list of descriptors, one per header,
+     * left-to-right as the user sees them.
+     *
+     * WHY THIS IS THE SINGLE SOURCE OF TRUTH: every column-oriented concern - order
+     * checks, "column not displayed" checks, resolving a caption to the DOM colId used
+     * to read cell values across the fixed/scroll split, and "is this header rendered"
+     * - needs the very same header scan across the two UI5 table variants (sap.ui.table
+     * grid and sap.m.Table list). Scanning the DOM once here and deriving everything
+     * else from it removes the near-identical header loops this class used to carry.
+     *
+     * @return array<int, array{caption: string, index: int, colId: string|null, visible: bool}>
+     */
+    private function getRenderedColumns(): array
+    {
+        $columns = [];
+
+        // sap.ui.table (grid): the header is rendered in BOTH the fixed and the scroll
+        // table, so deduplicate on data-sap-ui-colid, then order by the logical column index.
+        $rawHeaderCells = $this->getNodeElement()->findAll(
+            'css',
+            '.sapUiTableColHdrCnt .sapUiTableHeaderDataCell[data-sap-ui-colid]:not(.sapUiTableCellDummy)'
+        );
+        $seenColIds = [];
+        $uniqueHeaders = [];
+        foreach ($rawHeaderCells as $cell) {
+            $id = $cell->getAttribute('data-sap-ui-colid');
+            if ($id !== null && !isset($seenColIds[$id])) {
+                $seenColIds[$id] = true;
+                $uniqueHeaders[] = $cell;
+            }
+        }
+        usort($uniqueHeaders, static fn($a, $b) =>
+            (int) $a->getAttribute('data-sap-ui-colindex') <=> (int) $b->getAttribute('data-sap-ui-colindex')
+        );
+        foreach ($uniqueHeaders as $cell) {
+            $label = $cell->find('css', 'label') ?? $cell;
+            $columns[] = [
+                'caption' => trim($label->getText()),
+                'index'   => count($columns),
+                'colId'   => $cell->getAttribute('data-sap-ui-colid'),
+                'visible' => $cell->isVisible(),
+            ];
+        }
+
+        if (! empty($columns)) {
+            return $columns;
+        }
+
+        // sap.m.Table (responsive list): headers already sit in visual order and carry no
+        // data-sap-ui-colid, so the index is the DOM position and the cell lookup is index-based.
+        foreach ($this->getNodeElement()->findAll('css', '.sapMListTblHeader .sapMColumnHeader') as $header) {
+            $columns[] = [
+                'caption' => trim($header->getText()),
+                'index'   => count($columns),
+                'colId'   => null,
+                'visible' => $header->isVisible(),
+            ];
+        }
+
+        return $columns;
+    }
+
+    /**
+     * Returns the captions of the visible rendered columns in left-to-right UI order.
+     *
+     * Thin projection over getRenderedColumns() for the order/visibility steps: only
+     * visible, non-empty captions are what the user actually sees in the table.
+     *
+     * @return string[]
+     */
+    public function getRenderedColumnCaptionsInOrder(): array
+    {
+        $captions = [];
+        foreach ($this->getRenderedColumns() as $col) {
+            if ($col['visible'] && $col['caption'] !== '') {
+                $captions[] = $col['caption'];
+            }
+        }
+        return $captions;
+    }
+
+    /**
+     * Resolves a column caption to its [index, colId] in the rendered header, or
+     * [null, null] when the column is not rendered.
+     *
+     * WHY IT MATCHES REGARDLESS OF VISIBILITY: it preserves the original
+     * verifyTableContent() behaviour, which located a column by caption without a
+     * visibility check. The value-reading callers rely on the same tolerant match.
+     *
+     * @param string $columnName
+     * @return array{0: int|null, 1: string|null} [columnIndex, colId]
+     */
+    private function resolveRenderedColumn(string $columnName): array
+    {
+        $columnName = trim($columnName);
+        foreach ($this->getRenderedColumns() as $col) {
+            if ($col['caption'] === $columnName) {
+                return [$col['index'], $col['colId']];
+            }
+        }
+        return [null, null];
+    }
+
+    /**
+     * Returns the cell values of a single named column across every table row.
+     *
+     * WHY THIS EXISTS: the "column contains value" step needs to inspect one column's
+     * actual cell contents. Doing so requires the same header resolution and the same
+     * fixed/scroll row traversal verifyTableContent() already relies on. Exposing the
+     * raw values here lets the step choose its own matching semantics (presence in at
+     * least one row) instead of verifyTableContent()'s stricter all-rows-must-match rule.
+     *
+     * @param string $columnCaption
+     * @throws RuntimeException When the column is not rendered in the table.
+     * @return string[] Trimmed cell values, one entry per row (empty cells yield "").
+     */
+    public function getColumnCellValues(string $columnCaption): array
+    {
+        [$columnIndex, $colId] = $this->resolveRenderedColumn($columnCaption);
+        if ($columnIndex === null) {
+            throw new RuntimeException('Column `' . $columnCaption . '` not found in table');
+        }
+
+        $values = [];
+        foreach ($this->getAllTableRows() as $row) {
+            $values[] = trim((string) $this->extractCellValueFromRow($row, $columnIndex, $colId));
+        }
+
+        return $values;
+    }
+
+    /**
      * Ensures the row-selection precondition of the given action is satisfied before
      * the action is triggered.
      *
@@ -377,7 +509,7 @@ class UI5DataTableNode extends UI5DataNode
                     $logbook
                 );
             }
-            
+
             if ($range === null) {
                 $logbook->continueLine(' no value found!');
                 return SubstepResult::createSkipped(
@@ -400,8 +532,8 @@ class UI5DataTableNode extends UI5DataNode
             ]);
             $this->verifyTableContent([
                 ['column' => $columnCaption, 'value' => $range['to'], 'comparator' => '<=', 'dataType' => $this->getInputDataType()]
-            ]);            
-            
+            ]);
+
             return $result;
         }
 
@@ -428,7 +560,7 @@ class UI5DataTableNode extends UI5DataNode
                 $logbook
             );
         }
-        
+
         if (trim($filterVal ?? '') === '') {
             $logbook->continueLine(' no value found!');
             return SubstepResult::createSkipped('No value found for filter `' . $filter->getCaption() . '`', $logbook);
@@ -537,27 +669,15 @@ class UI5DataTableNode extends UI5DataNode
      */
     protected function isColumnHeaderRendered(string $caption) : bool
     {
+        // Delegate to the single header scan so "is this column rendered?" can never
+        // drift from the order/lookup logic that reads the very same headers. Matches
+        // regardless of visibility, preserving the original behaviour of this method.
         $caption = trim($caption);
-
-        // sap.ui.table headers carry the caption in a <label> inside the header cell.
-        $headerCells = $this->getNodeElement()->findAll(
-            'css',
-            '.sapUiTableColHdrCnt .sapUiTableHeaderDataCell[data-sap-ui-colid]:not(.sapUiTableCellDummy)'
-        );
-        foreach ($headerCells as $cell) {
-            $label = $cell->find('css', 'label') ?? $cell;
-            if (trim($label->getText()) === $caption) {
+        foreach ($this->getRenderedColumns() as $col) {
+            if ($col['caption'] === $caption) {
                 return true;
             }
         }
-
-        // sap.m.Table headers (no data-sap-ui-colid).
-        foreach ($this->getNodeElement()->findAll('css', '.sapMListTblHeader .sapMColumnHeader') as $header) {
-            if (trim($header->getText()) === $caption) {
-                return true;
-            }
-        }
-
         return false;
     }
 
@@ -610,7 +730,7 @@ class UI5DataTableNode extends UI5DataNode
                 }
                 continue;
             }
-            
+
             $rowNumber = 1;
             switch (true) {
                 case $action === null:
@@ -680,7 +800,7 @@ class UI5DataTableNode extends UI5DataNode
             }
         }
         if($rowNumber !== null) {
-            $this->selectRow($rowNumber);            
+            $this->selectRow($rowNumber);
         }
 
         // Log a SKIPPED substep for every reason to skip buttons
@@ -757,20 +877,9 @@ class UI5DataTableNode extends UI5DataNode
         $columnCaption = $column->getCaption();
         $i = $this->getVisibleColumnIndex($column);
 
-        // Resolve the DOM column id so that extractCellValueFromRow can cross the
-        // fixed/scroll table boundary that UI5 creates for frozen columns.
-        $colId = null;
-        $headerCells = $this->getNodeElement()->findAll(
-            'css',
-            '.sapUiTableColHdrCnt .sapUiTableHeaderDataCell[data-sap-ui-colid]:not(.sapUiTableCellDummy)'
-        );
-        foreach ($headerCells as $cell) {
-            $label = $cell->find('css', 'label') ?? $cell;
-            if (trim($label->getText()) === $columnCaption) {
-                $colId = $cell->getAttribute('data-sap-ui-colid');
-                break;
-            }
-        }
+        // Resolve the DOM column id via the shared header scan so a frozen column's
+        // cells can be read across the fixed/scroll table boundary that UI5 creates.
+        [, $colId] = $this->resolveRenderedColumn($columnCaption);
 
         $rows = $this->getTableRows();
         $cellValue = null;
@@ -844,28 +953,6 @@ class UI5DataTableNode extends UI5DataNode
     public function verifyTableContent(array $expectedContent): void
     {
         try {
-            // Build a deduplicated, sorted list of header cells.
-            // When fixed columns are present UI5 renders the column headers in BOTH the
-            // fixed table and the scroll table.  We deduplicate on data-sap-ui-colid so
-            // that every logical column appears exactly once.
-            $rawHeaderCells = $this->getNodeElement()->findAll(
-                'css',
-                '.sapUiTableColHdrCnt .sapUiTableHeaderDataCell[data-sap-ui-colid]:not(.sapUiTableCellDummy)'
-            );
-
-            $seenColIds    = [];
-            $uniqueHeaders = [];   // NodeElement[] – the header <td> cells, unique
-            foreach ($rawHeaderCells as $cell) {
-                $id = $cell->getAttribute('data-sap-ui-colid');
-                if ($id !== null && !isset($seenColIds[$id])) {
-                    $seenColIds[$id] = true;
-                    $uniqueHeaders[] = $cell;
-                }
-            }
-            usort($uniqueHeaders, static fn($a, $b) =>
-                (int)$a->getAttribute('data-sap-ui-colindex') <=> (int)$b->getAttribute('data-sap-ui-colindex')
-            );
-
             // Check each expected content item
             foreach ($expectedContent as $content) {
                 $columnName = $content['column'];
@@ -874,29 +961,9 @@ class UI5DataTableNode extends UI5DataNode
                 /** @var DataTypeInterface $inputDataType */
                 $inputDataType = $content['dataType'] ?? new StringDataType(SelectorFactory::createDataTypeSelector($this->getWorkbench(), static::class));
 
-                // Resolve column by caption from the deduplicated header list.
-                $columnIndex = null;
-                $colId       = null;
-                foreach ($uniqueHeaders as $index => $headerCell) {
-                    $label = $headerCell->find('css', 'label') ?? $headerCell;
-                    if (trim($label->getText()) === $columnName) {
-                        $columnIndex = $index;
-                        $colId       = $headerCell->getAttribute('data-sap-ui-colid');
-                        break;
-                    }
-                }
-
-                // Fallback: sap.m.Table headers (no data-sap-ui-colid).
-                if ($columnIndex === null) {
-                    $mHeaders = $this->getNodeElement()->findAll('css', '.sapMListTblHeader .sapMColumnHeader');
-                    foreach ($mHeaders as $index => $header) {
-                        if (trim($header->getText()) === $columnName) {
-                            $columnIndex = $index;
-                            break;
-                        }
-                    }
-                }
-
+                // Resolve the column against the rendered headers (both table variants,
+                // fixed/scroll split handled) via the shared header scan.
+                [$columnIndex, $colId] = $this->resolveRenderedColumn($columnName);
                 Assert::assertNotNull($columnIndex, "Column '$columnName' not found in table");
 
                 // Check table cells - get rows from all available tables (both fixed and scroll)
