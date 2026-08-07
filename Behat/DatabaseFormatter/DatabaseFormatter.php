@@ -9,6 +9,7 @@ use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
 use axenox\BDT\DataTypes\StepStatusDataType;
+use axenox\BDT\Exceptions\BrowserTimeoutException;
 use axenox\BDT\Interfaces\TestResultInterface;
 use axenox\BDT\Interfaces\TestRunObserverInterface;
 use Behat\Testwork\EventDispatcher\Event\BeforeSuiteTested;
@@ -649,7 +650,18 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $result = $event->getTestResult();
             $ds = $this->stepDataSheet->extractSystemColumns();
             $stepStatusCode = StepStatusDataType::convertFromBehatResultCode($result->getResultCode());
-            $this->logStepEnd($ds, $this->stepStart, $stepStatusCode, $result->getResultCode() === TestResult::FAILED ? $result->getException() : null, $this::$stepLogbooks);
+            $stepException = $result->getResultCode() === TestResult::FAILED ? $result->getException() : null;
+
+            // Behat only knows PASSED/FAILED/SKIPPED/UNDEFINED, so a step that merely ran out
+            // of time arrives here indistinguishable from a step that hit a real application
+            // error. Refining FAILED to TIMEOUT when the cause was a wait timeout is what makes
+            // the two separable in the report - without it, every slow step keeps inflating the
+            // framework-error count and burying the failures that need an actual code fix.
+            if ($stepStatusCode === StepStatusDataType::FAILED && $this->isTimeoutException($stepException)) {
+                $stepStatusCode = StepStatusDataType::TIMEOUT;
+            }
+
+            $this->logStepEnd($ds, $this->stepStart, $stepStatusCode, $stepException, $this::$stepLogbooks);
 
             // Make sure to end ALL substeps. Substeps can only exist inside a step, so if the step ends, all
             // of them MUST end too. Give the substeps the status code of the step.
@@ -850,7 +862,11 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         if ($updatedTitle !== null) {
             $ds->setCellValue('name', 0, mb_ucfirst($updatedTitle));
         }
-        if ($stepStatusCode === StepStatusDataType::FAILED) {
+        // A timeout carries exactly the same forensic value as a failure: the screenshot
+        // shows what the UI was stuck on, and the message and log id are the only trail
+        // back to the cause. Keying this block on FAILED alone would silently strip all of
+        // it the moment a step is reclassified as TIMEOUT.
+        if ($stepStatusCode === StepStatusDataType::FAILED || $stepStatusCode === StepStatusDataType::TIMEOUT) {
             if($this->provider->isCaptured()) {
                 $screenshotRelativePath = $this->provider->getPath() . DIRECTORY_SEPARATOR . $this->provider->getName();
                 $ds->setCellValue('screenshot_path', 0, $screenshotRelativePath);
@@ -1443,6 +1459,30 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             }
         }
         return null;
+    }
+    
+    /**
+     * Reports whether a step failure was caused by a browser wait timeout.
+     *
+     * WHY the chain is walked instead of a plain instanceof: a BrowserTimeoutException
+     * raised deep inside the wait manager is rarely what reaches Behat. Intermediate
+     * layers re-wrap it while adding context ("Wait operation failed (after step): ...",
+     * "Failed to load UI5 application DB: ..."), so the outermost throwable is almost
+     * never the timeout itself. Testing only the top of the chain would classify nearly
+     * every timeout as an ordinary failure and leave this mapping useless in practice.
+     *
+     * @param \Throwable|null $e The exception recorded for the step, if any
+     * @return bool
+     */
+    protected function isTimeoutException(?\Throwable $e): bool
+    {
+        while ($e !== null) {
+            if ($e instanceof BrowserTimeoutException) {
+                return true;
+            }
+            $e = $e->getPrevious();
+        }
+        return false;
     }
 
     /**

@@ -361,12 +361,18 @@ JS
                 $this->waitManager->waitForPendingOperations(false, true, false);
             }
         } catch (\Throwable $e) {
+            // Pass the original throwable as `previous`. Interpolating it into the message
+            // only preserves its text - the object is lost, and with it every downstream
+            // decision that depends on the exception TYPE (timeout classification, CDP
+            // connection detection, Chrome recovery). Those all walk getPrevious().
             throw new RuntimeException(
                 sprintf(
-                    "Wait operation failed (%s step): %s",
+                    'Wait operation failed (%s step): %s',
                     $isAfterStep ? 'after' : 'before',
-                    $e
-                )
+                    $e->getMessage()
+                ),
+                null,
+                $e
             );
         }
     }
