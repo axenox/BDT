@@ -292,8 +292,12 @@ class UI5ErrorDetector
             url: url,
             message: (st + ' ' + (xhr.statusText || '')).trim(),
             response: body,
-            request: { body: requestBody }
+            request: { body: requestBody.substring(0, 2000) }
           });
+          return;
+        }
+        // Only application responses are body-scanned. See isStaticAsset() for why.
+        if (isStaticAsset(url, xhr)) {
           return;
         }
 
@@ -335,8 +339,38 @@ class UI5ErrorDetector
             method: xhr.__exfMethod || '',
             url: url,
             message: extracted,
-            response: body
+            // Cap the stored body: the full response is written into run_step.error_message
+            // and into the daily error report. A truncated head is enough to identify the
+            // cause, while an untruncated bundle response can be megabytes long and makes
+            // the report unreadable (and the DB write needlessly large).
+            response: body.substring(0, 2000),
           });
+          // Decides whether a response is a static asset whose body must never be scanned
+          // for server-side error markers.
+          //
+          // WHY this exists: the body scan below matches generic PHP/HTTP error wording.
+          // Minified JS bundles ship their own error-handling strings ("Stack trace",
+          // "Internal error", "Fatal error"), so scanning them turns every such asset into a
+          // false "Application error detected" - this is exactly how the mermaid bundle was
+          // being reported. A static asset can never carry a server error page, so its body
+          // is worthless for detection and scanning it can only produce false positives.
+          //
+          // Content-Type is the primary signal because it is what the server actually
+          // declares; the URL extension is only a fallback for responses served with a
+          // missing or generic header (e.g. application/octet-stream).
+          function isStaticAsset(url, xhr) {
+            var ct = '';
+            try { ct = (xhr.getResponseHeader('content-type') || '').toLowerCase(); } catch (e) { ct = ''; }
+            if (ct) {
+              if (/javascript|ecmascript|text\/css|font|image\/|application\/wasm/.test(ct)) return true;
+              // A server error page is always HTML, JSON or plain text. If the server declared
+              // one of those, this IS a candidate for scanning - do not fall through to the
+              // extension heuristic, which could misjudge an extensionless API route.
+              if (/json|html|xml|text\/plain/.test(ct)) return false;
+            }
+            var path = (url.split('?')[0] || '').toLowerCase();
+            return /\.(js|mjs|css|map|woff2?|ttf|eot|svg|png|jpe?g|gif|ico|wasm)$/.test(path);
+          }
         }
       } catch (e) {}
     }
