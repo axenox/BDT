@@ -54,6 +54,7 @@ class UI5Browser
     private $workbench = null;
     private $facade = null;
     private UI5WaitManager $waitManager;
+    private UI5ErrorDetector $errorDetector;
 
     private $objectAlias = null;
     private array $focusStack = [];
@@ -94,6 +95,7 @@ class UI5Browser
         $this->session = $session;
         $this->workbench = $workbench;
         $this->waitManager = new UI5WaitManager($session);
+        $this->errorDetector = new UI5ErrorDetector($session);
         $this->locale = $locale;
         $this->pagesVisited[] = StringDataType::substringBefore($ui5AppUrl, '.html');
 
@@ -132,6 +134,16 @@ class UI5Browser
     public function getWaitManager(): UI5WaitManager
     {
         return $this->waitManager;
+    }
+
+    /**
+     * Gets the error detector instance that handles all error detection operations
+     *
+     * @return UI5ErrorDetector The error detector instance
+     */
+    public function getErrorDetector(): UI5ErrorDetector
+    {
+        return $this->errorDetector;
     }
 
     /**
