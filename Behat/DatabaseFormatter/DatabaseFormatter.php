@@ -32,6 +32,7 @@ use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\DateTimeDataType;
 use exface\Core\DataTypes\FilePathDataType;
 use exface\Core\DataTypes\PhpFilePathDataType;
+use exface\Core\DataTypes\SortingDirectionsDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Events\Workbench\OnCleanUpEvent;
 use exface\Core\Exceptions\RuntimeException;
@@ -60,6 +61,30 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private ?DataSheetInterface $scenarioDataSheet = null;
     private float               $scenarioStart;
     private static array        $scenarioPages = [];
+
+    /**
+     * App-config key holding the run retention window in days.
+     *
+     * Kept config-driven (mirroring the ETL cleanups) so ops can tune how long test runs are kept
+     * on the results database - the growth of which is what the recurring "allocate memory" errors
+     * are traced back to - without a code change.
+     */
+    private const CLEANUP_DAYS_TO_KEEP = 'CLEANUP.DAYS_TO_KEEP';
+    
+    /**
+     * App-config key capping how many old runs a single cleanup pass deletes.
+     *
+     * Deleting a large backlog in one pass can itself exhaust memory on the results DB - the very
+     * failure this cleanup fights - and holds locks longer than needed. Capping the batch keeps each
+     * pass bounded; the next scheduled cleanup continues where this one left off.
+     */
+    private const CLEANUP_DELETE_BATCH = 'CLEANUP.DELETE_BATCH';
+
+    /**
+     * Fallback batch size when CLEANUP.DELETE_BATCH is not configured, so cleanup stays bounded even
+     * on an installation that set the retention age but not an explicit batch.
+     */
+    private const DELETE_BATCH_DEFAULT = 100;
 
     /**
      * Reason why the current scenario is NOT being recorded, or null while a scenario is open.
@@ -173,6 +198,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                         throw new RuntimeException('Attached run UID ' . $runUid . ' not found');
                     }
                     $this->runDataSheet = $ds;
+                    $this->bindRunUidToProvider();
                     $this->registerMetrics();
                     // Still register the shutdown handler, but the handler will avoid touching the run row
                     // when in attach-mode.
@@ -184,6 +210,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                 }
             } else {
                 $this->startRun();
+                $this->bindRunUidToProvider();
             }
         }
     }
@@ -1426,15 +1453,92 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     }
 
     /**
+     * Deletes test runs older than the configured retention window to reclaim space on the results
+     * database, whose growth is the root cause of the recurring "allocate memory" failures.
+     *
+     * WHY STATIC: it is installed via StaticEventListenerInstaller against OnCleanUpEvent and runs on
+     * the workbench cleanup cycle with no Behat process alive. It therefore holds no instance state
+     * and derives everything (workbench, config, cutoff) from the event.
+     *
+     * WHY CREATED_ON DRIVES THE CUTOFF INSTEAD OF started_on: CREATED_ON is a system attribute that
+     * is always populated, so a run that crashed before started_on was ever written is still an old
+     * row that must be reclaimed. Filtering on started_on would leave such orphans behind forever.
+     *
+     * WHY A MISSING OR NON-POSITIVE CONFIG DISABLES CLEANUP: deleting runs is irreversible, so
+     * retention must be an explicit operational decision. An unset or <= 0 CLEANUP.RUN_MAX_AGE_DAYS
+     * means "keep everything" rather than falling back to a hard-coded age that could silently wipe
+     * data on an installation that never opted in.
+     *
+     * This iteration only SELECTS the eligible runs; the recursive deletion of child rows
+     * (feature/scenario/step/screenshot) and of each run's on-disk parallel log directory is added
+     * in the following step.
+     *
      * @param OnCleanUpEvent $event
+     * @return string Returns the result of the cleaned records
+     * @throws \DateInvalidOperationException
+     */
+    public static function onCleanUp(OnCleanUpEvent $event) : string
+    {
+
+        $workbench = $event->getWorkbench();
+        $config = $workbench->getApp('axenox.BDT')->getConfig();
+
+        // Retention is opt-in: without an explicit positive age, keep every run.
+        if (! $config->hasOption(self::CLEANUP_DAYS_TO_KEEP)) {
+            return 'Cleaned up on BDT App removing no run records. There is no option as clean up days to keep in the config';
+        }
+        $maxAgeDays = (int) $config->getOption(self::CLEANUP_DAYS_TO_KEEP);
+        if ($maxAgeDays <= 0) {
+            return 'Cleaned up on BDT App removing no run records. Invalid option as clean up days to keep in the config';
+        }
+
+        // Cutoff = now - maxAgeDays. Runs created strictly before this are eligible for deletion.
+        $cutoff = (new \DateTimeImmutable('now'))->sub(new \DateInterval('P' . $maxAgeDays . 'D'));
+        $cutoffStr = DateTimeDataType::formatDateNormalized($cutoff);
+
+        // Read only the identity of the old runs. Child rows and the on-disk log directory are
+        // resolved per run in the deletion pass that follows, so no child columns are loaded here.
+        $ds = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'axenox.BDT.run');
+        $ds->getColumns()->addFromSystemAttributes();
+        $ds->getColumns()->addFromExpression('started_on');
+        $ds->getFilters()->addConditionFromString('CREATED_ON', $cutoffStr, ComparatorDataType::LESS_THAN);
+        // Delete the oldest runs first: combined with the batch limit below, each pass drains the N
+        // longest-standing runs, so a backlog shrinks from its oldest end instead of leaving ancient
+        // rows behind while newer ones in the same window get picked.
+        $ds->getSorters()->addFromString('CREATED_ON', SortingDirectionsDataType::ASC);
+        // Cap the pass so a large backlog is drained across several scheduled cleanups instead of one
+        // memory-hungry delete. Fall back to a bounded default rather than an unlimited delete.
+        $batch = $config->hasOption(self::CLEANUP_DELETE_BATCH)
+            ? (int) $config->getOption(self::CLEANUP_DELETE_BATCH)
+            : self::DELETE_BATCH_DEFAULT;
+        if ($batch > 0) {
+            $ds->setRowsLimit($batch);
+        }
+        $ds->dataRead();
+
+        if ($ds->countRows() === 0) {
+            return 'Cleaned up on BDT App removing no run records.';
+        }
+        
+        $deleted = $ds->dataDelete();
+        return 'Cleaned up on BDT App removing ' . $deleted . ' expired run records.';
+    }
+
+    /**
+     * Passes the current run UID to the screenshot provider once the run is known.
+     *
+     * Why this exists: captureScreenshot() groups files under Screenshots/<run_uid>/, so the provider
+     * must carry the run UID before any step screenshot is taken. The UID is stable for the whole run,
+     * so it is set once here - from both the normal startRun flow and attach-mode - instead of being
+     * repeated on every step.
+     *
      * @return void
      */
-    public static function onCleanUp(OnCleanUpEvent $event) : void
+    private function bindRunUidToProvider() : void
     {
-        // TODO read old runs using a config option similar to ETL cleanups, but read with data sheets
-        // Delete old runs - this will delete all child objects recursively.
-        // BUT it will not (yet) delete screenshots. To delete screenshots we need to link them to steps through the
-        // model. Currently there is an extra meta object for the screenshots with a relation to run_step and 
-        // delete-with-related-object. Need testing here!
+        $runUid = $this->getCurrentRunUid();
+        if ($runUid !== null && $runUid !== '') {
+            $this->provider->setRunUid($runUid);
+        }
     }
 }
