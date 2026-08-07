@@ -373,7 +373,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $this->getBrowser()->handleStepWaitOperations(true);
 
             // Check for any errors that occurred during the step
-            $this->browser->getWaitManager()->validateNoErrors();
+            $this->browser->getErrorDetector()->validateNoErrors();
 
             $stepKeyword = $scope->getStep()->getKeyword();
             $stepText    = $scope->getStep()->getText();
@@ -1697,7 +1697,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     public function allPagesShouldLoadSuccessfully(): void
     {
         // Verify no errors in current session
-        $this->browser->getWaitManager()->validateNoErrors();
+        $this->browser->getErrorDetector()->validateNoErrors();
 
         // Verify UI5 is in stable state
         $isStable = $this->getSession()->evaluateScript(
