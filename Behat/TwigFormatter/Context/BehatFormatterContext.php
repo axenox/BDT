@@ -83,7 +83,7 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
             . DIRECTORY_SEPARATOR . 'axenox'
             . DIRECTORY_SEPARATOR . 'BDT'
             . DIRECTORY_SEPARATOR . 'Screenshots'
-            . DIRECTORY_SEPARATOR . date('Ymd');
+            . DIRECTORY_SEPARATOR . $this->provider->getRunUid();
         $dir = getcwd()
             . DIRECTORY_SEPARATOR . $relativePath;
         if (!is_dir($dir)) {
