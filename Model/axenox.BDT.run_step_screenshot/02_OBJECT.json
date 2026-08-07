@@ -87,9 +87,9 @@
         {
             "_EXPORT_SUMMARY": "Screenshot [axenox.BDT.run_step_screenshot]",
             "CREATED_ON": "2026-08-05 17:46:25",
-            "MODIFIED_ON": "2026-08-05 17:49:00",
+            "MODIFIED_ON": "2026-08-06 14:47:03",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
+            "MODIFIED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
             "UID": "0x11f1b6a6d0b8005eb6a6025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
@@ -101,10 +101,12 @@
             "APP": "0x11efa2214f96c8b8a221025041000001",
             "SHORT_DESCRIPTION": "",
             "PARENT_OBJECT": null,
-            "DATA_ADDRESS_PROPS": null,
+            "DATA_ADDRESS_PROPS": {
+                "delete_empty_folders": true
+            },
             "DEFAULT_EDITOR_UXON": null,
             "ALIAS": "run_step_screenshot",
-            "DATA_ADDRESS": ""
+            "DATA_ADDRESS": "data/axenox/BDT/Screenshots/*/*.png"
         }
     ],
     "totals_rows": [],
