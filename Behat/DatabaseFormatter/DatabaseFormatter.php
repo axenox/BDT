@@ -9,6 +9,7 @@ use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
 use axenox\BDT\DataTypes\StepStatusDataType;
+use axenox\BDT\Exceptions\BrowserTimeoutException;
 use axenox\BDT\Interfaces\TestResultInterface;
 use axenox\BDT\Interfaces\TestRunObserverInterface;
 use Behat\Testwork\EventDispatcher\Event\BeforeSuiteTested;
@@ -133,7 +134,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     // Do not create a run record for dry-run executions.
     // Dry-run is used as a pre-flight syntax check and must not pollute the test results DB.
     private bool $isDryRun = false;
-    
+
     /**
      * When non-null, the formatter is running in attach-mode and must bind to the
      * provided run UID without creating or updating the run row itself.
@@ -290,7 +291,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             if ($this->isDryRun || $this->runDataSheet === null || $this->injectedRunUid !== null) {
                 return;
             }
-            (new RunRecordWriter())->finalize($this->runDataSheet);            
+            (new RunRecordWriter())->finalize($this->runDataSheet);
 
             // Mark as finished so that onShutdown() does not call this method a second time
             $this->exerciseFinished = true;
@@ -402,7 +403,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $ds->setCellValue('finished_on', 0, DateTimeDataType::now());
             $ds->setCellValue('duration_ms', 0, $this->microtime() - $this->featureStart);
             $ds->setCellValue('chrome_info', 0, $this->buildChromeInfo());
-            $ds->dataUpdate();            
+            $ds->dataUpdate();
         }
         catch(\Throwable $e){
             ErrorManager::getInstance()->logException($e, $this->workbench);
@@ -412,7 +413,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             ChromeManager::getInstance()->clearStartHistory();
         }
     }
-    
+
     /**
      * Marks a scenario as successfully opened, i.e. persisted with a usable UID.
      *
@@ -677,12 +678,29 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $result = $event->getTestResult();
             $ds = $this->stepDataSheet->extractSystemColumns();
             $stepStatusCode = StepStatusDataType::convertFromBehatResultCode($result->getResultCode());
-            $this->logStepEnd($ds, $this->stepStart, $stepStatusCode, $result->getResultCode() === TestResult::FAILED ? $result->getException() : null, $this::$stepLogbooks);
+            $stepException = $result->getResultCode() === TestResult::FAILED ? $result->getException() : null;
+
+            // Behat only knows PASSED/FAILED/SKIPPED/UNDEFINED, so a step that merely ran out
+            // of time arrives here indistinguishable from a step that hit a real application
+            // error. Refining FAILED to TIMEOUT when the cause was a wait timeout is what makes
+            // the two separable in the report - without it, every slow step keeps inflating the
+            // framework-error count and burying the failures that need an actual code fix.
+            if ($stepStatusCode === StepStatusDataType::FAILED && $this->isTimeoutException($stepException)) {
+                $stepStatusCode = StepStatusDataType::TIMEOUT;
+            }
+
+            $this->logStepEnd($ds, $this->stepStart, $stepStatusCode, $stepException, $this::$stepLogbooks);
 
             // Make sure to end ALL substeps. Substeps can only exist inside a step, so if the step ends, all
-            // of them MUST end too. Give the substeps the status code of the step
+            // of them MUST end too. Give the substeps the status code of the step.
+            // Skip null markers that indicate a failed substep record creation in onBeforeSubstep.
             /* @var \exface\Core\Interfaces\DataSheets\DataSheetInterface $ds */
             foreach ($this->substepDataSheets as $i => $ds) {
+                // If this substep was never recorded due to a DB insertion failure, the marker is null.
+                // Skip it to avoid attempting an extractSystemColumns() call on null.
+                if ($ds === null) {
+                    continue;
+                }
                 $startTime = $this->substepStarts[$i];
                 $ds = $ds->extractSystemColumns();
                 $this->logStepEnd($ds, $startTime, $stepStatusCode, null, [], null, 'Step finished');
@@ -702,6 +720,13 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
      * scenario is open or because the step INSERT failed - there is nothing to hang the substep on.
      * We skip it and leave the stack untouched, so onAfterSubstep finds an empty stack and also does
      * nothing. Recording a substep here would inherit exactly the invalid-FK problem we are avoiding.
+     *
+     * Why degraded-state markers for DB insertion failures: when logStepStart() throws (e.g., DB
+     * constraint, connection timeout), the substep is not persisted. Without explicit markers in the
+     * stack arrays, onAfterSubstep would attempt to close a non-existent record, producing an invalid
+     * UPDATE and potentially corrupting the run with wrong timestamps. The marker (null value) ensures
+     * onAfterSubstep recognizes the failure and exits cleanly. The parent step's error message already
+     * captures the root cause for logging.
      */
     public function onBeforeSubstep(BeforeSubstep $event)
     {
@@ -717,11 +742,29 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             }
             $this->stepIdx++;
             $startTime = $this->microtime();
-            $parentStepData = (empty($this->substepDataSheets) ? $this->stepDataSheet : $this->substepDataSheets[array_key_last($this->substepDataSheets)]);
+
+            // Find the parent step's UID by walking backwards through the substep stack.
+            // If the last entry is a null marker (indicating a failed DB insertion in a prior substep),
+            // skip it and use the nearest non-null substep. If all are markers or the stack is empty,
+            // default to the main parent step's UID.
+            $parentStepUid = null;
+            if (!empty($this->substepDataSheets)) {
+                for ($i = count($this->substepDataSheets) - 1; $i >= 0; $i--) {
+                    if ($this->substepDataSheets[$i] !== null) {
+                        $parentStepUid = $this->substepDataSheets[$i]->getUidColumn()->getValue(0);
+                        break;
+                    }
+                }
+            }
+            // If all substeps are markers or no substeps exist, use the main parent step as the true parent.
+            if ($parentStepUid === null) {
+                $parentStepUid = $this->stepDataSheet->getUidColumn()->getValue(0);
+            }
+
             $ds = $this->logStepStart(
                 $event->getSubstepName(),
                 $this->stepDataSheet->getCellValue('line', 0),
-                $parentStepData->getUidColumn()->getValue(0)
+                $parentStepUid
             );
 
             $this->substepStarts[] = $startTime;
@@ -730,6 +773,14 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $this->provider->setName($ds->getUidColumn()->getValue(0));
         }
         catch(\Throwable $e){
+            // Substep record creation failed. Push null markers so onAfterSubstep recognizes the
+            // failure and does not attempt to close a non-existent record. The exception is logged
+            // via ErrorManager for root-cause visibility.
+            $this->workbench->getLogger()->error(
+                'BDT: substep "' . $event->getSubstepName() . '" not recorded - DB insertion failed: ' . $e->getMessage()
+            );
+            $this->substepStarts[] = $this->microtime();
+            $this->substepDataSheets[] = null;
             ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
@@ -741,6 +792,12 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
      * the stack is empty and array_key_last() returns null - indexing with it would raise a warning
      * and then an \Error. An empty stack simply means "this substep was never recorded", which is an
      * expected degraded state, so we return quietly.
+     *
+     * Why the null-marker check: when onBeforeSubstep's logStepStart() throws (e.g., DB insertion
+     * failure), the substep record is never created. A null marker is pushed into the stack to keep
+     * stack indices synchronized with BeforeSubstep/AfterSubstep events. When we detect a null marker
+     * here, we pop it and return — the failure is already logged by onBeforeSubstep and no UPDATE
+     * should be attempted on a non-existent row.
      */
     public function onAfterSubstep(AfterSubstep $event)
     {
@@ -752,7 +809,18 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                 return;
             }
             $currentSubstepIdx = array_key_last($this->substepDataSheets);
-            $ds = $this->substepDataSheets[$currentSubstepIdx]->extractSystemColumns();
+            $ds = $this->substepDataSheets[$currentSubstepIdx];
+
+            // If this substep was never recorded due to a DB insertion failure in onBeforeSubstep,
+            // the marker will be null. Pop both stacks and return to avoid attempting an UPDATE
+            // on a non-existent row.
+            if ($ds === null) {
+                array_pop($this->substepDataSheets);
+                array_pop($this->substepStarts);
+                return;
+            }
+
+            $ds = $ds->extractSystemColumns();
             $this->logStepEnd($ds, $this->substepStarts[$currentSubstepIdx], $event->getResultCode(), $event->getException(), [], $event->getSubstepName(), $event->getResult()->getReason());
             // Remove the top-most substep data sheet from the stack
             array_pop($this->substepDataSheets);
@@ -822,7 +890,11 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         if ($updatedTitle !== null) {
             $ds->setCellValue('name', 0, mb_ucfirst($updatedTitle));
         }
-        if ($stepStatusCode === StepStatusDataType::FAILED) {
+        // A timeout carries exactly the same forensic value as a failure: the screenshot
+        // shows what the UI was stuck on, and the message and log id are the only trail
+        // back to the cause. Keying this block on FAILED alone would silently strip all of
+        // it the moment a step is reclassified as TIMEOUT.
+        if ($stepStatusCode === StepStatusDataType::FAILED || $stepStatusCode === StepStatusDataType::TIMEOUT) {
             if($this->provider->isCaptured()) {
                 $screenshotRelativePath = $this->provider->getPath() . DIRECTORY_SEPARATOR . $this->provider->getName();
                 $ds->setCellValue('screenshot_path', 0, $screenshotRelativePath);
@@ -833,22 +905,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             }
             if ($e) {
                 $ds->setCellValue('error_message', 0, $e->getMessage());
-
-                // WHY: a FAILED step must carry a log id that resolves to THIS exception's detail,
-                // otherwise the UI cannot build ERROR_WIDGET for it and ShowDialogFromData fails with
-                // "UXON column ERROR_WIDGET not found in input data". Relying on the ambient
-                // ErrorManager::getLastLogId() is unsafe here: driver/Behat exceptions (e.g. the Chrome
-                // mink-driver "/json/version" failure) never pass through ExFace's ErrorManager, so the
-                // ambient id is either empty (no widget) or stale from an unrelated earlier error (wrong
-                // widget). We therefore bind the id to $e directly: ExFace exceptions already own one;
-                // any other Throwable is logged now so a fresh detail file and id exist for it.
-                if ($e instanceof ExceptionInterface) {
-                    $logId = $e->getLogId();
-                } else {
-                    $this->workbench->getLogger()->logException($e);
-                    $logId = ErrorManager::getInstance()->getLastLogId();
-                }
-                if (!empty($logId)) {
+                if(!empty($logId = ErrorManager::getInstance()->getLastLogId())) {
                     $ds->setCellValue('error_log_id', 0, $logId);
                 }
             }
@@ -874,7 +931,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         return $this->logError($e->getMessage(), $e);
     }
 
-    /** 
+    /**
      * Defensive fallback for the "no open scenario" case: a run_step row requires a
      * run_scenario FK, so it can only be written while a scenario is open. logError() can be
      * called before any scenario exists — most importantly when Chrome fails to start inside
@@ -883,7 +940,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
      * crash here, hide the real cause, and leave the run looking like an unexplained stop.
      * Instead, we log the exception through the workbench logger, producing a monitor-visible
      * entry with a log id regardless of hook ordering, and return an unsaved sheet.
-     * 
+     *
      * {@inheritDoc}
      * @see TestRunObserverInterface::logError()
      */
@@ -1148,7 +1205,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
 
         ChromeManager::getInstance()->stop();
     }
-    
+
     /**
      * Builds and logs the startup banner that sets the expectation for THIS Behat process before any
      * feature runs: which mode it is in, whether its Chrome will be visible or headless, and whether a
@@ -1430,6 +1487,30 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             }
         }
         return null;
+    }
+    
+    /**
+     * Reports whether a step failure was caused by a browser wait timeout.
+     *
+     * WHY the chain is walked instead of a plain instanceof: a BrowserTimeoutException
+     * raised deep inside the wait manager is rarely what reaches Behat. Intermediate
+     * layers re-wrap it while adding context ("Wait operation failed (after step): ...",
+     * "Failed to load UI5 application DB: ..."), so the outermost throwable is almost
+     * never the timeout itself. Testing only the top of the chain would classify nearly
+     * every timeout as an ordinary failure and leave this mapping useless in practice.
+     *
+     * @param \Throwable|null $e The exception recorded for the step, if any
+     * @return bool
+     */
+    protected function isTimeoutException(?\Throwable $e): bool
+    {
+        while ($e !== null) {
+            if ($e instanceof BrowserTimeoutException) {
+                return true;
+            }
+            $e = $e->getPrevious();
+        }
+        return false;
     }
 
     /**
