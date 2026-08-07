@@ -2,6 +2,7 @@
 
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
+use axenox\BDT\Exceptions\BrowserTimeoutException;
 use axenox\BDT\Exceptions\ChromeHangException;
 use axenox\BDT\Exceptions\FacadeBrowserException;
 use Behat\Mink\Session;
@@ -104,7 +105,6 @@ class UI5WaitManager
                 $timeouts = array_merge($this->defaultTimeouts, $timeouts);
                 break;
             case is_int($timeouts):
-                $timeout = $timeouts;
                 $timeouts = [];
                 foreach ($this->defaultTimeouts as $i => $t) {
                     $timeouts[$i] = $t;
@@ -122,7 +122,7 @@ class UI5WaitManager
         if ($waitForPage) {
             $allowed = $this->remainingBudget($startTime);
             if (!$this->waitForPageLoad(min($timeouts['page'], $allowed))) {
-                throw new FacadeBrowserException(
+                throw new BrowserTimeoutException(
                     "The page was not loaded within the expected time of {$timeouts['page']} seconds.",
                     ["URL" => $this->getSession()->getCurrentUrl()]
                 );
@@ -133,8 +133,8 @@ class UI5WaitManager
         if ($waitForBusy) {
             $allowed = $this->remainingBudget($startTime);
             if (!$this->waitForBusyIndicator(min($timeouts['busy'], $allowed))) {
-                throw new FacadeBrowserException(
-                    "The busy indicator was not disappear within the expected time of {$timeouts['busy']} seconds.",
+                throw new BrowserTimeoutException(
+                    "The busy indicator did not disappear within the expected time of {$timeouts['busy']} seconds.",
                     ["URL" => $this->getSession()->getCurrentUrl()]
                 );
             }
@@ -144,7 +144,7 @@ class UI5WaitManager
         if ($waitForAjax) {
             $allowed = $this->remainingBudget($startTime);
             if (!$this->waitForAjaxRequests(min($timeouts['ajax'], $allowed))) {
-                throw new FacadeBrowserException(
+                throw new BrowserTimeoutException(
                     "The AJAX requests was not completed within the expected time of {$timeouts['ajax']} seconds.",
                     ["URL" => $this->getSession()->getCurrentUrl()]
                 );
@@ -163,14 +163,23 @@ class UI5WaitManager
         $this->errorDetector->assertNoErrors();
     }
 
+    /**
+     * Returns how many seconds of the session budget are still available.
+     *
+     * WHY it throws instead of returning 0: once the budget is gone there is no valid
+     * timeout left to hand to the next sub-wait, and calling one with a zero or negative
+     * timeout would either return instantly (a false negative) or block until the
+     * Mink/Chrome session is killed - which produces an opaque socket error instead of an
+     * attributable timeout.
+     */
     private function remainingBudget(float $startTime): int
     {
         $elapsed = microtime(true) - $startTime;
         $remaining = self::SESSION_BUDGET_SECONDS - (int)$elapsed;
         if ($remaining <= 0) {
-            throw new FacadeBrowserException(
+            throw new BrowserTimeoutException(
                 "waitForPendingOperations exceeded the session budget of "
-                . self::SESSION_BUDGET_SECONDS . " s (elapsed: " . round($elapsed) . " s). ...",
+                . self::SESSION_BUDGET_SECONDS . " s (elapsed: " . round($elapsed) . " s).",
                 ["URL" => $this->getSession()->getCurrentUrl()]
             );
         }
