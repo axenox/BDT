@@ -117,7 +117,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         if (self::$isDryRun) {
             return;
         }
-        $this->workbench = new Workbench(['MONITOR.ENABLED' => $this->resolveMonitorEnabled($monitorEnabled)]);
+        $this->workbench = new Workbench();
         $this->workbench->start();
         // Authenticated with the default CLI user if called from CLI. The authenticated
         // user will change with Browser::setupUser() later, but for now the CLI user is
