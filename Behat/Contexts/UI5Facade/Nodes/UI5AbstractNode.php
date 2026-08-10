@@ -18,6 +18,7 @@ use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Exception\DriverException;
 use Behat\Mink\Session;
+use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\UiPageInterface;
@@ -67,7 +68,7 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
     public function getBrowser(): UI5Browser
     {
         if ($this->browser === null) {
-            throw new \RuntimeException('BDT Browser not initialized on node! Did you forget to call setBrowser()?');
+            throw new RuntimeException('BDT Browser not initialized on node! Did you forget to call setBrowser()?');
         }
         return $this->browser;
     }
