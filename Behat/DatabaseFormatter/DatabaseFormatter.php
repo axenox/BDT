@@ -1534,61 +1534,96 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     }
 
     /**
-     * Deletes test runs older than the configured retention window to reclaim space on the results
-     * database, whose growth is the root cause of the recurring "allocate memory" failures.
+     * Static OnCleanUpEvent listener that reclaims disk and DB space by deleting expired BDT runs.
      *
-     * WHY STATIC: it is installed via StaticEventListenerInstaller against OnCleanUpEvent and runs on
-     * the workbench cleanup cycle with no Behat process alive. It therefore holds no instance state
-     * and derives everything (workbench, config, cutoff) from the event.
+     * WHY THIS EXISTS
+     * Old `axenox.BDT.run` records and their screenshot files accumulate until the DB throws
+     * "allocate memory" errors and the Screenshots folder grows without bound. This listener runs
+     * during the core `exface.Core:CleanUp` action and removes runs older than a configurable window
+     * together with their whole child tree: run -> run_feature -> run_scenario -> run_step ->
+     * run_step_screenshot (file). Retention is OPT-IN: without a positive `CLEANUP.DAYS_TO_KEEP`
+     * every run is kept. Deletion is capped to one `CLEANUP.DELETE_BATCH` per invocation so a single
+     * run never has to remove an unbounded number of rows/files.
      *
-     * WHY CREATED_ON DRIVES THE CUTOFF INSTEAD OF started_on: CREATED_ON is a system attribute that
-     * is always populated, so a run that crashed before started_on was ever written is still an old
-     * row that must be reclaimed. Filtering on started_on would leave such orphans behind forever.
+     * WHY THE WORK IS DONE THIS WAY (gotchas learned the hard way)
      *
-     * WHY A MISSING OR NON-POSITIVE CONFIG DISABLES CLEANUP: deleting runs is irreversible, so
-     * retention must be an explicit operational decision. An unset or <= 0 CLEANUP.RUN_MAX_AGE_DAYS
-     * means "keep everything" rather than falling back to a hard-coded age that could silently wipe
-     * data on an installation that never opted in.
+     * 1) Leaf-first step deletion, depth-agnostic.
+     *    `run_step` is self-referencing via `parent_step` with an ON DELETE RESTRICT foreign key, and
+     *    the hierarchy is deeper than two levels (a substep can itself be a parent). Deleting a parent
+     *    before its children raises SQL error 1451. A binary parent/child flag with two passes is NOT
+     *    enough because of the multi-level nesting. MS SQL also forbids ON DELETE CASCADE on a
+     *    self-referencing table, so a DB-level cascade is not portable. The only robust approach is the
+     *    while loop below: each round deletes exactly the steps that are nobody's parent among those
+     *    still present, until none remain.
      *
-     * This iteration only SELECTS the eligible runs; the recursive deletion of child rows
-     * (feature/scenario/step/screenshot) and of each run's on-disk parallel log directory is added
-     * in the following step.
+     * 2) Screenshots are deleted by PATH, never by the step UID filter directly.
+     *    The screenshot object is file-based (core FILE / FileBuilder). FileBuilder::delete() is a
+     *    "read-then-delete": it deletes whatever buildQueryToRead() returns. The screenshot's own
+     *    `run_step` attribute maps to `~file:name_without_extension`, which FileBuilder does NOT treat
+     *    as a path address (see isFilePathAddress) and does not turn into a usable filename pattern for
+     *    an IN comparator - so an IN filter on it cannot narrow the delete-read. Therefore we FIRST read
+     *    the concrete PATHNAME_RELATIVE values (a normal data read, which narrows correctly and deletes
+     *    nothing), then delete by PATHNAME_RELATIVE, which IS a real path address FileBuilder can narrow.
+     *    Do NOT "simplify" this back to deleting straight off the `run_step` IN filter.
+     *
+     * 3) Never issue a file delete with an empty target set.
+     *    An empty IN filter degrades to "match everything" in the file source, which would read - and
+     *    delete - the entire Screenshots tree. This actually wiped all local screenshots once (via a
+     *    manual debugger step that ran the delete with an empty match set). Guards here guarantee we
+     *    only reach a file delete with concrete, non-empty targets, and the path-based delete above is
+     *    the structural safeguard even if a filter ever comes back empty.
+     *
+     * 4) Cross-source relation chains must not be used as the screenshot delete filter.
+     *    Filtering screenshots via `run_step__run_scenario__run_feature__run__UID` cannot be narrowed by
+     *    FileBuilder and falls back to the whole tree. Always filter on the screenshot's own attributes.
+     *
+     * 5) Everything runs inside one transaction, but file deletes are not transactional.
+     *    DB deletes are wrapped so a failure rolls back and never leaves a half-deleted run. Files,
+     *    however, cannot be rolled back: if a later DB delete fails and we roll back, the screenshot
+     *    files are already gone. We accept this direction (reclaim files first, keep the DB consistent
+     *    on retry) over the reverse risk of leaking files.
+     *
+     * 6) Windows log-file lock side effect (not thrown from here).
+     *    Deleting many screenshot files emits many log lines into the current day's log file. On
+     *    Windows an open log file cannot be renamed, so the core CleanUp log-repair/rotation step that
+     *    runs AFTER this listener could fail with "Access is denied (code 5)" while renaming
+     *    <tmp> -> <date>.log. That error surfaces outside this listener (after commit) and is mitigated
+     *    at the log-configuration / scheduling level (raise the file-log level, or run BDT screenshot
+     *    cleanup in a separate process), not inside this function.
+     *
+     * 7) OnCleanUpEvent ignores return values.
+     *    Progress and results must be reported via `$event->addResultMessage()`; returning a string does
+     *    nothing.
      *
      * @param OnCleanUpEvent $event
-     * @return string Returns the result of the cleaned records
-     * @throws \DateInvalidOperationException
+     * @return void
      */
-    public static function onCleanUp(OnCleanUpEvent $event) : string
+    public static function onCleanUp(OnCleanUpEvent $event) : void
     {
-
         $workbench = $event->getWorkbench();
         $config = $workbench->getApp('axenox.BDT')->getConfig();
 
         // Retention is opt-in: without an explicit positive age, keep every run.
         if (! $config->hasOption(self::CLEANUP_DAYS_TO_KEEP)) {
-            return 'Cleaned up on BDT App removing no run records. There is no option as clean up days to keep in the config';
+            $event->addResultMessage('BDT: no cleanup - option "' . self::CLEANUP_DAYS_TO_KEEP . '" is not set.');
+            return;
         }
         $maxAgeDays = (int) $config->getOption(self::CLEANUP_DAYS_TO_KEEP);
         if ($maxAgeDays <= 0) {
-            return 'Cleaned up on BDT App removing no run records. Invalid option as clean up days to keep in the config';
+            $event->addResultMessage('BDT: no cleanup - option "' . self::CLEANUP_DAYS_TO_KEEP . '" must be a positive number of days.');
+            return;
         }
 
         // Cutoff = now - maxAgeDays. Runs created strictly before this are eligible for deletion.
         $cutoff = (new \DateTimeImmutable('now'))->sub(new \DateInterval('P' . $maxAgeDays . 'D'));
         $cutoffStr = DateTimeDataType::formatDateNormalized($cutoff);
 
-        // Read only the identity of the old runs. Child rows and the on-disk log directory are
-        // resolved per run in the deletion pass that follows, so no child columns are loaded here.
+        // Read the identity of the old runs, oldest first, capped to one batch.
         $ds = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'axenox.BDT.run');
         $ds->getColumns()->addFromSystemAttributes();
         $ds->getColumns()->addFromExpression('started_on');
         $ds->getFilters()->addConditionFromString('CREATED_ON', $cutoffStr, ComparatorDataType::LESS_THAN);
-        // Delete the oldest runs first: combined with the batch limit below, each pass drains the N
-        // longest-standing runs, so a backlog shrinks from its oldest end instead of leaving ancient
-        // rows behind while newer ones in the same window get picked.
         $ds->getSorters()->addFromString('CREATED_ON', SortingDirectionsDataType::ASC);
-        // Cap the pass so a large backlog is drained across several scheduled cleanups instead of one
-        // memory-hungry delete. Fall back to a bounded default rather than an unlimited delete.
         $batch = $config->hasOption(self::CLEANUP_DELETE_BATCH)
             ? (int) $config->getOption(self::CLEANUP_DELETE_BATCH)
             : self::DELETE_BATCH_DEFAULT;
@@ -1598,11 +1633,80 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         $ds->dataRead();
 
         if ($ds->countRows() === 0) {
-            return 'Cleaned up on BDT App removing no run records.';
+            $event->addResultMessage('BDT: no expired run records to remove.');
+            return;
         }
-        
-        $deleted = $ds->dataDelete();
-        return 'Cleaned up on BDT App removing ' . $deleted . ' expired run records.';
+
+        $runUids = $ds->getUidColumn()->getValues();
+
+        $transaction = $workbench->data()->startTransaction();
+        try {
+            // Steps leaf-first: each round deletes the steps that are nobody's parent among those still
+            // present, and the screenshots of exactly those steps, until none remain. Screenshots are
+            // filtered by the screenshot object's OWN run_step attribute against the concrete leaf UIDs -
+            // never via a cross-source relation chain, which the FileBuilder cannot narrow and which
+            // would fall back to deleting the whole Screenshots tree.
+            $guard = 0;
+            while (true) {
+                if (++$guard > 1000) {
+                    throw new RuntimeException('Aborting BDT cleanup: run_step hierarchy did not drain after 1000 leaf rounds - parent_step data may be cyclic.');
+                }
+
+                $steps = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'axenox.BDT.run_step');
+                $steps->getColumns()->addFromUidAttribute();
+                $steps->getColumns()->addFromExpression('parent_step');
+                $steps->getFilters()->addConditionFromValueArray('run_scenario__run_feature__run__UID', $runUids);
+                $steps->dataRead();
+
+                if ($steps->countRows() === 0) {
+                    break;
+                }
+
+                $allUids = $steps->getUidColumn()->getValues();
+                $parentSet = array_flip(array_filter($steps->getColumnValues('parent_step')));
+                $leafUids = array_values(array_filter($allUids, function ($uid) use ($parentSet) {
+                    return ! isset($parentSet[$uid]);
+                }));
+
+                if (empty($leafUids)) {
+                    throw new RuntimeException('Aborting BDT cleanup: no leaf steps found among remaining run_step rows - parent_step data may contain a cycle.');
+                }
+
+                // Read the concrete relative paths of the screenshots belonging to these leaf steps.
+                // FileBuilder's delete widens to the whole tree unless it can narrow the READ by a real
+                // path address; name_without_extension does NOT count as a path filter (see isFilePathAddress),
+                // so we resolve concrete path_relative values first and delete by those.
+                $leafShots = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'axenox.BDT.run_step_screenshot');
+                $leafShots->getColumns()->addFromExpression('PATHNAME_RELATIVE');
+                $leafShots->getFilters()->addConditionFromValueArray('run_step', $leafUids);
+                $leafShots->dataRead();
+
+                if ($leafShots->countRows() > 0) {
+                    $paths = $leafShots->getColumnValues('PATHNAME_RELATIVE');
+                    $del = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'axenox.BDT.run_step_screenshot');
+                    $del->getFilters()->addConditionFromValueArray('PATHNAME_RELATIVE', $paths);
+                    $del->dataDelete($transaction);
+                }
+
+                // Then the leaf steps themselves.
+                $leafSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'axenox.BDT.run_step');
+                $leafCol = $leafSheet->getColumns()->addFromUidAttribute();
+                foreach ($leafUids as $uid) {
+                    $leafSheet->addRow([$leafCol->getName() => $uid]);
+                }
+                $leafSheet->dataDelete($transaction);
+            }
+
+            // Finally the runs; the cascade cleans features and scenarios, with no steps left to trip on.
+            $deleted = $ds->dataDelete($transaction);
+
+            $transaction->commit();
+            $event->addResultMessage('BDT: removed ' . $deleted . ' expired run records with their features, scenarios, steps and screenshots.');
+        } catch (\Throwable $e) {
+            // Roll back so a partial delete never persists, then re-throw so the real cause is visible.
+            $transaction->rollback();
+            throw $e;
+        }
     }
 
     /**
