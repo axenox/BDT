@@ -38,14 +38,19 @@ class UI5DialogNode extends UI5AbstractNode
         if ($closeBtn !== null) {
             $closeBtn->click();
             $logbook->addLine('Pressing close button of the dialog');
-        } else {
+        } elseif (null !== $backBtn = $this->findDialogBackButton($dialog)) {
             // Some dialogs (e.g. UI5 navigation pages) do not expose a "Close"
             // button on the current page - they are dismissed via the header
             // back button ("Zurück"). Fall back to this dialog's own back button.
-            $backBtn = $this->findDialogBackButton($dialog);
-            Assert::assertNotNull($backBtn, 'Neither close nor back button of the dialog can be found');
             $backBtn->click();
             $logbook->addLine('Pressing back button of the dialog');
+        } else {
+            // Last resort: neither a close nor a back button could be found.
+            // Most UI5 dialogs can still be dismissed by pressing the ESC key,
+            // so simulate it on this dialog before giving up.
+            $escPressed = $this->pressEscapeOnDialog($dialog);
+            Assert::assertTrue($escPressed, 'Cannot close the dialog: neither close nor back button found and ESC key could not be dispatched');
+            $logbook->addLine('Pressing ESC to close the dialog');
         }
 
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
@@ -114,5 +119,41 @@ class UI5DialogNode extends UI5AbstractNode
         // Fall back to a button captioned like the generic "back" action, but
         // still scoped to this dialog so we never grab another page's button.
         return $this->findDialogButtonByCaption($dialog, 'ACTION.GOBACK.NAME');
+    }
+
+    /**
+     * Dispatches an ESC keydown/keyup on this dialog to make UI5 close it.
+     *
+     * This is the last-resort fallback used when the dialog exposes neither a
+     * close nor a back button. UI5 dialogs (sap.m.Dialog) close on the Escape
+     * key, so we simulate a full keydown/keyup sequence on the dialog element.
+     *
+     * @param NodeElement $dialog
+     * @return bool true if the ESC key could be dispatched
+     */
+    private function pressEscapeOnDialog(NodeElement $dialog) : bool
+    {
+        $dialogId = $dialog->getAttribute('id');
+        if ($dialogId === null || $dialogId === '') {
+            return false;
+        }
+
+        $idJs = json_encode($dialogId, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $script = <<<JS
+(function(){
+    var el = document.getElementById($idJs);
+    if (!el) return false;
+    var target = el.querySelector(':focus') || el;
+    if (target.focus) target.focus();
+    ['keydown','keyup'].forEach(function(type){
+        target.dispatchEvent(new KeyboardEvent(type, {
+            key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
+        }));
+    });
+    return true;
+})();
+JS;
+
+        return (bool) $this->getSession()->evaluateScript($script);
     }
 }
