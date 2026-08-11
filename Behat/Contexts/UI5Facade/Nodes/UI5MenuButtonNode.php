@@ -95,6 +95,20 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
             $entryId = $this->getElementIdFromWidget($entryWidget);
             $table = $this->getOwningDataTableNode();
 
+            // Satisfy the row-selection precondition of THIS entry's action before the menu
+            // is opened. Menu entries carry their own action, and an entry that is not
+            // `disable_if_input_invalid` stays clickable with no row selected - the action
+            // then fails with "please select exactly 1 record". The disabled-driven row walk
+            // below only reacts to the rendered DOM state and never covers that case, so the
+            // precondition is taken from the action model here, reusing the guard the
+            // DataTable button loop already relies on. Without this, the reactive retry would
+            // have to absorb every such entry, and each first attempt would be recorded as a
+            // real failure in the test report.
+            $entryAction = $entryWidget->getAction();
+            if ($table !== null && $entryAction !== null && ! $table->ensureRowSelectedForAction($entryAction)) {
+                $logbook->addLine('Skipping menu item `' . $entryWidget->getCaption() . '` - its action requires a selected row, but the table has no rows to select');
+                continue;
+            }
             // Open the menu and read the entry's enabled state from aria-disabled
             // (the <li> carries no `disabled` attribute, so UI5ButtonNode::checkDisabled
             // cannot be used here).
@@ -139,22 +153,48 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
 
             // The <li> is tagged `exfw exfw-DataButton`, so the factory resolves the
             // proper button node; its id round-trips to the child DataButton widget.
-            $entryNode = UI5FacadeNodeFactory::createFromNodeElement($entryEl, $this->getSession(), $this->getBrowser());
             $urlBeforeClick = $this->getSession()->getCurrentUrl();
 
-            $result = $this->runAsSubstep(
-                function() use ($entryNode, $logbook) {
-                    return $entryNode->checkWorksAsExpected($logbook);
-                },
-                'Clicking menu item "' . $entryWidget->getCaption() . '"',
-                'Dialogs',
-                $logbook,
-                function() use ($urlBeforeClick) {
-                    if ($this->getSession()->getCurrentUrl() !== $urlBeforeClick) {
-                        $this->getBrowser()->navigateToPreviousPage();
-                    }
+            // Re-resolve the entry on every attempt: the popover closes when the entry's
+            // action runs, so the <li> goes stale between the click and any retry. The
+            // menu is reopened and the entry re-found by id before each attempt.
+            $runEntryClick = function() use ($entryId, $entryWidget, $logbook, $urlBeforeClick) {
+                $this->openMenu();
+                $entryEl = $this->getSession()->getPage()->findById($entryId);
+                if ($entryEl === null || ! $entryEl->isVisible()) {
+                    $this->closeMenuIfOpen();
+                    return SubstepResult::createSkipped('Menu item `' . $entryWidget->getCaption() . '` is no longer present after reopening the menu', $logbook);
                 }
-            );
+                $entryNode = UI5FacadeNodeFactory::createFromNodeElement($entryEl, $this->getSession(), $this->getBrowser());
+                return $this->runAsSubstep(
+                    function() use ($entryNode, $logbook) {
+                        return $entryNode->checkWorksAsExpected($logbook);
+                    },
+                    'Clicking menu item "' . $entryWidget->getCaption() . '"',
+                    'Dialogs',
+                    $logbook,
+                    function() use ($urlBeforeClick) {
+                        if ($this->getSession()->getCurrentUrl() !== $urlBeforeClick) {
+                            $this->getBrowser()->navigateToPreviousPage();
+                        }
+                    }
+                );
+            };
+
+            // If the entry's action reports a lost row selection, re-select a row and
+            // retry the click once. The modal popover must be closed before a row can be
+            // selected, hence the closeMenuIfOpen() hook.
+            if ($table !== null) {
+                $result = $table->retryClickIfRowSelectionLost(
+                    $runEntryClick,
+                    $logbook,
+                    function() {
+                        $this->closeMenuIfOpen();
+                    }
+                );
+            } else {
+                $result = $runEntryClick();
+            }
             if ($result->isFailed()) {
                 $failed = true;
             }

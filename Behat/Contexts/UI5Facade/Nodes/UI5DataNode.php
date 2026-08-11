@@ -500,16 +500,22 @@ class UI5DataNode extends UI5AbstractNode
     {
         // A calculated attribute has no stored literal to read (see isCalculatedAttribute): return no
         // candidates so the caller skips this filter instead of looping up to 100 empty reads and then
-        // throwing on the formula value.
-        if ($this->isCalculatedAttribute($attr)) {
+        // throwing on the formula value. Both the filter's own attribute and the attribute that really
+        // supplies the value are checked - for an InputComboTable these are two different attributes.
+        if ($this->isCalculatedAttribute($attr)
+            || $this->isCalculatedAttribute($this->getFilterValueAttribute($filterWidget))
+        ) {
             return [];
         }
-        
+
         $inputWidget = $filterWidget->getInputWidget();
         $values = [];
         $rowIndex = 0;
+        $foundLabel = null;
         if (($inputWidget instanceof InputComboTable)) {
-            $textAttr = $inputWidget->getTextAttribute(); // This gives us what we need to type into the filter (e.g. Name)
+            // This gives us what we need to type into the filter (e.g. Name) - resolved centrally so
+            // this branch and the calculated-attribute guards can never pick different attributes.
+            $textAttr = $this->getFilterValueAttribute($filterWidget);
             if ($inputWidget->isRelation()) {
                 $textAttrAliasFromFilter = RelationPath::join($inputWidget->getAttributeAlias(), $textAttr->getAliasWithRelationPath());
             } else {
@@ -589,8 +595,6 @@ class UI5DataNode extends UI5AbstractNode
 
     protected function findValueInDataSourceQuery(MetaObject $metaObject, MetaAttributeInterface $attr, string $returnColumn = null, string $sort = null, $rowIndex = 0)
     {
-        $ds = DataSheetFactory::createFromObject($metaObject);
-        $ds->getColumns()->addFromAttribute($attr);
         // Nothing readable exists for a calculated attribute: the data sheet returns its formula
         // definition, and normalizing that into the declared data type throws "Cannot convert ... to
         // a number", killing the whole filter substep before the caller can react. Bail out before
@@ -598,6 +602,8 @@ class UI5DataNode extends UI5AbstractNode
         if ($this->isCalculatedAttribute($attr)) {
             return null;
         }
+        $ds = DataSheetFactory::createFromObject($metaObject);
+        $ds->getColumns()->addFromAttribute($attr);
         foreach ($this->hiddenFilters as $hiddenFilter) {
             if ($hiddenFilter->getMetaObject()->isExactly($ds->getMetaObject())) {
                 $hiddenFilterValue = $this->getHiddenFilterValue($hiddenFilter);
@@ -973,23 +979,84 @@ class UI5DataNode extends UI5AbstractNode
 
         return $filterNodes;
     }
-    
+
     /**
-     * Detects whether an attribute's value is produced by a formula/calculation instead of being
-     * stored literally in the data source.
+     * Returns the attribute that actually supplies the literal value this filter is driven by.
+     *
+     * WHY THIS EXISTS: the attribute of a Filter widget is not always the attribute whose value ends
+     * up in the input. For an InputComboTable the filter itself is bound to the relation (a UID/foreign
+     * key with a plain data address), while what is typed - and what the table cell shows - is the TEXT
+     * attribute configured via `text_attribute_alias`, which is typically a label assembled by a formula
+     * or an SQL concatenation. Any decision about "is there a stored literal to filter by?" must
+     * therefore be taken on this attribute; taking it on the filter attribute lets every combo filter
+     * through unnoticed. findValuesInDataSource() already resolved exactly this attribute inline, so
+     * keeping the resolution in one place stops the skip decision and the value sourcing from
+     * disagreeing about which attribute they are talking about.
+     */
+    protected function getFilterValueAttribute(iFilterData $filter) : MetaAttributeInterface
+    {
+        // Only a Filter widget exposes an input widget - other iFilterData implementations are
+        // filtered by their own attribute.
+        if ($filter instanceof Filter) {
+            $inputWidget = $filter->getInputWidget();
+            if ($inputWidget instanceof InputComboTable) {
+                return $inputWidget->getTextAttribute();
+            }
+        }
+        return $filter->getAttribute();
+    }
+
+    /**
+     * Detects whether an attribute's value is produced by a calculation instead of being stored
+     * literally in the data source - either by an ExFace formula or by an SQL expression sitting
+     * in the data address.
      *
      * WHY THIS EXISTS: the works-as-expected filter routine sources a filter test value by reading a
-     * real value for the attribute from the data source. A calculated attribute has no such stored
-     * value - the data sheet hands back the attribute's own formula definition (e.g.
-     * "=TabelleAnfragen!Id") as the "value". Normalizing that into the attribute's (often numeric)
-     * data type then throws "Cannot convert ... to a number", which aborts the whole filter substep
-     * before trySetFilterValue's own try/catch can react. Since there is no literal the data source
-     * can be filtered by for such an attribute, callers must recognise it and skip it up front.
+     * real value for the attribute from the data source, and later verifies the table cells against
+     * that literal. A calculated attribute has no such stored value - the data sheet either hands back
+     * the attribute's own formula definition (e.g. "=TabelleAnfragen!Id") as the "value", which then
+     * throws "Cannot convert ... to a number" while being normalized into the declared data type, or
+     * the cell is assembled by the database at read time (e.g. a concatenated label) so it can never
+     * equal the single literal we filtered by. Both cases must be recognised up front and skipped,
+     * otherwise the substep fails for a widget that actually works.
+     *
+     * WHY THE HEURISTICS BELOW: a data address is either a plain column name or an expression. The
+     * bracket-pair rule is the very same criterion the core SQL query builders use to decide whether
+     * a data address is passed through as SQL, so it covers CONCAT()/COALESCE()/CASE and sub-selects.
+     * The operator rule catches concatenations written without a function call, which the bracket rule
+     * alone would miss.
      */
     protected function isCalculatedAttribute(MetaAttributeInterface $attr) : bool
     {
         $dataAddress = $attr->getDataAddress();
-        return is_string($dataAddress) && Expression::detectFormula($dataAddress);
+        if (! is_string($dataAddress)) {
+            return false;
+        }
+        $dataAddress = trim($dataAddress);
+        if ($dataAddress === '') {
+            return false;
+        }
+
+        // ExFace formula in the data address, e.g. "=Concatenate(FIRST_NAME, ' ', LAST_NAME)".
+        if (Expression::detectFormula($dataAddress)) {
+            return true;
+        }
+
+        // SQL statement instead of a plain column: function calls like CONCAT(...)/COALESCE(...),
+        // CASE expressions and sub-selects all carry a bracket pair, while a column name never does.
+        if (mb_strpos($dataAddress, '(') !== false && mb_strpos($dataAddress, ')') !== false) {
+            return true;
+        }
+
+        // Concatenation without a function call: "FIRST_NAME + ' ' + LAST_NAME" (MS SQL) or
+        // "FIRST_NAME || ' ' || LAST_NAME" (MySQL/Oracle). Neither a string literal quote nor these
+        // operators can occur inside a plain - even quoted or schema-qualified - column name, so their
+        // presence always means the value is computed.
+        if (preg_match("/(\\|\\||\\+|')/", $dataAddress) === 1) {
+            return true;
+        }
+
+        return false;
     }
 
     /**

@@ -277,14 +277,24 @@ class UI5DataTableNode extends UI5DataNode
         }
     }
 
+    /**
+     * Tells whether the given (1-based) row is currently marked as selected.
+     *
+     * Why both class names are checked:
+     * sap.ui.table marks the selected row with `sapUiTableRowSel`, while sap.m.Table marks
+     * it with `sapMLIBSelected`. Checking only the first one makes every sap.m.Table row look
+     * unselected, so selectEachRowUntil() never deselects the previous row and leaves several
+     * rows selected, while ensureExactlyOneRowSelected() clears nothing and then toggles the
+     * already selected row OFF - both produce the very "select exactly 1 record" error the
+     * retry is supposed to recover from.
+     */
     public function isRowSelected(int $rowNumber): bool
     {
         $rowIndex = $this->convertOrdinalToIndex($rowNumber);
         $tableId = $this->getNodeElement()->getAttribute('id');
-        $isSelected = $this->getSession()->evaluateScript(
-            "return jQuery('#{$tableId} .sapUiTableTr, #{$tableId} .sapMListTblRow').eq({$rowIndex}).hasClass('sapUiTableRowSel');"
+        return (bool) $this->getSession()->evaluateScript(
+            "return jQuery('#{$tableId} .sapUiTableTr, #{$tableId} .sapMListTblRow').eq({$rowIndex}).is('.sapUiTableRowSel, .sapMLIBSelected');"
         );
-        return $isSelected;
     }
 
     /**
@@ -325,6 +335,146 @@ class UI5DataTableNode extends UI5DataNode
             }
         }
         return false;
+    }
+
+    /**
+     * Toggles off every selected row on the first page and then selects exactly the
+     * first one.
+     *
+     * Why this exists:
+     * The "select exactly one record" precondition can be violated in two ways - no row
+     * is selected (the selection was silently dropped by a toolbar re-render), or more
+     * than one row is still selected from an earlier step. Clearing first and then
+     * selecting a single row recovers deterministically from both cases, which is what
+     * the row-selection retry (retryClickIfRowSelectionLost) needs before it re-clicks.
+     *
+     * @return void
+     */
+    protected function ensureExactlyOneRowSelected(): void
+    {
+        $count = $this->getLoadedRowCount();
+        if ($count < 1) {
+            return;
+        }
+        // Toggle off any currently selected row: clicking a selected row selector
+        // deselects it, so a leftover multi-selection can never survive into the retry.
+        for ($rowNumber = 1; $rowNumber <= $count; $rowNumber++) {
+            if ($this->isRowSelected($rowNumber)) {
+                $this->selectRow($rowNumber);
+            }
+        }
+        $this->selectRow(1);
+    }
+
+    /**
+     * Tells whether a failed substep failed because the action asked for a different
+     * number of selected rows (e.g. "Bitte genau 1 Datensatz auswählen!").
+     *
+     * Why this is translation-driven instead of a hard-coded string:
+     * The message is emitted client-side by UI5 in the active UI language, so it is
+     * matched against the translated SELECT_EXACTLY / SELECT_AT_LEAST / SELECT_AT_MOST
+     * core messages rather than a fixed German literal, keeping the retry locale-safe.
+     *
+     * @param SubstepResult $result
+     * @param LogBookInterface $logbook
+     * @return bool
+     */
+    public function isRowSelectionError(SubstepResult $result, LogBookInterface $logbook): bool
+    {
+        if (! $result->isFailed()) {
+            return false;
+        }
+        $message = (string) $result->getReason();
+        if ($message === '') {
+            return false;
+        }
+        $patterns = $this->getRowSelectionErrorPatterns();
+        if ($patterns === []) {
+            // No pattern could be resolved: either the message keys are missing from the core
+            // translations or the placeholder name changed. Silently returning false would
+            // disable the whole retry without any trace, so the condition is made visible.
+            $logbook->addLine(
+                '**WARNING:** No row-selection error patterns could be resolved for locale `'
+                . $this->getBrowser()->getLocale() . '` - the row-selection retry is inactive.'
+            );
+            return false;
+        }
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $message) === 1) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Builds the regex patterns that identify a row-selection error message in the
+     * current UI language, one per plural form of each relevant core message.
+     *
+     * The `%number%` placeholder is replaced by a sentinel before translation and then
+     * turned into a `\d+` matcher, so any required row count matches regardless of how
+     * the translator resolves placeholders.
+     *
+     * @return string[]
+     */
+    private function getRowSelectionErrorPatterns(): array
+    {
+        $translator = $this->getWorkbench()->getCoreApp()->getTranslator($this->getBrowser()->getLocale());
+        $keys = [
+            'MESSAGE.SELECT_EXACTLY_X_ROWS',
+            'MESSAGE.SELECT_AT_LEAST_X_ROWS',
+            'MESSAGE.SELECT_AT_MOST_X_ROWS'
+        ];
+        $sentinel = "\x01NUM\x01";
+        $patterns = [];
+        foreach ($keys as $key) {
+            foreach ([1, 2] as $pluralNumber) {
+                $translated = $translator->translate($key, ['%number%' => $sentinel], $pluralNumber);
+                if ($translated === '' || $translated === $key || strpos($translated, $sentinel) === false) {
+                    continue;
+                }
+                $regex = str_replace(preg_quote($sentinel, '/'), '\d+', preg_quote($translated, '/'));
+                $patterns['/' . $regex . '/u'] = '/' . $regex . '/u';
+            }
+        }
+        return array_values($patterns);
+    }
+
+    /**
+     * Runs a button-click substep and, if it fails because the action reported a
+     * row-selection error, re-selects a single row and retries the click exactly once.
+     *
+     * Why this exists:
+     * The row precondition is satisfied up-front via ensureRowSelectedForAction(), but
+     * the toolbar re-renders when data reloads and can silently drop the selection
+     * between the precondition and the actual click, so the action still fails asking
+     * for "genau 1 Datensatz". This safety net recovers from that race deterministically
+     * instead of failing the button. A single retry is enough: if the selection is lost
+     * again the failure is real and must surface.
+     *
+     * @param callable $runClickSubstep Returns the SubstepResult of the click.
+     * @param LogBookInterface $logbook
+     * @param callable|null $beforeReselect Optional hook run before re-selecting a row
+     *                                      (e.g. a MenuButton closing its modal popover
+     *                                      so the row selector is clickable).
+     * @return SubstepResult
+     */
+    public function retryClickIfRowSelectionLost(callable $runClickSubstep, LogBookInterface $logbook, ?callable $beforeReselect = null): SubstepResult
+    {
+        $result = $runClickSubstep();
+        if (! $this->isRowSelectionError($result, $logbook)) {
+            return $result;
+        }
+        if ($this->getLoadedRowCount() < 1) {
+            return $result;
+        }
+        $logbook->addLine('Action reported a row-selection error (e.g. "Bitte genau 1 Datensatz auswählen!") - re-selecting a single row and retrying the click once.');
+        if ($beforeReselect !== null) {
+            $beforeReselect();
+        }
+        $this->ensureExactlyOneRowSelected();
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+        return $runClickSubstep();
     }
 
     public function getElementId() : string
@@ -455,7 +605,25 @@ class UI5DataTableNode extends UI5DataNode
 
         // Get a valid value for filtering
         $filterAttr = $filter->getAttribute();
-
+        // Decide up front whether this filter can be driven by a stored literal at all. The value is
+        // supplied by getFilterValueAttribute() - for an InputComboTable that is the text attribute,
+        // not the filter's relation - and that attribute is often a label built by a formula or an SQL
+        // concatenation. Such a value is assembled at read time, so no literal exists that could be
+        // typed into the filter and then be found again cell-by-cell in the table. This runs before
+        // findColumnWithAttribute() so we do not scan the rendered headers, read the data source and
+        // drive the whole filter round-trip only to throw the outcome away afterwards.
+        $valueAttr = $this->getFilterValueAttribute($filter);
+        if ($this->isCalculatedAttribute($valueAttr)) {
+            $logbook->continueLine(' - skipped: `' . $valueAttr->getAliasWithRelationPath()
+                . '` is calculated (formula or SQL expression in its data address), no literal value to filter by');
+            $result->setTitle($result->getTitle() . ' (skipped: calculated attribute)');
+            return SubstepResult::createSkipped(
+                'Filter `' . $filter->getCaption() . '` is driven by the calculated attribute `'
+                . $valueAttr->getAliasWithRelationPath()
+                . '`; its value is computed at read time and can neither be filtered nor verified by a literal',
+                $logbook
+            );
+        }
 
         // Look for a value it the table
         // Verify the first DataTable contains the expected text in the specified column
@@ -476,24 +644,6 @@ class UI5DataTableNode extends UI5DataNode
                 $logbook->continueLine(' - column `' . $columnCaption . '` is optional/hidden, skipping content verification');
                 return SubstepResult::createSkipped(
                     'Column `' . $columnCaption . '` for filter `' . $filter->getCaption() . '` is optional/hidden and is not rendered in the table',
-                    $logbook
-                );
-            }
-            // A calculated/formula column has no stored literal value: its cells are derived at
-            // render time (e.g. a concatenated label). The value we sourced comes from the filter's
-            // attribute and never equals such a derived cell, so verifying cell-by-cell reports 0/N
-            // matched even though the filter works and rows were returned. We detect a calculated
-            // attribute the same way the framework already detects formula values: a calculated
-            // attribute carries its formula in its data address (Expression::detectFormula). This
-            // mirrors the formula-VALUE skip above — there is no reliable literal to assert against.
-            $columnAttr        = ($column !== null && $column->isBoundToAttribute()) ? $column->getAttribute() : null;
-            $columnDataAddress = $columnAttr !== null ? $columnAttr->getDataAddress() : null;
-            if (is_string($columnDataAddress) && Expression::detectFormula($columnDataAddress)) {
-                $logbook->continueLine(' - skipped verification: column `' . $columnCaption . '` is a calculated attribute');
-                $result->setTitle($result->getTitle() . ' (column not verified: calculated attribute)');
-                return SubstepResult::createSkipped(
-                    'Column `' . $columnCaption . '` for filter `' . $filter->getCaption()
-                    . '` is a calculated attribute; the filter was applied but its column cannot be verified by a literal value',
                     $logbook
                 );
             }
@@ -769,25 +919,33 @@ class UI5DataTableNode extends UI5DataNode
             $buttonNode = $readyNode;
             $urlBeforeClick = $this->getSession()->getCurrentUrl();
             if (!$buttonNode->checkDisabled()) {
-                // Press the button in a substep
-                $substepResult = $this->runAsSubstep(
-                    function() use ($buttonNode, $logbook) {
-                        return $buttonNode->checkWorksAsExpected($logbook);
-                    },
-                    'Clicking "' . $buttonWidget->getCaption() . '"',
-                    'Dialogs',
-                    $logbook,
-                    function() use ($urlBeforeClick) {
-                        // If the dialog caused a full-page navigation (large dialogs rendered as
-                        // separate pages), go back. If only a popup error appeared without navigation
-                        // (URL unchanged), dismissErrorDialogIfPresent() in runAsSubstep's catch
-                        // block already handled it — navigating back here would be wrong.
-                        $urlAfterError = $this->getSession()->getCurrentUrl();
-                        if ($urlAfterError !== $urlBeforeClick) {
-                            $this->getBrowser()->navigateToPreviousPage();
+                // Re-resolve the button on every attempt so the retry (below) never
+                // clicks an element that went stale when the toolbar re-rendered.
+                $runClick = function() use ($buttonWidget, $readyNode, $logbook, $urlBeforeClick) {
+                    $node = $this->resolveButtonNode($buttonWidget) ?? $readyNode;
+                    return $this->runAsSubstep(
+                        function() use ($node, $logbook) {
+                            return $node->checkWorksAsExpected($logbook);
+                        },
+                        'Clicking "' . $buttonWidget->getCaption() . '"',
+                        'Dialogs',
+                        $logbook,
+                        function() use ($urlBeforeClick) {
+                            // If the dialog caused a full-page navigation (large dialogs rendered as
+                            // separate pages), go back. If only a popup error appeared without navigation
+                            // (URL unchanged), dismissErrorDialogIfPresent() in runAsSubstep's catch
+                            // block already handled it — navigating back here would be wrong.
+                            $urlAfterError = $this->getSession()->getCurrentUrl();
+                            if ($urlAfterError !== $urlBeforeClick) {
+                                $this->getBrowser()->navigateToPreviousPage();
+                            }
                         }
-                    }
-                );
+                    );
+                };
+
+                // Press the button; if the action still reports a lost row selection,
+                // re-select a row and retry the click once.
+                $substepResult = $this->retryClickIfRowSelectionLost($runClick, $logbook);
 
                 // Say the buttons test is failed if at least one button fails
                 if ($substepResult->isFailed()) {
