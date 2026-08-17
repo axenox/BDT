@@ -113,11 +113,20 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
             return;
         }
 
-        // The daily sub-folder is intentional here (unlike the run logs): screenshots are not scoped
-        // to a run, they accumulate for every scenario of every run, so the date is the only thing
-        // that keeps the directory browsable and prunable.
-        $relativePath = BdtPaths::relative(BdtPaths::FOLDER_SCREENSHOTS, date('Ymd'));
-        $dir = BdtPaths::ensure(getcwd(), BdtPaths::FOLDER_SCREENSHOTS, date('Ymd'));
+        // One folder per run instead of per day: the run UID is the identifier every consumer already
+        // holds, and it lets a retention job drop an entire run's screenshots in one operation. The
+        // depth stays at two levels (Screenshots/<run_uid>/<step_uid>.png) because the metamodel
+        // addresses these files with a two-level glob.
+        $runUid = $this->provider->getRunUid();
+        if ($runUid === null || $runUid === '') {
+            // Fail loudly rather than writing one level up: a screenshot outside a run folder does not
+            // match the object's glob, so it would be invisible in the UI - a silent loss that looks
+            // like "the screenshot was never taken". The caller (UI5Browser::captureScreenshot) turns
+            // this into a failed substep, so the test itself continues.
+            throw new RuntimeException('Cannot store a screenshot: the run context was never bound to the screenshot provider.');
+        }
+        $relativePath = BdtPaths::relative(BdtPaths::FOLDER_SCREENSHOTS, $runUid);
+        $dir = BdtPaths::ensure(getcwd(), BdtPaths::FOLDER_SCREENSHOTS, $runUid);
         // Checked rather than fired and forgotten: without the directory every attempt below fails
         // identically, so the retry loop turns one clear cause into three obscure ones plus four
         // seconds of sleep on the failure path.
