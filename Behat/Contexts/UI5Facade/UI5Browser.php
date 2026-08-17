@@ -1,7 +1,9 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
+use axenox\BDT\Behat\Common\BdtPaths;
 use axenox\BDT\Behat\Common\Traits\AuthenticatorTimeStampingTrait;
+use axenox\BDT\Behat\Common\Traits\DeadlockRetryTrait;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5PageNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5TileNode;
@@ -48,6 +50,7 @@ use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 class UI5Browser
 {
     use AuthenticatorTimeStampingTrait;
+    use DeadlockRetryTrait;
     private $eventDispatcher;
 
     private $session;
@@ -79,7 +82,12 @@ class UI5Browser
 
     /** @var callable|null */
     private $chromeRecoveryFn = null;
-
+    
+    // How long a lane waits for the user provisioning mutex before giving up and provisioning
+    // unserialized. Sized well above a normal provisioning cycle (about a second) so contention among
+    // four lanes never trips it, yet far below the worker idle timeout so a wedged holder can never
+    // be the reason a lane is declared hung.
+    private const USER_PROVISIONING_LOCK_TIMEOUT_SECONDS = 60;
 
     /**
      * Constructor - initializes the UI5Browser with necessary dependencies
@@ -1240,53 +1248,107 @@ JS
         $testRunnerUsername = $laneId !== null
             ? $baseUsername . self::laneUserSuffix($laneId)
             : $baseUsername;
-        
-        
-        $userSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER');
-        $userSheet->getFilters()->addConditionFromString('USERNAME', $testRunnerUsername, ComparatorDataType::EQUALS);
-        $userSheet->getColumns()->addFromSystemAttributes();
-        $userSheet->getColumns()->addMultiple([
-            'USERNAME'
-        ]);
-        $userSheet->dataRead();
-        if ($userSheet->isEmpty()) {
-            $userSheet->addRow([
-                'USERNAME' => $testRunnerUsername,
-                'PASSWORD' => $testRunnerPassword,
-                'FIRST_NAME' => $config->getOption('TEST_USER.FIRST_NAME'),
-                'LAST_NAME' => $config->getOption('TEST_USER.LAST_NAME'),
-                'LOCALE' => $workbench->getConfig()->getOption('SERVER.DEFAULT_LOCALE')
+
+
+        // Everything that touches exface.Core.USER / USER_ROLE_USERS runs under a cross-process
+        // mutex. WHY: the nested-sheet write below is expanded by the core into a delete-then-insert
+        // over USER_ROLE_USERS, and each insert fires PreventDuplicatesBehavior, which READS the same
+        // table from inside the same transaction. Lanes have their own USER row, but their ROLE sets
+        // overlap heavily, so the duplicate-check reads of one lane cover index ranges another lane is
+        // concurrently rewriting - and the two long transactions form a lock cycle. Five deadlock
+        // victims in one nightly run all traced to exactly this call. Provisioning takes about a
+        // second and gains nothing from running concurrently, so serializing it removes the cycle by
+        // construction instead of tuning around it.
+        $provisioningLock = self::acquireUserProvisioningLock($workbench);
+        try {
+            $userSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER');
+            $userSheet->getFilters()->addConditionFromString('USERNAME', $testRunnerUsername, ComparatorDataType::EQUALS);
+            $userSheet->getColumns()->addFromSystemAttributes();
+            // LOCALE is read (not just written) so an unchanged locale can be detected and skipped -
+            // see the change check below.
+            $userSheet->getColumns()->addMultiple([
+                'USERNAME',
+                'LOCALE'
             ]);
-            $userSheet->dataCreate();
-        }
-        $userId = $userSheet->getUidColumn()->getValue(0);
-
-        if ($locale) {
-            $userSheet->setCellValue('LOCALE', 0, $locale);
-        }
-
-        if (!empty($roles)) {
-            $roleSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER_ROLE');
-            $roleSheet->getColumns()->addFromSystemAttributes();
-            $roleAliasCol = $roleSheet->getColumns()->addFromExpression('ALIAS_WITH_NS');
-            $roleUidCol = $roleSheet->getUidColumn();
-            $roleSheet->getFilters()
-                ->addNestedOR()
-                ->addConditionFromValueArray('ALIAS_WITH_NS', $roles)
-                ->addConditionFromValueArray('NAME', $roles);
-            $roleSheet->dataRead();
-            Assert::assertEquals(count($roles), $roleSheet->countRows(), 'From the requested ' . count($roles) . ' user roles only the following were found: ' . implode(', ', $roleAliasCol->getValues()));
-
-            $userRoleSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER_ROLE_USERS');
-            $userRoleSheet->getFilters()->addConditionFromString('USER', $userId);
-            foreach ($roleUidCol->getValues() as $roleUid) {
-                $userRoleSheet->addRow([
-                    'USER_ROLE' => $roleUid
+            $userSheet->dataRead();
+            if ($userSheet->isEmpty()) {
+                $userSheet->addRow([
+                    'USERNAME' => $testRunnerUsername,
+                    'PASSWORD' => $testRunnerPassword,
+                    'FIRST_NAME' => $config->getOption('TEST_USER.FIRST_NAME'),
+                    'LAST_NAME' => $config->getOption('TEST_USER.LAST_NAME'),
+                    'LOCALE' => $workbench->getConfig()->getOption('SERVER.DEFAULT_LOCALE')
                 ]);
+                $userSheet->dataCreate();
             }
-            $userSheet->setCellValue('USER_ROLE_USERS', 0, $userRoleSheet->exportUxonObject()->toArray());
+            $userId = $userSheet->getUidColumn()->getValue(0);
+
+            $localeChanged = false;
+            if ($locale) {
+                $localeChanged = ((string) $userSheet->getCellValue('LOCALE', 0)) !== $locale;
+                if ($localeChanged) {
+                    $userSheet->setCellValue('LOCALE', 0, $locale);
+                }
+            }
+
+            // Initialized up front because the BeforeUserLoggedIn dispatch at the end of this method
+            // reads it unconditionally - with no roles requested it would otherwise be an undefined
+            // variable.
+            $roleAliasCol = null;
+            $rolesChanged = false;
+
+            if (!empty($roles)) {
+                $roleSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER_ROLE');
+                $roleSheet->getColumns()->addFromSystemAttributes();
+                $roleAliasCol = $roleSheet->getColumns()->addFromExpression('ALIAS_WITH_NS');
+                $roleUidCol = $roleSheet->getUidColumn();
+                $roleSheet->getFilters()
+                    ->addNestedOR()
+                    ->addConditionFromValueArray('ALIAS_WITH_NS', $roles)
+                    ->addConditionFromValueArray('NAME', $roles);
+                $roleSheet->dataRead();
+                Assert::assertEquals(count($roles), $roleSheet->countRows(), 'From the requested ' . count($roles) . ' user roles only the following were found: ' . implode(', ', $roleAliasCol->getValues()));
+
+                $wantedRoleUids = $roleUidCol->getValues();
+
+                // Only rewrite the role assignment when it actually differs. WHY THIS IS THE BIGGEST
+                // WIN: iLogInToPage() runs in every scenario's Background, so a feature with ten
+                // scenarios used to perform ten identical delete-and-reinsert cycles over
+                // USER_ROLE_USERS - ten chances to deadlock, all of them writing exactly what was
+                // already there. Comparing first turns dozens of contended transactions per run into
+                // a handful that carry a real change.
+                $currentRoleUids = self::readAssignedRoleUids($workbench, $userId);
+                $rolesChanged = ! self::isSameUidSet($currentRoleUids, $wantedRoleUids);
+
+                if ($rolesChanged) {
+                    $userRoleSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER_ROLE_USERS');
+                    $userRoleSheet->getFilters()->addConditionFromString('USER', $userId);
+                    foreach ($wantedRoleUids as $roleUid) {
+                        $userRoleSheet->addRow([
+                            'USER_ROLE' => $roleUid
+                        ]);
+                    }
+                    $userSheet->setCellValue('USER_ROLE_USERS', 0, $userRoleSheet->exportUxonObject()->toArray());
+                }
+            }
+
+            // No change at all means no transaction at all - and a transaction that never runs can
+            // never be a deadlock victim.
+            if ($rolesChanged || $localeChanged) {
+                // The lock above cannot cover the web server, which writes the same user tables from
+                // its own process while the browser session logs in. Being chosen as a victim there is
+                // the documented, retryable outcome - the transaction was rolled back whole.
+                self::runWithDeadlockRetry(
+                    function () use ($userSheet) {
+                        $userSheet->dataUpdate();
+                    },
+                    'test user provisioning for "' . $testRunnerUsername . '"',
+                    $workbench->getLogger()
+                );
+            }
+        } finally {
+            self::releaseUserProvisioningLock($provisioningLock);
         }
-        $userSheet->dataUpdate();
 
         // Change the currently logged-in user to make sure the facade nodes "see" exaclty the same as the user in
         // the scenario. This is important because different users see slightly different UIs. If the scenario user
@@ -1336,6 +1398,125 @@ JS
         return $loginFields;
     }
 
+    /**
+     * Reads the role UIDs currently assigned to a user.
+     *
+     * Exists so setupUser() can compare the wanted role set against the stored one before deciding
+     * to write. A cheap indexed read replaces a delete-and-reinsert transaction in the common case
+     * where consecutive scenarios of the same feature request identical roles.
+     *
+     * @param WorkbenchInterface $workbench
+     * @param string $userId UID of the exface.Core.USER row.
+     * @return string[] Role UIDs, unordered.
+     */
+    private static function readAssignedRoleUids(WorkbenchInterface $workbench, string $userId): array
+    {
+        $ds = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER_ROLE_USERS');
+        $ds->getFilters()->addConditionFromString('USER', $userId, ComparatorDataType::EQUALS);
+        $col = $ds->getColumns()->addFromExpression('USER_ROLE');
+        $ds->dataRead();
+        return array_map('strval', $col->getValues(false));
+    }
+
+    /**
+     * Compares two UID lists as unordered sets.
+     *
+     * Order and duplicates carry no meaning for a role assignment, so a plain array comparison would
+     * report a difference whenever the data source returned the same roles in another order - and
+     * every such false difference costs one deadlock-prone write.
+     *
+     * @param string[] $a
+     * @param string[] $b
+     */
+    private static function isSameUidSet(array $a, array $b): bool
+    {
+        $a = array_unique(array_map('strval', $a));
+        $b = array_unique(array_map('strval', $b));
+        if (count($a) !== count($b)) {
+            return false;
+        }
+        sort($a);
+        sort($b);
+        return $a === $b;
+    }
+
+    /**
+     * Takes the cross-process mutex that serializes test user provisioning.
+     *
+     * WHY flock: the lock is released by the OS when its owner dies, so a crashed worker can never
+     * strand the mutex and block every future run - the same reasoning PortProbingTrait applies to
+     * port reservations. Those helpers cannot be reused directly here: they are instance methods
+     * built around a non-blocking per-port scan, whereas this is a single named mutex that must
+     * WAIT, and setupUser() is static.
+     *
+     * WHY IT DEGRADES INSTEAD OF FAILING: if the lock cannot be taken within the deadline, the method
+     * returns NULL and provisioning proceeds unserialized - exactly the behavior that existed before
+     * this lock. A scenario must never fail because a mutex was busy; the worst outcome of skipping
+     * it is the deadlock risk we already lived with, which the retry then covers.
+     *
+     * @return resource|null The open lock handle, or NULL if provisioning must proceed unlocked.
+     */
+    private static function acquireUserProvisioningLock(WorkbenchInterface $workbench)
+    {
+        // BdtPaths owns the folder layout; the degrade-instead-of-fail contract of this method is
+        // preserved by turning its exception into the same warning the manual mkdir produced.
+        try {
+            $dir = BdtPaths::ensure($workbench->getInstallationPath(), BdtPaths::FOLDER_LOCKS);
+        } catch (\Throwable $e) {
+            $workbench->getLogger()->warning('BDT: could not create the user provisioning lock directory - provisioning runs unserialized. ' . $e->getMessage());
+            return null;
+        }
+        if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
+            $workbench->getLogger()->warning('BDT: could not create the user provisioning lock directory ' . $dir . ' - provisioning runs unserialized.');
+            return null;
+        }
+
+        // 'c' creates without truncating: the file is only a mutex, its bytes are diagnostic.
+        $handle = @fopen($dir . DIRECTORY_SEPARATOR . 'user_provisioning.lock', 'c');
+        if ($handle === false) {
+            $workbench->getLogger()->warning('BDT: could not open the user provisioning lock - provisioning runs unserialized.');
+            return null;
+        }
+
+        // Polled non-blocking acquisition rather than a plain blocking LOCK_EX, because PHP's blocking
+        // flock has no timeout: a wedged holder would hang the lane until the worker timeout killed it.
+        $deadline = microtime(true) + self::USER_PROVISIONING_LOCK_TIMEOUT_SECONDS;
+        while (! flock($handle, LOCK_EX | LOCK_NB)) {
+            if (microtime(true) >= $deadline) {
+                fclose($handle);
+                $workbench->getLogger()->warning(sprintf(
+                    'BDT: user provisioning lock still held after %d s - proceeding unserialized.',
+                    self::USER_PROVISIONING_LOCK_TIMEOUT_SECONDS
+                ));
+                return null;
+            }
+            usleep(100000);
+        }
+
+        @ftruncate($handle, 0);
+        @fwrite($handle, sprintf('pid=%d acquired_at=%s%s', getmypid(), date('Y-m-d H:i:s'), PHP_EOL));
+        @fflush($handle);
+        return $handle;
+    }
+
+    /**
+     * Releases the provisioning mutex.
+     *
+     * Deliberately tolerates NULL so the caller's finally block needs no condition - acquisition is
+     * allowed to fail, and the release path must not become a second failure mode. The file is never
+     * unlinked: another process may hold it open, and removing a locked file underneath it is racy
+     * on Windows.
+     *
+     * @param resource|null $handle Whatever acquireUserProvisioningLock() returned.
+     */
+    private static function releaseUserProvisioningLock($handle): void
+    {
+        if (is_resource($handle)) {
+            @flock($handle, LOCK_UN);
+            @fclose($handle);
+        }
+    }
+    
     public function getTestingUsername() : string
     {
         $config = $this->getWorkbench()->getApp('axenox.BDT')->getConfig();

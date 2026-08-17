@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\TwigFormatter\Context;
 
+use axenox\BDT\Behat\Common\BdtPaths;
 use axenox\BDT\Behat\Common\ScreenshotAwareInterface;
 use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
 use Behat\Behat\Context\SnippetAcceptingContext;
@@ -9,6 +10,7 @@ use Behat\Behat\Hook\Scope\BeforeScenarioScope;
 use Behat\Behat\Hook\Scope\BeforeFeatureScope;
 use Behat\MinkExtension\Context\MinkContext;
 use Behat\Testwork\Tester\Result\TestResult;
+use exface\Core\Exceptions\RuntimeException;
 
 /**
  * Class BehatFormatterContext
@@ -19,8 +21,11 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
 {
     private $currentScenario;
     protected static $currentSuite;
-    
-    private ScreenshotProviderInterface $provider;
+
+    // Nullable with a default: the setter is called by the context initializer, and a capture that
+    // somehow runs before it must degrade instead of raising an uninitialized-property fatal inside an
+    // AfterStep hook.
+    private ?ScreenshotProviderInterface $provider = null;
 
     public function setScreenshotProvider(ScreenshotProviderInterface $provider) :void
     {
@@ -44,9 +49,14 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
     {
         $this->currentScenario = $scope->getScenario();
     }
-    
+
     /**
      * Capture a screenshot when a step fails.
+     *
+     * MUST NEVER THROW: an uncaught exception from an AfterStep hook aborts the Behat process with
+     * exit code 255, so a failed screenshot would destroy the whole feature run - and this hook fires
+     * precisely on the failure path, i.e. exactly when the run is most worth finishing. A screenshot is
+     * forensic evidence, never a test outcome, so its loss is recorded and the run goes on.
      *
      * @AfterStep
      * @param AfterStepScope $scope The Behat after-step scope
@@ -59,56 +69,74 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
             return;
         }
 
-        $this->captureScreenshot();
+        try {
+            $this->captureScreenshot();
+        } catch (\Throwable $e) {
+            error_log('Screenshot capture failed for a failed step: ' . $e->getMessage());
+        }
     }
-    
+
     /**
      * Capture and store a screenshot with the current URL.
      *
-     * Takes a screenshot of the current browser state and stores it along with
-     * the current URL. Retries up to 3 times if the screenshot capture fails.
-     * The screenshot path and URL are stored in the provider for later database logging.
+     * Takes a screenshot of the current browser state and stores it along with the current URL.
+     * Retries up to 3 times if the screenshot capture fails. The screenshot path and URL are stored in
+     * the provider for later database logging.
+     *
+     * WHY A MISSING NAME MEANS "SKIP" AND NOT "INVENT ONE": the file name IS the run_step UID, written
+     * by DatabaseFormatter when it opens the step row - that name is the only link between the image on
+     * disk and the row that references it. The formatter leaves it unset exactly on the paths where no
+     * step row exists at all (dry run, no open scenario, a failed step INSERT), so with no name there is
+     * also no row for the screenshot to be attached to. Generating a substitute name would produce an
+     * orphaned file that nothing in the UI can ever reach.
+     * 
+     *  THROWS ON FINAL FAILURE BY DESIGN: every current caller guards it - the AfterStep hook catches
+     *  it, and UI5Browser::captureScreenshot() routes it into ErrorManager. That is deliberate, because
+     *  a swallowed failure here would lose the only trace that evidence was not collected. Any NEW
+     *  caller must keep that guard: an exception escaping into a Behat hook kills the process with exit
+     *  code 255.
      *
      * @return void
      */
     public function captureScreenshot(): void
     {
-        // Guard: provider must be set by the initializer. If not, quietly skip screenshot
-        if (!isset($this->provider) || $this->provider === null) {
-            error_log('captureScreenshot skipped: no screenshot provider set');
+        if ($this->provider === null) {
+            error_log('Screenshot skipped: no screenshot provider was injected into the context.');
             return;
         }
 
-        $relativePath = 'data'
-            . DIRECTORY_SEPARATOR . 'axenox'
-            . DIRECTORY_SEPARATOR . 'BDT'
-            . DIRECTORY_SEPARATOR . 'Screenshots'
-            . DIRECTORY_SEPARATOR . date('Ymd');
-        $dir = getcwd()
-            . DIRECTORY_SEPARATOR . $relativePath;
-        if (!is_dir($dir)) {
-            mkdir($dir, 0755, true);
+        $fileNameBase = $this->provider->getName();
+        if ($fileNameBase === null || $fileNameBase === '') {
+            // Not an error worth raising: the step this screenshot would document was never recorded,
+            // so there is nothing that could reference the image.
+            error_log('Screenshot skipped: no step is currently recorded, so the image would have no owning row.');
+            return;
         }
 
-        $fileName = $this->provider->getName() . '.png';
+        // The daily sub-folder is intentional here (unlike the run logs): screenshots are not scoped
+        // to a run, they accumulate for every scenario of every run, so the date is the only thing
+        // that keeps the directory browsable and prunable.
+        $relativePath = BdtPaths::relative(BdtPaths::FOLDER_SCREENSHOTS, date('Ymd'));
+        $dir = BdtPaths::ensure(getcwd(), BdtPaths::FOLDER_SCREENSHOTS, date('Ymd'));
+        // Checked rather than fired and forgotten: without the directory every attempt below fails
+        // identically, so the retry loop turns one clear cause into three obscure ones plus four
+        // seconds of sleep on the failure path.
+        if (! is_dir($dir) && ! mkdir($dir, 0755, true) && ! is_dir($dir)) {
+            throw new RuntimeException('Could not create the screenshot directory: ' . $dir);
+        }
+
+        $fileName = $fileNameBase . '.png';
         $maxAttempts = 3;
         for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
             try {
                 $this->saveScreenshot($fileName, $dir);
-                // Try to set provider fields but catch any provider-related exceptions
-                try {
-                    $this->provider->setScreenshot($fileName, $relativePath);
-                    $this->provider->setUrl($this->getSession()->getCurrentUrl());
-                } catch (\Throwable $providerEx) {
-                    error_log('Failed to set screenshot info on provider: ' . $providerEx->getMessage());
-                }
+                $this->provider->setScreenshot($fileName, $relativePath);
+                $this->provider->setUrl($this->getSession()->getCurrentUrl());
                 return;
             } catch (\Throwable $e) {
-                // On final failure, log and swallow the exception so AfterStep hook does not kill Behat
                 if ($attempt === $maxAttempts) {
                     error_log('Screenshot failed after ' . $maxAttempts . ' attempts: ' . $e->getMessage());
-                    // Also write to PHP error log for visibility; do NOT rethrow to avoid killing Behat
-                    return;
+                    throw $e;
                 }
                 sleep(2);
             }
