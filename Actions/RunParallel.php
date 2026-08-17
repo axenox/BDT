@@ -190,7 +190,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     private string $startupBanner = '';
 
     /**
-     * Relative path of THIS run's own log directory (data/axenox/BDT/Logs/<YYYYMMDD>/<run_uid>),
+     * Relative path of THIS run's own log directory (data/axenox/BDT/Logs/<run_uid>),
      * remembered so the final CLI message and the run-log can point at it without rebuilding the
      * path - and without the caller having to know how the directory is laid out.
      *
@@ -429,7 +429,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         }
 
         // Worker output lives in one directory per run:
-        // data/axenox/BDT/Logs/<YYYYMMDD>/<run_uid>/, holding coordinator.log plus one
+        // data/axenox/BDT/Logs/<run_uid>/, holding coordinator.log plus one
         // lane<N>_<seq>_<feature>.log per feature run. Grouping by run keeps a run's logs a single unit
         // and stops hundreds of per-feature files from burying each other in one flat directory.
         //
@@ -1874,38 +1874,34 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     /**
      * Ensures THIS run's own log directory exists and returns its absolute path.
      *
-     * Layout: data/axenox/BDT/Logs/<YYYYMMDD>/<run_uid>/
+     * Layout: data/axenox/BDT/Logs/<run_uid>/
      *
-     * WHY TWO LEVELS INSTEAD OF ONE FLAT DIRECTORY: since a worker process runs a single feature,
-     * a run produces one log file per feature instead of one per lane - a few hundred files for a
-     * large suite. Dropped into one shared directory they bury each other, and files from different
-     * runs interleave alphabetically, so finding "the logs of last night's run" means reading run
-     * UIDs off filenames. Giving each run its own directory makes a run's logs a single unit that
-     * can be opened, zipped or deleted as one, and the daily level keeps the number of run
-     * directories per directory bounded.
+     * WHY ONE DIRECTORY PER RUN: since a worker process runs a single feature, a run produces one log
+     * file per feature instead of one per lane - a few hundred files for a large suite. Dropped into a
+     * shared directory they bury each other, and files from different runs interleave alphabetically,
+     * so finding "the logs of last night's run" means reading run UIDs off filenames. Giving each run
+     * its own directory makes a run's logs a single unit that can be opened, zipped or deleted as one.
      *
-     * WHY THE DATE COMES FROM THE RUN START AND NOT FROM date() AT WRITE TIME: a nightly run that
-     * begins at 23:55 would otherwise scatter its own feature logs across two daily folders, which
-     * is precisely when someone is trying to read them as one unit. The run's start instant fixes
-     * the folder for every file the run writes.
+     * WHY THERE IS NO DAILY LEVEL ABOVE IT ANY MORE: the daily folder only bounded how many entries sit
+     * in one directory, and it cost more than it bought. A run is identified everywhere - in the run
+     * row, in the CLI message, in an error report - by its UID alone, so a reader holding a UID had to
+     * first work out which day that run started on before they could find its files. A run that starts
+     * at 23:55 makes that guess wrong, which is exactly when the logs are wanted. The UID is unique on
+     * its own and already sorts runs apart, so it is now the only level.
      *
      * Anchored at $cwd (installation root), so it never depends on this action's process cwd.
      *
      * @param string $cwd    Installation root
      * @param string $runUid UID of the run owning this directory
-     * @return string Absolute path to data/axenox/BDT/Logs/<YYYYMMDD>/<run_uid>
+     * @return string Absolute path to data/axenox/BDT/Logs/<run_uid>
      */
     private function ensureRunLogDir(string $cwd, string $runUid): string
     {
-        // $this->runStart is set before the fleet launches; fall back to now only if this is somehow
-        // reached earlier, so a missing timestamp can never produce a directory named "19700101".
-        $day = date('Ymd', (int) ($this->runStart > 0 ? $this->runStart : microtime(true)));
-
-        $this->runLogDirRelative = 'data/axenox/BDT/Logs/' . $day . '/' . $runUid;
+        $this->runLogDirRelative = 'data/axenox/BDT/Logs/' . $runUid;
 
         $dir = $cwd . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR
             . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR . 'Logs'
-            . DIRECTORY_SEPARATOR . $day . DIRECTORY_SEPARATOR . $runUid;
+            . DIRECTORY_SEPARATOR . $runUid;
         if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
             throw new RuntimeException('Could not create BDT log directory: ' . $dir);
         }
@@ -1965,7 +1961,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // name ending in one would not round-trip to the file actually written.
         $name = trim($name, '._-');
         // Keep the name bounded: Windows still enforces a total path limit, and the run directory
-        // already contributes a date and a run UID to that budget.
+        // already contributes a run UID to that budget.
         if (strlen($name) > 60) {
             $name = rtrim(substr($name, 0, 60), '._-');
         }
