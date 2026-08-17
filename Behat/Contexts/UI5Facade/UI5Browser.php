@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
+use axenox\BDT\Behat\Common\BdtPaths;
 use axenox\BDT\Behat\Common\Traits\AuthenticatorTimeStampingTrait;
 use axenox\BDT\Behat\Common\Traits\DeadlockRetryTrait;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
@@ -1457,11 +1458,14 @@ JS
      */
     private static function acquireUserProvisioningLock(WorkbenchInterface $workbench)
     {
-        $dir = $workbench->getInstallationPath()
-            . DIRECTORY_SEPARATOR . 'data'
-            . DIRECTORY_SEPARATOR . 'axenox'
-            . DIRECTORY_SEPARATOR . 'BDT'
-            . DIRECTORY_SEPARATOR . 'locks';
+        // BdtPaths owns the folder layout; the degrade-instead-of-fail contract of this method is
+        // preserved by turning its exception into the same warning the manual mkdir produced.
+        try {
+            $dir = BdtPaths::ensure($workbench->getInstallationPath(), BdtPaths::FOLDER_LOCKS);
+        } catch (\Throwable $e) {
+            $workbench->getLogger()->warning('BDT: could not create the user provisioning lock directory - provisioning runs unserialized. ' . $e->getMessage());
+            return null;
+        }
         if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
             $workbench->getLogger()->warning('BDT: could not create the user provisioning lock directory ' . $dir . ' - provisioning runs unserialized.');
             return null;
