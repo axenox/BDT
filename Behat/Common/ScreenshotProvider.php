@@ -13,11 +13,16 @@ namespace axenox\BDT\Behat\Common;
  */
 class ScreenshotProvider implements ScreenshotProviderInterface
 {
-    private string $fileName;
-    private string $filePath;
+    // Nullable with an explicit default because the interface documents both getters as "or null if
+    // not set", and an uninitialized typed property cannot express that - it throws instead, turning a
+    // perfectly normal "nothing captured yet" state into a fatal error. The name is a step UID written
+    // by the formatter when a step row is opened, so "not set" is a real and expected state on every
+    // path where no step row exists (dry run, no open scenario, a failed step INSERT).
+    private ?string $fileName = null;
+    private ?string $filePath = null;
     private bool $isCaptured = false;
     private ?string $url = null;
-
+    
     /**
      * {@inheritDoc}
      */
@@ -31,7 +36,7 @@ class ScreenshotProvider implements ScreenshotProviderInterface
     /**
      * {@inheritDoc}
      */
-    public function getName(): string
+    public function getName(): ?string
     {
         return $this->fileName;
     }
@@ -47,7 +52,7 @@ class ScreenshotProvider implements ScreenshotProviderInterface
     /**
      * {@inheritDoc}
      */
-    public function getPath(): string
+    public function getPath(): ?string
     {
         return $this->filePath;
     }

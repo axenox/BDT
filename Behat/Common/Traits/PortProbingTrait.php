@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\Common\Traits;
 
+use axenox\BDT\Behat\Common\BdtPaths;
 use exface\Core\Exceptions\RuntimeException;
 use Symfony\Component\Yaml\Yaml;
 
@@ -240,14 +241,6 @@ trait PortProbingTrait
      */
     private function getPortLockDir(): string
     {
-        $dir = $this->getWorkbench()->getInstallationPath()
-            . DIRECTORY_SEPARATOR . 'data'
-            . DIRECTORY_SEPARATOR . 'axenox'
-            . DIRECTORY_SEPARATOR . 'BDT'
-            . DIRECTORY_SEPARATOR . 'portlocks';
-        if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
-            throw new RuntimeException('Could not create port-lock directory: ' . $dir);
-        }
-        return $dir;
+        return BdtPaths::ensure($this->getWorkbench()->getInstallationPath(), BdtPaths::FOLDER_PORT_LOCKS);
     }
 }
