@@ -217,6 +217,9 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     // a run once ended with no finished_on and no run log, and the diagnostic file gave no clue -
     // because it had already been closed one statement before the phase that failed. Everything that
     // happens after the fleet drains was, by construction, invisible.
+    /**
+     * @var resource|null
+     */
     private $diagLog = null;
 
     // --- Run-log digest bounds. The run log is an ORCHESTRATION log, not a test report: per-scenario
@@ -1024,7 +1027,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * @param int      $lane    The lane being killed.
      * @param Process  $process The lane's worker process.
      * @param resource $laneLog The lane's open log handle.
-     * @param resource $diagLog The coordinator diagnostic log handle.
+     * @param resource|null $diagLog The coordinator diagnostic log handle.
      * @param string   $reason  Human-readable reason, reused verbatim in both logs.
      * @param string   $cwd     Run working dir (for reapLaneProfile).
      */
@@ -1918,7 +1921,11 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     /**
      * Appends a line if the handle is open; ignores write failures so logging never breaks the fleet.
      *
-     * @param resource $handle
+     * @param resource|null $handle Open log handle, or NULL when the log is not (or no longer) open.
+     *                               NULL is a legitimate input, not an error: the close-out phase writes
+     *                               through this method after the handle may already have been closed,
+     *                               and diagnostics must never be the thing that breaks a run.
+     * @param string $text
      */
     private function writeRunLog($handle, string $text): void
     {
