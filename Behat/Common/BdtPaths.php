@@ -112,6 +112,17 @@ final class BdtPaths
     {
         $parts = [];
         foreach ($segments as $segment) {
+            // An EMPTY segment is always a caller bug, never a legitimate "no sub-folder": the caller
+            // asked for a level and handed over nothing to name it with. Silently skipping it would
+            // return the parent path instead - the run's log folder would collapse into the Logs root,
+            // where it mixes with the queue's own output, and a screenshot would land one level above
+            // the two-level glob the metamodel addresses it with. Both failures look like "the files
+            // were never written" and are found days later, so the empty value is rejected where it
+            // enters instead of being absorbed here. Callers that genuinely want no sub-folder simply
+            // pass no segment at all.
+            if (trim($segment) === '') {
+                throw new RuntimeException('Empty BDT path segment - cannot build a path below "' . implode(DIRECTORY_SEPARATOR, self::ROOT_SEGMENTS) . '" from an empty value.');
+            }
             $segment = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $segment);
             foreach (explode(DIRECTORY_SEPARATOR, $segment) as $part) {
                 $part = trim($part);
