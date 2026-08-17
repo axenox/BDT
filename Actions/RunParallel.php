@@ -1897,6 +1897,9 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      */
     private function ensureRunLogDir(string $cwd, string $runUid): string
     {
+        if ($runUid === '') {
+            throw new RuntimeException('Cannot create a log directory: the run has no UID yet.');
+        }
         $this->runLogDirRelative = BdtPaths::relative(BdtPaths::FOLDER_LOGS, $runUid);
         return BdtPaths::ensure($cwd, BdtPaths::FOLDER_LOGS, $runUid);
     }
