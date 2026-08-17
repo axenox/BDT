@@ -152,9 +152,9 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     // How often (seconds) the drain loop queries the DB for the run's run_step count to detect
     // progress. Kept much coarser than DRAIN_POLL_MICROSECONDS because a COUNT round-trip is far
     // heavier than reading a pipe: a long works-as-expected step inserts a run_step per substep, so
-    // polling every few seconds is more than enough to prove the fleet is alive without hammering
+    // polling every 60 seconds is more than enough to prove the fleet is alive without hammering
     // the DB while N workers run for minutes.
-    private const DB_PROGRESS_POLL_SECONDS = 5.0;
+    private const DB_PROGRESS_POLL_SECONDS = 60.0;
 
     // Environment overrides applied to every worker process. The key one is XDEBUG_MODE=off: it
     // disables the Xdebug debugger in the worker regardless of the inherited xdebug.mode/trigger, so
@@ -211,6 +211,13 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * before it is initialised still finalises cleanly.
      */
     private ?MarkdownLogBook $runLog = null;
+
+    // Coordinator diagnostic log handle, held on the instance rather than local to runFleet() so the
+    // close-out phase (cleanup, log staging, finalization) can still write to it. WHY THIS MATTERS:
+    // a run once ended with no finished_on and no run log, and the diagnostic file gave no clue -
+    // because it had already been closed one statement before the phase that failed. Everything that
+    // happens after the fleet drains was, by construction, invisible.
+    private $diagLog = null;
 
     // --- Run-log digest bounds. The run log is an ORCHESTRATION log, not a test report: per-scenario
     // and per-step outcomes are already persisted authoritatively as child rows by the attach-mode
@@ -388,10 +395,30 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // Runs on BOTH the normal path and the coordinator-error path, so a run that failed at
         // coordinator level still pulls whatever worker logs exist on disk into the DB. The digest is
         // staged onto the run sheet and persisted by finalize()'s single dataUpdate - no extra
-        // optimistic-lock round-trip. stageRunLog() swallows its own errors, so a digest problem can
-        // never stop finished_on from being written.
-        $this->stageRunLog($runRecordWriter, $runUid, $coordinatorError);
-        $runRecordWriter->finalize($this->runDataSheet);
+        // optimistic-lock round-trip.
+        //
+        // Every step is traced into the coordinator log, which is deliberately still open here: this
+        // is the phase in which a run once died leaving finished_on NULL, an empty run log and no
+        // diagnostic trace whatsoever. A silent close-out is not debuggable, so each stage announces
+        // itself before it runs - if the process is killed mid-phase, the last line written names the
+        // phase that was in progress.
+        try {
+            $this->writeRunLog($this->diagLog, 'DIAG close-out: staging run log');
+            $this->stageRunLog($runRecordWriter, $runUid, $coordinatorError);
+
+            $this->writeRunLog($this->diagLog, 'DIAG close-out: finalizing run row');
+            $runRecordWriter->finalize($this->runDataSheet);
+
+            $this->writeRunLog($this->diagLog, 'DIAG close-out: run row finalized');
+        } catch (\Throwable $e) {
+            // Not a suppression: the exception is re-thrown immediately. It is caught here ONLY so the
+            // reason lands in the diagnostic file before the handle closes - otherwise a failure of
+            // the very write that persists the run log destroys the evidence of its own failure.
+            $this->writeRunLog($this->diagLog, 'DIAG close-out: FAILED - ' . get_class($e) . ': ' . $e->getMessage());
+            $this->closeCoordinatorLog();
+            throw $e;
+        }
+        $this->closeCoordinatorLog();
 
         // A coordinator-level failure is re-thrown now that the run row is closed AND logged.
         if ($coordinatorError !== null) {
@@ -1101,7 +1128,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // Record the directory on the run row itself: the run-log is what a user opens from the DB, and
         // from there the on-disk worker logs are only findable if their location is stated.
         $this->runLog?->addLine('Log directory: ' . $this->runLogDirRelative, 1, 'Run summary');
-        $diagLog = $this->openCoordinatorLog($logDir, $runUid);
+        $diagLog = $this->diagLog = $this->openCoordinatorLog($logDir, $runUid);
         $this->writeRunLog($diagLog, '===== Coordinator DIAG (run ' . $runUid . ') =====');
         if ($banner !== '') {
             $this->writeRunLog($diagLog, $banner);
@@ -1147,9 +1174,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             $this->runLog?->addLine('Fleet: ' . $reason, 1, 'Fleet');
             $this->runLog?->addLine('Features never started: ' . $totalFeatures, 1, 'Fleet');
             $this->writeRunLog($diagLog, 'DIAG setup: ' . $reason . ' - aborting before any worker started');
-            if (is_resource($diagLog)) {
-                fclose($diagLog);
-            }
+            $this->closeCoordinatorLog();
             return $failures;
         }
 
@@ -1507,10 +1532,24 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             microtime(true) - $this->runStart
         ));
 
-        if (is_resource($diagLog)) {
-            fclose($diagLog);
-        }
         return $failures;
+    }
+
+    /**
+     * Closes the coordinator diagnostic log and forgets the handle.
+     *
+     * WHY A DEDICATED METHOD: the handle is now closed from two places (an early setup abort and the
+     * final close-out) and must be safe to call twice - the early-abort path returns from runFleet()
+     * without ever reaching perform()'s close-out, while a normal run reaches only the latter.
+     * Nulling the property is what makes the second call a no-op instead of an error on a stale
+     * resource.
+     */
+    private function closeCoordinatorLog(): void
+    {
+        if (is_resource($this->diagLog)) {
+            @fclose($this->diagLog);
+        }
+        $this->diagLog = null;
     }
 
     /**
