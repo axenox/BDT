@@ -909,71 +909,6 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Returns the current run_step count of the given run, keyed by the feature file each step belongs to,
-     * WITHOUT loading the step rows themselves.
-     *
-     * Why the count is read from run_feature and not from run_step: reading run_step with a plain
-     * "filename" column plus an aggregated count forces the SQL builder into a GROUP BY, and it also adds
-     * the object's system columns (modified_on) to the SELECT - which belong to neither the aggregate nor
-     * the GROUP BY clause and make MS SQL reject the whole statement. The query therefore failed on EVERY
-     * poll, was swallowed by the catch below and returned null, silently disabling the per-lane heartbeat
-     * for the entire lifetime of this feature. Aggregating over the reverse relation instead gives one row
-     * per feature by construction, so no GROUP BY (and no system-column trap) is involved at all.
-     *
-     * Why grouped per feature and not one fleet-wide total: the drain loop needs a PER-LANE liveness signal.
-     * A fleet-wide count grows as soon as ANY lane inserts a step, which would reset the idle clock of a lane
-     * that is genuinely hung just because a sibling lane is healthy. Since a lane executes exactly ONE feature
-     * at a time and no feature is ever handed to two lanes, per-feature counts let each lane be judged purely
-     * by the steps of the feature it is running right now.
-     *
-     * Never throws: a transient DB hiccup during polling must not abort an otherwise healthy fleet, so a
-     * failure is logged and returned as null ("unknown"), letting the caller keep the previous per-lane
-     * counters for that pass.
-     *
-     * @param string $runUid The run whose child run_step rows to count.
-     * @return array<string,int>|null Map of feature key (see featureKeyFromPath) => step count, or null on failure.
-     */
-    private function countRunStepsByFeature(string $runUid): ?array
-    {
-        try {
-            // Count per feature in PHP from a plain (non-aggregated) read instead of a grouped SQL query.
-            // Every SQL-side variant failed on MS SQL Server: the original run_feature reverse aggregation
-            // produced SUM((SELECT COUNT(...))) (aggregate over a subquery with an aggregate), and reading
-            // from run_step with a :COUNT column never emitted a GROUP BY - the sheet auto-adds the
-            // modified_on system column as a bare, ungrouped column, which MS SQL rejects ("... not
-            // contained in either an aggregate function or the GROUP BY clause"). MySQL tolerates both,
-            // hence the local/server split. A plain read carries system columns harmlessly, so we group the
-            // rows ourselves. The per-poll row volume is O(steps in the run); acceptable for a heartbeat, but
-            // if a very large run makes this heavy, switch to one scoped COUNT query per feature.
-            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.run_step');
-            $ds->getFilters()->addConditionFromString(
-                'run_scenario__run_feature__run',
-                $runUid,
-                ComparatorDataType::EQUALS
-            );
-            $fileCol = $ds->getColumns()->addFromExpression('run_scenario__run_feature__filename');
-            $ds->dataRead();
-
-            $counts = [];
-            foreach (array_keys($ds->getRows()) as $i) {
-                $file = (string) $fileCol->getValue($i);
-                if ($file === '') {
-                    continue;
-                }
-                // Normalize the same way featureKeyFromPath() does (forward slashes + lower case) so these
-                // keys match the lane bucket keys byte for byte; a back-slashed DB filename would otherwise
-                // never equal a forward-slashed lane key and silently blind the per-lane heartbeat.
-                $key = mb_strtolower(FilePathDataType::normalize($file, '/'));
-                $counts[$key] = ($counts[$key] ?? 0) + 1;
-            }
-            return $counts;
-        } catch (\Throwable $e) {
-            $this->getWorkbench()->getLogger()->logException($e);
-            return null;
-        }
-    }
-
-    /**
      * Converts a feature file path into the exact key the workers store in run_feature.filename.
      *
      * Why it must mirror DatabaseFormatter::onBeforeFeature() byte for byte: that hook normalizes the
@@ -993,27 +928,6 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         $vendorPath = FilePathDataType::normalize($this->getWorkbench()->filemanager()->getPathToVendorFolder(), '/') . '/';
         return mb_strtolower(
             StringDataType::substringAfter($normalized, $vendorPath, $normalized));
-    }
-
-    /**
-     * Sums the step counts of the feature file(s) a lane is currently accountable for.
-     *
-     * Exists so the drain loop can turn the fleet-wide grouped count into the single monotonically
-     * growing number that represents THIS lane's progress. Since the queue landed, a lane runs one
-     * feature at a time, so the key list normally holds exactly one entry - the sum then IS that
-     * feature's step count. The array form is kept because it makes the caller independent of that
-     * detail and costs nothing.
-     *
-     * @param array<string,int> $countsByFeature Grouped counts from countRunStepsByFeature().
-     * @param string[]          $featureKeys     Keys of the feature(s) this lane is currently running.
-     */
-    private function sumLaneSteps(array $countsByFeature, array $featureKeys): int
-    {
-        $sum = 0;
-        foreach ($featureKeys as $key) {
-            $sum += $countsByFeature[$key] ?? 0;
-        }
-        return $sum;
     }
 
     /**
@@ -1194,7 +1108,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         $slotStart        = []; // lane => microtime the current worker started
         $slotLastActivity = []; // lane => microtime of last observed progress (output OR its OWN DB growth)
         $slotKeys         = []; // lane => run_feature.filename key(s) of the feature being executed
-        $slotDbCount      = []; // lane => run_step rows counted for the feature being executed
+        $slotDbMarker     = []; // lane => marker of the newest run_step row of the feature being executed
         $slotFirstOutput  = []; // lane => TRUE once the current worker has emitted anything
 
         // Consecutive timeouts per lane, reset by any worker that exits normally. See
@@ -1273,7 +1187,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                     $slotKeys[$lane]         = [$this->featureKeyFromPath($feature)];
                     // Start from zero and let the first DB poll establish the real count: a feature is
                     // executed at most once per run, so any rows under its key belong to this very worker.
-                    $slotDbCount[$lane]      = 0;
+                    $slotDbMarker[$lane] = '';
 
                     // Create this feature run's run-log section NOW, at launch, so sections appear in the
                     // order work was dispatched even though workers finish out of order. It is filled in
@@ -1329,35 +1243,38 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
 
             // Per-lane DB progress heartbeat. A long works-as-expected step produces NO console output
             // while it runs, but the attach-mode worker keeps INSERTing one run_step row per substep - so
-            // a growing step count is the only proof that a silent lane is alive. The count MUST be scoped
-            // to the feature THAT lane is executing: a fleet-wide count would be pushed up by healthy
+            // a newer step row is the only proof that a silent lane is alive. The probe MUST be scoped
+            // to the feature THAT lane is executing: a fleet-wide signal would be advanced by healthy
             // sibling lanes and would keep a genuinely hung lane alive forever, defeating the idle timeout.
             if ($idleTimeout !== null && ($now - $lastDbPollAt) >= self::DB_PROGRESS_POLL_SECONDS) {
                 $lastDbPollAt = $now;
-                $dbCounts = $this->countRunStepsByFeature($runUid);
-                if ($dbCounts !== null) {
-                    // Fail loudly on a key mismatch: if the DB reports steps for a feature that is not in
-                    // this run's queue at all, our path normalization disagrees with what the workers wrote
+                $dbMarkers = $this->readLatestStepMarkers($runUid);
+                if ($dbMarkers !== null) {
+                    // Fail loudly on a key mismatch: if the DB reports a feature that is not in this
+                    // run's queue at all, our path normalization disagrees with what the workers wrote
                     // (e.g. a symlinked vendor dir resolved differently). Every lane would then look
                     // permanently idle and be killed although it is progressing, so we say so instead of
                     // failing silently.
                     if ($laneKeyWarned === false) {
-                        $unknown = array_diff(array_keys($dbCounts), $allFeatureKeys);
+                        $unknown = array_diff(array_keys($dbMarkers), $allFeatureKeys);
                         if (! empty($unknown)) {
                             $laneKeyWarned = true;
-                            $msg = 'BDT parallel: run_step rows found for features not in this run\'s queue ('
+                            $msg = 'BDT parallel: run_feature rows found for features not in this run\'s queue ('
                                 . implode(', ', $unknown) . ') - the per-lane idle heartbeat may be blind.';
                             $this->writeRunLog($diagLog, 'DIAG drain: ' . $msg);
                             $this->getWorkbench()->getLogger()->warning($msg);
                         }
                     }
                     foreach (array_keys($slotProcess) as $lane) {
-                        $current = $this->sumLaneSteps($dbCounts, $slotKeys[$lane]);
-                        if ($current > $slotDbCount[$lane]) {
-                            $slotDbCount[$lane]      = $current;
+                        $current = $this->laneMarker($dbMarkers, $slotKeys[$lane]);
+                        // Any CHANGE is progress - the marker is an identity, not a magnitude, so it is
+                        // compared for inequality rather than growth. An all-empty marker means the
+                        // feature has produced no step yet and is deliberately not treated as progress.
+                        if ($current !== $slotDbMarker[$lane] && trim($current, '#') !== '') {
+                            $slotDbMarker[$lane]     = $current;
                             $slotLastActivity[$lane] = $now; // this lane itself advanced - reset ITS idle clock
                             $this->writeRunLog($diagLog, sprintf(
-                                'DIAG drain: lane %d DB progress - %d run_step rows for %s at +%.1f s into run',
+                                'DIAG drain: lane %d DB progress - newest step %s for %s at +%.1f s into run',
                                 $lane,
                                 $current,
                                 $slotFeature[$lane],
@@ -1440,7 +1357,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                     unset(
                         $slotProcess[$lane], $slotLog[$lane], $slotLogName[$lane], $slotFeature[$lane],
                         $slotSection[$lane], $slotStart[$lane], $slotLastActivity[$lane], $slotKeys[$lane],
-                        $slotDbCount[$lane], $slotFirstOutput[$lane]
+                        $slotDbMarker[$lane], $slotFirstOutput[$lane]
                     );
                     continue;
                 }
@@ -1499,7 +1416,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                     unset(
                         $slotProcess[$lane], $slotLog[$lane], $slotLogName[$lane], $slotFeature[$lane],
                         $slotSection[$lane], $slotStart[$lane], $slotLastActivity[$lane], $slotKeys[$lane],
-                        $slotDbCount[$lane], $slotFirstOutput[$lane]
+                        $slotDbMarker[$lane], $slotFirstOutput[$lane]
                     );
                 }
             }
@@ -2112,7 +2029,16 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                 . 'Run UID: ' . $runUid . "\n\n"
                 . 'Run log build failed: ' . $e->getMessage();
         }
-        $writer->setRunLog($this->runDataSheet, $markdown);
+        // Staging the value is inside its own guard because the docblock's promise ("never throws")
+        // was not actually kept: setCellValue() sits on the run sheet and can fail on its own - an
+        // unknown column, a value the column's data type rejects - and that throw would have escaped
+        // straight past finalize(), leaving the run row open with no finished_on. Losing the digest is
+        // an acceptable outcome; losing the run's close-out because of the digest is not.
+        try {
+            $writer->setRunLog($this->runDataSheet, $markdown);
+        } catch (\Throwable $e) {
+            $this->getWorkbench()->getLogger()->logException($e);
+        }
     }
 
     /**
@@ -2303,5 +2229,138 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         $marker = "\n\n... (run log truncated at " . self::LOG_TOTAL_MAX_BYTES . ' bytes)';
         $budget = self::LOG_TOTAL_MAX_BYTES - strlen($marker);
         return mb_strcut($markdown, 0, max(0, $budget)) . $marker;
+    }
+
+    /**
+     * Returns, per feature of the given run, a marker identifying the most recently created run_step
+     * row of that feature - WITHOUT counting or loading the step rows themselves.
+     *
+     * WHY A MARKER AND NOT A COUNT: the drain loop only ever asks one question of this data - "did
+     * this lane produce anything new since the last poll?". A count answers that by reading every
+     * step row of the run on every poll: thousands of rows, growing all run long, holding shared
+     * locks on exactly the tables four workers are inserting into. A marker answers the same question
+     * from ONE row per lane. The count was never used as a number anywhere.
+     *
+     * WHY THIS ALSO REMOVES THE ROW-LIMIT HAZARD: the previous read had no explicit limit, so a
+     * default page size on the meta object would have silently truncated it - freezing the counter
+     * and making every healthy lane look idle until the drain loop killed it. Reading a single row on
+     * purpose makes that class of failure impossible rather than merely unlikely.
+     *
+     * WHY THE FAILURE DIRECTION IS BETTER: a stalled count reads as "no progress" and kills a working
+     * lane. An imprecise marker reads as "still alive", and the worst case of a falsely-alive lane is
+     * that the wall-clock ceiling catches it instead of the idle timeout - far cheaper than deleting a
+     * healthy feature run.
+     *
+     * WHY THE FEATURE UID AND NOT THE FILENAME IS THE FILTER: filtering run_step by a normalized
+     * filename would make a single path-normalization mismatch return an empty result SILENTLY. The
+     * run_feature rows are read first (at most one per feature in the run) and supply both the UIDs to
+     * filter by and the filename keys the caller matches its lanes against, so a mismatch surfaces as
+     * a reported unknown key instead of a blind heartbeat.
+     *
+     * Never throws: a transient DB hiccup during polling must not abort an otherwise healthy fleet, so
+     * a failure is logged and returned as null ("unknown"), letting the caller keep the previous
+     * per-lane markers for that pass.
+     *
+     * @param string $runUid The run whose features to probe.
+     * @return array<string,string>|null Map of feature key (see featureKeyFromPath) => marker, or NULL
+     *                                   if the state could not be read at all.
+     */
+    private function readLatestStepMarkers(string $runUid): ?array
+    {
+        try {
+            $featureSheet = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.run_feature');
+            $featureSheet->getFilters()->addConditionFromString('run', $runUid, ComparatorDataType::EQUALS);
+            $uidCol  = $featureSheet->getColumns()->addFromUidAttribute();
+            $fileCol = $featureSheet->getColumns()->addFromExpression('filename');
+            // No total-count query: it would issue a second read over the same rows on every poll for a
+            // number the caller never uses.
+            $featureSheet->setAutoCount(false);
+            $featureSheet->dataRead();
+
+            $markers = [];
+            foreach (array_keys($featureSheet->getRows()) as $i) {
+                $file = (string) $fileCol->getValue($i);
+                $featureUid = (string) $uidCol->getValue($i);
+                if ($file === '' || $featureUid === '') {
+                    continue;
+                }
+                // Normalize the same way featureKeyFromPath() does (forward slashes + lower case) so
+                // these keys match the lane bucket keys byte for byte.
+                $key = mb_strtolower(FilePathDataType::normalize($file, '/'));
+                $markers[$key] = $this->readLatestStepMarkerOfFeature($featureUid);
+            }
+            return $markers;
+        } catch (\Throwable $e) {
+            $this->getWorkbench()->getLogger()->logException($e);
+            return null;
+        }
+    }
+
+    /**
+     * Reads the marker of the newest run_step row belonging to one run_feature.
+     *
+     * Split out from readLatestStepMarkers() so the per-feature read has its own failure boundary: one
+     * feature whose probe fails must not blank out the markers of every other lane in the same pass,
+     * which would reset nothing and let healthy lanes drift towards the idle timeout together.
+     *
+     * WHY THE UID IS PART OF THE SORT AND OF THE MARKER: created_on alone is not a deterministic sort
+     * key - two rows written inside the same second have no defined order, so consecutive polls could
+     * alternate between them and report progress that never happened. And because the UIDs are not
+     * lexicographically ordered, the marker can only be compared for CHANGE, never for growth.
+     *
+     * WHY created_on IS NEVER COMPARED TO THE COORDINATOR'S CLOCK: the DB server and the test server
+     * are different machines. Any "no row in the last N seconds" arithmetic would silently absorb
+     * their clock skew. Only the previous DB value is compared to the current DB value.
+     *
+     * @param string $featureUid UID of the run_feature row to probe.
+     * @return string The marker, or an empty string when the feature has no steps yet or could not be
+     *                read - both mean "nothing new to report", never "this lane is dead".
+     */
+    private function readLatestStepMarkerOfFeature(string $featureUid): string
+    {
+        try {
+            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.run_step');
+            $ds->getFilters()->addConditionFromString(
+                'run_scenario__run_feature',
+                $featureUid,
+                ComparatorDataType::EQUALS
+            );
+            $createdCol = $ds->getColumns()->addFromExpression('created_on');
+            $stepUidCol = $ds->getColumns()->addFromUidAttribute();
+            $ds->getSorters()->addFromString('created_on', 'DESC');
+            $ds->getSorters()->addFromString($ds->getMetaObject()->getUidAttributeAlias(), 'DESC');
+            $ds->setAutoCount(false);
+            $ds->setRowsLimit(1);
+            $ds->dataRead();
+
+            if ($ds->countRows() === 0) {
+                return '';
+            }
+            return (string) $createdCol->getValue(0) . '|' . (string) $stepUidCol->getValue(0);
+        } catch (\Throwable $e) {
+            $this->getWorkbench()->getLogger()->logException($e);
+            return '';
+        }
+    }
+
+    /**
+     * Combines the markers of the feature(s) a lane is accountable for into the single value the drain
+     * loop compares between polls.
+     *
+     * Replaces the former sum: with markers there is nothing to add up, but the multi-key form is kept
+     * because the caller must not depend on a lane running exactly one feature. Concatenating in the
+     * caller's key order keeps the result stable, so an unchanged fleet produces an unchanged string
+     * rather than a reordering that would look like progress.
+     *
+     * @param array<string,string> $markersByFeature Markers from readLatestStepMarkers().
+     * @param string[]             $featureKeys      Keys of the feature(s) this lane is running.
+     */
+    private function laneMarker(array $markersByFeature, array $featureKeys): string
+    {
+        $parts = [];
+        foreach ($featureKeys as $key) {
+            $parts[] = $markersByFeature[$key] ?? '';
+        }
+        return implode('#', $parts);
     }
 }
