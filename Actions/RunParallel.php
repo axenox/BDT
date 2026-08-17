@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Actions;
 
+use axenox\BDT\Behat\Common\BdtPaths;
 use axenox\BDT\Behat\Common\Traits\ChromeProfileReaperTrait;
 use axenox\BDT\Behat\Common\Traits\PortProbingTrait;
 use axenox\BDT\Behat\Common\RunRecordWriter;
@@ -290,7 +291,6 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // run has no single behat command anyway - it fans out to N lane commands. The reconstructed action
         // command is the one reproducible truth for the whole run.
         $behatCommand = $this->describeInvocation($tags, $featureArg, $suiteArg);
-        // --- Step 1: open the run record (sole creator, so the workers can attach to its UID) ---
         $this->runDataSheet = $runRecordWriter->create($this->getWorkbench(), $behatCommand);
         $this->runStart = microtime(true);
         $runUid = $this->runDataSheet->getUidColumn()->getValue(0);
@@ -445,7 +445,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         //
         // The directory is resolved by runFleet; if the run failed before that, fall back to the base
         // Logs path so the message still points somewhere real instead of at an empty string.
-        $logDirRel = $this->runLogDirRelative !== '' ? $this->runLogDirRelative : 'data/axenox/BDT/Logs';
+        $logDirRel = $this->runLogDirRelative !== '' ? $this->runLogDirRelative : BdtPaths::relative(BdtPaths::FOLDER_LOGS);
         if (! empty($failures)) {
             $lines = [];
             foreach ($failures as $failure) {
@@ -1791,8 +1791,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      */
     private function chromeProfilesRoot(string $workingDir): string
     {
-        return $workingDir . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR
-            . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR . 'chrome_profiles';
+        return BdtPaths::absolute($workingDir, BdtPaths::FOLDER_CHROME_PROFILES);
     }
 
     /**
@@ -1887,9 +1886,10 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * row, in the CLI message, in an error report - by its UID alone, so a reader holding a UID had to
      * first work out which day that run started on before they could find its files. A run that starts
      * at 23:55 makes that guess wrong, which is exactly when the logs are wanted. The UID is unique on
-     * its own and already sorts runs apart, so it is now the only level.
+     * its own, so it is now the only level.
      *
-     * Anchored at $cwd (installation root), so it never depends on this action's process cwd.
+     * Anchored at $cwd (installation root) via BdtPaths, so it never depends on this action's process
+     * cwd and never spells out BDT's data folder itself.
      *
      * @param string $cwd    Installation root
      * @param string $runUid UID of the run owning this directory
@@ -1897,15 +1897,8 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      */
     private function ensureRunLogDir(string $cwd, string $runUid): string
     {
-        $this->runLogDirRelative = 'data/axenox/BDT/Logs/' . $runUid;
-
-        $dir = $cwd . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR
-            . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR . 'Logs'
-            . DIRECTORY_SEPARATOR . $runUid;
-        if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
-            throw new RuntimeException('Could not create BDT log directory: ' . $dir);
-        }
-        return $dir;
+        $this->runLogDirRelative = BdtPaths::relative(BdtPaths::FOLDER_LOGS, $runUid);
+        return BdtPaths::ensure($cwd, BdtPaths::FOLDER_LOGS, $runUid);
     }
 
     /**

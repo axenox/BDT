@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\TwigFormatter\Context;
 
+use axenox\BDT\Behat\Common\BdtPaths;
 use axenox\BDT\Behat\Common\ScreenshotAwareInterface;
 use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
 use Behat\Behat\Context\SnippetAcceptingContext;
@@ -112,13 +113,11 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
             return;
         }
 
-        $relativePath = 'data'
-            . DIRECTORY_SEPARATOR . 'axenox'
-            . DIRECTORY_SEPARATOR . 'BDT'
-            . DIRECTORY_SEPARATOR . 'Screenshots'
-            . DIRECTORY_SEPARATOR . date('Ymd');
-        $dir = getcwd()
-            . DIRECTORY_SEPARATOR . $relativePath;
+        // The daily sub-folder is intentional here (unlike the run logs): screenshots are not scoped
+        // to a run, they accumulate for every scenario of every run, so the date is the only thing
+        // that keeps the directory browsable and prunable.
+        $relativePath = BdtPaths::relative(BdtPaths::FOLDER_SCREENSHOTS, date('Ymd'));
+        $dir = BdtPaths::ensure(getcwd(), BdtPaths::FOLDER_SCREENSHOTS, date('Ymd'));
         // Checked rather than fired and forgotten: without the directory every attempt below fails
         // identically, so the retry loop turns one clear cause into three obscure ones plus four
         // seconds of sleep on the failure path.
