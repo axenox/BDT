@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Actions;
 
+use axenox\BDT\Behat\Common\BdtPaths;
 use axenox\BDT\Behat\Common\Traits\ChromeProfileReaperTrait;
 use axenox\BDT\Behat\Common\Traits\PortProbingTrait;
 use exface\Core\CommonLogic\AbstractActionDeferred;
@@ -362,11 +363,8 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
      */
     private function writeInteractiveConfig(string $workingDir, string $behatConfig, int $port, string $chromePath): string
     {
-        $userDataDirRelative = 'data' . DIRECTORY_SEPARATOR
-            . 'axenox' . DIRECTORY_SEPARATOR
-            . 'BDT' . DIRECTORY_SEPARATOR
-            . 'chrome_profiles' . DIRECTORY_SEPARATOR . 'interactive' . $port;
-        $userDataDirAbsolute = $workingDir . DIRECTORY_SEPARATOR . $userDataDirRelative;
+        $userDataDirRelative = $this->interactiveProfileDirRelative($port);
+        $userDataDirAbsolute = BdtPaths::ensure($workingDir, BdtPaths::FOLDER_CHROME_PROFILES, 'interactive' . $port);
         if (! is_dir($userDataDirAbsolute) && ! @mkdir($userDataDirAbsolute, 0755, true) && ! is_dir($userDataDirAbsolute)) {
             throw new RuntimeException('Could not create interactive user_data_dir: ' . $userDataDirAbsolute);
         }
@@ -539,10 +537,9 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
     private function cleanupInteractiveChrome(string $workingDir, int $port): void
     {
         try {
-            // Must mirror writeInteractiveConfig()'s user_data_dir construction.
-            $absProfileDir = $workingDir . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR
-                . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR
-                . 'chrome_profiles' . DIRECTORY_SEPARATOR . 'interactive' . $port;
+            // Same path writeInteractiveConfig() created - both derive it from one method, so the
+            // create and the delete side cannot drift apart.
+            $absProfileDir = $workingDir . DIRECTORY_SEPARATOR . $this->interactiveProfileDirRelative($port);
 
             $logger = $this->getWorkbench()->getLogger();
             $killed = $this->reapChromeProfileDir($absProfileDir, $this->listChromeProcessCommandLines());
@@ -642,5 +639,23 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
             }
         }
         return $default;
+    }
+    
+    /**
+     * Returns THIS interactive run's Chrome profile dir, relative to the installation root.
+     *
+     * WHY IT EXISTS: the profile dir is CREATED in writeInteractiveConfig() and DELETED in
+     * cleanupInteractiveChrome(). Those two built the path independently, with a comment demanding
+     * they "mirror" each other - a mirror that only a human could enforce, on a path whose one use is
+     * recursive deletion. Deriving both from one method makes the mirror structural instead of
+     * documented.
+     *
+     * WHY RELATIVE: writeInteractiveConfig() must write exactly this value into the config's
+     * user_data_dir, which ChromeManager::start() resolves against getcwd(); the cleanup simply
+     * prepends its own working dir. Returning the relative form serves both without a second method.
+     */
+    private function interactiveProfileDirRelative(int $port): string
+    {
+        return BdtPaths::relative(BdtPaths::FOLDER_CHROME_PROFILES, 'interactive' . $port);
     }
 }

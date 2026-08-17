@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Actions;
 
+use axenox\BDT\Behat\Common\BdtPaths;
 use axenox\BDT\Behat\Common\Traits\ChromeProfileReaperTrait;
 use axenox\BDT\Behat\Common\Traits\PortProbingTrait;
 use axenox\BDT\Behat\Common\RunRecordWriter;
@@ -152,9 +153,9 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     // How often (seconds) the drain loop queries the DB for the run's run_step count to detect
     // progress. Kept much coarser than DRAIN_POLL_MICROSECONDS because a COUNT round-trip is far
     // heavier than reading a pipe: a long works-as-expected step inserts a run_step per substep, so
-    // polling every few seconds is more than enough to prove the fleet is alive without hammering
+    // polling every 60 seconds is more than enough to prove the fleet is alive without hammering
     // the DB while N workers run for minutes.
-    private const DB_PROGRESS_POLL_SECONDS = 5.0;
+    private const DB_PROGRESS_POLL_SECONDS = 60.0;
 
     // Environment overrides applied to every worker process. The key one is XDEBUG_MODE=off: it
     // disables the Xdebug debugger in the worker regardless of the inherited xdebug.mode/trigger, so
@@ -190,7 +191,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     private string $startupBanner = '';
 
     /**
-     * Relative path of THIS run's own log directory (data/axenox/BDT/Logs/<YYYYMMDD>/<run_uid>),
+     * Relative path of THIS run's own log directory (data/axenox/BDT/Logs/<run_uid>),
      * remembered so the final CLI message and the run-log can point at it without rebuilding the
      * path - and without the caller having to know how the directory is laid out.
      *
@@ -211,6 +212,16 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * before it is initialised still finalises cleanly.
      */
     private ?MarkdownLogBook $runLog = null;
+
+    // Coordinator diagnostic log handle, held on the instance rather than local to runFleet() so the
+    // close-out phase (cleanup, log staging, finalization) can still write to it. WHY THIS MATTERS:
+    // a run once ended with no finished_on and no run log, and the diagnostic file gave no clue -
+    // because it had already been closed one statement before the phase that failed. Everything that
+    // happens after the fleet drains was, by construction, invisible.
+    /**
+     * @var resource|null
+     */
+    private $diagLog = null;
 
     // --- Run-log digest bounds. The run log is an ORCHESTRATION log, not a test report: per-scenario
     // and per-step outcomes are already persisted authoritatively as child rows by the attach-mode
@@ -280,7 +291,6 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // run has no single behat command anyway - it fans out to N lane commands. The reconstructed action
         // command is the one reproducible truth for the whole run.
         $behatCommand = $this->describeInvocation($tags, $featureArg, $suiteArg);
-        // --- Step 1: open the run record (sole creator, so the workers can attach to its UID) ---
         $this->runDataSheet = $runRecordWriter->create($this->getWorkbench(), $behatCommand);
         $this->runStart = microtime(true);
         $runUid = $this->runDataSheet->getUidColumn()->getValue(0);
@@ -388,10 +398,30 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // Runs on BOTH the normal path and the coordinator-error path, so a run that failed at
         // coordinator level still pulls whatever worker logs exist on disk into the DB. The digest is
         // staged onto the run sheet and persisted by finalize()'s single dataUpdate - no extra
-        // optimistic-lock round-trip. stageRunLog() swallows its own errors, so a digest problem can
-        // never stop finished_on from being written.
-        $this->stageRunLog($runRecordWriter, $runUid, $coordinatorError);
-        $runRecordWriter->finalize($this->runDataSheet);
+        // optimistic-lock round-trip.
+        //
+        // Every step is traced into the coordinator log, which is deliberately still open here: this
+        // is the phase in which a run once died leaving finished_on NULL, an empty run log and no
+        // diagnostic trace whatsoever. A silent close-out is not debuggable, so each stage announces
+        // itself before it runs - if the process is killed mid-phase, the last line written names the
+        // phase that was in progress.
+        try {
+            $this->writeRunLog($this->diagLog, 'DIAG close-out: staging run log');
+            $this->stageRunLog($runRecordWriter, $runUid, $coordinatorError);
+
+            $this->writeRunLog($this->diagLog, 'DIAG close-out: finalizing run row');
+            $runRecordWriter->finalize($this->runDataSheet);
+
+            $this->writeRunLog($this->diagLog, 'DIAG close-out: run row finalized');
+        } catch (\Throwable $e) {
+            // Not a suppression: the exception is re-thrown immediately. It is caught here ONLY so the
+            // reason lands in the diagnostic file before the handle closes - otherwise a failure of
+            // the very write that persists the run log destroys the evidence of its own failure.
+            $this->writeRunLog($this->diagLog, 'DIAG close-out: FAILED - ' . get_class($e) . ': ' . $e->getMessage());
+            $this->closeCoordinatorLog();
+            throw $e;
+        }
+        $this->closeCoordinatorLog();
 
         // A coordinator-level failure is re-thrown now that the run row is closed AND logged.
         if ($coordinatorError !== null) {
@@ -399,7 +429,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         }
 
         // Worker output lives in one directory per run:
-        // data/axenox/BDT/Logs/<YYYYMMDD>/<run_uid>/, holding coordinator.log plus one
+        // data/axenox/BDT/Logs/<run_uid>/, holding coordinator.log plus one
         // lane<N>_<seq>_<feature>.log per feature run. Grouping by run keeps a run's logs a single unit
         // and stops hundreds of per-feature files from burying each other in one flat directory.
         //
@@ -415,7 +445,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         //
         // The directory is resolved by runFleet; if the run failed before that, fall back to the base
         // Logs path so the message still points somewhere real instead of at an empty string.
-        $logDirRel = $this->runLogDirRelative !== '' ? $this->runLogDirRelative : 'data/axenox/BDT/Logs';
+        $logDirRel = $this->runLogDirRelative !== '' ? $this->runLogDirRelative : BdtPaths::relative(BdtPaths::FOLDER_LOGS);
         if (! empty($failures)) {
             $lines = [];
             foreach ($failures as $failure) {
@@ -879,71 +909,6 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Returns the current run_step count of the given run, keyed by the feature file each step belongs to,
-     * WITHOUT loading the step rows themselves.
-     *
-     * Why the count is read from run_feature and not from run_step: reading run_step with a plain
-     * "filename" column plus an aggregated count forces the SQL builder into a GROUP BY, and it also adds
-     * the object's system columns (modified_on) to the SELECT - which belong to neither the aggregate nor
-     * the GROUP BY clause and make MS SQL reject the whole statement. The query therefore failed on EVERY
-     * poll, was swallowed by the catch below and returned null, silently disabling the per-lane heartbeat
-     * for the entire lifetime of this feature. Aggregating over the reverse relation instead gives one row
-     * per feature by construction, so no GROUP BY (and no system-column trap) is involved at all.
-     *
-     * Why grouped per feature and not one fleet-wide total: the drain loop needs a PER-LANE liveness signal.
-     * A fleet-wide count grows as soon as ANY lane inserts a step, which would reset the idle clock of a lane
-     * that is genuinely hung just because a sibling lane is healthy. Since a lane executes exactly ONE feature
-     * at a time and no feature is ever handed to two lanes, per-feature counts let each lane be judged purely
-     * by the steps of the feature it is running right now.
-     *
-     * Never throws: a transient DB hiccup during polling must not abort an otherwise healthy fleet, so a
-     * failure is logged and returned as null ("unknown"), letting the caller keep the previous per-lane
-     * counters for that pass.
-     *
-     * @param string $runUid The run whose child run_step rows to count.
-     * @return array<string,int>|null Map of feature key (see featureKeyFromPath) => step count, or null on failure.
-     */
-    private function countRunStepsByFeature(string $runUid): ?array
-    {
-        try {
-            // Count per feature in PHP from a plain (non-aggregated) read instead of a grouped SQL query.
-            // Every SQL-side variant failed on MS SQL Server: the original run_feature reverse aggregation
-            // produced SUM((SELECT COUNT(...))) (aggregate over a subquery with an aggregate), and reading
-            // from run_step with a :COUNT column never emitted a GROUP BY - the sheet auto-adds the
-            // modified_on system column as a bare, ungrouped column, which MS SQL rejects ("... not
-            // contained in either an aggregate function or the GROUP BY clause"). MySQL tolerates both,
-            // hence the local/server split. A plain read carries system columns harmlessly, so we group the
-            // rows ourselves. The per-poll row volume is O(steps in the run); acceptable for a heartbeat, but
-            // if a very large run makes this heavy, switch to one scoped COUNT query per feature.
-            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.run_step');
-            $ds->getFilters()->addConditionFromString(
-                'run_scenario__run_feature__run',
-                $runUid,
-                ComparatorDataType::EQUALS
-            );
-            $fileCol = $ds->getColumns()->addFromExpression('run_scenario__run_feature__filename');
-            $ds->dataRead();
-
-            $counts = [];
-            foreach (array_keys($ds->getRows()) as $i) {
-                $file = (string) $fileCol->getValue($i);
-                if ($file === '') {
-                    continue;
-                }
-                // Normalize the same way featureKeyFromPath() does (forward slashes + lower case) so these
-                // keys match the lane bucket keys byte for byte; a back-slashed DB filename would otherwise
-                // never equal a forward-slashed lane key and silently blind the per-lane heartbeat.
-                $key = mb_strtolower(FilePathDataType::normalize($file, '/'));
-                $counts[$key] = ($counts[$key] ?? 0) + 1;
-            }
-            return $counts;
-        } catch (\Throwable $e) {
-            $this->getWorkbench()->getLogger()->logException($e);
-            return null;
-        }
-    }
-
-    /**
      * Converts a feature file path into the exact key the workers store in run_feature.filename.
      *
      * Why it must mirror DatabaseFormatter::onBeforeFeature() byte for byte: that hook normalizes the
@@ -966,27 +931,6 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Sums the step counts of the feature file(s) a lane is currently accountable for.
-     *
-     * Exists so the drain loop can turn the fleet-wide grouped count into the single monotonically
-     * growing number that represents THIS lane's progress. Since the queue landed, a lane runs one
-     * feature at a time, so the key list normally holds exactly one entry - the sum then IS that
-     * feature's step count. The array form is kept because it makes the caller independent of that
-     * detail and costs nothing.
-     *
-     * @param array<string,int> $countsByFeature Grouped counts from countRunStepsByFeature().
-     * @param string[]          $featureKeys     Keys of the feature(s) this lane is currently running.
-     */
-    private function sumLaneSteps(array $countsByFeature, array $featureKeys): int
-    {
-        $sum = 0;
-        foreach ($featureKeys as $key) {
-            $sum += $countsByFeature[$key] ?? 0;
-        }
-        return $sum;
-    }
-
-    /**
      * Terminates a lane the drain loop has given up on (idle hang or total-timeout), reaps its
      * detached Chrome tree and closes its log. Centralized so the idle-timeout and the wall-clock
      * timeout paths kill a lane identically instead of duplicating the stop/reap/log sequence.
@@ -997,7 +941,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * @param int      $lane    The lane being killed.
      * @param Process  $process The lane's worker process.
      * @param resource $laneLog The lane's open log handle.
-     * @param resource $diagLog The coordinator diagnostic log handle.
+     * @param resource|null $diagLog The coordinator diagnostic log handle.
      * @param string   $reason  Human-readable reason, reused verbatim in both logs.
      * @param string   $cwd     Run working dir (for reapLaneProfile).
      */
@@ -1101,7 +1045,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // Record the directory on the run row itself: the run-log is what a user opens from the DB, and
         // from there the on-disk worker logs are only findable if their location is stated.
         $this->runLog?->addLine('Log directory: ' . $this->runLogDirRelative, 1, 'Run summary');
-        $diagLog = $this->openCoordinatorLog($logDir, $runUid);
+        $diagLog = $this->diagLog = $this->openCoordinatorLog($logDir, $runUid);
         $this->writeRunLog($diagLog, '===== Coordinator DIAG (run ' . $runUid . ') =====');
         if ($banner !== '') {
             $this->writeRunLog($diagLog, $banner);
@@ -1147,9 +1091,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             $this->runLog?->addLine('Fleet: ' . $reason, 1, 'Fleet');
             $this->runLog?->addLine('Features never started: ' . $totalFeatures, 1, 'Fleet');
             $this->writeRunLog($diagLog, 'DIAG setup: ' . $reason . ' - aborting before any worker started');
-            if (is_resource($diagLog)) {
-                fclose($diagLog);
-            }
+            $this->closeCoordinatorLog();
             return $failures;
         }
 
@@ -1166,7 +1108,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         $slotStart        = []; // lane => microtime the current worker started
         $slotLastActivity = []; // lane => microtime of last observed progress (output OR its OWN DB growth)
         $slotKeys         = []; // lane => run_feature.filename key(s) of the feature being executed
-        $slotDbCount      = []; // lane => run_step rows counted for the feature being executed
+        $slotDbMarker     = []; // lane => marker of the newest run_step row of the feature being executed
         $slotFirstOutput  = []; // lane => TRUE once the current worker has emitted anything
 
         // Consecutive timeouts per lane, reset by any worker that exits normally. See
@@ -1245,7 +1187,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                     $slotKeys[$lane]         = [$this->featureKeyFromPath($feature)];
                     // Start from zero and let the first DB poll establish the real count: a feature is
                     // executed at most once per run, so any rows under its key belong to this very worker.
-                    $slotDbCount[$lane]      = 0;
+                    $slotDbMarker[$lane] = '';
 
                     // Create this feature run's run-log section NOW, at launch, so sections appear in the
                     // order work was dispatched even though workers finish out of order. It is filled in
@@ -1301,35 +1243,38 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
 
             // Per-lane DB progress heartbeat. A long works-as-expected step produces NO console output
             // while it runs, but the attach-mode worker keeps INSERTing one run_step row per substep - so
-            // a growing step count is the only proof that a silent lane is alive. The count MUST be scoped
-            // to the feature THAT lane is executing: a fleet-wide count would be pushed up by healthy
+            // a newer step row is the only proof that a silent lane is alive. The probe MUST be scoped
+            // to the feature THAT lane is executing: a fleet-wide signal would be advanced by healthy
             // sibling lanes and would keep a genuinely hung lane alive forever, defeating the idle timeout.
             if ($idleTimeout !== null && ($now - $lastDbPollAt) >= self::DB_PROGRESS_POLL_SECONDS) {
                 $lastDbPollAt = $now;
-                $dbCounts = $this->countRunStepsByFeature($runUid);
-                if ($dbCounts !== null) {
-                    // Fail loudly on a key mismatch: if the DB reports steps for a feature that is not in
-                    // this run's queue at all, our path normalization disagrees with what the workers wrote
+                $dbMarkers = $this->readLatestStepMarkers($runUid);
+                if ($dbMarkers !== null) {
+                    // Fail loudly on a key mismatch: if the DB reports a feature that is not in this
+                    // run's queue at all, our path normalization disagrees with what the workers wrote
                     // (e.g. a symlinked vendor dir resolved differently). Every lane would then look
                     // permanently idle and be killed although it is progressing, so we say so instead of
                     // failing silently.
                     if ($laneKeyWarned === false) {
-                        $unknown = array_diff(array_keys($dbCounts), $allFeatureKeys);
+                        $unknown = array_diff(array_keys($dbMarkers), $allFeatureKeys);
                         if (! empty($unknown)) {
                             $laneKeyWarned = true;
-                            $msg = 'BDT parallel: run_step rows found for features not in this run\'s queue ('
+                            $msg = 'BDT parallel: run_feature rows found for features not in this run\'s queue ('
                                 . implode(', ', $unknown) . ') - the per-lane idle heartbeat may be blind.';
                             $this->writeRunLog($diagLog, 'DIAG drain: ' . $msg);
                             $this->getWorkbench()->getLogger()->warning($msg);
                         }
                     }
                     foreach (array_keys($slotProcess) as $lane) {
-                        $current = $this->sumLaneSteps($dbCounts, $slotKeys[$lane]);
-                        if ($current > $slotDbCount[$lane]) {
-                            $slotDbCount[$lane]      = $current;
+                        $current = $this->laneMarker($dbMarkers, $slotKeys[$lane]);
+                        // Any CHANGE is progress - the marker is an identity, not a magnitude, so it is
+                        // compared for inequality rather than growth. An all-empty marker means the
+                        // feature has produced no step yet and is deliberately not treated as progress.
+                        if ($current !== $slotDbMarker[$lane] && trim($current, '#') !== '') {
+                            $slotDbMarker[$lane]     = $current;
                             $slotLastActivity[$lane] = $now; // this lane itself advanced - reset ITS idle clock
                             $this->writeRunLog($diagLog, sprintf(
-                                'DIAG drain: lane %d DB progress - %d run_step rows for %s at +%.1f s into run',
+                                'DIAG drain: lane %d DB progress - newest step %s for %s at +%.1f s into run',
                                 $lane,
                                 $current,
                                 $slotFeature[$lane],
@@ -1412,7 +1357,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                     unset(
                         $slotProcess[$lane], $slotLog[$lane], $slotLogName[$lane], $slotFeature[$lane],
                         $slotSection[$lane], $slotStart[$lane], $slotLastActivity[$lane], $slotKeys[$lane],
-                        $slotDbCount[$lane], $slotFirstOutput[$lane]
+                        $slotDbMarker[$lane], $slotFirstOutput[$lane]
                     );
                     continue;
                 }
@@ -1471,7 +1416,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                     unset(
                         $slotProcess[$lane], $slotLog[$lane], $slotLogName[$lane], $slotFeature[$lane],
                         $slotSection[$lane], $slotStart[$lane], $slotLastActivity[$lane], $slotKeys[$lane],
-                        $slotDbCount[$lane], $slotFirstOutput[$lane]
+                        $slotDbMarker[$lane], $slotFirstOutput[$lane]
                     );
                 }
             }
@@ -1507,10 +1452,24 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             microtime(true) - $this->runStart
         ));
 
-        if (is_resource($diagLog)) {
-            fclose($diagLog);
-        }
         return $failures;
+    }
+
+    /**
+     * Closes the coordinator diagnostic log and forgets the handle.
+     *
+     * WHY A DEDICATED METHOD: the handle is now closed from two places (an early setup abort and the
+     * final close-out) and must be safe to call twice - the early-abort path returns from runFleet()
+     * without ever reaching perform()'s close-out, while a normal run reaches only the latter.
+     * Nulling the property is what makes the second call a no-op instead of an error on a stale
+     * resource.
+     */
+    private function closeCoordinatorLog(): void
+    {
+        if (is_resource($this->diagLog)) {
+            @fclose($this->diagLog);
+        }
+        $this->diagLog = null;
     }
 
     /**
@@ -1832,8 +1791,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      */
     private function chromeProfilesRoot(string $workingDir): string
     {
-        return $workingDir . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR
-            . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR . 'chrome_profiles';
+        return BdtPaths::absolute($workingDir, BdtPaths::FOLDER_CHROME_PROFILES);
     }
 
     /**
@@ -1879,7 +1837,11 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     /**
      * Appends a line if the handle is open; ignores write failures so logging never breaks the fleet.
      *
-     * @param resource $handle
+     * @param resource|null $handle Open log handle, or NULL when the log is not (or no longer) open.
+     *                               NULL is a legitimate input, not an error: the close-out phase writes
+     *                               through this method after the handle may already have been closed,
+     *                               and diagnostics must never be the thing that breaks a run.
+     * @param string $text
      */
     private function writeRunLog($handle, string $text): void
     {
@@ -1911,42 +1873,32 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     /**
      * Ensures THIS run's own log directory exists and returns its absolute path.
      *
-     * Layout: data/axenox/BDT/Logs/<YYYYMMDD>/<run_uid>/
+     * Layout: data/axenox/BDT/Logs/<run_uid>/
      *
-     * WHY TWO LEVELS INSTEAD OF ONE FLAT DIRECTORY: since a worker process runs a single feature,
-     * a run produces one log file per feature instead of one per lane - a few hundred files for a
-     * large suite. Dropped into one shared directory they bury each other, and files from different
-     * runs interleave alphabetically, so finding "the logs of last night's run" means reading run
-     * UIDs off filenames. Giving each run its own directory makes a run's logs a single unit that
-     * can be opened, zipped or deleted as one, and the daily level keeps the number of run
-     * directories per directory bounded.
+     * WHY ONE DIRECTORY PER RUN: since a worker process runs a single feature, a run produces one log
+     * file per feature instead of one per lane - a few hundred files for a large suite. Dropped into a
+     * shared directory they bury each other, and files from different runs interleave alphabetically,
+     * so finding "the logs of last night's run" means reading run UIDs off filenames. Giving each run
+     * its own directory makes a run's logs a single unit that can be opened, zipped or deleted as one.
      *
-     * WHY THE DATE COMES FROM THE RUN START AND NOT FROM date() AT WRITE TIME: a nightly run that
-     * begins at 23:55 would otherwise scatter its own feature logs across two daily folders, which
-     * is precisely when someone is trying to read them as one unit. The run's start instant fixes
-     * the folder for every file the run writes.
+     * WHY THERE IS NO DAILY LEVEL ABOVE IT ANY MORE: the daily folder only bounded how many entries sit
+     * in one directory, and it cost more than it bought. A run is identified everywhere - in the run
+     * row, in the CLI message, in an error report - by its UID alone, so a reader holding a UID had to
+     * first work out which day that run started on before they could find its files. A run that starts
+     * at 23:55 makes that guess wrong, which is exactly when the logs are wanted. The UID is unique on
+     * its own, so it is now the only level.
      *
-     * Anchored at $cwd (installation root), so it never depends on this action's process cwd.
+     * Anchored at $cwd (installation root) via BdtPaths, so it never depends on this action's process
+     * cwd and never spells out BDT's data folder itself.
      *
      * @param string $cwd    Installation root
      * @param string $runUid UID of the run owning this directory
-     * @return string Absolute path to data/axenox/BDT/Logs/<YYYYMMDD>/<run_uid>
+     * @return string Absolute path to data/axenox/BDT/Logs/<run_uid>
      */
     private function ensureRunLogDir(string $cwd, string $runUid): string
     {
-        // $this->runStart is set before the fleet launches; fall back to now only if this is somehow
-        // reached earlier, so a missing timestamp can never produce a directory named "19700101".
-        $day = date('Ymd', (int) ($this->runStart > 0 ? $this->runStart : microtime(true)));
-
-        $this->runLogDirRelative = 'data/axenox/BDT/Logs/' . $day . '/' . $runUid;
-
-        $dir = $cwd . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR
-            . 'axenox' . DIRECTORY_SEPARATOR . 'BDT' . DIRECTORY_SEPARATOR . 'Logs'
-            . DIRECTORY_SEPARATOR . $day . DIRECTORY_SEPARATOR . $runUid;
-        if (! is_dir($dir) && ! @mkdir($dir, 0755, true) && ! is_dir($dir)) {
-            throw new RuntimeException('Could not create BDT log directory: ' . $dir);
-        }
-        return $dir;
+        $this->runLogDirRelative = BdtPaths::relative(BdtPaths::FOLDER_LOGS, $runUid);
+        return BdtPaths::ensure($cwd, BdtPaths::FOLDER_LOGS, $runUid);
     }
 
     /**
@@ -2002,7 +1954,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // name ending in one would not round-trip to the file actually written.
         $name = trim($name, '._-');
         // Keep the name bounded: Windows still enforces a total path limit, and the run directory
-        // already contributes a date and a run UID to that budget.
+        // already contributes a run UID to that budget.
         if (strlen($name) > 60) {
             $name = rtrim(substr($name, 0, 60), '._-');
         }
@@ -2066,7 +2018,16 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                 . 'Run UID: ' . $runUid . "\n\n"
                 . 'Run log build failed: ' . $e->getMessage();
         }
-        $writer->setRunLog($this->runDataSheet, $markdown);
+        // Staging the value is inside its own guard because the docblock's promise ("never throws")
+        // was not actually kept: setCellValue() sits on the run sheet and can fail on its own - an
+        // unknown column, a value the column's data type rejects - and that throw would have escaped
+        // straight past finalize(), leaving the run row open with no finished_on. Losing the digest is
+        // an acceptable outcome; losing the run's close-out because of the digest is not.
+        try {
+            $writer->setRunLog($this->runDataSheet, $markdown);
+        } catch (\Throwable $e) {
+            $this->getWorkbench()->getLogger()->logException($e);
+        }
     }
 
     /**
@@ -2257,5 +2218,138 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         $marker = "\n\n... (run log truncated at " . self::LOG_TOTAL_MAX_BYTES . ' bytes)';
         $budget = self::LOG_TOTAL_MAX_BYTES - strlen($marker);
         return mb_strcut($markdown, 0, max(0, $budget)) . $marker;
+    }
+
+    /**
+     * Returns, per feature of the given run, a marker identifying the most recently created run_step
+     * row of that feature - WITHOUT counting or loading the step rows themselves.
+     *
+     * WHY A MARKER AND NOT A COUNT: the drain loop only ever asks one question of this data - "did
+     * this lane produce anything new since the last poll?". A count answers that by reading every
+     * step row of the run on every poll: thousands of rows, growing all run long, holding shared
+     * locks on exactly the tables four workers are inserting into. A marker answers the same question
+     * from ONE row per lane. The count was never used as a number anywhere.
+     *
+     * WHY THIS ALSO REMOVES THE ROW-LIMIT HAZARD: the previous read had no explicit limit, so a
+     * default page size on the meta object would have silently truncated it - freezing the counter
+     * and making every healthy lane look idle until the drain loop killed it. Reading a single row on
+     * purpose makes that class of failure impossible rather than merely unlikely.
+     *
+     * WHY THE FAILURE DIRECTION IS BETTER: a stalled count reads as "no progress" and kills a working
+     * lane. An imprecise marker reads as "still alive", and the worst case of a falsely-alive lane is
+     * that the wall-clock ceiling catches it instead of the idle timeout - far cheaper than deleting a
+     * healthy feature run.
+     *
+     * WHY THE FEATURE UID AND NOT THE FILENAME IS THE FILTER: filtering run_step by a normalized
+     * filename would make a single path-normalization mismatch return an empty result SILENTLY. The
+     * run_feature rows are read first (at most one per feature in the run) and supply both the UIDs to
+     * filter by and the filename keys the caller matches its lanes against, so a mismatch surfaces as
+     * a reported unknown key instead of a blind heartbeat.
+     *
+     * Never throws: a transient DB hiccup during polling must not abort an otherwise healthy fleet, so
+     * a failure is logged and returned as null ("unknown"), letting the caller keep the previous
+     * per-lane markers for that pass.
+     *
+     * @param string $runUid The run whose features to probe.
+     * @return array<string,string>|null Map of feature key (see featureKeyFromPath) => marker, or NULL
+     *                                   if the state could not be read at all.
+     */
+    private function readLatestStepMarkers(string $runUid): ?array
+    {
+        try {
+            $featureSheet = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.run_feature');
+            $featureSheet->getFilters()->addConditionFromString('run', $runUid, ComparatorDataType::EQUALS);
+            $uidCol  = $featureSheet->getColumns()->addFromUidAttribute();
+            $fileCol = $featureSheet->getColumns()->addFromExpression('filename');
+            // No total-count query: it would issue a second read over the same rows on every poll for a
+            // number the caller never uses.
+            $featureSheet->setAutoCount(false);
+            $featureSheet->dataRead();
+
+            $markers = [];
+            foreach (array_keys($featureSheet->getRows()) as $i) {
+                $file = (string) $fileCol->getValue($i);
+                $featureUid = (string) $uidCol->getValue($i);
+                if ($file === '' || $featureUid === '') {
+                    continue;
+                }
+                // Normalize the same way featureKeyFromPath() does (forward slashes + lower case) so
+                // these keys match the lane bucket keys byte for byte.
+                $key = mb_strtolower(FilePathDataType::normalize($file, '/'));
+                $markers[$key] = $this->readLatestStepMarkerOfFeature($featureUid);
+            }
+            return $markers;
+        } catch (\Throwable $e) {
+            $this->getWorkbench()->getLogger()->logException($e);
+            return null;
+        }
+    }
+
+    /**
+     * Reads the marker of the newest run_step row belonging to one run_feature.
+     *
+     * Split out from readLatestStepMarkers() so the per-feature read has its own failure boundary: one
+     * feature whose probe fails must not blank out the markers of every other lane in the same pass,
+     * which would reset nothing and let healthy lanes drift towards the idle timeout together.
+     *
+     * WHY THE UID IS PART OF THE SORT AND OF THE MARKER: created_on alone is not a deterministic sort
+     * key - two rows written inside the same second have no defined order, so consecutive polls could
+     * alternate between them and report progress that never happened. And because the UIDs are not
+     * lexicographically ordered, the marker can only be compared for CHANGE, never for growth.
+     *
+     * WHY created_on IS NEVER COMPARED TO THE COORDINATOR'S CLOCK: the DB server and the test server
+     * are different machines. Any "no row in the last N seconds" arithmetic would silently absorb
+     * their clock skew. Only the previous DB value is compared to the current DB value.
+     *
+     * @param string $featureUid UID of the run_feature row to probe.
+     * @return string The marker, or an empty string when the feature has no steps yet or could not be
+     *                read - both mean "nothing new to report", never "this lane is dead".
+     */
+    private function readLatestStepMarkerOfFeature(string $featureUid): string
+    {
+        try {
+            $ds = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.run_step');
+            $ds->getFilters()->addConditionFromString(
+                'run_scenario__run_feature',
+                $featureUid,
+                ComparatorDataType::EQUALS
+            );
+            $createdCol = $ds->getColumns()->addFromExpression('created_on');
+            $stepUidCol = $ds->getColumns()->addFromUidAttribute();
+            $ds->getSorters()->addFromString('created_on', 'DESC');
+            $ds->getSorters()->addFromString($ds->getMetaObject()->getUidAttributeAlias(), 'DESC');
+            $ds->setAutoCount(false);
+            $ds->setRowsLimit(1);
+            $ds->dataRead();
+
+            if ($ds->countRows() === 0) {
+                return '';
+            }
+            return (string) $createdCol->getValue(0) . '|' . (string) $stepUidCol->getValue(0);
+        } catch (\Throwable $e) {
+            $this->getWorkbench()->getLogger()->logException($e);
+            return '';
+        }
+    }
+
+    /**
+     * Combines the markers of the feature(s) a lane is accountable for into the single value the drain
+     * loop compares between polls.
+     *
+     * Replaces the former sum: with markers there is nothing to add up, but the multi-key form is kept
+     * because the caller must not depend on a lane running exactly one feature. Concatenating in the
+     * caller's key order keeps the result stable, so an unchanged fleet produces an unchanged string
+     * rather than a reordering that would look like progress.
+     *
+     * @param array<string,string> $markersByFeature Markers from readLatestStepMarkers().
+     * @param string[]             $featureKeys      Keys of the feature(s) this lane is running.
+     */
+    private function laneMarker(array $markersByFeature, array $featureKeys): string
+    {
+        $parts = [];
+        foreach ($featureKeys as $key) {
+            $parts[] = $markersByFeature[$key] ?? '';
+        }
+        return implode('#', $parts);
     }
 }
