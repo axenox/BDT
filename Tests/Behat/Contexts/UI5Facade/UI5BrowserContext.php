@@ -315,7 +315,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             // recovery after a crash knows which page to reload.
             $this->lastPageAlias = $this->getBrowser()->getPageAliasFromCurrentUrl();
 
-            $this->getBrowser()->getWaitManager()->installHttpInterceptor();
+            $this->getBrowser()->getErrorDetector()->installHttpInterceptor();
 
             // Short pause to let the UI fully settle before the step executes
             $this->getSession()->wait(1000);
