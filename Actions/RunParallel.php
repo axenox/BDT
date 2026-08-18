@@ -12,6 +12,7 @@ use exface\Core\DataTypes\FilePathDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Facades\ConsoleFacade\CliCommandRunner;
+use exface\Core\CommonLogic\Queue\CliTaskQueue;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\ResultFactory;
 use exface\Core\Interfaces\Actions\iCanBeCalledFromCLI;
@@ -150,12 +151,58 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     // run for minutes.
     private const DRAIN_POLL_MICROSECONDS = 100000;
 
+    /**
+     * Seconds reserved before the granted lifetime for the close-out, so the coordinator ends the run
+     * ITSELF instead of being hard-killed by the launcher.
+     *
+     * WHY A RESERVE AT ALL: a queue kill lands wherever it lands - for a long run, inside the fleet
+     * drain - leaving the run row with finished_on NULL, no duration and no log even though hours of
+     * results were produced, which is indistinguishable from a traceless crash. By stopping dispatch
+     * and killing the lanes this many seconds BEFORE the deadline, the coordinator runs its normal
+     * close-out (stage log digest, finalize the run row) in the clear, and the hard kill can no longer
+     * land inside it.
+     *
+     * WHY THIS SIZE: the close-out stops up to N lanes, reaps their Chrome trees and profile dirs,
+     * stages the (byte-capped) on-disk worker-log digest and issues one DB finalize update. 120 s is
+     * generous headroom for that even on a loaded host, while staying negligible next to any realistic
+     * lifetime. It is NOT a lifetime and does not duplicate WORKER_TIMEOUT_SECONDS - it bounds the
+     * close-out, not a feature.
+     */
+    private const CLOSEOUT_BUDGET_SECONDS = 120.0;
+
     // How often (seconds) the drain loop queries the DB for the run's run_step count to detect
     // progress. Kept much coarser than DRAIN_POLL_MICROSECONDS because a COUNT round-trip is far
     // heavier than reading a pipe: a long works-as-expected step inserts a run_step per substep, so
     // polling every 60 seconds is more than enough to prove the fleet is alive without hammering
     // the DB while N workers run for minutes.
     private const DB_PROGRESS_POLL_SECONDS = 60.0;
+
+    /**
+     * Hard row ceilings for the two coordinator-side reads whose truncation would be DESTRUCTIVE or
+     * BLINDING, rather than merely incomplete.
+     *
+     * WHY AN EXPLICIT LIMIT INSTEAD OF NONE: an unlimited dataRead() is silently truncated by whatever
+     * default page size the meta object carries. For the run read that means an active run falls off the
+     * end and has its live browser killed; for the run_feature read it means a lane's own feature is
+     * missing from the heartbeat, so the lane reads as permanently idle and is killed although it is
+     * progressing. Both failures are invisible. Asking for a bounded number of rows on purpose turns
+     * them into a condition we can DETECT: a result that fills the limit exactly cannot be proven
+     * complete, so the caller refuses to act on it instead of acting on half the truth.
+     */
+    private const ACTIVE_RUN_READ_LIMIT = 500;
+    private const RUN_FEATURE_READ_LIMIT = 5000;
+
+    /**
+     * Safety margin (seconds) added to the granted lifetime before an unfinished run is judged dead.
+     *
+     * WHY: another run's started_on is written only AFTER its own Behat init, whereas the launcher's
+     * lifetime clock started earlier - at the moment the queue spawned that run. Its real wall-clock
+     * ceiling is therefore reached slightly LATER than "started_on + lifetime" suggests. Comparing
+     * against started_on alone would round that gap down and could declare a run dead while it is in
+     * its final legitimate minutes, killing its live browser. The margin covers the init gap so the
+     * judgement only ever errs in the safe direction (leaving a profile the mtime sweep reclaims later).
+     */
+    private const RUN_START_MARGIN_SECONDS = 600.0;
 
     // Environment overrides applied to every worker process. The key one is XDEBUG_MODE=off: it
     // disables the Xdebug debugger in the worker regardless of the inherited xdebug.mode/trigger, so
@@ -175,6 +222,25 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // value is what actually SETS the var in the child environment.
         'BDT_MONITOR_ENABLED' => '0',
     ];
+
+    /**
+     * Captured at the very TOP of perform() - the instant the coordinator process really began work.
+     *
+     * WHY NOT $runStart: the run row (and $runStart) is created only AFTER Behat init, which alone can
+     * take minutes. The launcher's lifetime clock started when the process was spawned, so the
+     * self-imposed deadline must be measured from here, not from $runStart - measuring from $runStart
+     * would hand the coordinator time it does not actually have and let a hard kill land inside the
+     * close-out anyway.
+     */
+    private float $performStart = 0.0;
+
+    /**
+     * The wall-clock lifetime (seconds) granted by the launcher, resolved once from the launcher env var
+     * CliTaskQueue::ENV_TASK_TIMEOUT_SECONDS - the single place that enforces it. NULL means the env var
+     * was absent, i.e. nothing bounds this process (unbounded in practice); every consumer must treat
+     * NULL as "cannot conclude anything" and neither impose a deadline nor declare another run dead.
+     */
+    private ?float $maxRuntimeSeconds = null;
 
     /**
      * Captured at run-row creation so the finalize step can compute the same wall-clock
@@ -235,14 +301,6 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     // slightly larger budget costs nothing on a healthy run but buys headroom for a stack trace.
     private const LOG_CRASH_TAIL_BYTES = 4096;
     private const LOG_TOTAL_MAX_BYTES  = 65536;
-    /**
-     * Age past which an unfinished run row can no longer own a live Chrome.
-     *
-     * WHY: a coordinator killed by an app-pool recycle never writes finished_on, so its row stays
-     * "active" forever. Nothing legitimate can still be running that long after the row was opened,
-     * so past this age its profiles are reclaimable.
-     */
-    private const RUN_MAX_AGE_MINUTES = 180;
 
     /**
      * Entry point. Drives the run lifecycle once, fanning the matched features out to N workers.
@@ -254,6 +312,12 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      */
     protected function perform(TaskInterface $task, DataTransactionInterface $transaction): ResultInterface
     {
+        // Anchor the self-imposed deadline to the process START, not to $runStart. WHY HERE AND NOT
+        // LATER: the run row is only created after Behat init (which can take minutes), so a deadline
+        // measured from $runStart would over-count the time this coordinator actually has and let the
+        // launcher's hard kill land inside the close-out. This is the earliest point our code runs.
+        $this->performStart = microtime(true);
+
         // --- Read inputs. Only --tags carries a real default here; the path/scope inputs are read as
         // nullable and resolved AFTER init from their authoritative sources, so the common case is a bare
         // `RunParallel --tags=...`. ---
@@ -262,6 +326,19 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         $chromePathArg  = $this->getOptionalTaskParam($task, self::OPT_CHROME_PATH);
         $featureArg     = $this->getOptionalTaskParam($task, self::OPT_FEATURE);
         $suiteArg       = $this->getOptionalTaskParam($task, self::OPT_SUITE);
+
+        // Resolve the launcher-granted lifetime once, up front, so BOTH consumers see the same value:
+        // the self-imposed deadline below and the identity-based orphan sweep further down. Refuses a
+        // present-but-invalid value loudly; resolves to NULL when unknown (see resolveMaxRuntime).
+        $this->maxRuntimeSeconds = $this->resolveMaxRuntime();
+        // Log the lifetime we were handed at startup, unconditionally - so the granted number (or its
+        // absence) is readable from the log even on a run that matches no feature and never builds a
+        // banner.
+        $this->getWorkbench()->getLogger()->info(
+            'BDT parallel: coordinator lifetime ' . ($this->maxRuntimeSeconds === null
+                ? 'UNKNOWN - no self-imposed deadline, relying on the external launcher timeout'
+                : $this->maxRuntimeSeconds . ' s granted (close-out reserve ' . self::CLOSEOUT_BUDGET_SECONDS . ' s)')
+        );
 
         // At least one scope selector must be present. tags no longer has a baked-in default, so a bare
         // invocation with no --tags, --feature or --suite would run the ENTIRE test base with no filter -
@@ -325,6 +402,12 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // that aborts the fleet still pulls whatever lane output exists into the DB.
         $failures = [];
         $coordinatorError = null;
+        // Set when the resolved scope matched no feature at all. This path deliberately does NOT return
+        // early any more: it used to call finalize() directly and return, which closed the run row with
+        // an EMPTY log column - byte for byte the same fingerprint a coordinator that died without a
+        // trace leaves behind. Routing it through the single close-out below means every run, including
+        // an empty one, states in its own log why it did nothing.
+        $nothingToRun = false;
         try {
             // --- Step 2: compute the full expected scope up front over ALL matched features ---
             // Done here, not in the workers, because attach-mode workers skip this, and because
@@ -352,32 +435,43 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             // with no positional path makes Behat run the ENTIRE suite, contradicting an expected count of 0 and
             // producing a wildly wrong run. Finalize cleanly and report instead.
             if ($matchedFiles === []) {
-                $runRecordWriter->finalize($this->runDataSheet);
-                return ResultFactory::createMessageResult(
-                    $task,
-                    sprintf('Parallel run %s: no feature files matched the requested scope/tags. Nothing to run.', $runUid)
+                $nothingToRun = true;
+                $this->runLog->addLine(
+                    'No feature files matched the requested scope/tags - nothing to run.',
+                    1,
+                    'Run summary'
                 );
+            } else {
+                // Lane count is still capped by the number of matched features - starting more lanes than
+                // there is work for would only allocate ports and profile dirs that never run anything.
+                // Beyond that cap the features are NOT pre-assigned: they form one queue that the lanes
+                // pull from as they become free (see runFleet).
+                $maxWorkers   = $this->resolveMaxWorkers();
+                $workerCount  = max(1, min($maxWorkers, count($matchedFiles)));
+
+                // --- Step 4b: announce the resolved run configuration BEFORE any worker starts, so the
+                // user knows what to expect (how many workers will run, whether Chrome will be visible,
+                // and whether a debugger is in play). Purely informational - it changes no behaviour. ---
+                $banner = $this->buildStartupBanner($workerCount, $maxWorkers, count($matchedFiles));
+                $this->startupBanner = $banner;
+                $this->getWorkbench()->getLogger()->info($banner);
+                // Mirror the resolved configuration into the run-log so the DB record opens with the same
+                // expectation the console showed (worker count, headless state, debugger state).
+                $this->runLog->addLine('Configuration:', 1, 'Run summary');
+                $this->runLog->addCodeBlock($banner, '', 'Run summary');
+
+                // --- Step 5: run the fleet. Wrapped so a worker failure still reaches finalize. ---
+                // Kept INSIDE this else branch: on the nothingToRun path $workerCount and $banner are
+                // never assigned, so calling runFleet() there would pass undefined values into a typed
+                // signature and TypeError before the clean "nothing to run" close-out could report.
+                // Self-imposed deadline (absolute microtime): the granted lifetime, measured from the
+                // process start, minus the close-out reserve. NULL when the lifetime is unknown - then the
+                // fleet imposes no deadline of its own and relies solely on the external launcher timeout.
+                $dispatchDeadline = $this->maxRuntimeSeconds === null
+                    ? null
+                    : $this->performStart + $this->maxRuntimeSeconds - self::CLOSEOUT_BUDGET_SECONDS;
+                $failures = $this->runFleet($cwd, $behatConfig, $runUid, $chromePath, $tags, $matchedFiles, $workerCount, $banner, $dispatchDeadline);
             }
-            // Lane count is still capped by the number of matched features - starting more lanes than
-            // there is work for would only allocate ports and profile dirs that never run anything.
-            // Beyond that cap the features are NOT pre-assigned: they form one queue that the lanes
-            // pull from as they become free (see runFleet).
-            $maxWorkers   = $this->resolveMaxWorkers();
-            $workerCount  = max(1, min($maxWorkers, count($matchedFiles)));
-
-            // --- Step 4b: announce the resolved run configuration BEFORE any worker starts, so the
-            // user knows what to expect (how many workers will run, whether Chrome will be visible,
-            // and whether a debugger is in play). Purely informational - it changes no behaviour. ---
-            $banner = $this->buildStartupBanner($workerCount, $maxWorkers, count($matchedFiles));
-            $this->startupBanner = $banner;
-            $this->getWorkbench()->getLogger()->info($banner);
-            // Mirror the resolved configuration into the run-log so the DB record opens with the same
-            // expectation the console showed (worker count, headless state, debugger state).
-            $this->runLog->addLine('Configuration:', 1, 'Run summary');
-            $this->runLog->addCodeBlock($banner, '', 'Run summary');
-
-            // --- Step 5: run the fleet. Wrapped so a worker failure still reaches finalize. ---
-            $failures = $this->runFleet($cwd, $behatConfig, $runUid, $chromePath, $tags, $matchedFiles, $workerCount, $banner);
 
         } catch (\Throwable $e) {
             // Record the coordinator failure but do NOT finalize/throw yet: the single close-out below
@@ -426,6 +520,15 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // A coordinator-level failure is re-thrown now that the run row is closed AND logged.
         if ($coordinatorError !== null) {
             throw new RuntimeException('Parallel run coordinator failed: ' . $coordinatorError->getMessage(), null, $coordinatorError);
+        }
+
+        // Reported only now, after the run row has been logged AND finalized. There is no log directory
+        // to point at: runFleet never ran, so none was created.
+        if ($nothingToRun) {
+            return ResultFactory::createMessageResult(
+                $task,
+                sprintf('Parallel run %s: no feature files matched the requested scope/tags. Nothing to run.', $runUid)
+            );
         }
 
         // Worker output lives in one directory per run:
@@ -687,6 +790,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             'Lanes:    ' . $workerCount . ' (' . $reason . ')',
             'Features: ' . $matchedFeatures . ' queued, dispatched one per worker process as lanes free up',
             'Chrome:   ' . $chromeLine,
+            'Lifetime: ' . $this->describeLifetimeForBanner(),
         ];
         if ($debuggerActive) {
             $lines[] = 'Debugger: ATTACHED to the coordinator - NOTE: fleet workers force the debugger OFF, '
@@ -697,6 +801,25 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         $lines[] = '==========================================';
 
         return implode("\n", $lines);
+    }
+
+    /**
+     * Renders the coordinator lifetime for the startup banner, making the granted number and the
+     * point at which dispatch stops readable straight from the run record.
+     *
+     * WHY IT BELONGS IN THE BANNER: the lifetime is enforced externally by the launcher, so the run
+     * itself carries no other visible trace of the number it was granted. The banner is mirrored into
+     * the run log, so surfacing the lifetime here lets a reader SEE why dispatch stopped when it did,
+     * instead of discovering the ceiling later as an unexplained hard kill.
+     */
+    private function describeLifetimeForBanner(): string
+    {
+        if ($this->maxRuntimeSeconds === null) {
+            return 'unknown - no self-imposed deadline; relying on the external launcher timeout';
+        }
+        $stopAt = $this->maxRuntimeSeconds - self::CLOSEOUT_BUDGET_SECONDS;
+        return $this->maxRuntimeSeconds . ' s granted (close-out reserved ' . self::CLOSEOUT_BUDGET_SECONDS
+            . ' s; stop dispatching and kill lanes at +' . $stopAt . ' s from process start)';
     }
 
     /**
@@ -909,6 +1032,61 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
+     * Resolves the launcher-granted coordinator lifetime (seconds), the ONE authoritative number that
+     * bounds this whole run.
+     *
+     * WHY THERE IS EXACTLY ONE SOURCE: the ceiling is enforced by Core - Symfony Process in
+     * CliCommandRunner, fed by the scheduler/queue command_timeout - and the launcher hands that exact
+     * number to this process in the env var CliTaskQueue::ENV_TASK_TIMEOUT_SECONDS. There is exactly one
+     * place this number can come from because there is exactly one place that enforces it. We do NOT read
+     * a CLI option or a config key: both would be a human COPY of a number owned elsewhere and would
+     * silently go stale, re-creating in a new place the very drift this design removes. Worse, a run
+     * started by hand has NO external ceiling at all, so a hand-written lifetime would only make the
+     * coordinator cut itself short against a deadline nobody enforces - a deadline with no enforcer is
+     * not a deadline.
+     *
+     * WHY NULL MEANS "UNBOUNDED IN PRACTICE" AND NOT "UNLIMITED-BY-DESIGN": when the env var is absent
+     * nothing bounds this process - it may run as long as it wants - so we cannot prove any lifetime and
+     * return NULL. Every consumer must refuse to conclude anything from NULL: no self-imposed deadline is
+     * imposed, and findActiveRunUids() skips the identity sweep entirely (nothing can be proven dead). A
+     * present-but-non-positive value is refused loudly instead of being coerced, because a silently-wrong
+     * ceiling is exactly the failure this resolution exists to prevent.
+     *
+     * @return float|null Positive number of seconds, or NULL when no launcher timeout is present.
+     */
+    private function resolveMaxRuntime(): ?float
+    {
+        $envRaw = getenv(CliTaskQueue::ENV_TASK_TIMEOUT_SECONDS);
+        if ($envRaw === false || $envRaw === '') {
+            return null;
+        }
+        return $this->assertPositiveSeconds((string) $envRaw, CliTaskQueue::ENV_TASK_TIMEOUT_SECONDS);
+    }
+
+    /**
+     * Validates a raw lifetime value and casts it to seconds, refusing anything non-positive LOUDLY.
+     *
+     * WHY A SEPARATE CHECK: the lifetime arrives as an opaque string from the launcher env var, and a
+     * garbage or non-positive value must be rejected rather than coerced - a silently-wrong ceiling is
+     * exactly the failure this resolution exists to prevent. Naming the source in the error makes a
+     * misconfiguration point at the place to fix it.
+     *
+     * @param string $raw    The value as read from its source.
+     * @param string $source Human-readable origin, quoted in the error message.
+     * @return float Positive number of seconds.
+     */
+    private function assertPositiveSeconds(string $raw, string $source): float
+    {
+        if (! is_numeric($raw) || (float) $raw <= 0) {
+            throw new RuntimeException(
+                'Invalid ' . $source . ' value "' . $raw . '": the coordinator lifetime must be a positive '
+                . 'number of seconds (it is the launcher timeout this run must end before).'
+            );
+        }
+        return (float) $raw;
+    }
+
+    /**
      * Converts a feature file path into the exact key the workers store in run_feature.filename.
      *
      * Why it must mirror DatabaseFormatter::onBeforeFeature() byte for byte: that hook normalizes the
@@ -1015,6 +1193,10 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * @param int      $workerCount Number of lane slots to set up
      * @param string   $banner      Startup banner echoed into the coordinator log so the run's log opens
      *                              with the same expectation the user saw on the console
+     * @param float|null $dispatchDeadline Absolute microtime at which the coordinator must stop
+     *                              dispatching new features and kill its running lanes so its close-out
+     *                              runs before the launcher's hard kill. NULL when the lifetime is
+     *                              unknown - then no deadline is imposed.
      * @return array<int,array> Worker failures; non-empty means the run must fail
      * @throws \Throwable
      */
@@ -1026,7 +1208,8 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         ?string $tags,
         array $queue,
         int $workerCount,
-        string $banner = ''
+        string $banner = '',
+        ?float $dispatchDeadline = null
     ): array {
         [$portStart, $portEnd] = $this->resolvePortBand($behatConfig, self::OVERRIDE_KEY_SCHEDULED, self::CFG_PORT_BAND);
         $timeout = $this->resolveWorkerTimeout();
@@ -1124,14 +1307,40 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         $laneKeyWarned = false;
         $launchStartWall = microtime(true);
 
+        // Latched TRUE once the self-imposed deadline passes. From that point the coordinator dispatches
+        // nothing new and kills whatever is still running, so its close-out runs in the clear before the
+        // launcher's hard kill. Stays FALSE forever when no deadline was granted (unknown lifetime).
+        $deadlineReached = false;
+
         // --- Phase B - fill and drain. The loop runs while any worker is alive OR there is still work
-        // that a free lane could take. When neither holds, everything that could run has run. ---
-        while ($slotProcess !== [] || ($queue !== [] && $idleLanes !== [])) {
+        // that a free lane could take AND the deadline has not passed. Once the deadline is reached we
+        // stop taking new work, so the loop only continues to drain (kill) the lanes still running. ---
+        while ($slotProcess !== [] || (! $deadlineReached && $queue !== [] && $idleLanes !== [])) {
+
+            // Check the self-imposed deadline once per pass, BEFORE filling. WHY BEFORE: a feature must
+            // never be dispatched past the deadline - it could not finish in the close-out budget and its
+            // lane would be hard-killed mid-test. Latched so the transition is logged exactly once.
+            if ($dispatchDeadline !== null && ! $deadlineReached && microtime(true) >= $dispatchDeadline) {
+                $deadlineReached = true;
+                $msg = sprintf(
+                    'coordinator deadline reached at +%.1f s into the process (granted lifetime %.0f s, '
+                    . 'close-out reserve %.0f s) - stopping dispatch and killing %d running lane(s); %d feature(s) still queued',
+                    microtime(true) - $this->performStart,
+                    (float) $this->maxRuntimeSeconds,
+                    self::CLOSEOUT_BUDGET_SECONDS,
+                    count($slotProcess),
+                    count($queue)
+                );
+                $this->writeRunLog($diagLog, 'DIAG deadline: ' . $msg);
+                $this->getWorkbench()->getLogger()->warning('BDT parallel: ' . $msg);
+                $this->runLog?->addLine($msg, 1, 'Run summary');
+            }
 
             // Fill every free lane from the head of the queue. This runs on the first pass (initial fill)
             // and again on every pass where a worker exited, so a slot is refilled in the same iteration
-            // it is released - a lane never waits for the next poll tick to pick up new work.
-            while ($queue !== [] && $idleLanes !== []) {
+            // it is released - a lane never waits for the next poll tick to pick up new work. Suppressed
+            // entirely once the deadline is reached.
+            while (! $deadlineReached && $queue !== [] && $idleLanes !== []) {
                 $lane    = array_shift($idleLanes);
                 $feature = array_shift($queue);
                 $seq++;
@@ -1248,7 +1457,17 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             // sibling lanes and would keep a genuinely hung lane alive forever, defeating the idle timeout.
             if ($idleTimeout !== null && ($now - $lastDbPollAt) >= self::DB_PROGRESS_POLL_SECONDS) {
                 $lastDbPollAt = $now;
-                $dbMarkers = $this->readLatestStepMarkers($runUid);
+                // Only the features a lane is EXECUTING right now are worth a step query. The probe used
+                // to run for every feature of the run, including ones that finished hours ago, so a
+                // 34-feature run issued 35 queries a minute for four answers it actually read - added
+                // lock pressure on exactly the tables the workers are inserting into, for nothing.
+                $activeKeys = [];
+                foreach ($slotKeys as $keys) {
+                    foreach ($keys as $key) {
+                        $activeKeys[] = $key;
+                    }
+                }
+                $dbMarkers = $this->readLatestStepMarkers($runUid, $activeKeys);
                 if ($dbMarkers !== null) {
                     // Fail loudly on a key mismatch: if the DB reports a feature that is not in this
                     // run's queue at all, our path normalization disagrees with what the workers wrote
@@ -1286,6 +1505,28 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             }
 
             foreach ($slotProcess as $lane => $process) {
+                // Deadline shutdown takes precedence over every other lane outcome. Once the deadline is
+                // reached the coordinator must free its lanes so its own close-out runs before the
+                // launcher's hard kill. WHY IT IS NOT A TIMEOUT: the lane did nothing wrong - it was
+                // still within its per-feature ceiling - so this must NOT increment its consecutive-timeout
+                // strike count and the lane is NOT returned to the pool (nothing more will be dispatched).
+                if ($deadlineReached) {
+                    $feature = $slotFeature[$lane];
+                    // Flush whatever the worker produced up to now, so the killed feature's partial output
+                    // is not lost before its log is parsed into the run-log.
+                    $this->streamLaneOutput($process, $slotLog[$lane]);
+                    $reason = 'killed at coordinator deadline before the launcher timeout (feature was still running)';
+                    $this->recordFailure($failures, $lane, $feature, $slotLogName[$lane], $reason);
+                    $this->killHungLane($lane, $process, $slotLog[$lane], $diagLog, $reason, $cwd, $runUid);
+                    $this->appendFeatureOutcome($logDir, $slotSection[$lane], $slotLogName[$lane], $reason);
+                    unset(
+                        $slotProcess[$lane], $slotLog[$lane], $slotLogName[$lane], $slotFeature[$lane],
+                        $slotSection[$lane], $slotStart[$lane], $slotLastActivity[$lane], $slotKeys[$lane],
+                        $slotDbMarker[$lane], $slotFirstOutput[$lane]
+                    );
+                    continue;
+                }
+
                 // Stream whatever new output arrived since the last pass.
                 $wrote = $this->streamLaneOutput($process, $slotLog[$lane]);
                 if ($wrote) {
@@ -1429,18 +1670,21 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             }
         }
 
-        // Anything still queued here could never be dispatched, because every lane was retired. Record
-        // each one explicitly: a feature that silently never ran is exactly the failure mode the queue
-        // was introduced to eliminate, so it must surface as a worker error rather than as a quiet
-        // expected-vs-actual shortfall.
+        // Anything still queued here could never be dispatched. Record each one explicitly: a feature
+        // that silently never ran is exactly the failure mode the queue was introduced to eliminate, so
+        // it must surface as a worker error rather than as a quiet expected-vs-actual shortfall. The
+        // reason distinguishes the two causes: the coordinator's own deadline (the run legitimately did
+        // not fit its granted lifetime) versus every lane having been retired (a lane/setup fault).
         if ($queue !== []) {
-            $reason = 'never started - all lanes were retired before it could be dispatched';
+            $reason = $deadlineReached
+                ? 'never started - coordinator deadline reached before it could be dispatched'
+                : 'never started - all lanes were retired before it could be dispatched';
             foreach ($queue as $feature) {
                 $this->recordFailure($failures, 0, $feature, null, $reason);
             }
             $this->writeRunLog($diagLog, 'DIAG drain: ' . count($queue) . ' feature(s) never dispatched - ' . $reason);
             $this->getWorkbench()->getLogger()->error(
-                'BDT parallel: ' . count($queue) . ' feature(s) never ran because all lanes were retired'
+                'BDT parallel: ' . count($queue) . ' feature(s) never ran - ' . $reason
             );
         }
 
@@ -1473,37 +1717,97 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Returns the UIDs of coordinator runs that may still legitimately own a Chrome profile dir.
+     * Returns the UIDs of coordinator runs that may still legitimately own a Chrome profile dir, so
+     * reapProfilesOfInactiveRuns() can reclaim every OTHER unfinished run's profiles without ever
+     * touching a live one.
      *
-     * WHY THIS EXISTS: reapProfilesOfInactiveRuns() must not kill the browsers of a run that is still
-     * executing, but it also must not wait for an age threshold to expire before reclaiming the ones
-     * that are not. The run table is the authority: a row with no finished_on is potentially still
-     * running. A run whose row was never finalized because the coordinator was hard-killed would keep
-     * its profiles alive forever, so rows older than the coordinator's own wall-clock ceiling are no
-     * longer treated as active - past that point no legitimate Chrome of theirs can still exist.
+     * WHY THE JUDGEMENT IS NOW A GUARANTEE, NOT AN ESTIMATE: every run is granted the SAME wall-clock
+     * lifetime this coordinator was (the launcher timeout - see resolveMaxRuntime). Past that lifetime a
+     * run has only two possible states: it finalized (and is excluded here by the finished_on filter), or
+     * the launcher hard-killed it. Either way it can no longer own a live browser. So an unfinished run
+     * whose started_on is older than "now - (lifetime + margin)" is provably dead - no run_step probing,
+     * no derived silence window, no guessed age. Younger than that, it is still within its granted
+     * lifetime and is treated as active. The margin covers the gap between the launcher's clock (which
+     * starts at spawn) and started_on (written only after that run's own Behat init).
      *
-     * WHY IT FAILS SAFE: if the query fails we return only the current run UID... no. We must NOT do
-     * that - it would authorize killing everything. On any error we return an empty result and the
-     * caller skips the sweep entirely, falling back to the age-based one. Never guess.
+     * WHY WE SKIP THE SWEEP ENTIRELY WHEN THE LIFETIME IS UNKNOWN: without the one authoritative number,
+     * nothing bounds how long an unfinished run may run, so NOTHING can be proven dead. Rather than fall
+     * back to a guessed age - the exact defect this change removes - we return NULL and let only the
+     * age-based (mtime) reapStaleChromeProfiles() sweep reclaim anything. NULL never means "unlimited";
+     * it means "cannot conclude anything".
+     *
+     * WHY A TRUNCATED READ IS REFUSED: with no explicit limit, a default page size would silently drop
+     * rows off the end - and a dropped row is an active run whose browser we would then kill. A bounded
+     * read makes that detectable, and a result we cannot prove complete authorizes nothing.
+     *
+     * WHY IT FAILS SAFE: on any error, or on a read we cannot trust, we return NULL and the caller skips
+     * the identity sweep entirely, falling back to the age-based (mtime) one. Never guess in the
+     * destructive direction.
      *
      * @param string $currentRunUid UID of the run being started (always considered active)
      * @return string[]|null Active run UIDs, or NULL if the state could not be determined
      */
     private function findActiveRunUids(string $currentRunUid): ?array
     {
+        // Unknown lifetime: nothing bounds an unfinished run, so nothing can be proven dead. Skip the
+        // identity sweep and leave reclamation to the age-based (mtime) sweep. WHY NOT A FALLBACK AGE:
+        // any age we invented here would be the guessed constant this whole change exists to delete.
+        if ($this->maxRuntimeSeconds === null) {
+            return null;
+        }
+
         try {
-            $cutoff = (new \DateTime())->sub(new \DateInterval('PT' . self::RUN_MAX_AGE_MINUTES . 'M'));
             $ds = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.run');
-            $ds->getColumns()->addFromUidAttribute();
+            $uidCol     = $ds->getColumns()->addFromUidAttribute();
+            $startedCol = $ds->getColumns()->addFromExpression('started_on');
             $ds->getFilters()->addConditionFromString('finished_on', '', ComparatorDataType::EQUALS);
-            $ds->getFilters()->addConditionFromString(
-                'started_on',
-                $cutoff->format(DateTimeDataType::DATETIME_FORMAT_INTERNAL),
-                ComparatorDataType::GREATER_THAN_OR_EQUALS
-            );
+            // Newest first, so the bounded read keeps the rows most likely to still be alive.
+            $ds->getSorters()->addFromString('started_on', 'DESC');
+            // No total-count query: the number itself is never used, only the rows are.
+            $ds->setAutoCount(false);
+            $ds->setRowsLimit(self::ACTIVE_RUN_READ_LIMIT);
             $ds->dataRead();
-            $uids = $ds->getUidColumn()->getValues(false);
-            $uids[] = $currentRunUid;
+
+            // A result that exactly fills the limit is indistinguishable from a truncated one, and a run
+            // missing from this list gets its live browser killed. Refuse rather than risk it.
+            if ($ds->countRows() >= self::ACTIVE_RUN_READ_LIMIT) {
+                $this->getWorkbench()->getLogger()->warning(
+                    'BDT parallel: at least ' . self::ACTIVE_RUN_READ_LIMIT . ' unfinished run rows exist - skipping '
+                    . 'the identity-based profile sweep, because a possibly truncated list cannot prove any run is '
+                    . 'dead. Investigate why so many runs were never finalized.'
+                );
+                return null;
+            }
+
+            // The instant before which an unfinished run is provably dead: it has outlived the lifetime
+            // every run is granted, plus the init-gap margin. Anything at or after it is still within its
+            // lifetime and stays active.
+            $deadBeforeSeconds = (int) ceil($this->maxRuntimeSeconds + self::RUN_START_MARGIN_SECONDS);
+            $activeSince = (new \DateTime())->sub(new \DateInterval('PT' . $deadBeforeSeconds . 'S'));
+
+            $uids = [$currentRunUid];
+            foreach (array_keys($ds->getRows()) as $i) {
+                $uid = (string) $uidCol->getValue($i);
+                if ($uid === '' || $uid === $currentRunUid) {
+                    continue;
+                }
+                $startedOn = (string) $startedCol->getValue($i);
+                // No parseable start time is not proof of death - keep such a run active. An empty or
+                // malformed started_on tells us nothing, and "nothing" must never authorize a kill.
+                if ($startedOn === '') {
+                    $uids[] = $uid;
+                    continue;
+                }
+                try {
+                    $started = new \DateTimeImmutable($startedOn);
+                } catch (\Exception $e) {
+                    $uids[] = $uid;
+                    continue;
+                }
+                if ($started >= $activeSince) {
+                    $uids[] = $uid;
+                }
+            }
             return array_values(array_unique($uids));
         } catch (\Throwable $e) {
             $this->getWorkbench()->getLogger()->logException($e);
@@ -2249,15 +2553,28 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * filter by and the filename keys the caller matches its lanes against, so a mismatch surfaces as
      * a reported unknown key instead of a blind heartbeat.
      *
+     *  WHY ONLY THE ACTIVE FEATURES ARE PROBED: the drain loop reads exactly one marker per RUNNING lane.
+     *  Probing every feature of the run meant issuing a sorted run_step query per finished feature too -
+     *  work whose result was discarded, growing with every feature completed, against the very tables the
+     *  workers are writing to. Features that are not currently assigned to a lane are still LISTED (so the
+     *  unknown-key diagnostic below still sees the full picture) but cost no query.
+     *
+     *  WHY THE FEATURE READ IS BOUNDED: without an explicit limit a default page size would silently drop
+     *  feature rows, and a lane whose own feature was dropped reports an empty marker forever - it looks
+     *  permanently idle and gets killed although it is progressing. A result that cannot be proven
+     *  complete therefore returns NULL ("unknown"), which keeps the previous markers instead of
+     *  manufacturing a fake standstill.
+     * 
      * Never throws: a transient DB hiccup during polling must not abort an otherwise healthy fleet, so
      * a failure is logged and returned as null ("unknown"), letting the caller keep the previous
      * per-lane markers for that pass.
      *
      * @param string $runUid The run whose features to probe.
+     * @param string[] $activeFeatureKeys Keys of the features currently assigned to a lane.
      * @return array<string,string>|null Map of feature key (see featureKeyFromPath) => marker, or NULL
      *                                   if the state could not be read at all.
      */
-    private function readLatestStepMarkers(string $runUid): ?array
+    private function readLatestStepMarkers(string $runUid, array $activeFeatureKeys): ?array
     {
         try {
             $featureSheet = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.run_feature');
@@ -2267,8 +2584,20 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             // No total-count query: it would issue a second read over the same rows on every poll for a
             // number the caller never uses.
             $featureSheet->setAutoCount(false);
+            $featureSheet->setRowsLimit(self::RUN_FEATURE_READ_LIMIT);
             $featureSheet->dataRead();
 
+            // A result that exactly fills the limit cannot be proven complete, and an absent feature reads
+            // as a standstill that kills a healthy lane. Report "unknown" instead.
+            if ($featureSheet->countRows() >= self::RUN_FEATURE_READ_LIMIT) {
+                $this->getWorkbench()->getLogger()->warning(
+                    'BDT parallel: run ' . $runUid . ' has at least ' . self::RUN_FEATURE_READ_LIMIT
+                    . ' run_feature rows - the per-lane idle heartbeat cannot be computed reliably and is skipped.'
+                );
+                return null;
+            }
+
+            $wanted  = array_flip($activeFeatureKeys);
             $markers = [];
             foreach (array_keys($featureSheet->getRows()) as $i) {
                 $file = (string) $fileCol->getValue($i);
@@ -2279,7 +2608,8 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                 // Normalize the same way featureKeyFromPath() does (forward slashes + lower case) so
                 // these keys match the lane bucket keys byte for byte.
                 $key = mb_strtolower(FilePathDataType::normalize($file, '/'));
-                $markers[$key] = $this->readLatestStepMarkerOfFeature($featureUid);
+                // Listed either way; queried only when a lane is actually accountable for it.
+                $markers[$key] = isset($wanted[$key]) ? $this->readLatestStepMarkerOfFeature($featureUid) : '';
             }
             return $markers;
         } catch (\Throwable $e) {
@@ -2310,28 +2640,64 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      */
     private function readLatestStepMarkerOfFeature(string $featureUid): string
     {
+        $row = $this->readLatestStepRow('run_scenario__run_feature', $featureUid);
+        // NULL (probe failed) and [] (no step yet) both mean "nothing new to report", never "this lane
+        // is dead" - the caller keeps its previous marker either way.
+        if ($row === null || $row === []) {
+            return '';
+        }
+        return $row['created_on'] . '|' . $row['uid'];
+    }
+
+    /**
+     * Reads the newest run_step row reachable through a given relation, as [created_on, uid].
+     *
+     * WHY ONE METHOD FOR TWO CALLERS: the drain heartbeat asks for the newest step OF A FEATURE and the
+     * orphan sweep asks for the newest step OF A RUN. Both are the same query with a different filter
+     * alias, and writing them twice is exactly how two constructions of the same thing drift apart in
+     * this codebase. Only the relation path differs, so only that is a parameter.
+     *
+     * WHY THE UID IS PART OF THE SORT: created_on alone is not a deterministic sort key - two rows
+     * written inside the same second have no defined order, so consecutive reads could alternate between
+     * them and report a change that never happened. Because UIDs are not lexicographically ordered, the
+     * resulting marker can only be compared for CHANGE, never for growth.
+     *
+     * Never throws: it is called both while polling a live fleet and while deciding whether to reclaim
+     * another run's resources, and in neither case may a transient DB hiccup escalate into an aborted run
+     * or a wrongly killed browser. The three return shapes are therefore distinct on purpose.
+     *
+     * @param string $filterAlias Attribute alias (with relation path) to filter run_step by.
+     * @param string $value       Value that alias must equal.
+     * @return array|null NULL when the read failed (unknown), [] when there is no such step yet, or
+     *                    ['created_on' => ..., 'uid' => ...] for the newest one.
+     */
+    private function readLatestStepRow(string $filterAlias, string $value): ?array
+    {
         try {
             $ds = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.run_step');
-            $ds->getFilters()->addConditionFromString(
-                'run_scenario__run_feature',
-                $featureUid,
-                ComparatorDataType::EQUALS
-            );
-            $createdCol = $ds->getColumns()->addFromExpression('created_on');
+            $ds->getFilters()->addConditionFromString($filterAlias, $value, ComparatorDataType::EQUALS);
+            // WHY UPPERCASE: CREATED_ON is inherited from the metamodel base object and its ALIAS is
+            // upper case - "created_on" is only the SQL data address behind it. Aliases resolve
+            // case-sensitively, so the lower case form matches no attribute at all and the sorter
+            // rejects the sheet, no matter that the column exists in the table.
+            $createdCol = $ds->getColumns()->addFromExpression('CREATED_ON');
             $stepUidCol = $ds->getColumns()->addFromUidAttribute();
-            $ds->getSorters()->addFromString('created_on', 'DESC');
+            $ds->getSorters()->addFromString('CREATED_ON', 'DESC');
             $ds->getSorters()->addFromString($ds->getMetaObject()->getUidAttributeAlias(), 'DESC');
             $ds->setAutoCount(false);
             $ds->setRowsLimit(1);
             $ds->dataRead();
 
             if ($ds->countRows() === 0) {
-                return '';
+                return [];
             }
-            return (string) $createdCol->getValue(0) . '|' . (string) $stepUidCol->getValue(0);
+            return [
+                'created_on' => (string) $createdCol->getValue(0),
+                'uid'        => (string) $stepUidCol->getValue(0)
+            ];
         } catch (\Throwable $e) {
             $this->getWorkbench()->getLogger()->logException($e);
-            return '';
+            return null;
         }
     }
 
