@@ -2676,9 +2676,13 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         try {
             $ds = DataSheetFactory::createFromObjectIdOrAlias($this->getWorkbench(), 'axenox.BDT.run_step');
             $ds->getFilters()->addConditionFromString($filterAlias, $value, ComparatorDataType::EQUALS);
-            $createdCol = $ds->getColumns()->addFromExpression('created_on');
+            // WHY UPPERCASE: CREATED_ON is inherited from the metamodel base object and its ALIAS is
+            // upper case - "created_on" is only the SQL data address behind it. Aliases resolve
+            // case-sensitively, so the lower case form matches no attribute at all and the sorter
+            // rejects the sheet, no matter that the column exists in the table.
+            $createdCol = $ds->getColumns()->addFromExpression('CREATED_ON');
             $stepUidCol = $ds->getColumns()->addFromUidAttribute();
-            $ds->getSorters()->addFromString('created_on', 'DESC');
+            $ds->getSorters()->addFromString('CREATED_ON', 'DESC');
             $ds->getSorters()->addFromString($ds->getMetaObject()->getUidAttributeAlias(), 'DESC');
             $ds->setAutoCount(false);
             $ds->setRowsLimit(1);
