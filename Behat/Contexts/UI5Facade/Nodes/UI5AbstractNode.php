@@ -14,7 +14,7 @@ use axenox\BDT\Exceptions\FacadeNodeScriptException;
 use axenox\BDT\Exceptions\UIException;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use axenox\BDT\Interfaces\TestResultInterface;
-use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
+use axenox\BDT\Behat\Common\ErrorManager;
 use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Exception\DriverException;
 use Behat\Mink\Session;
