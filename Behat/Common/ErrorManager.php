@@ -1,5 +1,5 @@
 <?php
-namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
+namespace axenox\BDT\Behat\Common;
 
 use exface\Core\Exceptions\RuntimeException;
 

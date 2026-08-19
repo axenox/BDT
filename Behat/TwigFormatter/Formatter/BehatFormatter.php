@@ -28,7 +28,7 @@ use axenox\BDT\Behat\TwigFormatter\Classes\Step;
 use axenox\BDT\Behat\TwigFormatter\Classes\Suite;
 use axenox\BDT\Behat\TwigFormatter\Printer\FileOutputPrinter;
 use axenox\BDT\Behat\TwigFormatter\Renderer\BaseRenderer;
-use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
+use axenox\BDT\Behat\Common\ErrorManager;
 
 global $suiteStartDate, $suiteEndDate, $featureStartDate, $featureEndDate, $scenarioStartDate, $scenarioEndDate, $stepStartDate, $stepEndDate;
 
