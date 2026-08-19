@@ -22,7 +22,8 @@ class ScreenshotProvider implements ScreenshotProviderInterface
     private ?string $filePath = null;
     private bool $isCaptured = false;
     private ?string $url = null;
-    
+    private ?string $runUid = null;
+
     /**
      * {@inheritDoc}
      */
@@ -79,5 +80,21 @@ class ScreenshotProvider implements ScreenshotProviderInterface
     public function getUrl(): ?string
     {
         return $this->url;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function setRunUid(string $runUid): void
+    {
+        $this->runUid = $runUid;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function getRunUid(): ?string
+    {
+        return $this->runUid;
     }
 }

@@ -33,12 +33,14 @@ use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\DateTimeDataType;
 use exface\Core\DataTypes\FilePathDataType;
 use exface\Core\DataTypes\PhpFilePathDataType;
+use exface\Core\DataTypes\SortingDirectionsDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Events\Workbench\OnCleanUpEvent;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\UiPageFactory;
 use exface\Core\Interfaces\DataSheets\DataSheetInterface;
+use exface\Core\Interfaces\DataSources\DataTransactionInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Exceptions\ExceptionInterface;
 use exface\Core\Interfaces\WorkbenchInterface;
@@ -61,6 +63,30 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private ?DataSheetInterface $scenarioDataSheet = null;
     private float               $scenarioStart;
     private static array        $scenarioPages = [];
+
+    /**
+     * App-config key holding the run retention window in days.
+     *
+     * Kept config-driven (mirroring the ETL cleanups) so ops can tune how long test runs are kept
+     * on the results database - the growth of which is what the recurring "allocate memory" errors
+     * are traced back to - without a code change.
+     */
+    private const CLEANUP_DAYS_TO_KEEP = 'CLEANUP.DAYS_TO_KEEP';
+    
+    /**
+     * App-config key capping how many old runs a single cleanup pass deletes.
+     *
+     * Deleting a large backlog in one pass can itself exhaust memory on the results DB - the very
+     * failure this cleanup fights - and holds locks longer than needed. Capping the batch keeps each
+     * pass bounded; the next scheduled cleanup continues where this one left off.
+     */
+    private const CLEANUP_DELETE_BATCH = 'CLEANUP.DELETE_BATCH';
+
+    /**
+     * Fallback batch size when CLEANUP.DELETE_BATCH is not configured, so cleanup stays bounded even
+     * on an installation that set the retention age but not an explicit batch.
+     */
+    private const DELETE_BATCH_DEFAULT = 100;
 
     /**
      * Reason why the current scenario is NOT being recorded, or null while a scenario is open.
@@ -174,6 +200,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                         throw new RuntimeException('Attached run UID ' . $runUid . ' not found');
                     }
                     $this->runDataSheet = $ds;
+                    $this->bindRunUidToProvider();
                     $this->registerMetrics();
                     // Still register the shutdown handler, but the handler will avoid touching the run row
                     // when in attach-mode.
@@ -185,6 +212,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                 }
             } else {
                 $this->startRun();
+                $this->bindRunUidToProvider();
             }
         }
     }
@@ -1507,15 +1535,197 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     }
 
     /**
+     * Deletes expired BDT test runs and lets the model cascade take care of everything below them.
+     *
+     * WHY parent-only: the delete logic must stay in ONE place. run_feature, run_scenario, run_step
+     * and run_step_screenshot are all reachable from run through delete-with-related-object
+     * relations, so removing the run row is the single instruction that expresses "this run and
+     * everything it produced is gone". Enumerating the children here would duplicate knowledge that
+     * already lives in the meta model and would silently rot whenever the model changes.
+     *
+     * WHY one transaction: a half-deleted run (run_feature gone, run_step left behind) is worse than
+     * no cleanup at all, because the orphans are unreachable through the model and can only be found
+     * by hand in SQL. Either the whole tree goes or nothing does.
+     *
+     * WHY the pass is capped and oldest-first: deleting a large backlog in one go can exhaust memory
+     * on the results database - the very failure this cleanup fights. The pass therefore takes at
+     * most CLEANUP.DELETE_BATCH runs, sorted oldest first, so each scheduled run drains a bounded
+     * slice of the backlog and the next one continues where this one stopped. Sorting matters: an
+     * unsorted limited read would pick an arbitrary slice and could leave the oldest runs - the ones
+     * the retention window is actually about - alive indefinitely.
+     *
+     * WHY addResultMessage instead of a return value: OnCleanUpEvent ignores whatever the listener
+     * returns, so the only way to report back to the operator running the CleanUp is the event itself.
+     *
+     * KNOWN LIMITATION - screenshots live in a file data source. File deletes are NOT part of the
+     * transaction, so a rollback after the files are gone cannot bring them back.
+     *
      * @param OnCleanUpEvent $event
      * @return void
      */
     public static function onCleanUp(OnCleanUpEvent $event) : void
     {
-        // TODO read old runs using a config option similar to ETL cleanups, but read with data sheets
-        // Delete old runs - this will delete all child objects recursively.
-        // BUT it will not (yet) delete screenshots. To delete screenshots we need to link them to steps through the
-        // model. Currently there is an extra meta object for the screenshots with a relation to run_step and 
-        // delete-with-related-object. Need testing here!
+        $workbench = $event->getWorkbench();
+        $config = $workbench->getApp('axenox.BDT')->getConfig();
+
+        // Retention is opt-in: without an explicit positive age, keep every run.
+        if (! $config->hasOption(self::CLEANUP_DAYS_TO_KEEP)) {
+            $event->addResultMessage('BDT: no cleanup - option "' . self::CLEANUP_DAYS_TO_KEEP . '" is not set.');
+            return;
+        }
+        $maxAgeDays = (int) $config->getOption(self::CLEANUP_DAYS_TO_KEEP);
+        if ($maxAgeDays <= 0) {
+            $event->addResultMessage('BDT: no cleanup - option "' . self::CLEANUP_DAYS_TO_KEEP . '" must be a positive number of days.');
+            return;
+        }
+
+        // An unset or non-positive batch size must not be read as "unlimited": an unbounded pass is
+        // exactly the memory-exhausting delete this cap exists to prevent, so fall back to the default.
+        $batchSize = $config->hasOption(self::CLEANUP_DELETE_BATCH)
+            ? (int) $config->getOption(self::CLEANUP_DELETE_BATCH)
+            : self::DELETE_BATCH_DEFAULT;
+        if ($batchSize <= 0) {
+            $batchSize = self::DELETE_BATCH_DEFAULT;
+        }
+
+        // Cutoff = now - maxAgeDays. Runs created strictly before this are eligible for deletion.
+        $cutoff = (new \DateTimeImmutable('now'))->sub(new \DateInterval('P' . $maxAgeDays . 'D'));
+        $cutoffStr = DateTimeDataType::formatDateNormalized($cutoff);
+
+        $runs = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'axenox.BDT.run');
+        $runs->getColumns()->addFromUidAttribute();
+        $runs->getFilters()->addConditionFromString('CREATED_ON', $cutoffStr, ComparatorDataType::LESS_THAN);
+        $runs->getSorters()->addFromString('CREATED_ON', SortingDirectionsDataType::ASC);
+        $runs->setRowsLimit($batchSize);
+        // No total count is needed - the message below infers a remaining backlog from a full batch -
+        // and skipping it saves an extra COUNT over a table this cleanup exists because it is large.
+        $runs->setAutoCount(false);
+        $runs->dataRead();
+
+        // An empty sheet must never reach dataDelete(): with no rows and no narrowing filter the
+        // delete scope would widen to the whole object - that is how a cleanup wipes a table.
+        if ($runs->isEmpty()) {
+            $event->addResultMessage('BDT: no test runs older than ' . $maxAgeDays . ' days - nothing to clean up.');
+            return;
+        }
+
+        $transaction = $workbench->data()->startTransaction();
+        try {
+            // The cascade cannot order a MULTI-level self-referencing hierarchy: a substep can itself
+            // have substeps, so a mid-level step gets deleted before its own children and trips the
+            // RESTRICT FK (SQL error 1451). Depth is data-dependent, so no fixed number of passes
+            // works either. Read the whole parent/child map once, compute each step's depth in PHP and
+            // delete deepest-first - depth-agnostic, one read, no recursion, same transaction.
+            self::deleteRunStepsLeafFirst($workbench, $runs->getUidColumn()->getValues(false), $transaction);
+            $deleted = $runs->dataDelete($transaction);
+            $transaction->commit();
+        } catch (\Throwable $e) {
+            // Roll back so a partially deleted tree never persists, then re-throw: the real error
+            // (e.g. the 1451 FK violation above) must stay visible instead of being swallowed here.
+            $transaction->rollback();
+            throw $e;
+        }
+
+        // A full batch means the age filter still matches more runs, so the operator knows the
+        // backlog is being drained gradually rather than assuming this pass finished the job.
+        $message = 'BDT: removed ' . $deleted . ' test runs older than ' . $maxAgeDays . ' days.';
+        if ($runs->countRows() >= $batchSize) {
+            $message .= ' Batch limit of ' . $batchSize . ' reached - more runs remain and will be removed by the next cleanup.';
+        }
+        $event->addResultMessage($message);
+    }
+
+    /**
+     * Deletes all run_step rows belonging to the given runs in leaf-to-root order.
+     *
+     * WHY this exists: bdt_run_step.parent_step_oid references bdt_run_step.oid with ON DELETE
+     * RESTRICT. MS SQL Server forbids ON DELETE CASCADE on a self-referencing table, so the database
+     * cannot be taught this order and the constraint cannot simply be relaxed - the order has to come
+     * from the application. Doing it here rather than per call site keeps the cleanup a single unit.
+     *
+     * WHY depth is computed in PHP: expressing "has no remaining children" as a data sheet filter
+     * would mean one query per hierarchy level. One flat read plus an in-memory depth calculation
+     * costs a single round trip regardless of how deep the tree gets.
+     *
+     * @param WorkbenchInterface $workbench
+     * @param string[] $runUids UIDs of the runs whose steps are to be removed
+     * @param DataTransactionInterface $transaction Transaction the deletes must join
+     * @return int Number of deleted step rows
+     */
+    private static function deleteRunStepsLeafFirst(
+        WorkbenchInterface $workbench,
+        array $runUids,
+        DataTransactionInterface $transaction
+    ) : int
+    {
+        if (empty($runUids)) {
+            return 0;
+        }
+
+        $steps = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'axenox.BDT.run_step');
+        $steps->getColumns()->addFromUidAttribute();
+        $steps->getColumns()->addFromExpression('parent_step');
+        $steps->getFilters()->addConditionFromValueArray('run_scenario__run_feature__run__UID', $runUids);
+        $steps->dataRead();
+        if ($steps->isEmpty()) {
+            return 0;
+        }
+
+        $uidAlias = $steps->getMetaObject()->getUidAttributeAlias();
+        $parentOf = [];
+        foreach ($steps->getRows() as $row) {
+            $parentOf[$row[$uidAlias]] = $row['parent_step'] ?: null;
+        }
+
+        // Walk each step up to its root to get its depth. The visited set is not an optimisation but
+        // a safety net: corrupt data with a parent cycle would otherwise loop forever inside a
+        // transaction and hang the scheduled cleanup.
+        $byDepth = [];
+        foreach (array_keys($parentOf) as $uid) {
+            $depth = 0;
+            $cursor = $uid;
+            $visited = [];
+            while (($parent = $parentOf[$cursor] ?? null) !== null) {
+                if (isset($visited[$parent])) {
+                    throw new RuntimeException('Cannot clean up BDT test runs: the run_step hierarchy contains a cycle at step "' . $parent . '".');
+                }
+                $visited[$parent] = true;
+                $cursor = $parent;
+                $depth++;
+            }
+            $byDepth[$depth][] = $uid;
+        }
+        krsort($byDepth);
+
+        $deleted = 0;
+        foreach ($byDepth as $uids) {
+            $batch = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'axenox.BDT.run_step');
+            $batch->getColumns()->addFromUidAttribute();
+            $batch->getFilters()->addConditionFromValueArray($uidAlias, $uids);
+            $batch->dataRead();
+            if (! $batch->isEmpty()) {
+                // Deleting a step also cascades to its screenshots, so the files follow the rows.
+                $deleted += $batch->dataDelete($transaction);
+            }
+        }
+        return $deleted;
+    }
+
+    /**
+     * Passes the current run UID to the screenshot provider once the run is known.
+     *
+     * Why this exists: captureScreenshot() groups files under Screenshots/<run_uid>/, so the provider
+     * must carry the run UID before any step screenshot is taken. The UID is stable for the whole run,
+     * so it is set once here - from both the normal startRun flow and attach-mode - instead of being
+     * repeated on every step.
+     *
+     * @return void
+     */
+    private function bindRunUidToProvider() : void
+    {
+        $runUid = $this->getCurrentRunUid();
+        if ($runUid !== null && $runUid !== '') {
+            $this->provider->setRunUid($runUid);
+        }
     }
 }
