@@ -9,6 +9,7 @@ use exface\Core\CommonLogic\AbstractAction;
 use exface\Core\CommonLogic\Actions\ServiceParameter;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\FilePathDataType;
+use exface\Core\DataTypes\MarkdownDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Facades\ConsoleFacade\CliCommandRunner;
@@ -1093,7 +1094,8 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * Gherkin file path to forward slashes and strips the vendor folder prefix before the INSERT. If the
      * coordinator built its key any other way (raw absolute path, basename), a lane's bucket would never
      * match the rows its own worker writes - silently disabling the per-lane heartbeat and letting a
-     * healthy lane be killed as "idle".
+     * healthy lane be killed as "idle". The normalization itself therefore lives in
+     * featureRelativePath(), shared with everything that displays a feature path.
      *
      * Lower-cased because Windows paths are case-insensitive while the array lookup here is not.
      *
@@ -1102,10 +1104,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      */
     private function featureKeyFromPath(string $path): string
     {
-        $normalized = FilePathDataType::normalize($path, '/');
-        $vendorPath = FilePathDataType::normalize($this->getWorkbench()->filemanager()->getPathToVendorFolder(), '/') . '/';
-        return mb_strtolower(
-            StringDataType::substringAfter($normalized, $vendorPath, $normalized));
+        return mb_strtolower($this->featureRelativePath($path));
     }
 
     /**
@@ -1227,7 +1226,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         $logDir = $this->ensureRunLogDir($cwd, $runUid);
         // Record the directory on the run row itself: the run-log is what a user opens from the DB, and
         // from there the on-disk worker logs are only findable if their location is stated.
-        $this->runLog?->addLine('Log directory: ' . $this->runLogDirRelative, 1, 'Run summary');
+        $this->runLog?->addLine('Log directory: ' . MarkdownDataType::escapeCodeInline($this->runLogDirRelative), 1, 'Run summary');
         $diagLog = $this->diagLog = $this->openCoordinatorLog($logDir, $runUid);
         $this->writeRunLog($diagLog, '===== Coordinator DIAG (run ' . $runUid . ') =====');
         if ($banner !== '') {
@@ -1402,7 +1401,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                     // order work was dispatched even though workers finish out of order. It is filled in
                     // when the worker ends (see appendFeatureOutcome).
                     $this->runLog?->addSection($section);
-                    $this->runLog?->addLine('Feature: ' . $feature, 1, $section);
+                    $this->runLog?->addLine('Feature: ' . MarkdownDataType::escapeCodeInline($this->featureRelativePath($feature)), 1, $section);
                     $this->runLog?->addLine('Lane: ' . $lane . ' (port ' . $lanePorts[$lane] . ')', 1, $section);
 
                     $this->writeRunLog($diagLog, sprintf(
@@ -1435,7 +1434,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                     // the coordinator's own error message is the record.
                     $section = '#' . $seq . ' ' . basename($feature) . ' (lane ' . $lane . ')';
                     $this->runLog?->addSection($section);
-                    $this->runLog?->addLine('Feature: ' . $feature, 1, $section);
+                    $this->runLog?->addLine('Feature: ' . MarkdownDataType::escapeCodeInline($this->featureRelativePath($feature)), 1, $section);
                     $this->runLog?->addLine('Worker: failed', 1, $section);
                     $this->runLog?->addLine('Worker error: ' . $error, 1, $section);
                     $this->runLog?->addLine('Lane ' . $lane . ' retired from the queue rotation', 1, $section);
@@ -2368,7 +2367,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         }
         // Always name the on-disk worker log: the verbose Behat output is deliberately NOT copied into
         // the run row, so the reader must be told where the full truth lives.
-        $this->runLog->addLine('Worker log: ' . $logName, 1, $section);
+        $this->runLog->addLine('Worker log: ' . MarkdownDataType::escapeCodeInline($logName), 1, $section);
 
         $lines = $this->readLaneLogTail($logDir . DIRECTORY_SEPARATOR . $logName);
         if ($lines === null) {
@@ -2721,4 +2720,30 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         }
         return implode('#', $parts);
     }
+
+    /**
+     * Converts an absolute feature file path into its vendor-relative, forward-slashed form.
+     *
+     * WHY THIS EXISTS: the coordinator carries feature files as absolute paths, because that is what
+     * the calculator finds on disk. But every place where a path is COMPARED or SHOWN needs the same
+     * shortened form that DatabaseFormatter::onBeforeFeature() stores in run_feature.filename. Keeping
+     * that normalization in exactly one place means the run-log, the per-lane heartbeat key and the DB
+     * column can never drift apart - and a reader can take a path out of the run log and find the very
+     * same string in the database.
+     *
+     * WHY IT IS NOT LOWER-CASED HERE: this is the human-readable form, so the original spelling of the
+     * file is preserved. Case folding is a lookup concern and stays inside featureKeyFromPath().
+     *
+     * @param string $path Absolute feature file path.
+     * @return string Vendor-relative, forward-slashed path.
+     */
+    private function featureRelativePath(string $path) : string
+    {
+        $normalized = FilePathDataType::normalize($path, '/');
+        $vendorPath = FilePathDataType::normalize($this->getWorkbench()->filemanager()->getPathToVendorFolder(), '/') . '/';
+
+        return StringDataType::substringAfter($normalized, $vendorPath, $normalized);
+    }
+
+   
 }
