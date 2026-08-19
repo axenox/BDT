@@ -2,7 +2,7 @@
     "uid": "0x11f081c80201101681c800155de44ed2",
     "alias_with_namespace": "axenox.bdt.feature-files",
     "menu_parent_page_selector": "0x11ef9cade73751fa9cad025041000001",
-    "menu_index": 2,
+    "menu_index": 1,
     "menu_visible": true,
     "name": "Feature files",
     "description": "",
@@ -11,7 +11,7 @@
     "created_by_user_selector": "0x11eca7f5b092f284a7f5005056bea39f",
     "created_on": "2025-10-08 18:22:39",
     "modified_by_user_selector": "0x11efa72c1fb56dfea72c025041000001",
-    "modified_on": "2026-07-07 20:29:03",
+    "modified_on": "2026-08-19 12:38:04",
     "contents": {
         "object_alias": "exface.Core.DUMMY",
         "widget_type": "SplitHorizontal",

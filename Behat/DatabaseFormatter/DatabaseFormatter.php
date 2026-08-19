@@ -17,7 +17,6 @@ use Behat\Testwork\Output\Formatter;
 use Behat\Testwork\Suite\Suite;
 use Behat\Testwork\Suite\SuiteRegistry;
 use Behat\Testwork\Tester\Result\TestResult;
-use Behat\Testwork\EventDispatcher\Event\AfterSuiteTested;
 use Behat\Behat\EventDispatcher\Event\AfterOutlineTested;
 use Behat\Behat\EventDispatcher\Event\BeforeOutlineTested;
 use Behat\Behat\EventDispatcher\Event\BeforeFeatureTested;
@@ -26,7 +25,7 @@ use Behat\Behat\EventDispatcher\Event\BeforeStepTested;
 use Behat\Behat\EventDispatcher\Event\AfterStepTested;
 use Behat\Behat\EventDispatcher\Event\AfterScenarioTested;
 use Behat\Behat\EventDispatcher\Event\AfterFeatureTested;
-use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
+use axenox\BDT\Behat\Common\ErrorManager;
 use exface\Core\CommonLogic\Debugger\LogBooks\MarkdownLogBook;
 use exface\Core\CommonLogic\UxonObject;
 use exface\Core\DataTypes\ComparatorDataType;
@@ -106,7 +105,6 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private array               $substepDataSheets = [];
     private array               $substepStarts = [];
 
-    private static array        $testedPages = [];
     // Provides all resolved suites (paths, filters) as Behat itself parsed them from
     // behat.yml and its imports - used once at run start to compute the expected scope.
     private SuiteRegistry $suiteRegistry;
@@ -224,7 +222,6 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             // Use __destruct() to finish the log on inner errors too
             // AfterExerciseCompleted::AFTER => 'onAfterExercise',
             BeforeSuiteTested::BEFORE => 'onBeforeSuite',
-            AfterSuiteTested::AFTER => 'onAfterSuite',
             BeforeFeatureTested::BEFORE => 'onBeforeFeature',
             AfterFeatureTested::AFTER => 'onAfterFeature',
             BeforeScenarioTested::BEFORE => 'onBeforeScenario',
@@ -326,37 +323,6 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             }
             $this->expectedResultsCalculated = true;
         } catch (\Throwable $e) {
-            ErrorManager::getInstance()->logException($e, $this->workbench);
-        }
-    }
-
-    public function onAfterSuite(AfterSuiteTested $event) : void
-    {
-        try{
-            if ($this->isDryRun) {
-                return;
-            }
-            if (!empty(self::$scenarioPages)) {
-                $suite = $event->getSuite();
-                $suiteName = $suite->getName();
-                $existingPages = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'exface.Core.PAGE');
-                $existingPages->getFilters()->addConditionFromString('APP__ALIAS', $suiteName, ComparatorDataType::EQUALS);
-                $existingPages->dataRead();
-                $pageCount = $existingPages->countRows();
-                if ($pageCount > 0) {
-                    $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'axenox.BDT.run_suite');
-                    $ds->addRow([
-                        'run' => $this->runDataSheet->getUidColumn()->getValue(0),
-                        'app' => $suiteName,
-                        'effected_page_count' => count(self::$testedPages),
-                        'total_page_count' => $pageCount,
-                        'coverage' => number_format((count(self::$testedPages) / $pageCount) * 100, 2)
-                    ]);
-                    $ds->dataCreate(false);
-                }
-            }
-        }
-        catch(\Throwable $e){
             ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
@@ -996,9 +962,6 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
 
         if (!in_array($alias, static::$scenarioPages, true)) {
             static::$scenarioPages[] = $alias;
-        }
-        if (!in_array($alias, static::$testedPages, true)) {
-            static::$testedPages[] = $alias;
         }
     }
 

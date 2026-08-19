@@ -11,7 +11,7 @@ use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\Events\BeforeUserLoggedIn;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
-use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
+use axenox\BDT\Behat\Common\ErrorManager;
 use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Session;
 use exface\Core\Actions\Login;
