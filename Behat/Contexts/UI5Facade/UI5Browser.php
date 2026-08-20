@@ -12,6 +12,7 @@ use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\Events\BeforeUserLoggedIn;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use axenox\BDT\Behat\Common\ErrorManager;
+use Behat\Mink\Element\ElementInterface;
 use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Session;
 use exface\Core\Actions\Login;
@@ -51,15 +52,14 @@ class UI5Browser
 {
     use AuthenticatorTimeStampingTrait;
     use DeadlockRetryTrait;
-    private $eventDispatcher;
+    private EventDispatcherInterface $eventDispatcher;
 
-    private $session;
-    private $workbench = null;
-    private $facade = null;
+    private Session $session;
+    private Workbench $workbench;
+    private ?UI5Facade $facade = null;
     private UI5WaitManager $waitManager;
     private UI5ErrorDetector $errorDetector;
 
-    private $objectAlias = null;
     private array $focusStack = [];
     private array $pagesVisited = [];
 
@@ -226,32 +226,6 @@ class UI5Browser
             $this->facade = FacadeFactory::createFromString(UI5Facade::class, $this->getWorkbench());
         }
         return $this->facade;
-    }
-
-    /**
-     * Sets the object alias used for filtering widget search results
-     * This allows targeting specific widgets that contain the given alias text
-     * For example, if searching for a table related to "Customer" data,
-     * setting objectAlias to "Customer" will only return widgets containing that text
-     *
-     * @param string|null $alias The text to filter widgets by, null to clear filter
-     * @return void
-     */
-    public function setObjectAlias(?string $alias): void
-    {
-        $this->objectAlias = $alias;
-    }
-
-    /**
-     * Gets the current object alias used for widget filtering
-     * Returns the text currently being used to filter widget search results,
-     * or null if no filtering is active
-     *
-     * @return string|null The current object alias or null if not set
-     */
-    public function getObjectAlias(): ?string
-    {
-        return $this->objectAlias;
     }
 
     /**
@@ -1047,9 +1021,11 @@ JS
                 break;
             }
         }
+        if ($button !== null){
+            Assert::assertTrue($button->isVisible(), 'Button "' . $caption . '" is not visible');            
+        }
         return $button;
     }
-
 
     /**
      * Finds the latest downloaded XLSX file
@@ -1080,93 +1056,311 @@ JS
         return null;
     }
 
-
-
     /**
-     * Finds and returns visible widgets based on specific criteria
+     * Reduces a set of widget nodes to those matching the given name - a caption or a meta object.
      *
-     * This method performs a comprehensive search for UI5 widgets with the following features:
-     * - Searches for widgets using a generalized CSS selector
-     * - Waits for pending operations to complete before searching
-     * - Filters widgets by type and optional object alias
-     * - Ensures only visible widgets are returned
+     * WHY both: the `with ":name"` part of the widget steps is written by hand and authors use whatever
+     * identifies the widget in the app in front of them - the dialog title ("Materialbedarfsliste Seile
+     * erstellen") just as often as the object behind a table ("Materialbedarfsliste"). Accepting only the
+     * object alias made every scenario using the other notation return zero matches, which reads like
+     * "the widget is not on the page" instead of "you named it differently than this filter expects".
      *
-     * @param string $widgetType The type of widget to search for (e.g., 'DataTable')
-     * @param string|null $objectAlias Optional text to filter widgets by their title or content
-     * @param int $timeoutInSeconds Maximum time to wait for widgets to be available (default: 10 seconds)
+     * WHY the metamodel and not the DOM: neither caption nor alias is rendered anywhere reliable, so
+     * matching against visible text would let a caption or a table cell that happens to contain the same
+     * words pass as a match - exactly the kind of false green this filter exists to prevent.
      *
-     * @return NodeElement[] Array of visible widget nodes matching the search criteria
+     * The comparison is case insensitive and accepts the object alias in both notations - fully qualified
+     * ("my.App.CUSTOMER") and short ("CUSTOMER") - because the namespace is noise in most steps.
      *
-     * Search Strategy:
-     * - Uses CSS class-based widget identification
-     * - Performs visibility and alias-based filtering
-     * - Supports case-insensitive partial matching for object alias
+     * @param FacadeNodeInterface[] $nodes
+     * @param string|null $name Null or empty disables filtering and returns the input unchanged
+     * @return FacadeNodeInterface[]
      */
-    public function findWidgets(string $widgetType, ?string $objectAlias = null, int $timeoutInSeconds = 10): array
+    public function filterNodesByName(array $nodes, ?string $name) : array
     {
-        // Generate a generalized CSS selector for the specific widget type
-        $cssSelector = ".exfw-{$widgetType}";
-
-        // Wait for all pending operations to complete
-        $this->waitManager->waitForPendingOperations(true, true, true);
-        if ($timeoutInSeconds > 0) {
-            $this->waitManager->waitForDOMElements($cssSelector, $timeoutInSeconds);
+        // Resolving the widget of every node hits the page model, so skip the whole loop when there is
+        // nothing to filter by - which is the case for the majority of steps.
+        if ($name === null || $name === '') {
+            return $nodes;
         }
-        // Find all widgets on the page matching the CSS selector
-        $page = $this->getPage();
-        $widgets = $page->findAll('css', $cssSelector);
 
-        // Filter widgets based on visibility and optional object alias
-        $visibleWidgets = array_filter($widgets, function ($widget) use ($objectAlias) {
+        $name = trim($name);
+        $filtered = [];
+        foreach ($nodes as $node) {
+            // A node whose widget cannot be resolved from the page model cannot be proven to match, so it
+            // counts as a non-match. WHY not let it bubble up: one unrelated widget on the page would
+            // otherwise turn a filtered assertion into a fatal error instead of a clean count mismatch.
+            try {
+                $widget = $node->getWidget();
+                $object = $widget->getMetaObject();
+            } catch (\Throwable $e) {
+                continue;
+            }
 
-            // Return only visible widgets
-            return $widget->isVisible();
-        });
+            $candidates = [
+                $widget->getCaption(),
+                $object->getName(),
+                $object->getAlias(),
+                $object->getAliasWithNamespace()
+            ];
 
-        return $visibleWidgets;
+            foreach ($candidates as $candidate) {
+                if ($candidate !== null && $candidate !== '' && strcasecmp(trim($candidate), $name) === 0) {
+                    $filtered[] = $node;
+                    break;
+                }
+            }
+        }
+
+        return $filtered;
     }
 
     /**
-     * Summary of findWidgetNodes
+     * Builds the CSS selector for a widget type INCLUDING every subtype currently rendered.
+     *
+     * WHY: the UI5 facade writes exactly one `.exfw-<WidgetType>` class per widget and that class
+     * always holds the CONCRETE type. A CSS class selector matches whole class tokens, so
+     * `.exfw-Input` never matches `.exfw-InputComboTable`. Every step that addresses widgets by
+     * type would therefore ignore all specialised variants, even though the metamodel derives them
+     * from the requested type. This method restores the metamodel semantics by collecting the
+     * widget types actually present in the DOM and keeping the ones whose widget class is - or
+     * extends - the requested one.
+     *
+     * The type discovery is intentionally page-wide even when the caller searches inside a
+     * container afterwards: an extra type in the selector can only ever match zero additional
+     * elements within a narrower scope, whereas a scoped discovery would cost one CDP round trip
+     * per element.
+     *
+     * @param string $widgetType The widget type requested by the test step
+     * @return string A CSS selector, e.g. ".exfw-Input, .exfw-InputComboTable"
+     */
+    public function buildCssSelectorForWidgetType(string $widgetType) : string
+    {
+        $baseSelector = '.exfw-' . $widgetType;
+
+        $typesFound = $this->session->evaluateScript('
+            (function(){
+                var types = {};
+                document.querySelectorAll(\'[class*="exfw-"]\').forEach(function(el){
+                    el.classList.forEach(function(cls){
+                        if (cls.indexOf("exfw-") === 0) {
+                            types[cls.substring(5)] = true;
+                        }
+                    });
+                });
+                return Object.keys(types).join(",");
+            })();
+        ');
+
+        if (! is_string($typesFound) || $typesFound === '') {
+            return $baseSelector;
+        }
+
+        $selectors = [];
+        foreach (explode(',', $typesFound) as $typeFound) {
+            if (UI5FacadeNodeFactory::isWidgetTypeDerivedFrom($typeFound, $widgetType)) {
+                $selectors[] = '.exfw-' . $typeFound;
+            }
+        }
+
+        // Never hand back an empty selector: when nothing has matched yet - e.g. the dialog is still
+        // being rendered - the caller must still be able to WAIT for the plain type selector.
+        return empty($selectors) ? $baseSelector : implode(', ', $selectors);
+    }
+
+    /**
+     * Finds visible widgets of the given type anywhere on the current page.
+     *
+     * WHY it returns a list: the visibility filter used to be applied with array_filter(), which preserves
+     * the original DOM keys. Callers indexing the result directly - e.g. $dataTables[0] in the "the DataTable
+     * contains" step - then hit an undefined key whenever the first matching element happened to be hidden,
+     * producing a PHP warning instead of the intended assertion failure. array_values() restores a real list.
+     *
+     * @param string $widgetType The type of widget to search for (e.g. 'DataTable')
+     * @param string|null $objectAlias Reserved - see the note below, currently NOT applied as a filter
+     * @param int $timeoutInSeconds Maximum time to wait for the widgets to appear
+     *
+     * @return NodeElement[] Visible widget elements matching the search criteria
+     */
+    public function findWidgets(string $widgetType, int $timeoutInSeconds = 10): array
+    {
+        // Let the UI settle FIRST: buildCssSelectorForWidgetType() discovers subtypes by scanning the
+        // live DOM, so resolving it against a DOM that is still rendering would silently collapse the
+        // selector back to the plain type and drop every specialised variant again.
+        $this->waitManager->waitForPendingOperations(true, true, true);
+
+        if ($timeoutInSeconds > 0) {
+            // waitForDOMElements() takes ($cssSelector, $number, $timeoutInSeconds). The timeout used to be
+            // passed as the second argument, so the generated condition became "length >= <timeout>" and the
+            // call waited for as many elements as there were seconds in the timeout - which almost never
+            // becomes true. Every lookup therefore burned the full default timeout before returning, even
+            // when the widget had been in the DOM from the start.
+            $this->waitManager->waitForDOMElements(
+                $this->buildCssSelectorForWidgetType($widgetType),
+                1,
+                $timeoutInSeconds
+            );
+        }
+
+        // Resolve once more after the wait - subtypes may have appeared only during it.
+        $cssSelector = $this->buildCssSelectorForWidgetType($widgetType);
+
+        $visibleWidgets = array_filter($this->getPage()->findAll('css', $cssSelector), function ($widget) {
+            return $widget->isVisible();
+        });
+
+        return array_values($visibleWidgets);
+    }
+
+    /**
+     * Finds widgets of the given type in the currently focused scope, falling back to the whole page.
+     *
+     * WHY the fallback: most steps run without an explicit focus (or right after a navigation reset the
+     * focus stack), and a page-wide result is the useful answer there. Steps that must NOT leave the
+     * container - like "it has :number widget of type" - deliberately use findWidgetNodesInNode()
+     * instead, which has no fallback.
+     *
      * @param string $widgetType
      * @param int $timeoutInSeconds
+     * @param string|null $caption Optional caption of the widget
      * @return FacadeNodeInterface[]
      * @throws \Exception
      */
-    public function findWidgetNodes(string $widgetType, int $timeoutInSeconds = 10): array
+    public function findWidgetNodes(string $widgetType, int $timeoutInSeconds = 10, ?string $caption = null): array
     {
-        // Generate a generalized CSS selector for the specific widget type
-        $cssSelector = ".exfw-{$widgetType}";
-
-        // Wait for all pending operations to complete
+        // Let the UI settle BEFORE scanning the DOM for widget types - a subtype that is still being
+        // rendered would otherwise be missing from the selector.
         $this->waitManager->waitForPendingOperations(true, true, true);
+
         if ($timeoutInSeconds > 0) {
-            $this->waitManager->waitForDOMElements($cssSelector, 1, $timeoutInSeconds);
+            $this->waitManager->waitForDOMElements(
+                $this->buildCssSelectorForWidgetType($widgetType),
+                1,
+                $timeoutInSeconds
+            );
         }
 
-        // Find all widgets on the page matching the CSS selector 
-        $widgets = $this->getFocusedNode()->getNodeElement()->findAll('css', $cssSelector);
+        // Resolve the selector once more AFTER the wait: a subtype may have entered the DOM only during
+        // that wait and would otherwise be absent from the selector used for the actual search.
+        $cssSelector = $this->buildCssSelectorForWidgetType($widgetType);
 
-        // If no widgets found, fallback to page-wide search
-        if (empty($widgets)) {
-            $page = $this->getPage();
-            $widgets = $page->findAll('css', $cssSelector);
-        }
-
-        $nodes = [];
-        foreach ($widgets as $nodeEl) {
-            if (!$nodeEl->isVisible()) {
-                continue;
-            }
-            $nodes[] = UI5FacadeNodeFactory::createFromWidgetType($widgetType, $nodeEl, $this->getSession(), $this);
+        $nodes = $this->findWidgetNodesInScope($this->getFocusedNode()->getNodeElement(), $widgetType, $caption, $cssSelector);
+        if (empty($nodes)) {
+            $nodes = $this->findWidgetNodesInScope($this->getPage(), $widgetType, $caption, $cssSelector);
         }
 
         return $nodes;
     }
 
+    /**
+     * Converts every visible widget of the given type inside the given DOM scope into a facade node.
+     *
+     * WHY: a scoped search (inside a container) and a page-wide search only differ by the element they
+     * start from - selector, visibility filter, node creation and object filtering are identical. Keeping
+     * that shared part here means the object alias filter is implemented once and cannot drift between
+     * the two entry points.
+     *
+     * @param ElementInterface $scope Document or DOM element to search within
+     * @param string $widgetType
+     * @param string|null $caption Optional meta object alias to restrict the result to
+     * @param string|null $cssSelector Pre-resolved selector - pass it when the caller already built one,
+     *        so the DOM type scan is not repeated over CDP for the same step
+     * @return FacadeNodeInterface[]
+     */
+    protected function findWidgetNodesInScope(ElementInterface $scope, string $widgetType, ?string $caption = null, ?string $cssSelector = null) : array
+    {
+        $nodes = [];
+        foreach ($scope->findAll('css', $cssSelector) as $nodeEl) {
+            if (! $nodeEl->isVisible()) {
+                continue;
+            }
+            // Derive the node class from the element's own `.exfw-<Type>` class, NOT from the requested
+            // type. WHY: the selector matches subtypes now, so passing $widgetType here would wrap an
+            // InputComboTable element into a plain UI5InputNode and silently lose its combo behaviour
+            // for every step that reuses the returned nodes.
+            $nodes[] = UI5FacadeNodeFactory::createFromNodeElement($nodeEl, $this->getSession(), $this);
+        }
+
+        return $this->filterNodesByName($nodes, $caption);
+    }
 
     /**
-     * Summary of findTiles
+     * Finds widgets of the given type strictly inside the given container node - never outside it.
+     *
+     * WHY: assertions like "it has :number widget of type" are only meaningful within the container a
+     * previous step focused on. findWidgetNodes() cannot serve them, because it deliberately falls back
+     * to a page-wide search when the focused scope yields nothing - which silently turns "this dialog
+     * contains no inputs" into "the page contains twelve inputs" and lets the assertion pass or fail for
+     * the wrong reason. This method has no fallback: an empty result means the container really is empty.
+     *
+     * @param FacadeNodeInterface $containerNode Node to search within
+     * @param string $widgetType
+     * @param int $number Number of widgets to wait for before asserting
+     * @param int $timeoutInSeconds
+     * @return FacadeNodeInterface[]
+     * @throws \Exception
+     */
+    public function findWidgetNodesInNode(FacadeNodeInterface $containerNode, string $widgetType, int $number = 1, int $timeoutInSeconds = 10) : array
+    {
+        $this->waitManager->waitForPendingOperations(true, true, true);
+
+        $cssSelector = $this->buildCssSelectorForWidgetType($widgetType);
+
+        // The pre-wait is page-wide on purpose: waitForDOMElements() evaluates its jQuery selector against
+        // the document and cannot be restricted to a single element. It is only used to avoid asserting
+        // against a DOM that has not finished rendering - the authoritative count is the scoped search
+        // below. Waiting for 0 elements would be pointless, so it is skipped for a "has no widgets" check.
+        if ($timeoutInSeconds > 0 && $number > 0) {
+            $this->waitManager->waitForDOMElements($cssSelector, $number, $timeoutInSeconds);
+        }
+
+        return $this->findWidgetNodesInScope($containerNode->getNodeElement(), $widgetType, null, $cssSelector);
+    }
+
+    /**
+     * Finds the widgets a step can use as a search scope when it only knows the widget's NAME.
+     *
+     * WHY: steps like "I see button :buttonText at the :tableName" name the container the way the
+     * test author sees it in the app - the table caption or the object behind it - but they never
+     * name its widget TYPE. findWidgetNodes() can already filter by name, yet it insists on a type,
+     * so every such step either had to hard-wire one type (and then miss dialogs and panels) or -
+     * as was the case until now - drop the name and search the whole page, which lets a button
+     * belonging to a completely different widget satisfy the assertion.
+     *
+     * WHY these two types in this order: `Data` covers every table/list variant, which is what
+     * "at the ..." refers to in practice, and `Container` covers dialogs, panels and forms as a
+     * fallback. Both are resolved through the metamodel hierarchy by buildCssSelectorForWidgetType(),
+     * so concrete subtypes (DataTable, DataTableResponsive, Dialog, Form, ...) are included.
+     *
+     * WHY the timeout is dropped after the first pass: the wait inside findWidgetNodes() blocks
+     * until at least one widget of that type exists. Keeping the timeout for the fallback pass
+     * would burn it a second time on every page that simply has no widget of that type.
+     *
+     * @param string $name Caption, object name or object alias of the widget to use as scope
+     * @param int $timeoutInSeconds Maximum time to wait for the widgets to appear
+     * @param string[] $widgetTypes Base widget types to look in, in order of preference
+     * @return FacadeNodeInterface[] Empty when no widget matches the name
+     * @throws \Exception
+     */
+    public function findWidgetNodesByName(string $name, int $timeoutInSeconds = 10, array $widgetTypes = ['Data', 'Container']) : array
+    {
+        foreach ($widgetTypes as $widgetType) {
+            $nodes = $this->findWidgetNodes($widgetType, $timeoutInSeconds, $name);
+            if (! empty($nodes)) {
+                return $nodes;
+            }
+            $timeoutInSeconds = 0;
+        }
+
+        return [];
+    }
+
+    /**
+     * Returns all visible tiles of the current page.
+     *
+     * WHY it goes through the scope helper: tiles are page-level by definition, so the focused-scope
+     * logic of findWidgetNodes() does not apply, and building the nodes through the factory keeps tile
+     * node resolution identical to every other widget type instead of hard-wiring UI5TileNode here.
      *
      * @return \axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5TileNode[]
      */

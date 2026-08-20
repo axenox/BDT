@@ -74,12 +74,25 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
     }
 
     /**
+     * Returns the rendered caption of this widget node.
+     *
+     * WHY the guards: UI5 exposes a caption via `aria-label` only for some controls, and where it does,
+     * the attribute often carries the caption plus the debug block on following lines. strstr() returns
+     * FALSE both when the attribute is absent and when it contains no newline at all, so returning its
+     * result directly violated the declared string return type and raised a TypeError for every control
+     * with a single-line or missing label - which is the majority of them.
+     * 
      * {@inheritDoc}
      * @see FacadeNodeInterface::getCaption()
      */
     public function getCaption(): string
     {
-        return strstr($this->getNodeElement()->getAttribute('aria-label'), "\n", true);
+        $label = $this->getNodeElement()->getAttribute('aria-label');
+        if ($label === null || $label === '') {
+            return '';
+        }
+        $firstLine = strstr($label, "\n", true);
+        return trim($firstLine === false ? $label : $firstLine);
     }
 
     public function getWidgetType() : ?string
