@@ -7,16 +7,28 @@ use exface\Core\Interfaces\Debug\LogBookInterface;
 use Behat\Mink\Element\NodeElement;
 use PHPUnit\Framework\Assert;
 
-class UI5DialogNode extends UI5AbstractNode
+class UI5DialogNode extends UI5ContainerNode
 {
+    /**
+     * Returns the title text shown in this dialog's header.
+     *
+     * WHY an own implementation: a sap.m.Dialog does not carry its title in `aria-label` - it points to
+     * a separate <h1 id="<dialogId>-title"> via `aria-labelledby`. The inherited aria-label based
+     * caption therefore always came back empty for dialogs, which made every log line and every step
+     * that identifies a dialog by its title unusable.
+     */
     public function getCaption() : string
     {
-        return strstr($this->getNodeElement()->getAttribute('aria-label'), "\n", true);;
-    }
+        $dialogId = $this->getNodeElement()->getAttribute('id');
+        if ($dialogId !== null && $dialogId !== '') {
+            $title = $this->getNodeElement()->find('css', '#' . $dialogId . '-title');
+            if ($title !== null) {
+                return trim($title->getText());
+            }
+        }
 
-    public function capturesFocus() : bool
-    {
-        return true;
+        // Fall back to the generic aria-label based caption for dialogs rendered without a title control
+        return parent::getCaption();
     }
     
     public function checkWorksAsExpected(LogBookInterface $logbook) : TestResultInterface
