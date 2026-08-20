@@ -1,7 +1,9 @@
 <?php
 namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
+use axenox\BDT\Behat\Common\ErrorManager;
 use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ContainerNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5MenuButtonNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5PageNode;
@@ -72,11 +74,23 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * retries apart. Irrelevant for a single lane.
      */
     private const VISIT_RETRY_JITTER_MAX_MS = 1000;
-    private $browser;
-    private $scenarioName;
+    
+    /**
+     * WHY NULLABLE WITH AN EXPLICIT DEFAULT: a typed property declared without a default value is
+     * "uninitialized", not null. Reading it before the first assignment raises a fatal Error, so the
+     * "has the browser been created yet?" guards in beforeScenario(), prepareBeforeStep() and
+     * completeAfterStep() would crash on exactly the case they exist to protect against - the very
+     * first step of a run, before iLogInToPage()/visitPath() ever built a UI5Browser. It must also be
+     * genuinely nullable because browserLogin() resets it to null to force a rebuild after a stale
+     * session was detected.
+     *
+     * @var UI5Browser|null
+     */
+    private ?UI5Browser $browser = null;
+    private string $scenarioName;
 
-    private $workbench = null;
-    private $debug = false;
+    private ?Workbench $workbench = null;
+    private bool $debug = false;
     private string $locale = 'de_DE';
     private static bool $isDryRun = false;
     private ?string $lastLoginUrl = null;
@@ -299,7 +313,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function prepareBeforeStep(BeforeStepScope $scope): void
     {
-        if (!$this->browser) {
+        if ($this->browser === null) {
             return;
         }
 
@@ -364,7 +378,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
 
         // Skip if browser hasn't been initialized yet
-        if (!$this->browser) {
+        if ($this->browser === null) {
             return;
         }
 
@@ -444,7 +458,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         $this->scenarioName = $scope->getScenario()->getTitle();
 
-        if ($this->browser) {
+        if (!empty($this->browser)) {
             try {
                 $this->browser->initializeXHRMonitoring();
             } catch (\Throwable $e) {
@@ -539,7 +553,16 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
 
     /**
-     * Verifies that the page content is accessible and not empty
+     * Checks that a page actually loaded and is not blank.
+     *
+     * Use this as a simple sanity check right after opening or navigating to a page. It
+     * confirms the browser received real content instead of an empty response. It does not
+     * look for any specific text or widget - only that "something" is there.
+     *
+     * Usage example:
+     *
+     *   Given I log in to the page "exface.core.logs.html" as "Support"
+     *   Then I should see the page
      *
      * @Then I should see the page
      */
@@ -553,14 +576,26 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Log in to a URL with a specific role and locale
-     * 
-     * Examples:
-     * - Given I log in to the page "exface.core.logs.html" as "Support"
-     * - Given I log in to the page "exface.core.logs.html" as "Support, Debugger"
-     * - Given I log in to the page "exface.core.logs.html" as "Support" with locale "de_DE"
-     * - Given I log in to the page "exface.core.logs.html" as "exface.Core.SUPERUSER"
-     * 
+     * Opens a page and logs in, optionally as a specific user role and in a specific language.
+     *
+     * This is usually the very first step of a scenario. It creates a temporary test user,
+     * assigns the role(s) you name, opens the given page and fills in the login form for you.
+     * Everything after this step runs as that user, so you can check what this kind of user is
+     * allowed to see and do.
+     *
+     * - The page is given as its alias plus ".html", e.g. "exface.core.logs.html".
+     * - "as :userRole" lets you test permissions. It needs to be alias with app alias of 
+     *   the role like "exface.Core.SUPERUSER" or name of the role. You can pass several 
+     *   roles separated by commas.
+     * - "with locale :locale" switches the language/formatting, e.g. "de_DE" or "en_US".
+     *
+     * Usage examples:
+     *
+     *   Given I log in to the page "exface.core.logs.html" as "Support"
+     *   Given I log in to the page "exface.core.logs.html" as "Support, Debugger"
+     *   Given I log in to the page "exface.core.logs.html" as "Support" with locale "de_DE"
+     *   Given I log in to the page "exface.core.logs.html" as "exface.Core.SUPERUSER"
+     *
      * @Given I log in to the page :url
      * @Given I log in to the page :url as :userRole
      * @Given I log in to the page :url as :userRole with locale :locale
@@ -654,8 +689,18 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Navigate to a specific page URL
-     * Initializes the UI5Browser with the current session
+     * Opens a page without logging in.
+     *
+     * Use this to jump to another page inside the same app once you are already logged in
+     * (for example to move from a list page to a detail page). Give the page alias with or
+     * without the ".html" ending - both work. If you still need to log in, use
+     * "I log in to the page ..." instead.
+     *
+     * Usage example:
+     *
+     *   Given I log in to the page "my.app.start.html" as "Support"
+     *   When I visit page "my.app.orders"
+     *   Then I should see the page
      *
      * @Given I visit page :url
      *
@@ -677,29 +722,42 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Verifies presence of a specific number of widgets of a given type
-     * Optionally focuses on a specific object alias
-     * Highlights matching widgets for visual debugging
+     * Counts how many widgets of a certain type are on the page and checks the number matches.
+     *
+     * A "widget" is any building block of the user interface - a table, an input field, a form,
+     * a button bar and so on. Use this step to make sure the page shows exactly as many of a
+     * given widget type as you expect. You can narrow the count down with "with :caption" - the name
+     * of the widget itself, i.e. its caption or the data object behind it.
+     *
+     * As a side effect, when exactly one matching widget is found it becomes the "focused"
+     * widget, so follow-up steps like "it has filters:" or "I enter ... in filter ..." act on it.
+     * Matching widgets are briefly highlighted in the browser to make debugging easier.
+     *
+     * Usage examples:
+     *
+     *   Then I see 1 widget of type "DataTable"
+     *   Then I see 3 widgets of type "Input"
+     *   Then I see 1 widget of type "DataTable" with "Caption of the Datatable"
      *
      * @Then I see :number widget of type ":widgetType"
      * @Then I see :number widgets of type ":widgetType"
-     * @Then I see :number widget of type ":widgetType" with ":objectAlias"
-     * @Then I see :number widgets of type ":widgetType" with ":objectAlias"
+     * @Then I see :number widget of type ":widgetType" with ":caption"
+     * @Then I see :number widgets of type ":widgetType" with ":caption"
      *
      * @param int $number Expected number of widgets
      * @param string $widgetType Type of widget to look for
-     * @param string|null $objectAlias Optional object alias to filter widgets
+     * @param string|null $caption Optional caption of the widget or name/alias of its data object
      * @throws \Exception
      */
-    public function iSeeWidgets(int $number, string $widgetType, string $objectAlias = null): void
+    public function iSeeWidgets(int $number, string $widgetType, string $caption = null): void
     {
-
-        // Wait for any pending operations to complete
-        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
-
-        // Fetch widgets based on type and optional alias
-        $widgetNodes = $this->getBrowser()->findWidgetNodes($widgetType, 15);
-
+        // Fetch widgets of the requested type, restricted to the given name if the step supplied one.
+        // The name matches the widget's OWN identity - its caption, or the name/alias of the data object
+        // behind it - not the area it sits in. WHY it matters that this is applied at all: the name used
+        // to be accepted by the step and then dropped, so the "with :caption" variant counted widgets of
+        // every object on the page and could report a pass for data the scenario never meant to check.
+        $widgetNodes = $this->getBrowser()->findWidgetNodes($widgetType, 15, $caption);
+        
         // Only reset the focus stack when this step actually establishes a new focus.
         // WHY: this step is primarily an assertion. Clearing the stack unconditionally while pushing
         // a new focus only when exactly one focusable widget is found means that any "I see N widgets"
@@ -717,24 +775,21 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             }
         }
 
-        // Assert the number of widgets
+        // Assert the number of widgets.
+        // The message names the filter "name" rather than "alias", because filterNodesByName() accepts
+        // the caption and the object name just as well - reporting it as an alias sends whoever reads the
+        // failure looking for a wrong alias when the caption they used simply did not match.
         Assert::assertCount(
             $number,
             $widgetNodes,
             sprintf(
-                "Expected %d widget(s) of type '%s' with alias '%s', but found %d",
+                "Expected %d widget(s) of type '%s' with name '%s', but found %d",
                 $number,
                 $widgetType,
-                $objectAlias ?? 'N/A',
+                $caption ?? 'N/A',
                 count($widgetNodes)
             )
         );
-
-        // // Optionally highlight the first widget for debugging
-        // if (!empty($widgets)) {
-        //     echo "Test Girdi\n";
-        //     $this->browser->highlightWidget($widgets[0], $widgetType, 0);
-        // }
 
         // Optionally highlight widgets for debugging
         if (!empty($widgetNodes)) {
@@ -748,43 +803,57 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Verifies that the currently focused element contains a specified number of widgets
-     * of a given type. Used after focusing on a container element.
+     * Counts widgets of a type inside the area you are currently looking at.
+     *
+     * This is the "zoomed-in" version of "I see :number widget of type ...". It only counts
+     * widgets within the currently focused container (for example a dialog you just opened),
+     * instead of the whole page. Open a dialog or focus a widget first, then use this step to
+     * verify what that container contains.
+     *
+     * Usage example:
+     *
+     *   When I click button "Details"
+     *   Then I see 1 widget of type "Dialog"
+     *   Then it has 2 widget of type "Input"
      *
      * @Then it has :number widget of type ":widgetType"
+     * @Then it has :number widgets of type ":widgetType"
      *
      * @param int $number Expected number of widgets
      * @param string $widgetType Type of widget to look for
      */
     public function itHasWidgetsOfType(int $number, string $widgetType): void
     {
-        // If dialog exists, set dialog as focus point
-        $dialogWidgets = $this->getBrowser()->findWidgets('Dialog');
+        $focusedNode = $this->getBrowser()->getFocusedNode();
 
-        if (!empty($dialogWidgets)) {
-            // If dialog is found, use null as object alias to search within the dialog
-            $widgetNodes = $this->getBrowser()->findWidgets($widgetType, null);
-        } else {
-            // If no dialog exists, search on the entire page
-            $widgetNodes = $this->getBrowser()->findWidgets($widgetType, null);
-        }
-
-        // Check the number of found widgets
-        Assert::assertEquals(
-            $number,
-            count($widgetNodes),
+        Assert::assertInstanceOf(
+            UI5ContainerNode::class,
+            $focusedNode,
             sprintf(
-                "Expected %d widgets of type '%s', found %d",
+                'Cannot look for widgets inside the focused element: expected a container, but the focus is on a "%s". '
+                . 'Focus a container (dialog, form, panel) before using this step.',
+                $focusedNode->getWidgetType()
+            )
+        );
+
+        $widgetNodes = $this->getBrowser()->findWidgetNodesInNode($focusedNode, $widgetType, $number, 15);
+
+        Assert::assertCount(
+            $number,
+            $widgetNodes,
+            sprintf(
+                'Expected %d widget(s) of type "%s" inside the focused "%s", but found %d',
                 $number,
                 $widgetType,
+                $focusedNode->getWidgetType(),
                 count($widgetNodes)
             )
         );
 
-        // Highlight found widgets (optional, for debugging)
+        // Highlight the first few matches for visual debugging only - has no effect on the assertion above
         foreach (array_slice($widgetNodes, 0, 3) as $index => $node) {
             $this->getBrowser()->highlightWidget(
-                $node,
+                $node->getNodeElement(),
                 $widgetType,
                 $index
             );
@@ -792,8 +861,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Fills multiple form fields with values from a table
-     * The table should have columns 'widget_name' and 'value'
+     * Fills in several input fields at once, using a table of field names and values.
+     *
+     * Handy for forms: instead of one "I type ... into ..." step per field, you list all the
+     * fields and their values in a Gherkin table. Each field is found by its visible label
+     * (caption). The table must have two columns named "widget_name" and "value".
+     *
+     * Usage example:
+     *
+     *   Then I fill the following fields:
+     *     | widget_name | value          |
+     *     | First name  | John           |
+     *     | Last name   | Doe            |
+     *     | E-mail      | john@doe.test  |
      *
      * @Then I fill the following fields:
      *
@@ -816,8 +896,17 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Verifies that a focused widget (typically a form or filter group) contains the
-     * specified filters by name
+     * Checks that the widget you are looking at(focused) offers a given set of filters.
+     *
+     * Filters are the search fields above a table or list that let a user narrow down the data.
+     * Use this step to confirm that the expected filters are available to the user. Focus a
+     * table or filter area first (for example with "I look at table 1"). The filter names are
+     * given as a comma-separated list and each one is briefly highlighted in the browser.
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   Then it has filters: Name, Created on, Status
      *
      * @Then it has filters: :filterList
      *
@@ -868,8 +957,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Filter input handling for UI5 applications
-     * Supports both standard input fields and special UI5 components like ComboBox
+     * Types a value into a named filter of the table you are looking at.
+     *
+     * This is how you "search" during a test: pick a filter by its label and give it a value.
+     * It works both for plain text filters and for special ones like drop-downs (ComboBox),
+     * where it will select the matching entry. Focus a table first (e.g. "I look at table 1").
+     * Usually you follow this with a step that clicks the search/apply button or checks results.
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   And I enter "Berlin" in filter "City"
+     *   And I click button "Search"
+     *   Then I see "Berlin" in column "City"
      *
      * @When I enter :value in filter :filterName
      *
@@ -897,7 +997,20 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Verifies if specific text appears in a named column of a DataTable
+     * Checks that a given text appears in a named column of the table you are looking at.
+     *
+     * Use this after searching or filtering to confirm the results contain what you expect.
+     * Note: every visible row of that column must match the text, so this is best used when
+     * you have filtered the table down to matching rows. To check that just one row contains a
+     * value, use "The column :columnName contains value :value" instead. Focus a table first
+     * (e.g. "I look at table 1").
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   And I enter "Berlin" in filter "City"
+     *   And I click button "Search"
+     *   Then I see "Berlin" in column "City"
      *
      * @Then I see ":text" in column ":columnName"
      *
@@ -1028,10 +1141,17 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Asserts the given filters are rendered in the stated left-to-right order.
+     * Checks that filters appear left-to-right in the exact order you list.
      *
-     * Exists so a scenario can pin the visual filter order after personalisation or a
-     * layout change, which the presence-only "it has filters:" step cannot detect.
+     * Unlike "it has filters:", which only checks that filters exist, this step pins down their
+     * order on screen - useful after a layout change or personalisation. The table may contain
+     * more filters than you list; this step only checks that the ones you name appear in the
+     * stated order relative to each other. Focus a table first (e.g. "I look at table 1").
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   Then the filters are displayed in the following order Name, City, Status
      *
      * @Then the filters are displayed in the following order :filterList
      *
@@ -1045,10 +1165,17 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Asserts the given columns are rendered in the stated left-to-right order.
+     * Checks that table columns appear left-to-right in the exact order you list.
      *
-     * Exists so a scenario can pin the visual column order (e.g. after a personalisation
-     * change), which the presence-only "it has columns:" step cannot detect.
+     * Unlike "it has columns:", which only checks that columns exist, this step pins down their
+     * order on screen - useful after a personalisation or layout change. The table may contain
+     * more columns than you list; this step only checks that the ones you name appear in the
+     * stated order relative to each other. Focus a table first (e.g. "I look at table 1").
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   Then the columns are displayed in the following order Name, City, Created on
      *
      * @Then the columns are displayed in the following order :columnList
      *
@@ -1062,10 +1189,17 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Asserts that none of the listed columns are rendered in the focused table.
+     * Checks that the listed columns are NOT shown in the table you are looking at.
      *
-     * Exists to verify that a role/personalisation actually hides columns - the positive
-     * "it has columns:" step cannot express the negative expectation.
+     * Use this to confirm that certain columns are hidden - for example because the logged-in
+     * user's role is not allowed to see them, or a personalisation removed them. Focus a table
+     * first (e.g. "I look at table 1"). List the columns you expect to be absent, separated by
+     * commas.
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   Then I do not see columns Salary, Bonus
      *
      * @Then I do not see columns :columnList
      * @Then I do not see column :columnList
@@ -1090,10 +1224,16 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Asserts that none of the listed filters are rendered in the focused widget.
+     * Checks that the listed filters are NOT shown in the widget you are looking at.
      *
-     * Exists to verify that a role/personalisation actually hides filters - the positive
-     * "it has filters:" step cannot express the negative expectation.
+     * The counterpart of "it has filters:". Use it to confirm that certain filters are hidden -
+     * for example because the current user's role should not have them. Focus a table first
+     * (e.g. "I look at table 1"). List the filters you expect to be absent, separated by commas.
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   Then I do not see filters Internal note, Cost center
      *
      * @Then I do not see filters :filterList
      * @Then I do not see filter :filterList
@@ -1118,13 +1258,17 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Asserts that at least one row of the named column holds the given value.
+     * Checks that every row of a named column contains the given value.
      *
-     * WHY EXISTENCE (one row) AND NOT ALL ROWS: this reads as "the column contains value X",
-     * i.e. the value appears somewhere in that column. That is deliberately different from
-     * "I see :text in column :columnName", which delegates to verifyTableContent() and
-     * requires EVERY row to match. Keeping the two semantics separate lets authors express
-     * "some row has this" without forcing a fully homogeneous column.
+     * Use this when you want to confirm a value shows up somewhere in a column, without
+     * requiring every row to match. This is the "at least one row" counterpart to
+     * "I see :text in column :columnName" (which requires all rows to match). Focus a table
+     * first (e.g. "I look at table 1").
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   Then The column "Status" contains value "Open"
      *
      * @Then The column :columnName contains value :value
      *
@@ -1150,9 +1294,18 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Clicks a button with the specified caption
-     * Searches for a button within the currently focused widget or page
-     * Uses multiple search strategies to find the button
+     * Clicks a button by the text shown on it.
+     *
+     * This is the everyday "press this button" step. It first looks inside the widget you are
+     * currently focused on and then, if needed, across the whole page, matching either the
+     * button's visible text or its tooltip. If the button is disabled (greyed out) the step
+     * fails with a clear message instead of silently doing nothing.
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   And I select table row 1
+     *   And I click button "Edit"
      *
      * @When I click button ":caption"
      *
@@ -1310,7 +1463,15 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Clicks a tab with the specified caption
+     * Switches to a tab by the text on its header.
+     *
+     * Many pages and dialogs group content into tabs. Use this step to open a specific tab by
+     * its caption before checking or filling what is inside it.
+     *
+     * Usage example:
+     *
+     *   When I click tab "Addresses"
+     *   Then it has 2 widget of type "Input"
      *
      * @When I click tab ":caption"
      *
@@ -1323,7 +1484,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Enters text into an input widget identified by its caption
+     * Types a value into a single input field, found by its label.
+     *
+     * Use this for one field at a time. The field is located by the caption shown next to it.
+     * To fill many fields at once, use "I fill the following fields:" instead.
+     *
+     * Usage example:
+     *
+     *   When I type "John" into "First name"
      *
      * @When I type ":value" into ":caption"
      *
@@ -1341,8 +1509,17 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Focus a widget of a given type at a specific position
-     * Used to establish context for subsequent "it has..." steps
+     * Picks a widget of a given type so that later "it has..." steps act on it.
+     *
+     * Think of this as pointing at one specific element on the page. Once "looked at", that
+     * widget becomes the context for follow-up checks like "it has filters:" or
+     * "it has a column ...". Use "the first" for the first one, or "no. N" to pick the Nth
+     * widget of that type (counting from 1). The chosen widget is highlighted.
+     *
+     * Usage examples:
+     *
+     *   When I look at the first "DataTable"
+     *   When I look at "Form" no. 2
      *
      * @When I look at the first ":widgetType"
      * @When I look at ":widgetType" no. :number
@@ -1350,44 +1527,116 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $widgetType Type of widget to focus
      * @param int $number Position of the widget (1-based index)
      * @return void
+     * @throws RuntimeException If the page has fewer widgets of that type than requested
      * @throws \Exception
      */
     public function iLookAtWidget(string $widgetType, int $number = 1): void
     {
-        // Find all widgets of the specified type
-        $widgetNodes = $this->getBrowser()->findWidgetNodes($widgetType,15);
-        // Get the widget at the specified position (1-based index)
-        $node = $widgetNodes[$number - 1];
-        Assert::assertNotNull($node, 'Cannot find "' . $widgetType . '" no. ' . $number . '!');
+        // WHY this method owns the whole "focus the Nth widget of a type" logic: "I look at
+        // table :index" used to duplicate it for the single type DataTable, with its own range
+        // check and its own highlight call. The two copies drifted - the table variant reported
+        // how many tables actually exist while this one read an out-of-range array offset, which
+        // raises a PHP warning and then asserts on null, telling the author "cannot find" instead
+        // of "there are only N". One implementation keeps both notations behaving identically.
+        // WHY the explicit timeout: without it the lookup falls back to the shorter default and
+        // becomes flaky on slow-rendering pages - exactly the pages parallel runs produce.
+        $widgetNodes = $this->getBrowser()->findWidgetNodes($widgetType, 15);
+        Assert::assertNotEmpty(
+            $widgetNodes,
+            'No widget of type "' . $widgetType . '" found on the page.'
+        );
+
+        // Range check before the array access. Reading $widgetNodes[$number - 1] on an out of
+        // range index emits a warning and yields null, which turns a precise "only N available"
+        // message into a misleading "cannot find".
+        $index = $number - 1;
+        if (! isset($widgetNodes[$index])) {
+            throw new RuntimeException(
+                'Widget "' . $widgetType . '" no. ' . $number . ' not found. Only '
+                . count($widgetNodes) . ' widget(s) of this type available on the page.'
+            );
+        }
+
+        $node = $widgetNodes[$index];
+        // Highlight for visual debugging only - has no effect on the focus below
+        $this->getBrowser()->highlightWidget($node->getNodeElement(), $widgetType, $index);
         // Set focus to this widget
         $this->getBrowser()->focus($node);
     }
 
     /**
-     * Verify the existence of a button with specific text
+     * Checks that one or more buttons are visible on the page.
      *
-     * This method supports multiple scenarios for button verification:
-     * - Check button existence by text
-     * - Check button existence in a specific table/section
+     * Use this to confirm the user has access to certain actions. You can name a single button
+     * or several separated by commas. Add "at the :tableName" to look for the buttons only in
+     * the toolbar of the named table (or dialog/panel) - name it the way the app shows it, or
+     * by the data object behind it. Each found button is briefly highlighted.
      *
+     * Usage examples:
+     *
+     *   Then I see button "Save"
+     *   Then I see buttons "Save, Cancel, Delete"
+     *   Then I see button "Delete" at the "Materialbedarfsliste"
+     *
+     * @Then I see button :buttonText
+     * @Then I see buttons :buttonText
+     * @Then I see a button with text :buttonText
+     * @Then I see button :buttonText at the :tableName
+     * @Then I see buttons :buttonText at the :tableName
      * @Then I should see button :buttonText
      * @Then I should see buttons :buttonText
      * @Then I should see a button with text :buttonText
      * @Then I should see button :buttonText at the :tableName
      *
      * @param string $buttonText The text of the button to find
-     * @param string|null $tableName Optional table/section name
+     * @param string|null $tableName Optional caption or object of the widget to search in
      * @throws \Exception If button is not found
      */
-    public function iShouldSeeButton(string $buttonText, string $tableName = null)
+    public function iSeeButton(string $buttonText, string $tableName = null)
     {
-        $buttons = $this->explodeList($buttonText);
-        foreach ($buttons as $buttonText) {
-            // Attempt to find the button using the UI5Browser instance
-            $button = $this->getBrowser()->findButtonByCaption($buttonText);
+        // Resolve the search scope ONCE, before the button loop - the scope depends on the step,
+        // not on the individual button, and resolving it per button would repeat the DOM type scan
+        // for every entry of a comma separated list.
+        // WHY at all: the "at the :tableName" wording used to be parsed and then thrown away, so the
+        // step searched the whole page. A button that exists somewhere else entirely - e.g. in the
+        // toolbar of another table or in a still-open dialog - then satisfied an assertion that was
+        // written to check exactly one widget.
+        $scopeNodes = [];
+        $tableName = $tableName === null ? null : trim($tableName);
+        if ($tableName !== null && $tableName !== '') {
+            $scopeNodes = $this->getBrowser()->findWidgetNodesByName($tableName, 15);
+            Assert::assertNotEmpty(
+                $scopeNodes,
+                'Cannot find a widget named "' . $tableName . '" to look for buttons in.'
+            );
+        }
 
-            // Assert that the button was found
-            Assert::assertNotNull($button, "Button with text '{$buttonText}' not found.");
+        $buttons = $this->explodeList($buttonText);
+        // WHY a separate loop variable: reusing $buttonText here would overwrite the parameter and
+        // make every message built after the first iteration report the wrong step arguments.
+        foreach ($buttons as $buttonCaption) {
+            if (empty($scopeNodes)) {
+                $button = $this->getBrowser()->findButtonByCaption($buttonCaption);
+            } else {
+                // Several widgets may legitimately carry the same name - a table and the table inside
+                // the dialog it opens, for example. Accept the first scope that actually contains the
+                // button instead of failing on ambiguity: the assertion stays strict, because a button
+                // outside ALL matching widgets still fails.
+                $button = null;
+                foreach ($scopeNodes as $scopeNode) {
+                    $button = $this->getBrowser()->findButtonByCaption($buttonCaption, $scopeNode->getNodeElement());
+                    if ($button !== null) {
+                        break;
+                    }
+                }
+            }
+
+            Assert::assertNotNull(
+                $button,
+                $tableName === null || $tableName === ''
+                    ? "Button with text '{$buttonCaption}' not found."
+                    : "Button with text '{$buttonCaption}' not found at '{$tableName}'."
+            );
 
             // Highlight the button for debugging purposes
             $this->getBrowser()->highlightWidget($button, 'Button', 0);
@@ -1395,7 +1644,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Checks that a column of an editable spreadsheet is read-only (not editable).
+     *
+     * A DataSpreadSheet is the Excel-like editing grid used in some pages. Use this step to
+     * confirm that a given column cannot be edited by the user - every cell in that column must
+     * be marked read-only, otherwise the step fails and tells you which row was editable.
+     *
+     * Usage example:
+     *
+     *   Then the column "ID" in data spreadsheet should be disabled
+     *
      * @Then the column :columnName in data spreadsheet should be disabled
+     *
+     * @param string $columnName Caption of the spreadsheet column to check
      */
     public function theColumnInDataSpreadsheetShouldBeDisabled($columnName)
     {
@@ -1435,14 +1696,29 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Fills in cells of one row of an editable spreadsheet.
      *
-     * Fills multiple form fields with values from a table
-     * The table should have columns 'Column' and 'Value'
+     * Works on a DataSpreadSheet (the Excel-like editing grid). Choose the row by number, or
+     * use "the last row" to target the last one (handy after adding a new empty row). Provide
+     * a Gherkin table with two columns, "Column" and "Value", listing which cell to fill in
+     * that row and with what. Drop-down cells are handled by selecting the matching entry.
+     *
+     * Usage examples:
+     *
+     *   When I fill the row 2 of data spreadsheet with:
+     *     | Column   | Value      |
+     *     | Name     | Widget A   |
+     *     | Quantity | 10         |
+     *
+     *   When I fill the last row of data spreadsheet with:
+     *     | Column   | Value      |
+     *     | Name     | Widget B   |
      *
      * @When I fill the row :rowIndex of data spreadsheet with:
      * @When I fill the last row of data spreadsheet with:
      *
-     *
+     * @param TableNode $table Rows with "Column" and "Value" pairs to fill in
+     * @param int|string|null $rowIndex 1-based row number, or null for the last row
      */
     public function iFillTheNthRowOfDataSpreadsheetWith(TableNode $table, $rowIndex = null)
     {
@@ -1529,8 +1805,17 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Verifies that the currently focused widget has a column with the specified caption
-     * Typically used with DataTable widgets
+     * Checks that the table you are looking at has one or more named columns.
+     *
+     * Use this to confirm expected columns are present. Name a single column or several
+     * separated by commas. Focus a table first (e.g. "I look at table 1"). Each found column
+     * is briefly highlighted.
+     *
+     * Usage examples:
+     *
+     *   When I look at table 1
+     *   Then it has a column "Name"
+     *   Then it has columns "Name, City, Status"
      *
      * @Then it has a column ":caption"
      * @Then it has columns ":caption"
@@ -1555,24 +1840,31 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Verifies that any DataTable on the page contains the specified text
-     * Searches all cells in the first DataTable found
+     * Checks that some text appears anywhere in the table you are currently looking at.
+     *
+     * A quick, broad check: it scans all cells of the focused table and passes if the text
+     * turns up in any of them. Unlike "I see ... in column ...", it does not care which
+     * column the text is in - but it does need a table to be focused first, e.g. with
+     * "I look at table 1". Without a focused table the step fails with a focus error rather
+     * than a "text not found" error.
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   Then the DataTable contains "Berlin"
      *
      * @Then the DataTable contains :text
      *
-     * @param string $text Text to search for in the DataTable
+     * @param string $text Text to search for in the focused DataTable
      */
     public function theDataTableContains(string $text): void
     {
         // Find all DataTable widgets on the page
-        $dataTables = $this->getBrowser()->findWidgets('DataTable');
-        Assert::assertNotEmpty($dataTables, 'No DataTable found on page');
-        // Get the first DataTable found
-        $dataTable = $dataTables[0];
+        $dataTable = $this->getFocusedDataTableNode();
 
         // Search for text in all table cells
         $found = false;
-        $cells = $dataTable->findAll('css', 'td');
+        $cells = $dataTable->getNodeElement()->findAll('css', 'td');
         // Check each cell for the specified text
         foreach ($cells as $cell) {
             if (strpos($cell->getText(), $text) !== false) {
@@ -1585,8 +1877,18 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Verifies that at least one data item is present in a DataTable
-     * Useful for checking if filtering operations returned results
+     * Checks that the table you are looking at shows at least one row of data.
+     *
+     * Useful after a search or filter to confirm results came back. An explicit "no data"
+     * message also counts as a valid, expected state (empty result). Focus a table first
+     * (e.g. "I look at table 1").
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   And I enter "Berlin" in filter "City"
+     *   And I click button "Search"
+     *   Then I see at least one data item
      *
      * @Then I see at least one data item
      */
@@ -1655,11 +1957,26 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Opens several pages in a row and checks that each one loads.
+     *
+     * A convenient smoke test: give a Gherkin table of page URLs (column named "url") and this
+     * step visits each one and verifies it is not blank. Often paired with
+     * "all pages should load successfully" to confirm none of them produced errors.
+     *
+     * Usage example:
+     *
+     *   When I visit the following pages:
+     *     | url                  |
+     *     | my.app.orders.html   |
+     *     | my.app.customers.html|
+     *   Then all pages should load successfully
+     *
      * @When I visit the following pages:
+     *
+     * @param TableNode $table Table of page URLs to visit (column "url")
      */
     public function iVisitTheFollowingPages(TableNode $table): void
     {
-        //TODO: this also needs to add visited pages to the DatabaseFormatter
         $urls = $table->getHash();
         $currentSession = $this->getSession();
 
@@ -1669,7 +1986,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         foreach ($urls as $urlData) {
             $url = $urlData['url'];
-
 
             // Combine base URL with page URL
             $fullUrl = rtrim($baseUrl, '/') . '/' . ltrim($url, '/');
@@ -1692,6 +2008,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Checks that the pages just visited loaded without any errors.
+     *
+     * Use this after "I visit the following pages:". It fails if any error was detected while
+     * loading, or if the UI framework did not finish rendering properly. A good final guard for
+     * a page smoke test.
+     *
+     * Usage example:
+     *
+     *   When I visit the following pages:
+     *     | url                |
+     *     | my.app.orders.html |
+     *   Then all pages should load successfully
+     *
      * @Then all pages should load successfully
      */
     public function allPagesShouldLoadSuccessfully(): void
@@ -1705,12 +2034,21 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         );
 
         if (!$isStable) {
-            throw new \RuntimeException('UI5 framework is not in stable state after page navigation');
+            throw new RuntimeException('UI5 framework is not in stable state after page navigation');
         }
     }
 
     /**
-     * Focuses on a specific table by index
+     * Picks one of several tables on the page by its position.
+     *
+     * When a page shows more than one table, use this to say which one the following steps
+     * (selecting rows, checking columns, entering filters, etc.) should work on. Tables are
+     * counted from 1 in the order they appear on the page. The chosen table is highlighted.
+     *
+     * Usage example:
+     *
+     *   When I look at table 2
+     *   And I select table row 1
      *
      * @When I look at table :index
      *
@@ -1719,33 +2057,36 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iLookAtTable(int $index): void
     {
-
-        // Adjust to 0-based index for internal use
-        $tableIndex = $index - 1;
-        $tables = $this->getBrowser()->findWidgetNodes('DataTable');
-        Assert::assertNotEmpty($tables, 'No DataTable found on page');
-
-        if (!isset($tables[$index - 1])) {
-            throw new RuntimeException("Table {$index} not found. Only " . count($tables) . " tables available.");
-        }
-        $table = $tables[$tableIndex];
-        $this->getBrowser()->highlightWidget($table->getNodeElement(), 'DataTable', $tableIndex);
-        // Focus the selected table
-        $this->getBrowser()->focus($table);
+        // WHY this is a one liner: "look at table N" is nothing but "look at DataTable no. N".
+        // Keeping a second implementation here meant the range check, the highlight call and the
+        // lookup timeout had to be maintained twice and had already diverged. This step stays as
+        // a separate annotation because the wording is the one scenario authors use for tables,
+        // but the behaviour is now guaranteed to be identical to the generic notation.
+        $this->iLookAtWidget('DataTable', $index);
     }
 
     /**
-     * Selects a specific row in a table
+     * Selects (ticks) a row in the table you are looking at.
+     *
+     * Selecting a row is often required before pressing a button that acts on it, such as
+     * "Edit" or "Delete". Rows are counted from 1. Focus a table first (e.g. "I look at
+     * table 1"). The step waits for the UI to react and then confirms the row is selected.
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   And I select table row 1
+     *   And I click button "Edit"
      *
      * @When I select table row :rowNumber
+     *
+     * @param int $rowNumber The 1-based number of the row to select
      */
     public function iSelectTableRow(int $rowNumber)
     {
         // Use the focused table (if there is no error, throw an error)
         /** @var \axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataTableNode $table */
-        $table = $this->getBrowser()->getFocusedNode();
-        Assert::assertNotNull($table, "No table is currently focused. Call 'I look at table' first.");
-
+        $table = $this->getFocusedDataTableNode();
         $table->selectRow($rowNumber);
 
         // Wait for UI 
@@ -1755,69 +2096,92 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Clicks a button belonging to a specific table on the page.
+     *
+     * Many pages show several tables whose toolbars have buttons with the same text
+     * ("Export", "Edit", ...). The plain "I click button" step cannot tell them apart, so this
+     * step lets you name which table the button belongs to. Tables are counted from 1, in the
+     * order they appear on the page.
+     *
+     * Good to know:
+     * - The button is looked for inside the named table only. There is no page-wide fallback,
+     *   so the step will not accidentally click a same-named button of another table.
+     * - The table number can be written as a plain number or as an ordinal in quotes - both
+     *   2 and "2." select the second table.
+     * - The step fails with a clear message if the named table does not exist, if the button
+     *   is not found, if it is hidden, or if it is disabled (greyed out).
+     *
+     * Usage examples:
+     *
+     *   When I look at table 2
+     *   And I select table row 1
+     *   And I click button "Export" on the 2 table
+     *
+     *   When I click button "Neu" on the "2." table
+     *
      * @When I click button :caption on the :tableIndex table
+     *
+     * @param string $buttonCaption Text of the button to click
+     * @param int|string $tableIndex 1-based index of the table whose button to click (e.g. 2 or "2.")
      */
     public function iClickButtonOnTable(string $buttonCaption, $tableIndex = 1)
     {
-        $this->logDebug("Button Click Started: $buttonCaption, Table: $tableIndex");
-
         // Wait for all pending operations to complete
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
 
-        $page = $this->getBrowser()->getPage();
-
-        // Find all DataTables
-        $dataTables = $page->findAll('css', '.exfw-DataTable');
-        $this->logDebug("DataTable count: " . count($dataTables));
-
-        // Adjust table index (1-based indexing)
-        $tableNumber = filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT);
-
-        if (count($dataTables) === 0) {
-            throw new \Exception("No DataTables found on the page");
-        }
-
-        // Select a specific table if multiple DataTables exist
-        $targetTable = count($dataTables) > 1
-            ? $dataTables[$tableNumber - 1]
-            : $dataTables[0];
+        // Resolve the table the button belongs to.
+        // WHY strict index validation: an out-of-range or non-numeric index used to fall through
+        // to the first table, so a scenario naming a table that does not exist still went green.
+        // parseTableIndex()/findTableElementByIndex() now own both the notation handling and the
+        // range check, so this step accepts exactly the same index notations as every other
+        // table-scoped step.
+        $tableNumber = $this->parseTableIndex($tableIndex) ?? 1;
+        $targetTable = $this->findTableElementByIndex($tableNumber);
 
         // Find the button
-        $button = $targetTable->findButton($buttonCaption);
-
-        if (!$button) {
-            // If not found in the table, search globally on the page
-            $button = $page->findButton($buttonCaption);
-        }
-
+        $button = $this->getBrowser()->findButtonByCaption($buttonCaption, $targetTable);
         // Check and click the button
         Assert::assertNotNull($button, "Button '$buttonCaption' not found");
-
+        Assert::assertTrue($button->isVisible(), "Button '$buttonCaption' is not visible");
+        // Make sure the button is not disabled before attempting to click it.
+        // WHY: UI5 silently swallows clicks on disabled buttons - the driver reports a
+        // successful click, the step turns green and nothing actually happened. Failing here
+        // turns that false green into a clear message. Mirrors the identical check in
+        // iClickButton() and UI5ButtonNode::checkDisabled(), which both treat the presence of
+        // the "disabled" attribute as the button being disabled.
+        Assert::assertFalse(
+            $button->hasAttribute('disabled'),
+            'Button "' . $buttonCaption . '" is disabled and cannot be clicked'
+        );
+        $this->getBrowser()->highlightWidget($button, 'Button', 0);
         try {
-            // Use JavaScript click method to bypass visibility constraints
-            $this->getSession()->executeScript(
-                "arguments[0].click();",
-                [$button->getXpath()]
-            );
+            $button->click();
 
             // Short wait after clicking
             $this->getSession()->wait(1000);
-
-            $this->logDebug("Button '$buttonCaption' clicked successfully");
-        } catch (\Exception $e) {
-            $this->logDebug("Button click failed: " . $e->getMessage());
-            throw new \Exception("Could not click button '$buttonCaption': " . $e->getMessage());
+        } catch (\Throwable $e) {
+            throw new BrowserDriverException(
+                $this->getSession(),
+                'Cannot click button "' . $buttonCaption . '" on table ' . $tableNumber . '. ' . $e->getMessage(),
+                null,
+                $e,
+                $this->browser
+            );
         }
     }
 
     /**
-     * Opens a MenuButton and clicks one of its entries in a single step.
+     * Opens a menu button and clicks one of its entries, in a single step.
      *
-     * Why this exists:
-     * MenuButton entries render as <li role="menuitem"> in a detached, modal popover,
-     * so the generic "I click button" step cannot reach them. This step resolves the
-     * MenuButton to its node and delegates the open-and-click to it, letting scenarios
-     * express "open menu X, click item Y" in one line.
+     * Some buttons open a small drop-down menu of further actions (a "MenuButton"). Because
+     * those menu entries are not ordinary buttons, the normal "I click button" step cannot
+     * reach them. This step opens the named menu and then clicks the named entry inside it.
+     * If a table is currently focused, its menu is preferred when several menus share a name.
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   And I click button "Print" in button menu "More actions"
      *
      * @When I click button :item in button menu :menu
      *
@@ -1853,111 +2217,140 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Clicks the overflow button on the specified table
+     * Clicks the "..." overflow button that reveals a table's extra actions.
      *
-     * @Then I click the overflow button on table :tableIndex
+     * When a table toolbar is too narrow to show all its buttons, the remaining ones are tucked
+     * behind an overflow ("...") button. Use this step to open that menu. You can name the table
+     * by position, or omit it to use the table you are currently looking at.
+     *
+     * Usage examples:
+     *
+     *   When I look at table 1
+     *   Then I click the overflow button
+     *
+     *   Then I click the overflow button on the 2 table
+     *   Then I click the overflow button on the "2." table
+     *
+     * @Then I click the overflow button on the :tableIndex table
      * @Then I click the overflow button
      *
-     * @param string|null $tableIndex Table index (optional)
+     * @param int|string|null $tableIndex 1-based index of the table (e.g. 2 or "2."), optional
      * @return void
      */
-    public function clickTableOverflowButton($tableIndex = null): void
+    public function iClickTableOverflowButton($tableIndex = null): void
     {
-        // If a table index is provided, convert it to an integer
-        $tableNumber = null;
-        if ($tableIndex !== null) {
-            $tableNumber = (int) filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT);
-        }
-
-
-        // Click the overflow button
-        $this->clickOverflowButton($tableNumber);
+        // Notation handling lives in parseTableIndex() so that this step stays interchangeable
+        // with the other table-scoped steps instead of growing its own dialect.
+        $this->clickOverflowButton($this->parseTableIndex($tableIndex));
     }
 
     /**
-     * Clicks the overflow button of the selected table or in the focused context
+     * Clicks the overflow button of a given table, or of the currently focused widget.
      *
-     * @param int|null $tableIndex The table index (1-based) of the overflow button to click
+     * WHY this method was rewritten: the previous implementation threw as soon as the focused
+     * node contained no overflow button, which made the table-index and page-wide fallbacks
+     * below it unreachable - so "on table 2" silently had no effect at all. It also re-checked
+     * whether the menu had opened but never asserted the result, meaning a click that opened
+     * nothing still turned the step green.
+     *
+     * @param int|null $tableIndex 1-based table number, already normalised by parseTableIndex()
      * @return void
+     * @throws RuntimeException If neither the scope nor the page contains an overflow button
      */
     public function clickOverflowButton($tableIndex = null)
     {
-        // Check if the browser object is initialized
-        if (!$this->browser) {
-            throw new \RuntimeException("Browser is not initialized. You need to visit a page first.");
+        // Two selectors, tried in order: the exact UI5 suffix first, then the looser variants
+        // used by older/other toolbars. Kept in one list so that every lookup path below - table
+        // scope, focused widget, whole page - searches for exactly the same thing.
+        $selectors = [
+            'button[id$="-overflowButton"]',
+            'button[id*="overflowButton"], button[id*="tableMenuButton"]'
+        ];
+
+        // Decide where to look. An explicit table number always wins over the focused widget,
+        // because the scenario author named that table on purpose.
+        $scope = null;
+        if ($tableIndex !== null) {
+            $scope = $this->findTableElementByIndex($tableIndex);
+        } else {
+            $focusedNode = $this->getBrowser()->getFocusedNode();
+            if ($focusedNode !== null && ! $focusedNode instanceof UI5PageNode) {
+                $scope = $focusedNode->getNodeElement();
+            }
         }
 
         $overflowButton = null;
-
-        // First, try to find in the focused node
-        $focusedNode = $this->getBrowser()->getFocusedNode();
-        if ($focusedNode) {
-            $overflowButton = $this->getBrowser()->getFocusedNode()->getNodeElement()->find('css', 'button[id$="-overflowButton"]');
-        }
-
-        if ($overflowButton) {
-            // Highlight Button 
-            $this->getBrowser()->highlightWidget($overflowButton, 'Button', 0);
-        } else {
-            // If button cant found, throw ex
-            throw new \RuntimeException("Overflow button not found");
-        }
-
-        // If not found in focused node and a table index is provided
-        if (!$overflowButton && $tableIndex !== null) {
-            $page = $this->getBrowser()->getPage();
-            $tables = $page->findAll('css', '.exfw-DataTable, .sapUiTable, .sapMTable');
-
-            if (count($tables) < $tableIndex) {
-                throw new \RuntimeException("Table not found at the specified index: " . $tableIndex);
+        $searchIn = $scope ?? $this->getBrowser()->getPage();
+        foreach ($selectors as $selector) {
+            $overflowButton = $searchIn->find('css', $selector);
+            if ($overflowButton !== null) {
+                break;
             }
-
-            $targetTable = $tables[$tableIndex - 1];
-            $overflowButton = $targetTable->find('css', 'button[id*="overflowButton"], button[id*="tableMenuButton"]');
         }
 
-        // If still not found, try in the page
-        if (!$overflowButton) {
-            $page = $this->getBrowser()->getPage();
-            $overflowButton = $page->find('css', 'button[id*="overflowButton"]');
+        // Page-wide fallback only when no table was named. With an explicit table number a
+        // page-wide search would click the overflow button of a completely different table,
+        // which is worse than a clear failure.
+        if ($overflowButton === null && $tableIndex === null) {
+            foreach ($selectors as $selector) {
+                $overflowButton = $this->getBrowser()->getPage()->find('css', $selector);
+                if ($overflowButton !== null) {
+                    break;
+                }
+            }
         }
 
-        // If no overflow button was found, throw an error
-        if (!$overflowButton) {
-            throw new \RuntimeException("Overflow button couldn't be found" .
-                ($tableIndex ? " (Table index: $tableIndex)" : ""));
+        if ($overflowButton === null) {
+            throw new RuntimeException(
+                'Overflow button not found'
+                . ($tableIndex !== null ? ' on table no. ' . $tableIndex : '')
+                . '.'
+            );
         }
 
-        // Click the button
+        $this->getBrowser()->highlightWidget($overflowButton, 'Button', 0);
         $overflowButton->click();
-
-        // Wait briefly
         $this->getSession()->wait(1000);
 
-        // Verify the click was successful
-        $menu = $this->getBrowser()->getPage()->find('css', '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu');
+        $menuSelector = '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu';
+        $menu = $this->getBrowser()->getPage()->find('css', $menuSelector);
 
-        if (!$menu) {
-            // Try clicking via JavaScript as an alternative method
-            $buttonId = $overflowButton->getAttribute('id');
-            $this->getSession()->executeScript("
-            var element = document.getElementById('$buttonId');
-            if (element) {
-                element.click();
-                return true;
-            }
-            return false;
-        ");
-
-            // Wait again and check
+        if ($menu === null) {
+            // Fallback: UI5 sometimes ignores a synthetic click on a toolbar overflow button,
+            // so trigger the DOM click directly. The id is JSON-encoded rather than interpolated
+            // to keep a widget id containing quotes from breaking out of the script literal.
+            $buttonId = json_encode($overflowButton->getAttribute('id'));
+            $this->getSession()->executeScript(
+                'var element = document.getElementById(' . $buttonId . ');'
+                . ' if (element) { element.click(); }'
+            );
             $this->getSession()->wait(1000);
-            $menu = $this->getBrowser()->getPage()->find('css', '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu');
+            $menu = $this->getBrowser()->getPage()->find('css', $menuSelector);
         }
+
+        // WHY this assertion: without it the step reported success even when no menu ever
+        // appeared, hiding the failure until a later step failed for an unrelated-looking reason.
+        Assert::assertNotNull(
+            $menu,
+            'Clicked the overflow button'
+            . ($tableIndex !== null ? ' on table no. ' . $tableIndex : '')
+            . ', but no menu opened.'
+        );
 
         $this->logDebug("✓ Overflow button clicked successfully\n");
     }
 
     /**
+     * Checks that clicking an "export" action actually produced an Excel file.
+     *
+     * After triggering an export, use this step to confirm a real .xlsx file was downloaded and
+     * is not empty. It waits up to 30 seconds for the download to finish.
+     *
+     * Usage example:
+     *
+     *   When I click button "Export to Excel"
+     *   Then an XLSX file should be downloaded
+     *
      * @Then an XLSX file should be downloaded
      */
     public function anXlsxFileShouldBeDownloaded(): void
@@ -1986,14 +2379,23 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             sleep(2);
         }
 
-        throw new \RuntimeException("XLSX file could not be downloaded or is empty.");
+        throw new RuntimeException("XLSX file could not be downloaded or is empty.");
     }
 
     /**
-     * Verify the presence of specific tiles on the page
-     * This method checks if all expected tiles are present in the UI
+     * Checks that the named tiles are shown on the page.
+     *
+     * Tiles are the clickable cards on a launchpad/home page. Use this to confirm the expected
+     * tiles are present. Other tiles may also be present - this step only requires the ones you
+     * name. List tile captions separated by commas.
+     *
+     * Usage example:
+     *
+     *   Then I see tiles "Orders, Customers, Reports"
      *
      * @Then I see tiles :tileNames
+     *
+     * @param string $tileNames Comma-separated list of expected tile captions
      */
     public function iSeeTiles($tileNames): void
     {
@@ -2039,7 +2441,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Checks that exactly the named tiles are shown - no more, no less.
+     *
+     * Stricter than "I see tiles": this step also fails if any tile other than the ones you
+     * list is present. Great for verifying that a user role sees precisely the expected set of
+     * launchpad tiles. List tile captions separated by commas.
+     *
+     * Usage example:
+     *
+     *   Then I only see tiles "Orders, Customers"
+     *
      * @Then I only see tiles :tileNames
+     *
+     * @param string $tileNames Comma-separated list of the only tiles expected
      */
     public function iOnlySeeTiles($tileNames): void
     {
@@ -2060,43 +2474,72 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Checks that the named buttons are NOT visible.
+     *
+     * Perfect for permission tests: confirm that a user without certain rights does not see
+     * actions like "Delete" or "Approve". Name one or more buttons separated by commas. Add
+     * "on the :tableIndex table" to restrict the check to a specific table's toolbar.
+     *
+     * Usage examples:
+     *
+     *   Then I do not see the button "Delete"
+     *   Then I do not see the buttons "Delete, Approve"
+     *   Then I do not see the button "Delete" on the 1 table
+     *
+     * @Then I do not see the button :unexpectedButton
+     * @Then I do not see the button :unexpectedButton on the :tableIndex table
+     * @Then I do not see the buttons :unexpectedButtons
+     * @Then I do not see the buttons :unexpectedButtons on the :tableIndex table
      * @Then I should not see the button :unexpectedButton
      * @Then I should not see the button :unexpectedButton on the :tableIndex table
      * @Then I should not see the buttons :unexpectedButtons
      * @Then I should not see the buttons :unexpectedButtons on the :tableIndex table
      *
+     * @param string $unexpectedButtons Comma-separated list of buttons expected to be absent
+     * @param string|null $tableIndex Optional 1-based table index to scope the check
      */
-    public function iShouldNotSeeTheFollowingButtons($unexpectedButtons, $tableIndex = null)
+    public function iDoNotSeeTheFollowingButtons($unexpectedButtons, $tableIndex = null)
     {
-        $page = $this->getBrowser()->getPage();
-
         // Parse the comma-separated tile list
-        $unexpectedButtons = array_map('trim', explode(',', $unexpectedButtons));
+        $unexpectedButtons = $this->explodeList($unexpectedButtons);
+
+        // Resolve the scope once instead of per button: the table does not change between
+        // iterations, and the shared resolver adds the range check this step was missing.
+        $scope = null;
+        $tableNumber = $this->parseTableIndex($tableIndex);
+        if ($tableNumber !== null) {
+            $scope = $this->findTableElementByIndex($tableNumber);
+        }
 
         foreach ($unexpectedButtons as $btn) {
-            if (empty($tableIndex)) {
-                $foundButton = $this->getBrowser()->findButtonByCaption($btn);
-            } else {
-                //find the parent data table 
-                // Convert index to integer and remove any non-numeric characters (e.g., ".")
-                $tableNumber = (int) filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT);
-                $parents = $page->findAll('css', '.exfw-DataTable');
+            $foundButton = $scope === null
+                ? $this->getBrowser()->findButtonByCaption($btn)
+                : $this->getBrowser()->findButtonByCaption($btn, $scope);
 
-                //find button with parent
-                $foundButton = $this->getBrowser()->findButtonByCaption($btn, $parents[$tableNumber - 1]);
-
-            }
-
-            if (!empty($foundButton)) {
+            if (! empty($foundButton)) {
                 $this->getBrowser()->highlightWidget($foundButton, 'Button', 0);
             }
-            Assert::assertEmpty($foundButton, "Unexpected buttons found: " . $btn);
+            Assert::assertEmpty($foundButton, 'Unexpected buttons found: ' . $btn);
         }
     }
 
     /**
+     * Checks that the named tabs are shown on the page.
+     *
+     * Confirms that expected tabs (page or dialog sections) are available. Name one or more
+     * tabs separated by commas. Each found tab is briefly highlighted.
+     *
+     * Usage examples:
+     *
+     *   Then I see tab "General"
+     *   Then I should see tabs "General, Addresses, History"
+     *
+     * @Then I see tabs :tabs
+     * @Then I see tab :tabs
      * @Then I should see tabs :tabs
      * @Then I should see tab :tabs
+     *
+     * @param string $tabs Comma-separated list of expected tab captions
      */
     public function iSeeTabs($tabs): void
     {
@@ -2111,14 +2554,23 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Given I log in ...
-     * And test data from "nbr.OneLink" folder "Global" is loaded
-     * When I do...
+     * Loads a set of prepared test data before the checks run.
+     *
+     * Many scenarios need known records to exist first (so results are predictable). This step
+     * imports a folder of ready-made test data that ships with an app. Give the app alias and
+     * the name of the data subfolder to load. Usually placed right after logging in.
+     *
+     * Usage example:
+     *
+     *   Given I log in to the page "nbr.onelink.start.html" as "Support"
+     *   And test data from "nbr.OneLink" folder "Global" is loaded
+     *   When I look at table 1
+     *   Then I see at least one data item
      *
      * @Given test data from ":appAlias" folder ":subfolder" is loaded
      *
-     * @param string $appAlias
-     * @param string $subfolder
+     * @param string $appAlias Alias of the app that provides the test data
+     * @param string $subfolder Name of the test-data subfolder to load
      * @return void
      */
     public function testDataIsLoaded(string $appAlias, string $subfolder)
@@ -2139,7 +2591,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $expectedText The text (or part of text) expected in the toast
      * @param int $timeout Maximum time to wait for the toast in seconds
      * @return void
-     * @throws \RuntimeException if toast message is not found
+     * @throws RuntimeException if toast message is not found
      */
     private function verifyToastMessage(string $expectedText, int $timeout = 30): void
     {
@@ -2175,7 +2627,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         // Assert that the toast was found
         if (!$toastFound) {
-            throw new \RuntimeException(
+            throw new RuntimeException(
                 "Expected toast message containing \"$expectedText\" did not appear within $timeout seconds"
             );
         }
@@ -2257,57 +2709,29 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         return $array;
     }
 
-    /**
-     * Central function for error handling in UI5 Browser context
-     *
-     * This function captures, processes and logs exceptions that occur during browser operations.
-     * It standardizes the error handling process by formatting error data into a consistent structure
-     * and delegates the actual logging to the ErrorManager singleton. The function enriches basic
-     * exception information with contextual data such as the current URL and allows for additional
-     * custom data to be included.
-     *
-     * @param \Exception $e The caught exception instance
-     * @param string $type Error type classification (e.g., 'validation', 'connection', 'timeout')
-     * @param string $source Source of the error (typically the method name where exception occurred)
-     * @param array $additionalData Additional contextual data to include with the error (optional)
-     * @return void
-     */
-    protected function handleContextError(\Exception $e, string $type, string $source, array $additionalData = []): void
-    {
-        $errorManager = ErrorManager::getInstance();
-
-        // Basic error data
-        $errorData = [
-            'type' => $type,         // Type of the error
-            'message' => $e->getMessage(), // Error message from exception
-            'source' => $source,     // Source method where error occurred
-            'url' => $this->browser === null ? null : $this->getBrowser()->getCurrentUrlWithHash(), // Current URL with hash
-        ];
-
-        // Add additional data if provided
-        if (!empty($additionalData)) {
-            $errorData = array_merge($errorData, $additionalData);
-        }
-
-        // Add the error to ErrorManager
-        $errorManager->addError($errorData, 'UI5BrowserContext');
-    }
-
     protected function explodeList(string $list): array
     {
         return array_map('trim', explode(',', $list));
     }
 
     /**
-     * Example
+     * Runs a guided self-check of a table, told which columns, filters and buttons to expect.
      *
-     * ```
-     * Given I log in ...
-     * When I look at table 1
-     * Then It works as shown below
-     * Column Caption | Filter Caption | Button Caption
+     * This is a powerful "does this table behave correctly" step. You provide a Gherkin table
+     * describing the captions the widget should have, and the platform automatically exercises
+     * those columns, filters and buttons and reports any problem. Focus a table first (e.g.
+     * "I look at table 1"). Use this when you want to spell out exactly what should be there;
+     * use "It works as expected" when you want a fully automatic check.
      *
-     * ```
+     * Usage example:
+     *
+     *   Given I log in to the page "my.app.orders.html" as "Support"
+     *   When I look at table 1
+     *   Then It works as shown below
+     *     | Column Caption | Filter Caption | Button Caption |
+     *     | Order No.      | Customer       | New            |
+     *     | Customer       | Status         | Edit           |
+     *
      * @Then It works as shown below
      * | :Column Caption | :Filter Caption | :Button Caption |
      *
@@ -2326,13 +2750,20 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Example
+     * Runs a fully automatic self-check of the widget you are looking at.
      *
-     * ```
-     * Given I log in ...
-     * When I look at table 1
-     * Then It works as expected
-     * ```
+     * The platform inspects the focused widget and, based on its own model, automatically tries
+     * out its filters and buttons and verifies it behaves correctly - you do not have to list
+     * anything. This is the quickest way to broadly test a table. Focus a widget first (e.g.
+     * "I look at table 1"). To check only filters or only buttons, use the dedicated steps below.
+     * If the focused widget is a Page this will also check its child widgets work as expected.
+     *
+     * Usage example:
+     *
+     *   Given I log in to the page "my.app.orders.html" as "Support"
+     *   When I look at table 1
+     *   Then It works as expected
+     *
      * @Then It works as expected
      *
      * @return void
@@ -2348,24 +2779,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Verifies that ONLY the filters of the currently focused data widget work as expected.
+     * Automatically checks only the filters of the widget you are looking at.
      *
-     * WHY a dedicated step: some scenarios need to assert filter behaviour in isolation - for
-     * instance when a page's buttons are intentionally out of scope for a run, or when a filter
-     * regression must be pinned down without the slower full button sweep also running. It
-     * mirrors itWorksAsExpected() but drives only the filter checks.
+     * A focused version of "It works as expected" that exercises just the filters and leaves
+     * the buttons alone. Use it when you want to pin down filter behaviour on its own - for
+     * example when the page's buttons are out of scope, or you are chasing a filter problem
+     * without the slower full check. Focus a table first (e.g. "I look at table 1").
      *
-     * WHY the instanceof guard (unlike itWorksAsExpected): checkFiltersWorkAsExpected() lives on
-     * UI5DataNode, not on the UI5AbstractNode base, so if the focus stack is empty and
-     * getFocusedNode() falls back to a UI5PageNode this would otherwise be a fatal
-     * "call to undefined method" instead of a readable assertion failure.
+     * Usage example:
      *
-     * Example
-     * ```
-     * Given I log in ...
-     * When I look at table 1
-     * Then The filters work as expected
-     * ```
+     *   Given I log in to the page "my.app.orders.html" as "Support"
+     *   When I look at table 1
+     *   Then The filters work as expected
+     *
      * @Then The filters work as expected
      *
      * @return void
@@ -2386,22 +2812,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Verifies that ONLY the buttons of the currently focused data widget work as expected.
+     * Automatically checks only the buttons of the widget you are looking at.
      *
-     * WHY a dedicated step: see theFiltersWorkAsExpected(). This lets a scenario green-light the
-     * button sweep on its own, e.g. when the filters are covered by another step or are known to
-     * be flaky on a given page. It mirrors itWorksAsExpected() but drives only the button checks.
+     * A focused version of "It works as expected" that exercises just the buttons and leaves
+     * the filters alone. Use it when the filters are covered elsewhere or are known to be flaky
+     * on a given page, and you only want to green-light the buttons. Focus a table first (e.g.
+     * "I look at table 1").
      *
-     * WHY the instanceof guard: checkButtonsWorkAsExpectedOnly() lives on UI5DataNode, so a
-     * UI5PageNode fallback (empty focus stack) would otherwise fatal with "call to undefined
-     * method" instead of a readable assertion failure.
+     * Usage example:
      *
-     * Example
-     * ```
-     * Given I log in ...
-     * When I look at table 1
-     * Then The buttons work as expected
-     * ```
+     *   Given I log in to the page "my.app.orders.html" as "Support"
+     *   When I look at table 1
+     *   Then The buttons work as expected
+     *
      * @Then The buttons work as expected
      *
      * @return void
@@ -2674,5 +3097,74 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 ));
             } catch (\Throwable $ignored) {}
         }
+    }
+
+    /**
+     * Normalises the table number written in a Gherkin step into a 1-based integer.
+     *
+     * WHY: Test authors write the table number in several notations - as a bare number (2), as a
+     * quoted ordinal ("2.") or with stray whitespace. Until now every table-scoped step repeated
+     * its own `(int) filter_var(...)` line, so the accepted notations drifted apart from step to
+     * step and an author could not rely on one table step behaving like the next. Parsing in a
+     * single place keeps all table steps interchangeable and produces one clear error message
+     * instead of a silent fallback to table 1.
+     *
+     * @param int|string|null $tableIndex Raw value as captured from the step
+     * @return int|null NULL when no index was given - the caller should then use the focused table
+     * @throws RuntimeException If a value was given but contains no usable positive number
+     */
+    private function parseTableIndex($tableIndex): ?int
+    {
+        // An omitted index is not an error: it means "use whatever table is currently focused".
+        if ($tableIndex === null || trim((string) $tableIndex) === '') {
+            return null;
+        }
+
+        // Strip everything that is not part of a number so that 2, "2.", "2nd" and " 2 " all
+        // resolve to the same table.
+        $digits = filter_var((string) $tableIndex, FILTER_SANITIZE_NUMBER_INT);
+        if ($digits === false || $digits === '' || ! is_numeric($digits)) {
+            throw new RuntimeException(
+                'Invalid table index "' . $tableIndex . '". Expected a number like 2 or "2.".'
+            );
+        }
+
+        $tableNumber = (int) $digits;
+        if ($tableNumber < 1) {
+            throw new RuntimeException(
+                'Invalid table index "' . $tableIndex . '". Tables are counted from 1.'
+            );
+        }
+
+        return $tableNumber;
+    }
+
+    /**
+     * Resolves a 1-based table number to the DataTable element it refers to.
+     *
+     * WHY: "Find the Nth table on the page" was copy-pasted into several steps, each with its own
+     * CSS selector list and its own - sometimes missing - range check. That meant the very same
+     * scenario line could address different tables depending on which step executed it, and an
+     * out-of-range number reached PHP as an undefined array key instead of a readable test
+     * failure. One resolver keeps the numbering identical across all table-scoped steps.
+     *
+     * @param int $tableNumber 1-based table number
+     * @return NodeElement
+     * @throws RuntimeException If the page contains fewer tables than requested
+     */
+    private function findTableElementByIndex(int $tableNumber): NodeElement
+    {
+        $tables = $this->getBrowser()->getPage()->findAll('css', '.exfw-DataTable');
+        Assert::assertNotEmpty($tables, 'No DataTables found on the page');
+
+        if (! isset($tables[$tableNumber - 1])) {
+            throw new RuntimeException(sprintf(
+                'Table no. %d requested, but only %d table(s) found on the page',
+                $tableNumber,
+                count($tables)
+            ));
+        }
+
+        return $tables[$tableNumber - 1];
     }
 }
