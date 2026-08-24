@@ -13,6 +13,7 @@ use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\TwigFormatter\Context\BehatFormatterContext;
 use axenox\BDT\Common\Installer\TestDataInstaller;
 use axenox\BDT\Exceptions\BrowserDriverException;
+use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Behat\Context\Context;
 use Behat\Behat\Tester\Result\UndefinedStepResult;
 use Behat\Mink\Element\NodeElement;
@@ -1032,6 +1033,54 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Resolves a 1-based table index on the current page to a typed table node.
+     *
+     * WHY A SEPARATE WRAPPER: getWidgetNodeByIndex() is declared to return the generic
+     * FacadeNodeInterface, so the table-specific callers still need the narrowing. Doing it here
+     * means a factory change that starts returning another node type for "DataTable" surfaces as
+     * a readable failure at this point instead of a fatal "call to undefined method" much later.
+     *
+     * @param int $index 1-based index of the table on the page.
+     * @throws RuntimeException If the table is not rendered or is not a DataTable node.
+     * @return UI5DataTableNode
+     */
+    private function getDataTableNodeByIndex(int $index): UI5DataTableNode
+    {
+        $node = $this->getWidgetNodeByIndex('DataTable', $index);
+
+        if (! $node instanceof UI5DataTableNode) {
+            throw new RuntimeException(
+                'Widget no. ' . $index . ' is not a DataTable, but a `' . get_class($node) . '`'
+            );
+        }
+
+        return $node;
+    }
+
+    /**
+     * Ensures a data widget is focused before a filter-scoped assertion runs and returns it typed.
+     *
+     * WHY THIS STAYS IN THE CONTEXT: the focus stack is a Behat concept - a node cannot know
+     * whether the author called "I look at table 1". Guarding the type here turns a fatal
+     * "call to undefined method" that would kill the whole Behat process into a single readable
+     * failing step naming the focus that was actually active.
+     *
+     * @return UI5DataNode
+     */
+    private function getFocusedDataNode(): UI5DataNode
+    {
+        $node = $this->getBrowser()->getFocusedNode();
+        Assert::assertInstanceOf(
+            UI5DataNode::class,
+            $node,
+            'No data widget is focused (current focus: "'
+            . ($node ? get_class($node) : 'none')
+            . '"). Focus a data widget first, e.g. with "I look at table 1".'
+        );
+        return $node;
+    }
+
+    /**
      * Ensures a DataTable is focused before a table-scoped assertion runs and returns it typed.
      *
      * WHY THIS EXISTS: getFocusedNode() falls back to a UI5PageNode when the focus stack is
@@ -1051,6 +1100,42 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             . ($node ? get_class($node) : 'none')
             . '"). Focus a table first, e.g. with "I look at table 1".'
         );
+        return $node;
+    }
+
+    /**
+     * Resolves the n-th rendered widget of a given type on the current page.
+     *
+     * WHY THIS EXISTS: focusing a widget, highlighting it and addressing it by ordinal from a
+     * step were three separate copies of the same "find all widgets of this type, take the n-th,
+     * complain if there are fewer" logic. Centralising it keeps the failure message identical
+     * everywhere and means a change to how widgets are located (timeout, CSS, factory) has to be
+     * made exactly once.
+     *
+     * @param string $widgetType        Widget type as understood by findWidgetNodes(), e.g. 'DataTable'.
+     * @param int    $number            1-based position of the widget on the page.
+     * @param int    $timeoutInSeconds  How long to wait for the widgets to appear.
+     * @throws RuntimeException If no widget of that type is rendered or fewer than $number are.
+     * @return FacadeNodeInterface
+     */
+    private function getWidgetNodeByIndex(string $widgetType, int $number, int $timeoutInSeconds = 15): FacadeNodeInterface
+    {
+        $nodes = $this->getBrowser()->findWidgetNodes($widgetType, $timeoutInSeconds);
+
+        if (empty($nodes)) {
+            throw new RuntimeException('No `' . $widgetType . '` found on page');
+        }
+
+        // Read via ?? instead of indexing directly: an out-of-range index would otherwise emit an
+        // "undefined array key" warning before the check below ever reports the real problem.
+        $node = $nodes[$number - 1] ?? null;
+        if ($node === null) {
+            throw new RuntimeException(
+                '`' . $widgetType . '` no. ' . $number . ' not found. Only '
+                . count($nodes) . ' available on the page.'
+            );
+        }
+
         return $node;
     }
 
@@ -1159,9 +1244,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function theFiltersAreDisplayedInTheFollowingOrder(string $filterList): void
     {
-        $expected = $this->explodeList($filterList);
-        $actual = $this->getVisibleFilterCaptionsInOrder();
-        $this->assertDisplayedInOrder($expected, $actual, 'filter');
+        $this->getFocusedDataNode()->assertFiltersDisplayedInOrder($this->explodeList($filterList));
     }
 
     /**
@@ -1183,9 +1266,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function theColumnsAreDisplayedInTheFollowingOrder(string $columnList): void
     {
-        $expected = $this->explodeList($columnList);
-        $actual = $this->getFocusedDataTableNode()->getRenderedColumnCaptionsInOrder();
-        $this->assertDisplayedInOrder($expected, $actual, 'column');
+        $this->getFocusedDataNode()->assertColumnsDisplayedInOrder($this->explodeList($columnList));
     }
 
     /**
@@ -1208,19 +1289,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iDoNotSeeColumns(string $columnList): void
     {
-        $unexpected = $this->explodeList($columnList);
-        $actual = $this->getFocusedDataTableNode()->getRenderedColumnCaptionsInOrder();
-        foreach ($unexpected as $column) {
-            Assert::assertNotContains(
-                $column,
-                $actual,
-                sprintf(
-                    'Column "%s" is displayed but was expected to be absent. Displayed columns: %s',
-                    $column,
-                    implode(', ', $actual)
-                )
-            );
-        }
+        $this->getFocusedDataTableNode()->assertColumnsNotDisplayed($this->explodeList($columnList));
     }
 
     /**
@@ -1242,19 +1311,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iDoNotSeeFilters(string $filterList): void
     {
-        $unexpected = $this->explodeList($filterList);
-        $actual = $this->getVisibleFilterCaptionsInOrder();
-        foreach ($unexpected as $filter) {
-            Assert::assertNotContains(
-                $filter,
-                $actual,
-                sprintf(
-                    'Filter "%s" is displayed but was expected to be absent. Displayed filters: %s',
-                    $filter,
-                    implode(', ', $actual)
-                )
-            );
-        }
+        $this->getFocusedDataNode()->assertFiltersNotDisplayed($this->explodeList($filterList));
     }
 
     /**
@@ -1532,43 +1589,15 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iLookAtWidget(string $widgetType, int $number = 1): void
     {
-        // WHY this method owns the whole "focus the Nth widget of a type" logic: "I look at
-        // table :index" used to duplicate it for the single type DataTable, with its own range
-        // check and its own highlight call. The two copies drifted - the table variant reported
-        // how many tables actually exist while this one read an out-of-range array offset, which
-        // raises a PHP warning and then asserts on null, telling the author "cannot find" instead
-        // of "there are only N". One implementation keeps both notations behaving identically.
-        // WHY the explicit timeout: without it the lookup falls back to the shorter default and
-        // becomes flaky on slow-rendering pages - exactly the pages parallel runs produce.
-        $widgetNodes = $this->getBrowser()->findWidgetNodes($widgetType, 15);
-        Assert::assertNotEmpty(
-            $widgetNodes,
-            'No widget of type "' . $widgetType . '" found on the page.'
-        );
-
-        // Range check before the array access. Reading $widgetNodes[$number - 1] on an out of
-        // range index emits a warning and yields null, which turns a precise "only N available"
-        // message into a misleading "cannot find".
-        $index = $number - 1;
-        if (! isset($widgetNodes[$index])) {
-            throw new RuntimeException(
-                'Widget "' . $widgetType . '" no. ' . $number . ' not found. Only '
-                . count($widgetNodes) . ' widget(s) of this type available on the page.'
-            );
-        }
-
-        $node = $widgetNodes[$index];
-        // Highlight for visual debugging only - has no effect on the focus below
-        $this->getBrowser()->highlightWidget($node->getNodeElement(), $widgetType, $index);
-        // Set focus to this widget
-        $this->getBrowser()->focus($node);
+        // Set focus to this widget so the subsequent "it has..." steps have a context
+        $this->getBrowser()->focus($this->getWidgetNodeByIndex($widgetType, $number));
     }
 
     /**
      * Checks that one or more buttons are visible on the page.
      *
      * Use this to confirm the user has access to certain actions. You can name a single button
-     * or several separated by commas. Add "at the :tableName" to look for the buttons only in
+     * or several separated by commas. Add "on the :tableName" to look for the buttons only in
      * the toolbar of the named table (or dialog/panel) - name it the way the app shows it, or
      * by the data object behind it. Each found button is briefly highlighted.
      *
@@ -1576,13 +1605,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      *   Then I see button "Save"
      *   Then I see buttons "Save, Cancel, Delete"
-     *   Then I see button "Delete" at the "Materialbedarfsliste"
+     *   Then I see button "Delete" on the "Materialbedarfsliste"
      *
      * @Then I see button :buttonText
      * @Then I see buttons :buttonText
      * @Then I see a button with text :buttonText
-     * @Then I see button :buttonText at the :tableName
-     * @Then I see buttons :buttonText at the :tableName
+     * @Then I see button :buttonText on the :tableName
+     * @Then I see buttons :buttonText on the :tableName
      * @Then I should see button :buttonText
      * @Then I should see buttons :buttonText
      * @Then I should see a button with text :buttonText
@@ -2057,12 +2086,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iLookAtTable(int $index): void
     {
-        // WHY this is a one liner: "look at table N" is nothing but "look at DataTable no. N".
-        // Keeping a second implementation here meant the range check, the highlight call and the
-        // lookup timeout had to be maintained twice and had already diverged. This step stays as
-        // a separate annotation because the wording is the one scenario authors use for tables,
-        // but the behaviour is now guaranteed to be identical to the generic notation.
-        $this->iLookAtWidget('DataTable', $index);
+        $table = $this->getDataTableNodeByIndex($index);
+        $this->getBrowser()->highlightWidget($table->getNodeElement(), 'DataTable', $index - 1);
+        // Focus the selected table
+        $this->getBrowser()->focus($table);
     }
 
     /**
@@ -2239,105 +2266,47 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iClickTableOverflowButton($tableIndex = null): void
     {
-        // Notation handling lives in parseTableIndex() so that this step stays interchangeable
-        // with the other table-scoped steps instead of growing its own dialect.
-        $this->clickOverflowButton($this->parseTableIndex($tableIndex));
+        $table = $tableIndex === null
+            ? $this->getFocusedDataTableNode()
+            : $this->getDataTableNodeByIndex((int) filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT));
+
+        $table->clickOverflowButton();
     }
 
     /**
-     * Clicks the overflow button of a given table, or of the currently focused widget.
+     * Clicks an entry inside a table's overflow ("...") menu.
      *
-     * WHY this method was rewritten: the previous implementation threw as soon as the focused
-     * node contained no overflow button, which made the table-index and page-wide fallbacks
-     * below it unreachable - so "on table 2" silently had no effect at all. It also re-checked
-     * whether the menu had opened but never asserted the result, meaning a click that opened
-     * nothing still turned the step green.
+     * When a table toolbar is too narrow to show all its buttons, the ones that don't fit are
+     * tucked away behind an overflow ("...") button. This step opens that menu and clicks the
+     * entry you name - all in one go - so you don't need a separate "open the overflow" step.
      *
-     * @param int|null $tableIndex 1-based table number, already normalised by parseTableIndex()
-     * @return void
-     * @throws RuntimeException If neither the scope nor the page contains an overflow button
+     * Good to know:
+     * - Without a table number, the step uses the table you are currently looking at (focus a
+     *   table first, e.g. "I look at table 1").
+     * - With a table number, it targets that table directly. Tables are counted from 1 in the
+     *   order they appear on the page, and the number may be written plainly or as an ordinal
+     *   in quotes - both 2 and "2." select the second table.
+     *
+     * Usage examples:
+     *
+     *   When I look at table 1
+     *   And I click "Export" in the overflow menu
+     *
+     *   When I click "Delete" in the overflow menu on 2 table
+     *
+     * @When I click :caption in the overflow menu
+     * @When I click :caption in the overflow menu on :tableIndex table
+     *
+     * @param string $caption Caption of the menu entry to click.
+     * @param int|string|null $tableIndex 1-based table index (e.g. 2 or "2."), optional.
      */
-    public function clickOverflowButton($tableIndex = null)
+    public function iClickOverflowMenuItem(string $caption, $tableIndex = null): void
     {
-        // Two selectors, tried in order: the exact UI5 suffix first, then the looser variants
-        // used by older/other toolbars. Kept in one list so that every lookup path below - table
-        // scope, focused widget, whole page - searches for exactly the same thing.
-        $selectors = [
-            'button[id$="-overflowButton"]',
-            'button[id*="overflowButton"], button[id*="tableMenuButton"]'
-        ];
+        $table = $tableIndex === null
+            ? $this->getFocusedDataTableNode()
+            : $this->getDataTableNodeByIndex((int) filter_var($tableIndex, FILTER_SANITIZE_NUMBER_INT));
 
-        // Decide where to look. An explicit table number always wins over the focused widget,
-        // because the scenario author named that table on purpose.
-        $scope = null;
-        if ($tableIndex !== null) {
-            $scope = $this->findTableElementByIndex($tableIndex);
-        } else {
-            $focusedNode = $this->getBrowser()->getFocusedNode();
-            if ($focusedNode !== null && ! $focusedNode instanceof UI5PageNode) {
-                $scope = $focusedNode->getNodeElement();
-            }
-        }
-
-        $overflowButton = null;
-        $searchIn = $scope ?? $this->getBrowser()->getPage();
-        foreach ($selectors as $selector) {
-            $overflowButton = $searchIn->find('css', $selector);
-            if ($overflowButton !== null) {
-                break;
-            }
-        }
-
-        // Page-wide fallback only when no table was named. With an explicit table number a
-        // page-wide search would click the overflow button of a completely different table,
-        // which is worse than a clear failure.
-        if ($overflowButton === null && $tableIndex === null) {
-            foreach ($selectors as $selector) {
-                $overflowButton = $this->getBrowser()->getPage()->find('css', $selector);
-                if ($overflowButton !== null) {
-                    break;
-                }
-            }
-        }
-
-        if ($overflowButton === null) {
-            throw new RuntimeException(
-                'Overflow button not found'
-                . ($tableIndex !== null ? ' on table no. ' . $tableIndex : '')
-                . '.'
-            );
-        }
-
-        $this->getBrowser()->highlightWidget($overflowButton, 'Button', 0);
-        $overflowButton->click();
-        $this->getSession()->wait(1000);
-
-        $menuSelector = '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu';
-        $menu = $this->getBrowser()->getPage()->find('css', $menuSelector);
-
-        if ($menu === null) {
-            // Fallback: UI5 sometimes ignores a synthetic click on a toolbar overflow button,
-            // so trigger the DOM click directly. The id is JSON-encoded rather than interpolated
-            // to keep a widget id containing quotes from breaking out of the script literal.
-            $buttonId = json_encode($overflowButton->getAttribute('id'));
-            $this->getSession()->executeScript(
-                'var element = document.getElementById(' . $buttonId . ');'
-                . ' if (element) { element.click(); }'
-            );
-            $this->getSession()->wait(1000);
-            $menu = $this->getBrowser()->getPage()->find('css', $menuSelector);
-        }
-
-        // WHY this assertion: without it the step reported success even when no menu ever
-        // appeared, hiding the failure until a later step failed for an unrelated-looking reason.
-        Assert::assertNotNull(
-            $menu,
-            'Clicked the overflow button'
-            . ($tableIndex !== null ? ' on table no. ' . $tableIndex : '')
-            . ', but no menu opened.'
-        );
-
-        $this->logDebug("✓ Overflow button clicked successfully\n");
+        $table->clickOverflowMenuItem($caption);
     }
 
     /**
