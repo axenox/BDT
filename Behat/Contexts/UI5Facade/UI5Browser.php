@@ -1269,9 +1269,27 @@ JS
      */
     protected function findWidgetNodesInScope(ElementInterface $scope, string $widgetType, ?string $caption = null, ?string $cssSelector = null) : array
     {
+        // Identify the scope element ONCE instead of per match. A DocumentElement has no id and can
+        // never be matched by an `.exfw-*` selector anyway, so a page-wide search skips the self-check
+        // below entirely and pays nothing for it - which matters, because every attribute read here is
+        // a separate synchronous CDP round trip.
+        $scopeId = $scope instanceof NodeElement ? (string) $scope->getAttribute('id') : '';
+
         $nodes = [];
         foreach ($scope->findAll('css', $cssSelector) as $nodeEl) {
             if (! $nodeEl->isVisible()) {
+                continue;
+            }
+            // Skip the scope element itself, so this really returns the widgets INSIDE the scope.
+            // WHY THIS IS NEEDED: Mink converts a CSS selector into an XPath beginning with
+            // `descendant-or-self::`, so a scoped search for the very widget type the scope element
+            // has matches that scope element again. The scoped result of findWidgetNodes() was
+            // therefore never empty for such a search, its page-wide fallback never ran, and looking
+            // at table 2 right after table 1 could only ever see the one table already in focus.
+            // WHY THE ID AND NOT THE XPATH: Mink builds the XPath of a found element on its own and
+            // does not necessarily format it the way the scope element's XPath was built, so comparing
+            // the two strings is unreliable. Every UI5 widget root carries a stable DOM id.
+            if ($scopeId !== '' && $nodeEl->getAttribute('id') === $scopeId) {
                 continue;
             }
             // Derive the node class from the element's own `.exfw-<Type>` class, NOT from the requested

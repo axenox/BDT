@@ -954,19 +954,24 @@ class UI5DataNode extends UI5AbstractNode
         $filterNodes = [];
 
         if ($container !== null) {
-            foreach (['.exfw-Filter', '.exfw-RangeFilter'] as $cssClass) {
-                // Extract the widget type name from the CSS class (e.g. 'exfw-Filter' -> 'Filter')
-                $widgetType = substr($cssClass, strlen('.exfw-'));
-                foreach ($container->findAll('css', $cssClass) as $el) {
-                    if ($el->isVisible()) {
-                        $filterNodes[] = UI5FacadeNodeFactory::createFromWidgetType(
-                            $widgetType,
-                            $el,
-                            $this->getSession(),
-                            $this->getBrowser()
-                        );
-                    }
+            // WHY ONE COMBINED SELECTOR INSTEAD OF ONE PASS PER CSS CLASS: findAll() returns its
+            // matches in document order, but running a separate pass per class concatenated all
+            // plain filters first and appended every range filter afterwards. The resulting list
+            // was therefore NOT the visual order as soon as a widget mixed both filter kinds, and
+            // an element carrying both classes would even have been counted twice. A single
+            // combined selector yields each filter exactly once, in the order the user sees it.
+            foreach ($container->findAll('css', '.exfw-Filter, .exfw-RangeFilter') as $el) {
+                if (! $el->isVisible()) {
+                    continue;
                 }
+                // Derive the widget type from the element itself rather than from the selector
+                // that matched it - that is the only way a single pass can still build the
+                // correct node class for each filter.
+                $filterNodes[] = UI5FacadeNodeFactory::createFromNodeElement(
+                    $el,
+                    $this->getSession(),
+                    $this->getBrowser()
+                );
             }
         }
 
@@ -978,6 +983,150 @@ class UI5DataNode extends UI5AbstractNode
         }
 
         return $filterNodes;
+    }
+
+    /**
+     * Returns the captions of the currently rendered filters in DOM (visual) order.
+     *
+     * WHY THIS BELONGS ON THE NODE AND NOT IN THE BEHAT CONTEXT: "which filters does this
+     * widget render and in which order" is knowledge about the widget, not about Gherkin.
+     * Keeping it here guarantees that every caller - step definitions as well as the node's
+     * own check* methods - reads the filter order through the exact same traversal that
+     * getFilters() uses, so a step can never drift away from what the node considers a filter.
+     *
+     * @return string[] Trimmed, non-empty filter captions in UI order.
+     */
+    public function getRenderedFilterCaptionsInOrder(): array
+    {
+        $captions = [];
+        // min = 0: a widget legitimately may render no filters at all, and the assertions
+        // below must be able to state exactly that instead of getFilters() aborting the step
+        // with "too few filters found".
+        foreach ($this->getFilters(0) as $filterNode) {
+            $caption = trim($filterNode->getCaption());
+            if ($caption !== '') {
+                $captions[] = $caption;
+            }
+        }
+        return $captions;
+    }
+
+    /**
+     * Asserts that the given filters are rendered in the stated left-to-right order.
+     *
+     * WHY THIS EXISTS: pins the visual filter order after a personalisation or layout change,
+     * which the presence-only filter check cannot detect.
+     *
+     * @param string[] $expectedCaptions Filter captions in the expected order.
+     */
+    public function assertFiltersDisplayedInOrder(array $expectedCaptions): void
+    {
+        $this->assertCaptionsDisplayedInOrder(
+            $expectedCaptions,
+            $this->getRenderedFilterCaptionsInOrder(),
+            'filter'
+        );
+    }
+
+    /**
+     * Asserts that none of the listed filters are rendered in this widget.
+     *
+     * WHY THIS EXISTS: verifying that a role or personalisation actually HIDES a filter is a
+     * negative expectation the positive filter check cannot express.
+     *
+     * @param string[] $unexpectedCaptions Filter captions expected to be absent.
+     */
+    public function assertFiltersNotDisplayed(array $unexpectedCaptions): void
+    {
+        $this->assertCaptionsNotDisplayed(
+            $unexpectedCaptions,
+            $this->getRenderedFilterCaptionsInOrder(),
+            'filter'
+        );
+    }
+
+    /**
+     * Asserts that every expected caption is present in $actual and that the expected captions
+     * appear in $actual in the given relative order.
+     *
+     * WHY RELATIVE ORDER (SUBSEQUENCE) RATHER THAN STRICT FULL-LIST EQUALITY: a widget usually
+     * renders more filters/columns than a single scenario declares, so requiring the actual list
+     * to equal the expected list verbatim would break the assertion whenever an unrelated column
+     * is added. Checking that the listed items appear in the stated order among the rendered ones
+     * keeps the assertion focused on what the author declared.
+     *
+     * WHY IT IS GENERIC OVER "captions": columns and filters need byte-identical semantics and
+     * failure messages. One implementation prevents two copies from drifting apart.
+     *
+     * @param string[] $expected
+     * @param string[] $actual
+     * @param string   $itemLabel Singular noun used in failure messages (e.g. "column").
+     */
+    protected function assertCaptionsDisplayedInOrder(array $expected, array $actual, string $itemLabel): void
+    {
+        // Report a missing item explicitly first: it is a clearer failure than the order check
+        // turning the same problem into a confusing "wrong order" message.
+        foreach ($expected as $item) {
+            Assert::assertContains(
+                $item,
+                $actual,
+                sprintf(
+                    '%s "%s" is not displayed. Displayed %ss: %s',
+                    ucfirst($itemLabel),
+                    $item,
+                    $itemLabel,
+                    implode(', ', $actual)
+                )
+            );
+        }
+
+        // Walk the actual list once, advancing through the expected list whenever the next
+        // expected item is met. Consuming all expected items means their relative order holds.
+        $cursor = 0;
+        foreach ($actual as $actualItem) {
+            if ($cursor < count($expected) && $actualItem === $expected[$cursor]) {
+                $cursor++;
+            }
+        }
+
+        Assert::assertSame(
+            count($expected),
+            $cursor,
+            sprintf(
+                'The %ss are not displayed in the expected order. Expected order: %s. Actual order: %s',
+                $itemLabel,
+                implode(', ', $expected),
+                implode(', ', $actual)
+            )
+        );
+    }
+
+    /**
+     * Asserts that none of the listed captions occur in $actual.
+     *
+     * WHY IT SITS NEXT TO assertCaptionsDisplayedInOrder(): both the column and the filter
+     * absence assertions need the identical message format, so they share one implementation
+     * for the same reason the order check does.
+     *
+     * @param string[] $unexpected
+     * @param string[] $actual
+     * @param string   $itemLabel Singular noun used in failure messages (e.g. "filter").
+     */
+    protected function assertCaptionsNotDisplayed(array $unexpected, array $actual, string $itemLabel): void
+    {
+        foreach ($unexpected as $item) {
+            Assert::assertNotContains(
+                $item,
+                $actual,
+                sprintf(
+                    '%s "%s" is displayed but was expected to be absent. Displayed %ss: %s',
+                    ucfirst($itemLabel),
+                    $item,
+                    $itemLabel,
+                    implode(', ', $actual)
+                )
+            );
+        }
     }
 
     /**
