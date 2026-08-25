@@ -2,45 +2,109 @@
     "uid": "0x11ef9e19d90bd3ce9e19c84bd653ed63",
     "alias_with_namespace": "axenox.bdt.contexts-and-steps",
     "menu_parent_page_selector": "0x11ef9cade73751fa9cad025041000001",
-    "menu_index": 2,
+    "menu_index": 5,
     "menu_visible": true,
-    "name": "Contexts & Steps",
-    "description": "Browse available testing contexts",
+    "name": "Documentation",
+    "description": "Documentation of steps available to use in different contexts",
     "intro": "",
     "replaces_page_selector": null,
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2024-12-03 17:01:22",
-    "modified_by_user_selector": "0x11efa72c1fb56dfea72c025041000001",
-    "modified_on": "2026-08-19 12:38:04",
+    "modified_by_user_selector": "0x11f08ce4baed19b88ce4005056be9857",
+    "modified_on": "2026-08-18 12:33:36",
     "contents": {
         "object_alias": "axenox.BDT.GHERKIN_CONTEXT",
-        "widget_type": "DataTable",
-        "filters": [
+        "widget_type": "SplitHorizontal",
+        "panels": [
             {
-                "attribute_alias": "NAME"
+                "caption": "Available contexts",
+                "width": "25%",
+                "widgets": [
+                    {
+                        "object_alias": "axenox.BDT.GHERKIN_CONTEXT",
+                        "widget_type": "DataTable",
+                        "id": "contexts_table",
+                        "filters": [
+                            {
+                                "attribute_alias": "NAME"
+                            },
+                            {
+                                "attribute_alias": "PATHNAME_RELATIVE"
+                            }
+                        ],
+                        "columns": [
+                            {
+                                "attribute_alias": "NAME"
+                            },
+                            {
+                                "attribute_alias": "APP__ALIAS"
+                            },
+                            {
+                                "attribute_alias": "PATHNAME_RELATIVE"
+                            }
+                        ],
+                        "buttons": [
+                            {
+                                "bind_to_double_click": true,
+                                "action": {
+                                    "alias": "exface.Core.ShowObjectInfoDialog",
+                                    "disable_buttons": false
+                                }
+                            }
+                        ]
+                    }
+                ]
             },
             {
-                "attribute_alias": "PATHNAME_RELATIVE"
-            }
-        ],
-        "columns": [
-            {
-                "attribute_alias": "NAME"
+                "caption": "Steps available in selected context",
+                "widgets": [
+                    {
+                        "object_alias": "axenox.BDT.GHERKIN_ANNOTATION",
+                        "widget_type": "DataTable",
+                        "empty_text": "Please select a context first!",
+                        "filters": [
+                            {
+                                "attribute_alias": "FILE",
+                                "hidden": true,
+                                "required": true,
+                                "value": "=contexts_table!PATHNAME_RELATIVE",
+                                "apply_on_change": true
+                            },
+                            {
+                                "attribute_alias": "STEP"
+                            }
+                        ],
+                        "columns": [
+                            {
+                                "attribute_alias": "STEP"
+                            }
+                        ],
+                        "buttons": [
+                            {
+                                "bind_to_double_click": true,
+                                "action_alias": "exface.Core.ShowObjectInfoDialog"
+                            }
+                        ],
+                        "sorters": [
+                            {
+                                "attribute_alias": "STEP",
+                                "direction": "desc"
+                            }
+                        ]
+                    }
+                ]
             },
             {
-                "attribute_alias": "APP__ALIAS"
-            },
-            {
-                "attribute_alias": "PATHNAME_RELATIVE"
-            }
-        ],
-        "buttons": [
-            {
-                "bind_to_double_click": true,
-                "action": {
-                    "alias": "exface.Core.ShowObjectInfoDialog",
-                    "disable_buttons": false
-                }
+                "caption": "Global documentation",
+                "width": "35%",
+                "widgets": [
+                    {
+                        "widget_type": "Browser",
+                        "object_alias": "exface.Core.Docs",
+                        "base_url": "[#api#]/docs/",
+                        "url": "axenox/bdt/Docs/index.md"
+                    }
+                ]
             }
         ]
     }
