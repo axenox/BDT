@@ -494,12 +494,38 @@
                                 "caption": "Log",
                                 "widgets": [
                                     {
-                                        "attribute_alias": "log",
-                                        "widget_type": "InputMarkdown",
-                                        "disabled": true,
+                                        "widget_type": "Form",
                                         "hide_caption": true,
                                         "width": "100%",
-                                        "height": "100%"
+                                        "height": "100%",
+                                        "widgets": [
+                                            {
+                                                "widget_type": "InputMarkdown",
+                                                "attribute_alias": "log",
+                                                "disabled": true,
+                                                "hide_caption": true,
+                                                "width": "100%",
+                                                "height": "100%"
+                                            }
+                                        ],
+                                        "buttons": [
+                                            {
+                                                "caption": "How to read the log",
+                                                "icon": "question-circle",
+                                                "action": {
+                                                    "alias": "exface.Core.ShowDialog",
+                                                    "dialog": {
+                                                        "widgets": [
+                                                            {
+                                                                "widget_type": "Browser",
+                                                                "object_alias": "exface.Core.DUMMY",
+                                                                "url": "api/docs/axenox/BDT/Docs/Parallel_Run/reading-the-run-log.md"
+                                                            }
+                                                        ]
+                                                    }
+                                                }
+                                            }
+                                        ]
                                     }
                                 ]
                             }

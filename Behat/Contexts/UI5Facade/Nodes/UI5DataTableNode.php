@@ -32,6 +32,33 @@ use PHPUnit\Framework\Assert;
  */
 class UI5DataTableNode extends UI5DataNode
 {
+    /**
+     * CSS of the popup the overflow button is expected to open.
+     */
+    const CSS_OVERFLOW_MENU = '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu';
+    
+    /**
+     * Suffix UI5 appends to an OverflowToolbar's id to build its overflow ("...") button.
+     *
+     * WHY A CONSTANT: the same toolbar id is the bridge between the button and the popup it opens
+     * (see OVERFLOW_MENU_ID_SUFFIX). Both suffixes have to be edited together if a UI5 upgrade ever
+     * changes them, so they live next to each other rather than being inlined at three call sites.
+     */
+    const OVERFLOW_BUTTON_ID_SUFFIX = '-overflowButton';
+
+    /**
+     * Suffix UI5 appends to an OverflowToolbar's id to build the popover holding the moved buttons.
+     */
+    const OVERFLOW_MENU_ID_SUFFIX = '-popover';
+
+    /**
+     * CSS of the toolbar overflow ("...") button.
+     *
+     * WHY ONLY THE ID SUFFIX AND NO LOOSER VARIANTS: the id is what makes the button traceable back
+     * to its toolbar and forward to its popover. A looser `id*="overflowButton"` match could pick an
+     * element that does not follow that naming and would then silently break the popover resolution.
+     */
+    const CSS_OVERFLOW_BUTTON = 'button[id$="' . self::OVERFLOW_BUTTON_ID_SUFFIX . '"]';
 
     public function getCaption(): string
     {
@@ -737,6 +764,203 @@ class UI5DataTableNode extends UI5DataNode
 
         $result->setTitle($result->getTitle() . ' with value "' . $filterVal . '"');
         return $result;
+    }
+
+    /**
+     * Asserts that the given columns are rendered in the stated left-to-right order.
+     *
+     * WHY THIS EXISTS: pins the visual column order (e.g. after a personalisation change),
+     * which the presence-only column check cannot detect.
+     *
+     * @param string[] $expectedCaptions Column captions in the expected order.
+     */
+    public function assertColumnsDisplayedInOrder(array $expectedCaptions): void
+    {
+        $this->assertCaptionsDisplayedInOrder(
+            $expectedCaptions,
+            $this->getRenderedColumnCaptionsInOrder(),
+            'column'
+        );
+    }
+
+    /**
+     * Asserts that none of the listed columns are rendered in this table.
+     *
+     * WHY THIS EXISTS: verifying that a role or personalisation actually HIDES a column is a
+     * negative expectation the positive column check cannot express.
+     *
+     * @param string[] $unexpectedCaptions Column captions expected to be absent.
+     */
+    public function assertColumnsNotDisplayed(array $unexpectedCaptions): void
+    {
+        $this->assertCaptionsNotDisplayed(
+            $unexpectedCaptions,
+            $this->getRenderedColumnCaptionsInOrder(),
+            'column'
+        );
+    }
+
+    /**
+     * Opens the toolbar overflow ("...") menu of THIS table and returns the opened popover.
+     *
+     * WHY IT RETURNS THE POPOVER: the step that follows this one always wants to act on an entry of
+     * that menu. Handing back the resolved container means the follow-up step never has to search
+     * the page for "a popover" and can never act on the menu of the neighbouring table.
+     *
+     * @throws RuntimeException If no overflow button is rendered, if it is rendered but hidden, or
+     *         if clicking it does not open the menu.
+     * @return NodeElement The opened overflow popover.
+     */
+    public function clickOverflowButton(): NodeElement
+    {
+        $button = $this->findOverflowButton();
+        if ($button === null) {
+            throw new RuntimeException(
+                'Overflow button not found for table `' . $this->getCaption() . '`'
+            );
+        }
+
+        // Distinguish "not rendered" from "rendered but hidden": UI5 keeps the overflow button in the
+        // DOM and only shows it once the toolbar actually overflows. Clicking a hidden button does
+        // nothing at all, which would otherwise surface as the misleading "menu did not open" below.
+        if (! $this->isElementVisibleInBrowser($button)) {
+            throw new RuntimeException(
+                'Overflow button of table `' . $this->getCaption()
+                . '` exists but is not visible - the toolbar is wide enough to show all buttons'
+            );
+        }
+
+        $this->getBrowser()->highlightWidget($button, 'Button', 0);
+        $button->click();
+
+        $menu = $this->waitForOverflowMenu($button);
+        if ($menu === null) {
+            // Retry once: the first click is occasionally swallowed while UI5 is still attaching the
+            // toolbar press handler, and a second click then opens the menu.
+            $button->click();
+            $menu = $this->waitForOverflowMenu($button);
+        }
+
+        if ($menu === null) {
+            throw new RuntimeException(
+                'Overflow button of table `' . $this->getCaption()
+                . '` was clicked, but its overflow menu did not become visible'
+            );
+        }
+
+        return $menu;
+    }
+
+    /**
+     * Clicks an entry of this table's toolbar overflow menu, opening the menu first if needed.
+     *
+     * WHY IT OPENS THE MENU ITSELF: a scenario reads "click X in the overflow menu" as one action.
+     * Requiring a separate opening step would make the assertion depend on step ordering and would
+     * break as soon as UI5 closes the popover on its own (e.g. after a re-render).
+     *
+     * WHY THE POPOVER IS PASSED AS SCOPE: getWidgetScope() stops at the nearest `role="dialog"`
+     * ancestor, and the overflow popover carries exactly that role - so the button search is
+     * guaranteed to stay inside this table's menu and can never reach the toolbar behind it.
+     *
+     * @param string $caption Caption of the entry, exactly as rendered in the menu.
+     * @throws RuntimeException If the menu holds no visible entry with that caption.
+     */
+    public function clickOverflowMenuItem(string $caption): void
+    {
+        $menu = $this->clickOverflowButton();
+
+        // isTranslated = true: the caption comes from the scenario and is already written the way
+        // the user sees it, so it must not be run through the translator again.
+        $item = $this->findVisibleButtonByCaption($caption, true, $menu);
+
+        if ($item === null) {
+            throw new RuntimeException(
+                'No entry `' . $caption . '` in the overflow menu of table `' . $this->getCaption() . '`'
+            );
+        }
+
+        $this->getBrowser()->highlightWidget($item, 'Button', 0);
+        $item->click();
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+    }
+
+    /**
+     * Waits until the overflow popover belonging to the given overflow button is visible.
+     *
+     * WHY THE POPOVER IS DERIVED FROM THE BUTTON ID: UI5 names both after the toolbar that owns
+     * them - `<toolbarId>-overflowButton` opens `<toolbarId>-popover`. Every other way of finding
+     * the popup is ambiguous on a page with several tables, because the popovers carry generic ids
+     * (`__toolbar0-popover`, `__toolbar1-popover`) and identical CSS classes, and UI5 keeps a once
+     * opened popover in the DOM afterwards. Searching for "a popover" would therefore happily match
+     * the leftover popup of the OTHER table and let the following step click the wrong entry.
+     *
+     * WHY IT POLLS FOR VISIBILITY INSTEAD OF EXISTENCE: for the same reason - the element exists in
+     * the DOM from the first open onwards, so its mere presence proves nothing about this click.
+     *
+     * @param NodeElement $overflowButton
+     * @param int $timeoutSeconds
+     * @return NodeElement|null Null when the menu did not become visible in time.
+     */
+    protected function waitForOverflowMenu(NodeElement $overflowButton, int $timeoutSeconds = 5): ?NodeElement
+    {
+        $buttonId = (string) $overflowButton->getAttribute('id');
+        $toolbarId = substr($buttonId, 0, -strlen(self::OVERFLOW_BUTTON_ID_SUFFIX));
+        $menuId = $toolbarId . self::OVERFLOW_MENU_ID_SUFFIX;
+
+        $page = $this->getSession()->getPage();
+        $deadline = microtime(true) + $timeoutSeconds;
+
+        do {
+            // XPath rather than a CSS id selector: UI5 ids start with underscores and contain
+            // characters that would have to be escaped in CSS, and an XPath literal needs no escaping.
+            $menu = $page->find('xpath', '//*[@id=' . $this->xpathLiteral($menuId) . ']');
+            if ($menu !== null && $this->isElementVisibleInBrowser($menu)) {
+                return $menu;
+            }
+            // 100 ms is a compromise: short enough to not add noticeable latency to a passing step,
+            // long enough to keep the number of synchronous CDP round trips per wait in the tens.
+            usleep(100000);
+        } while (microtime(true) < $deadline);
+
+        return null;
+    }
+
+    /**
+     * Locates the toolbar overflow button belonging to THIS table.
+     *
+     * WHY IT MAY HAVE TO LOOK BEYOND getNodeElement(): depending on the facade template the
+     * `.exfw-DataTable` element is sometimes the sapUiTable itself, with the toolbar rendered as a
+     * sibling above it. getWidgetScope() resolves the nearest ancestor holding both.
+     *
+     * WHY THE COUNT CHECK: widening the scope is only safe as long as it stays inside ONE table. On
+     * a split layout the nearest rendered widget root can span several tables, and silently taking
+     * the first overflow button found there would operate on the neighbouring table - the exact kind
+     * of failure a test cannot notice, because the menu does open, just for the wrong widget.
+     * Refusing an ambiguous scope turns that into a visible, explainable failure.
+     *
+     * @throws RuntimeException If the widened scope contains more than one overflow button.
+     * @return NodeElement|null
+     */
+    protected function findOverflowButton(): ?NodeElement
+    {
+        // The table element first: when the toolbar IS inside it, this is unambiguous by definition.
+        $button = $this->getNodeElement()->find('css', self::CSS_OVERFLOW_BUTTON);
+        if ($button !== null) {
+            return $button;
+        }
+
+        $scope = $this->getWidgetScope($this->getNodeElement());
+        $buttons = $scope->findAll('css', self::CSS_OVERFLOW_BUTTON);
+
+        if (count($buttons) > 1) {
+            throw new RuntimeException(
+                'Cannot tell which overflow button belongs to table `' . $this->getCaption()
+                . '`: its table element has none and the surrounding widget scope contains '
+                . count($buttons) . ' of them'
+            );
+        }
+
+        return $buttons[0] ?? null;
     }
 
     /**

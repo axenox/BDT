@@ -25,6 +25,11 @@ use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ButtonNode;
 class UI5FacadeNodeFactory
 {
     private static $classesByWidgetType = [];
+    
+    /**
+     * Cache for resolved widget type hierarchy checks, keyed by "<type>|<baseType>".
+     */
+    private static $widgetTypeHierarchyCache = [];
 
     /**
      * Creates a node object for a specific widget type
@@ -212,5 +217,46 @@ class UI5FacadeNodeFactory
     private static function getNodeClass(string $widgetType): string
     {
         return __NAMESPACE__ . '\\Nodes\\UI5' . $widgetType . 'Node';
+    }
+
+    /**
+     * Tells whether a widget type is the given base type itself or is derived from it.
+     *
+     * WHY: Gherkin steps address widgets by a single type name (e.g. `widget of type "Input"`),
+     * while the rendered DOM only ever carries the CONCRETE widget type as a CSS class. Without a
+     * hierarchy check, every step would have to enumerate all specialisations by hand and a step
+     * like `it has 2 widget of type "Input"` would silently under-count an `InputComboTable`,
+     * `InputDate` or `InputNumber` although the metamodel derives all of them from `Input`.
+     * Resolving the question against the metamodel widget classes keeps feature files readable and
+     * automatically covers widget types added to the core later on.
+     *
+     * @param string $widgetType The concrete widget type found in the DOM
+     * @param string $baseWidgetType The widget type requested by the test step
+     * @return bool
+     */
+    public static function isWidgetTypeDerivedFrom(string $widgetType, string $baseWidgetType) : bool
+    {
+        $cacheKey = $widgetType . '|' . $baseWidgetType;
+        if (array_key_exists($cacheKey, self::$widgetTypeHierarchyCache)) {
+            return self::$widgetTypeHierarchyCache[$cacheKey];
+        }
+
+        if (strcasecmp($widgetType, $baseWidgetType) === 0) {
+            return self::$widgetTypeHierarchyCache[$cacheKey] = true;
+        }
+
+        // getWidgetClassFromType() returns a leading-backslash FQCN - strip it, so the value can be
+        // used as an array key and compared consistently.
+        $class = ltrim(WidgetFactory::getWidgetClassFromType($widgetType), '\\');
+        $baseClass = ltrim(WidgetFactory::getWidgetClassFromType($baseWidgetType), '\\');
+
+        // Widget types read from the DOM may come from an app outside the core or may have no PHP
+        // class at all. Treat those as unrelated instead of letting is_a() trigger the autoloader
+        // for a class that will never exist.
+        if (! class_exists($class) || ! class_exists($baseClass)) {
+            return self::$widgetTypeHierarchyCache[$cacheKey] = false;
+        }
+
+        return self::$widgetTypeHierarchyCache[$cacheKey] = is_a($class, $baseClass, true);
     }
 }
