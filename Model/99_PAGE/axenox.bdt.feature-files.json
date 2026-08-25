@@ -10,8 +10,8 @@
     "replaces_page_selector": null,
     "created_by_user_selector": "0x11eca7f5b092f284a7f5005056bea39f",
     "created_on": "2025-10-08 18:22:39",
-    "modified_by_user_selector": "0x11f08ce4baed19b88ce4005056be9857",
-    "modified_on": "2026-08-18 12:14:07",
+    "modified_by_user_selector": "0x11efa72c1fb56dfea72c025041000001",
+    "modified_on": "2026-08-25 11:03:09",
     "contents": {
         "object_alias": "exface.Core.DUMMY",
         "widget_type": "SplitHorizontal",
@@ -31,6 +31,10 @@
                                         "caption": "Features",
                                         "id": "features_table",
                                         "filters": [
+                                            {
+                                                "caption": "Feature Name",
+                                                "attribute_alias": "FEATURE_NAME"
+                                            },
                                             {
                                                 "attribute_alias": "PATHNAME_RELATIVE",
                                                 "caption": "File"
