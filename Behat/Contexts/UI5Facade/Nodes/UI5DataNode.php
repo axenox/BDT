@@ -960,7 +960,7 @@ class UI5DataNode extends UI5AbstractNode
             // was therefore NOT the visual order as soon as a widget mixed both filter kinds, and
             // an element carrying both classes would even have been counted twice. A single
             // combined selector yields each filter exactly once, in the order the user sees it.
-            foreach ($container->findAll('css', '.exfw-Filter, .exfw-RangeFilter') as $el) {
+            foreach ($container->findAll('css', '.exfw-Filter, .exfw-RangeFilter, .exf-spinner-filter, .exf-spinner-range') as $el) {
                 if (! $el->isVisible()) {
                     continue;
                 }
