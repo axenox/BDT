@@ -63,4 +63,22 @@ interface ScreenshotProviderInterface
      * @return string|null The URL where the screenshot was captured, or null if not set
      */
     public function getUrl(): ?string;
+
+    /**
+     * Store the UID of the run the current screenshot belongs to.
+     *
+     * Needed so screenshots can be grouped into one folder per run (Screenshots/<run_uid>/), which
+     * keeps a run's shots together and lets cleanup drop a whole run's folder at once.
+     *
+     * @param string $runUid The UID of the current test run
+     * @return void
+     */
+    public function setRunUid(string $runUid): void;
+
+    /**
+     * Get the UID of the run the current screenshot belongs to.
+     *
+     * @return string|null The run UID, or null if not set
+     */
+    public function getRunUid(): ?string;
 }

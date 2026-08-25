@@ -6,7 +6,7 @@ use Behat\Behat\EventDispatcher\Event\ScenarioTested;
 use Behat\Testwork\EventDispatcher\Event\SuiteTested;
 use Behat\Testwork\Exception\ExceptionPresenter;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
-use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
+use axenox\BDT\Behat\Common\ErrorManager;
 
 class GlobalExceptionListener implements EventSubscriberInterface
 {

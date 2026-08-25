@@ -9,7 +9,7 @@ use axenox\BDT\Exceptions\FetchApiException;
 use axenox\BDT\Exceptions\MessagePageException;
 use axenox\BDT\Exceptions\TracerException;
 use axenox\BDT\Exceptions\UIException;
-use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
+use axenox\BDT\Behat\Common\ErrorManager;
 use Behat\Mink\Session;
 use exface\Core\Exceptions\RuntimeException;
 use GuzzleHttp\Psr7\Request;

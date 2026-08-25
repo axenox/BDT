@@ -85,26 +85,29 @@
     ],
     "rows": [
         {
-            "_EXPORT_SUMMARY": "BDT run suite stats [axenox.BDT.run_suite_stats]",
-            "CREATED_ON": "2025-07-31 13:08:30",
-            "MODIFIED_ON": "2025-07-31 13:10:14",
-            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "UID": "0x11f0b1e8b104e7a4b1e8025041000001",
+            "_EXPORT_SUMMARY": "Parallel run logs [axenox.BDT.run_log]",
+            "CREATED_ON": "2026-08-18 14:03:00",
+            "MODIFIED_ON": "2026-08-24 11:53:58",
+            "CREATED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
+            "MODIFIED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
+            "UID": "0x11f19760c28268049760025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
             "COMMENTS": "",
             "DOCS": "",
-            "NAME": "BDT run suite stats",
-            "INHERIT_DATA_SOURCE_BASE_OBJECT": 0,
-            "DATA_SOURCE": "0x11f0aee48b2814e8aee4025041000001",
+            "NAME": "Parallel run logs",
+            "INHERIT_DATA_SOURCE_BASE_OBJECT": 1,
+            "DATA_SOURCE": "0x11e6b09e2002641f8943e4b318306b9a",
             "APP": "0x11efa2214f96c8b8a221025041000001",
             "SHORT_DESCRIPTION": "",
             "PARENT_OBJECT": null,
-            "DATA_ADDRESS_PROPS": null,
+            "DATA_ADDRESS_PROPS": {
+                "delete_empty_folders": true,
+                "force_filtering": true
+            },
             "DEFAULT_EDITOR_UXON": null,
-            "ALIAS": "run_suite_stats",
-            "DATA_ADDRESS": "bdt_run_suite_stats"
+            "ALIAS": "run_log",
+            "DATA_ADDRESS": "data/axenox/BDT/Logs/*"
         }
     ],
     "totals_rows": [],

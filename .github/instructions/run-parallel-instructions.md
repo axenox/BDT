@@ -131,8 +131,11 @@ launches still ends up in the database.
 
 Two sweeps, both needed:
 
-* **Identity-based:** profile directories are named `<run_uid>_laneN`. Any directory whose run is
-  provably no longer active is reclaimed immediately — even if it crashed minutes ago.
+* **Identity-based:** profile directories are named `<run_uid>_laneN`. An unfinished run whose
+  `started_on` is older than `start + max_runtime + margin` has provably either finalized or been
+  killed by the launcher, so it can no longer own a live browser and its directory is reclaimed
+  immediately. When the coordinator lifetime is **unknown** (the launcher env var is absent), this sweep
+  is skipped entirely — nothing can be proven dead. See §7b.
 * **Age-based (6 h):** for everything that cannot be attributed (interactive profiles,
   half-deleted leftovers).
 
@@ -325,6 +328,50 @@ instead — far cheaper than deleting a healthy feature run.
 
 ---
 
+## 7b. The coordinator lifetime — `EXFACE_TASK_TIMEOUT_SECONDS`
+
+The two worker timeouts above bound a single **feature**. Neither bounds the **whole run** — that
+ceiling is external: it is the launcher timeout enforced by Symfony `Process` in Core's
+`CliCommandRunner`, fed by the scheduler task's `command_timeout` (see `18_SCHEDULER.json`, currently
+`3 hours` = 10800 s). When that timeout expires the coordinator process is hard-killed wherever it
+happens to be — for a long run, inside the fleet drain — leaving the run row with `finished_on` NULL,
+no duration and no log even though hours of results were produced, indistinguishable from a traceless
+crash.
+
+The launched action is a fresh OS process, so the authoritative number must reach it from outside.
+There is exactly **one** source, because there is exactly one place that enforces it: Core's
+`CliTaskQueue` sets the environment variable **`EXFACE_TASK_TIMEOUT_SECONDS`** to the exact timeout it
+computed and will enforce on this process. It is not a copy of the ceiling, it **is** the ceiling, so it
+can never drift.
+
+There is deliberately **no** CLI option and **no** config key for this number. Either would be a human
+copy of a value owned elsewhere and would silently go stale. Worse, a run started by hand has no
+external ceiling at all, so a hand-written lifetime would only make the coordinator cut itself short
+against a deadline nobody enforces — a deadline with no enforcer is not a deadline.
+
+When the env var is absent, `resolveMaxRuntime()` returns **NULL**. NULL means "unbounded in practice"
+(nothing kills this process), not "unlimited by design": every consumer must refuse to conclude anything
+from it — no self-imposed deadline, and the identity-based orphan sweep is skipped. A present-but-non-
+positive value is refused loudly.
+
+Given the lifetime, the coordinator sets a **self-imposed deadline** measured from the very start of
+`perform()` (not from run-row creation — `Behat init` alone can take minutes): at
+`start + max_runtime − CLOSEOUT_BUDGET_SECONDS` it stops dispatching new features and kills its running
+lanes, then finalizes the run normally. The reserved close-out budget means the launcher's hard kill
+can no longer land inside the finalize. Features killed or never dispatched at the deadline are recorded
+as failures (naming the deadline), so a suite that outgrew its window surfaces red instead of silently
+truncating. A deadline kill does **not** count towards a lane's consecutive-timeout strike count.
+
+The lifetime the coordinator was given is logged at startup and printed in the startup banner (mirrored
+into the run log), so the granted number is readable straight from the run record.
+
+The same lifetime also governs the orphan-profile sweep (§5, Phase 3): past `start + max_runtime + margin` an
+unfinished run has provably either finalized or been killed, so it can no longer own a live browser.
+When the lifetime is unknown the identity sweep is skipped entirely — nothing bounds an unfinished run,
+so nothing can be proven dead, and only the age-based (mtime) sweep reclaims anything.
+
+---
+
 ## 8. Isolation: ports, profiles, users, debugger
 
 ### Chrome ports
@@ -433,6 +480,9 @@ budget and truncate away the coordinator diagnostics the log exists for.
 | `--suite` | one of three | Named Behat suite. Mutually exclusive with `--feature` |
 | `--behat_config` | no | Base `behat.yml` the lanes import. Defaults to the installation-root file |
 | `--chrome_path` | no | Real `chrome.exe`. Defaults to `PARALLEL.CHROME_PATH` |
+
+> The coordinator lifetime is **not** a CLI option — it arrives only via the `EXFACE_TASK_TIMEOUT_SECONDS`
+> environment variable the launcher sets (see §7b). There is deliberately no `--max_runtime` option.
 
 ### App config (`axenox.BDT`)
 
