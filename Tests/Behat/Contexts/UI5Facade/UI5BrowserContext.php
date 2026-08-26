@@ -568,7 +568,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * @Then I should see the page
      */
-    public function iShouldSeeThePage()
+    public function iShouldSeeThePage(): void
     {
         // Get the current page object
         $page = $this->getSession()->getPage();
@@ -586,8 +586,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * allowed to see and do.
      *
      * - The page is given as its alias plus ".html", e.g. "exface.core.logs.html".
-     * - "as :userRole" lets you test permissions. It needs to be alias with app alias of 
-     *   the role like "exface.Core.SUPERUSER" or name of the role. You can pass several 
+     * - "as :userRole" lets you test permissions. It needs to be alias with app alias of
+     *   the role like "exface.Core.SUPERUSER" or name of the role. You can pass several
      *   roles separated by commas.
      * - "with locale :locale" switches the language/formatting, e.g. "de_DE" or "en_US".
      *
@@ -601,8 +601,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @Given I log in to the page :url
      * @Given I log in to the page :url as :userRole
      * @Given I log in to the page :url as :userRole with locale :locale
+     * @throws \Exception
      */
-    public function iLogInToPage(string $url, string $userRoles = null, string $userLocale = null)
+    public function iLogInToPage(string $url, string $userRoles = null, string $userLocale = null): void
     {
         // Persist login parameters so recoverChrome() can replay them.
         $this->lastLoginUrl = $url;
@@ -634,7 +635,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Fill the form
         $this->browserLogin($url, $tabCaption, $btnCaption, $loginFields, $userRolesArray);
     }
-    
+
     /**
      * Replays the browser-side login: visits the page, opens the authenticator tab, fills the
      * form and submits it. This is the only work a fresh Chrome actually needs to log back in —
@@ -645,11 +646,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * cached on the first login, avoiding the USER_AUTHENTICATOR optimistic-lock conflict that a
      * second setupUser() call would cause.
      *
-     * @param string $url         Page URL to log in to
-     * @param string $tabCaption  Caption of the authenticator tab to open
-     * @param string $btnCaption  Caption of the login submit button
-     * @param array  $loginFields Form fields as caption => value (without the _tab/_button keys)
-     * @param array  $userRoles   Array of user roles
+     * @param string $url Page URL to log in to
+     * @param string $tabCaption Caption of the authenticator tab to open
+     * @param string $btnCaption Caption of the login submit button
+     * @param array $loginFields Form fields as caption => value (without the _tab/_button keys)
+     * @param array $userRoles Array of user roles
+     * @throws \Exception
      */
     private function browserLogin(string $url, string $tabCaption, string $btnCaption, array $loginFields, array $userRoles): void
     {
@@ -708,7 +710,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * @param string $url URL to navigate to (will be appended to base URL)
      * @return void
-     * @throws \Exception
+     * @throws \Throwable
      */
     public function iVisitPage(string $url): void
     {
@@ -823,6 +825,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * @param int $number Expected number of widgets
      * @param string $widgetType Type of widget to look for
+     * @throws \Exception
      */
     public function itHasWidgetsOfType(int $number, string $widgetType): void
     {
@@ -1042,7 +1045,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * a readable failure at this point instead of a fatal "call to undefined method" much later.
      *
      * @param int $index 1-based index of the table on the page.
-     * @throws RuntimeException If the table is not rendered or is not a DataTable node.
+     * @throws RuntimeException|\Exception If the table is not rendered or is not a DataTable node.
      * @return UI5DataTableNode
      */
     private function getDataTableNodeByIndex(int $index): UI5DataTableNode
@@ -1116,7 +1119,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $widgetType        Widget type as understood by findWidgetNodes(), e.g. 'DataTable'.
      * @param int    $number            1-based position of the widget on the page.
      * @param int    $timeoutInSeconds  How long to wait for the widgets to appear.
-     * @throws RuntimeException If no widget of that type is rendered or fewer than $number are.
+     * @throws \Exception If no widget of that type is rendered or fewer than $number are.
      * @return FacadeNodeInterface
      */
     private function getWidgetNodeByIndex(string $widgetType, int $number, int $timeoutInSeconds = 15): FacadeNodeInterface
@@ -1138,92 +1141,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
 
         return $node;
-    }
-
-    /**
-     * Returns the captions of the currently rendered filters in DOM (visual) order.
-     *
-     * WHY THIS EXISTS: the filter order/visibility steps need the same focus guard and the
-     * same DOM-ordered filter source. Centralising it keeps those steps short and guarantees
-     * they all read filters the same way getFilters() renders them.
-     *
-     * @return string[] Trimmed, non-empty filter captions in UI order.
-     */
-    private function getVisibleFilterCaptionsInOrder(): array
-    {
-        $focusedNode = $this->getBrowser()->getFocusedNode();
-        Assert::assertInstanceOf(
-            UI5DataNode::class,
-            $focusedNode,
-            'No data widget is focused (current focus: "'
-            . ($focusedNode ? get_class($focusedNode) : 'none')
-            . '"). Focus a data widget first, e.g. with "I look at table 1".'
-        );
-
-        $captions = [];
-        // min = 0: a widget legitimately may show no filters, and these steps must be able to
-        // assert exactly that instead of throwing "too few filters found".
-        foreach ($focusedNode->getFilters(0) as $filterNode) {
-            $caption = trim($filterNode->getCaption());
-            if ($caption !== '') {
-                $captions[] = $caption;
-            }
-        }
-        return $captions;
-    }
-
-    /**
-     * Asserts that every expected caption is present in $actual and that the expected
-     * captions appear in $actual in the given relative order.
-     *
-     * WHY relative order (subsequence) rather than strict full-list equality: a table
-     * usually renders more filters/columns than a single scenario declares, so requiring
-     * the actual list to equal the expected list verbatim would break the step whenever an
-     * unrelated column is added. Checking that the listed items appear in the stated order
-     * among the actually rendered ones keeps the assertion focused on what the author
-     * declared while staying robust to surrounding filters/columns.
-     *
-     * @param string[] $expected
-     * @param string[] $actual
-     * @param string   $itemLabel Singular noun used in failure messages (e.g. "column").
-     */
-    private function assertDisplayedInOrder(array $expected, array $actual, string $itemLabel): void
-    {
-        // Report a missing item explicitly first: it is a clearer failure than the order
-        // check turning the same problem into a confusing "wrong order" message.
-        foreach ($expected as $item) {
-            Assert::assertContains(
-                $item,
-                $actual,
-                sprintf(
-                    '%s "%s" is not displayed. Displayed %ss: %s',
-                    ucfirst($itemLabel),
-                    $item,
-                    $itemLabel,
-                    implode(', ', $actual)
-                )
-            );
-        }
-
-        // Walk the actual list once, advancing through the expected list whenever the next
-        // expected item is met. Consuming all expected items means their relative order holds.
-        $cursor = 0;
-        foreach ($actual as $actualItem) {
-            if ($cursor < count($expected) && $actualItem === $expected[$cursor]) {
-                $cursor++;
-            }
-        }
-
-        Assert::assertSame(
-            count($expected),
-            $cursor,
-            sprintf(
-                'The %ss are not displayed in the expected order. Expected order: %s. Actual order: %s',
-                $itemLabel,
-                implode(', ', $expected),
-                implode(', ', $actual)
-            )
-        );
     }
 
     /**
@@ -1316,39 +1233,47 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Checks that every row of a named column contains the given value.
+     * Checks that EVERY row of a named column contains the given value.
      *
-     * Use this when you want to confirm a value shows up somewhere in a column, without
-     * requiring every row to match. This is the "at least one row" counterpart to
-     * "I see :text in column :columnName" (which requires all rows to match). Focus a table
+     * The match is a case-insensitive substring check, so "Open" also matches a cell
+     * reading "Open (reassigned)". Use it after searching or filtering to confirm that
+     * the whole result set really is restricted to the expected value. Focus a table
      * first (e.g. "I look at table 1").
      *
      * Usage example:
      *
      *   When I look at table 1
+     *   And I enter "Open" in filter "Status"
+     *   And I click button "Search"
      *   Then The column "Status" contains value "Open"
      *
      * @Then The column :columnName contains value :value
      *
      * @param string $columnName Caption of the column to inspect.
-     * @param string $value      Value expected in at least one row of that column.
+     * @param string $value      Value that every row of that column must contain.
      */
     public function theColumnContainsValue(string $columnName, string $value): void
     {
-        $cellValues = $this->getFocusedDataTableNode()->getColumnCellValues($columnName);
+        $table = $this->getFocusedDataTableNode();
 
-        $needle = trim($value);
-        $found = in_array($needle, array_map('trim', $cellValues), true);
-
-        Assert::assertTrue(
-            $found,
-            sprintf(
-                'Column "%s" does not contain value "%s". Found values: %s',
-                $columnName,
-                $value,
-                implode(' | ', $cellValues)
-            )
+        // WHY THE EMPTINESS GUARD: "every row contains X" is vacuously true for a table
+        // without rows, so the verification below would report 0/0 matches as a pass and
+        // the step would go green although nothing was checked. An empty result set is
+        // exactly the situation this step is meant to catch (filter returned nothing,
+        // data missing), so it must fail loudly instead of silently succeeding.
+        Assert::assertNotEmpty(
+            $table->getTableRows(),
+            sprintf('Cannot verify column "%s": the focused table has no rows.', $columnName)
         );
+
+        // WHY verifyTableContent() INSTEAD OF AN OWN LOOP: it already resolves the column
+        // against the rendered headers, crosses the fixed/scroll table split and applies
+        // the default "[" comparator, which is a case-insensitive "contains" evaluated for
+        // every row - precisely the semantics of this step. Re-implementing the traversal
+        // here would duplicate that logic and let the two drift apart.
+        $table->verifyTableContent([
+            ['column' => $columnName, 'value' => $value]
+        ]);
     }
 
     /**
@@ -1434,73 +1359,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Provides detailed debugging information when button search fails
-     *
-     * Logs:
-     * - Widget HTML content
-     * - All buttons within the widget
-     * - All buttons on the page
-     *
-     * @param string $caption The button caption being searched
-     * @param NodeElement $widget The widget being searched
-     */
-    private function debugButtonSearchContext(string $caption, $widget)
-    {
-        // Log the HTML content of the current widget
-        echo "Widget HTML Content:\n";
-        echo $widget->getHtml() . "\n\n";
-
-        // List all buttons within the widget
-        echo "All Buttons in Widget:\n";
-        $buttons = $widget->findAll('css', 'button');
-        foreach ($buttons as $btn) {
-            echo "Button Text: " . $btn->getText() . "\n";
-            echo "Button Title: " . $btn->getAttribute('title') . "\n";
-            echo "Button Classes: " . $btn->getAttribute('class') . "\n\n";
-        }
-
-        // List all buttons on the page
-        echo "All Buttons on Page:\n";
-        $pageButtons = $this->getSession()->getPage()->findAll('css', 'button');
-        foreach ($pageButtons as $btn) {
-            echo "Button Text: " . $btn->getText() . "\n";
-            echo "Button Title: " . $btn->getAttribute('title') . "\n";
-            echo "Button Classes: " . $btn->getAttribute('class') . "\n\n";
-        }
-    }
-
-    /**
-     * Provides detailed debugging information when button click fails
-     *
-     * Logs:
-     * - Button text
-     * - Button visibility status
-     * - Button enabled/disabled state
-     * - Executes JavaScript to further investigate button properties
-     *
-     * @param NodeElement $button The button that failed to click
-     * @param string $caption The button's caption
-     */
-    private function debugButtonClickContext($button, string $caption)
-    {
-        // Log basic button properties
-
-        echo "Button Click Debug:\n";
-        echo "Button Text: " . $button->getText() . "\n";
-        echo "Button Visibility: " . ($button->isVisible() ? 'Visible' : 'Hidden') . "\n";
-        echo "Button Enabled: " . ($button->hasAttribute('disabled') ? 'Disabled' : 'Enabled') . "\n";
-
-        // Use JavaScript to perform additional button property checks
-        $this->getSession()->executeScript("
-        var button = arguments[0];
-        console.log('Button found:', button);
-        console.log('Button text:', button.textContent);
-        console.log('Button visibility:', button.offsetParent !== null);
-        console.log('Button disabled:', button.disabled);
-    ", [$button->getXpath()]);
-    }
-
-    /**
      * Switches to a tab by the text on its header.
      *
      * Many pages and dialogs group content into tabs. Use this step to open a specific tab by
@@ -1516,7 +1374,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $caption Text caption of the tab to click
      * @return void
      */
-    public function iClickTab(string $caption)
+    public function iClickTab(string $caption): void
     {
         $this->getBrowser()->goToTab($caption);
     }
@@ -1602,7 +1460,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string|null $tableName Optional caption or object of the widget to search in
      * @throws \Exception If button is not found
      */
-    public function iSeeButton(string $buttonText, string $tableName = null)
+    public function iSeeButton(string $buttonText, string $tableName = null): void
     {
         // Resolve the search scope ONCE, before the button loop - the scope depends on the step,
         // not on the individual button, and resolving it per button would repeat the DOM type scan
@@ -1667,8 +1525,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @Then the column :columnName in data spreadsheet should be disabled
      *
      * @param string $columnName Caption of the spreadsheet column to check
+     * @throws \Exception
      */
-    public function theColumnInDataSpreadsheetShouldBeDisabled($columnName)
+    public function theColumnInDataSpreadsheetShouldBeDisabled(string $columnName): void
     {
         // Find the column by its header text
         $dataSpreadSheetNode = $this->getBrowser()->findWidgetNodes("DataSpreadSheet", 15);
@@ -1699,7 +1558,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $class = $cell->getAttribute('class');
 
             // If the class is not readonly class throw Exception
-            if (strpos($class, 'readonly') === false) {
+            if (!str_contains($class, 'readonly')) {
                 throw new \Exception("Column '$columnName' is NOT disabled in row " . ($rowIndex + 1));
             }
         }
@@ -1729,8 +1588,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * @param TableNode $table Rows with "Column" and "Value" pairs to fill in
      * @param int|string|null $rowIndex 1-based row number, or null for the last row
+     * @throws \Exception
      */
-    public function iFillTheNthRowOfDataSpreadsheetWith(TableNode $table, $rowIndex = null)
+    public function iFillTheNthRowOfDataSpreadsheetWith(TableNode $table, int|string $rowIndex = null): void
     {
         if ($rowIndex === null) {
             $rowIndex = 'last';
@@ -1877,7 +1737,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $cells = $dataTable->getNodeElement()->findAll('css', 'td');
         // Check each cell for the specified text
         foreach ($cells as $cell) {
-            if (strpos($cell->getText(), $text) !== false) {
+            if (str_contains($cell->getText(), $text)) {
                 $found = true;
                 break;
             }
@@ -1984,6 +1844,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @When I visit the following pages:
      *
      * @param TableNode $table Table of page URLs to visit (column "url")
+     * @throws \Exception
      */
     public function iVisitTheFollowingPages(TableNode $table): void
     {
@@ -2032,11 +1893,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *   Then all pages should load successfully
      *
      * @Then all pages should load successfully
+     * 
+     * @throws \Throwable If any page has errors or the UI framework is not stable after navigation
      */
     public function allPagesShouldLoadSuccessfully(): void
     {
         // Verify no errors in current session
-        $this->browser->getErrorDetector()->assertNoErrors();
+        $this->getBrowser()->getErrorDetector()->assertNoErrors();
 
         // Verify UI5 is in stable state
         $isStable = $this->getSession()->evaluateScript(
@@ -2090,10 +1953,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * @param int $rowNumber The 1-based number of the row to select
      */
-    public function iSelectTableRow(int $rowNumber)
+    public function iSelectTableRow(int $rowNumber): void
     {
         // Use the focused table (if there is no error, throw an error)
-        /** @var \axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataTableNode $table */
         $table = $this->getFocusedDataTableNode();
         $table->selectRow($rowNumber);
 
@@ -2132,7 +1994,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $buttonCaption Text of the button to click
      * @param int|string $tableIndex 1-based index of the table whose button to click (e.g. 2 or "2.")
      */
-    public function iClickButtonOnTable(string $buttonCaption, $tableIndex = 1)
+    public function iClickButtonOnTable(string $buttonCaption, int|string $tableIndex = 1): void
     {
         // Wait for all pending operations to complete
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
@@ -2258,7 +2120,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param int|string|null $tableIndex 1-based index of the table (e.g. 2 or "2."), optional
      * @return void
      */
-    public function iClickTableOverflowButton($tableIndex = null): void
+    public function iClickTableOverflowButton(int|string $tableIndex = null): void
     {
         $table = $tableIndex === null
             ? $this->getFocusedDataTableNode()
@@ -2294,7 +2156,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $caption Caption of the menu entry to click.
      * @param int|string|null $tableIndex 1-based table index (e.g. 2 or "2."), optional.
      */
-    public function iClickOverflowMenuItem(string $caption, $tableIndex = null): void
+    public function iClickOverflowMenuItem(string $caption, int|string $tableIndex = null): void
     {
         $table = $tableIndex === null
             ? $this->getFocusedDataTableNode()
@@ -2360,7 +2222,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * @param string $tileNames Comma-separated list of expected tile captions
      */
-    public function iSeeTiles($tileNames): void
+    public function iSeeTiles(string $tileNames): void
     {
         // Convert the comma-separated tile names into an array
         // Trims whitespace and handles multiple tile names
@@ -2418,7 +2280,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * @param string $tileNames Comma-separated list of the only tiles expected
      */
-    public function iOnlySeeTiles($tileNames): void
+    public function iOnlySeeTiles(string $tileNames): void
     {
         $captions = $this->explodeList($tileNames);
 
@@ -2461,7 +2323,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $unexpectedButtons Comma-separated list of buttons expected to be absent
      * @param string|null $tableIndex Optional 1-based table index to scope the check
      */
-    public function iDoNotSeeTheFollowingButtons($unexpectedButtons, $tableIndex = null)
+    public function iDoNotSeeTheFollowingButtons(string $unexpectedButtons, $tableIndex = null): void
     {
         // Parse the comma-separated tile list
         $unexpectedButtons = $this->explodeList($unexpectedButtons);
@@ -2536,7 +2398,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $subfolder Name of the test-data subfolder to load
      * @return void
      */
-    public function testDataIsLoaded(string $appAlias, string $subfolder)
+    public function testDataIsLoaded(string $appAlias, string $subfolder): void
     {
         $workbench = $this->getWorkbench();
         $appSelector = new AppSelector($workbench, $appAlias);
@@ -2547,66 +2409,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
     }
 
-
-    /**
-     * Verifies that a toast message appears with the expected text
-     *
-     * @param string $expectedText The text (or part of text) expected in the toast
-     * @param int $timeout Maximum time to wait for the toast in seconds
-     * @return void
-     * @throws RuntimeException if toast message is not found
-     */
-    private function verifyToastMessage(string $expectedText, int $timeout = 30): void
-    {
-
-        // Start timer
-        $start = time();
-        $toastFound = false;
-
-        // Try to find the toast message with retries
-        while ((time() - $start) < $timeout && !$toastFound) {
-            // Look for toast message elements
-            $toastElements = $this->getBrowser()->getPage()->findAll('css', '.sapMMessageToast');
-
-            foreach ($toastElements as $toast) {
-                $toastText = $toast->getText();
-
-                $this->logDebug("Found toast: $toastText\n");
-
-                // Check if the toast contains the expected text
-                if (strpos($toastText, $expectedText) !== false) {
-
-                    $this->logDebug("✓ Found expected toast message: \"$toastText\"\n");
-                    $toastFound = true;
-                    break;
-                }
-            }
-
-            if (!$toastFound) {
-                // Wait a short time before retrying
-                usleep(500000); // 0.5 seconds
-            }
-        }
-
-        // Assert that the toast was found
-        if (!$toastFound) {
-            throw new RuntimeException(
-                "Expected toast message containing \"$expectedText\" did not appear within $timeout seconds"
-            );
-        }
-
-        // Wait a moment to let the toast disappear (if needed)
-        sleep(1);
-
-    }
-
     /**
      * @BeforeScenario
      */
-    public function resetAjaxLog(BeforeScenarioScope $scope)
+    public function resetAjaxLog(BeforeScenarioScope $scope): void
     {
-        if ($this->browser) {
-            $this->browser->clearXHRLog();
+        if ($this->getBrowser()) {
+            $this->getBrowser()->clearXHRLog();
             $this->logDebug("\nXHR logs cleared before scenario: " . $scope->getScenario()->getTitle() . "\n");
         }
     }
@@ -2816,7 +2625,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *  3) UI5Browser re-initialization after navigation
      *
      * @param string $pageAlias
-     * @throws \Exception
+     * @throws \Throwable
      */
     private function navigateToPageAlias(string $pageAlias): void
     {
@@ -2955,7 +2764,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $targetPageAlias The alias of the page to open after recovery
      *                                (typically the tile page that was being tested
      *                                when Chrome hung).
-     * @throws RuntimeException If no login parameters are available (recoverChrome()
+     * @throws \Throwable If no login parameters are available (recoverChrome()
      *                           was called before iLogInToPage() ever ran).
      */
     public function recoverChrome(string $targetPageAlias): void
