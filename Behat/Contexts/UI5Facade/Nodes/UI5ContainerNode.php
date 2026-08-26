@@ -1,4 +1,5 @@
 <?php
+
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
@@ -6,20 +7,17 @@ use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
 use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Exceptions\ChromeHangException;
 use axenox\BDT\Interfaces\TestResultInterface;
+use exface\Core\Facades\ConsoleFacade\CliOutputPrinter;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\WidgetInterface;
+use exface\Core\Interfaces\Widgets\iContainOtherWidgets;
+use exface\Core\Widgets\Container;
 
 /**
- * @method \exface\Core\Widgets\Container getWidget()
+ * @method Container getWidget()
  */
 class UI5ContainerNode extends UI5AbstractNode
 {
-    public function getCaption(): string
-    {
-        // TODO
-        return '';
-    }
-
     /**
      * Validates every visible child widget of this container.
      *
@@ -42,7 +40,7 @@ class UI5ContainerNode extends UI5AbstractNode
      *
      * {@inheritDoc}
      */
-    public function checkWorksAsExpected(LogBookInterface $logbook) : TestResultInterface
+    public function checkWorksAsExpected(LogBookInterface $logbook): TestResultInterface
     {
         $containerAlias = $this->getWidget()->getPage()->getAliasWithNamespace();
         $childWidgets = $this->getWidget()->getWidgets();
@@ -89,14 +87,31 @@ class UI5ContainerNode extends UI5AbstractNode
                     // this container page so the retry starts from a clean state.
                     $this->getBrowser()->recoverChrome($containerAlias);
                 }
+                 catch (\Throwable $e) {
+                    // Record the failure on the child and keep testing its siblings.
+                    // WHY: a single widget that cannot even be looked at - e.g. a `Markdown`, whose
+                    // facade element needs a controller that does not exist outside a rendering
+                    // request - used to abort the whole container. One broken widget then hid every
+                    // other widget of the same dialog from the report. The error is not swallowed:
+                    // it is written to the logbook and shown as a FAILED substep of its own.
+                    $caption = $childWidget->getCaption() ?: $childWidget->getId();
+                    $this->logSubstep(
+                        'Looking at ' . $childWidget->getWidgetType() . ' "' . $caption . '"',
+                        StepStatusDataType::FAILED,
+                        CliOutputPrinter::printExceptionMessage($e)
+                    );
+                    $logbook->addLine('**Failed** to check ' . $childWidget->getWidgetType() . ' `' . $caption . '`: ' . CliOutputPrinter::printExceptionMessage($e));
+                    $failed = true;
+                    break; // this child is done - move on to the next sibling
+                }
             }
         }
         return $failed ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
     }
 
-    protected function checkChildWorksAsExpected(WidgetInterface $childWidget, LogBookInterface $logbook) : TestResultInterface
+    protected function checkChildWorksAsExpected(WidgetInterface $childWidget, LogBookInterface $logbook): TestResultInterface
     {
-        $childElementId = $this->getElementIdFromWidget($childWidget);
+        $childElementId = $this->getBrowser()->getElementIdFromWidget($childWidget);
         // Respect UI5's runtime visibility decision before doing anything else.
         // WHY: a child widget can be visible in the server-side model (so isHidden()
         // returns false and the caller does not skip it) yet be hidden by UI5 at render
@@ -113,18 +128,87 @@ class UI5ContainerNode extends UI5AbstractNode
         }
         $childWidgetElement = $this->getNodeElement()->find('css', '#' . $childElementId);
 
-        // Give an asynchronously rendered child a chance to appear before declaring it missing.
-        // WHY: a single find() returns immediately, so a child UI5 has not rendered yet is
-        // indistinguishable from one that does not exist at all. These failures were being recorded
-        // within hundredths of a millisecond, which is far too fast to be a trustworthy verdict.
         if ($childWidgetElement === null) {
+            // Separate "rendered nothing" from "not there at all" before blaming the widget.
+            if ($this->isRenderedEmptyByUI5($childElementId)) {
+                // A container is never skipped just because it has no element of its own.
+                // WHY: UI5 gives some containers a DOM root under a derived id - a
+                // sap.ui.layout.form.FormContainer renders as "<controlId>---Panel" - so getDomRef()
+                // is null although the container and all of its children are on screen. Skipping it
+                // would silently drop every widget inside, which is exactly the coverage this check
+                // exists to provide. The children carry their own ids, so searching them in this
+                // node's scope finds them.
+                if ($childWidget instanceof iContainOtherWidgets) {
+                    // Only descend if at least one child is actually on screen.
+                    // WHY: a container without an element of its own can mean two very different
+                    // things. Either UI5 gave it a derived DOM id (a FormContainer renders as
+                    // "<controlId>---Panel") and everything inside is visible - then descending is the
+                    // whole point. Or the container is not rendered at all because the current data
+                    // does not show it, and then every child is missing too. Descending in the second
+                    // case turns one honest "not on screen" into a row per child and buries the report.
+                    $anyChildRendered = false;
+                    foreach ($childWidget->getWidgets() as $grandChild) {
+                        if ($grandChild->isHidden()) {
+                            continue;
+                        }
+                        $grandChildId = $this->getBrowser()->getElementIdFromWidget($grandChild);
+                        if ($grandChildId !== '' && $this->getNodeElement()->find('css', '#' . $grandChildId) !== null) {
+                            $anyChildRendered = true;
+                            break;
+                        }
+                    }
+                    if ($anyChildRendered === true) {
+                        $logbook->addLine($childWidget->getWidgetType() . ' `' . $childWidget->getId()
+                            . '` has no DOM element of its own - checking its children in the scope of '
+                            . $this->getWidget()->getWidgetType());
+                        $node = UI5FacadeNodeFactory::createFromWidgetType(
+                            $childWidget->getWidgetType(),
+                            $this->getNodeElement(),
+                            $this->getSession(),
+                            $this->getBrowser(),
+                            $childWidget
+                        );
+                        return $node->checkWorksAsExpected($logbook);
+                    }
+                }
+                $logbook->addLine('Skipping ' . $childWidget->getWidgetType() . ' with id "' . $childElementId
+                    . '" — not on screen: UI5 created the control but rendered nothing (e.g. a message without text)');
+                return $this->logSubstep(
+                    'Looking at ' . $childWidget->getWidgetType() . ' "' . ($childWidget->getCaption() ?: $childWidget->getId()) . '"',
+                    StepStatusDataType::SKIPPED,
+                    'Not on screen: UI5 created the control but rendered nothing - it or its parent is not shown for the current data',
+                    null
+                )->getResult();
+            }
+            
+            // Ask the node itself whether it expects an element of its own before waiting for one.
+            // WHY here and not earlier: for the vast majority of widgets the first find() succeeds and
+            // nothing extra is needed. Only when it fails is it worth asking, and asking before the
+            // wait avoids spending a full wait cycle on a widget that will never have an element -
+            // e.g. a `Tabs` inside a maximized `Dialog`, which the facade renders as sections of the
+            // dialog's ObjectPageLayout without any control for the `Tabs` widget itself.
+            $node = UI5FacadeNodeFactory::createFromWidgetType(
+                $childWidget->getWidgetType(),
+                $this->getNodeElement(),
+                $this->getSession(),
+                $this->getBrowser(),
+                $childWidget
+            );
+            if ($node->usesOwnDomElement() === false) {
+                return $node->checkWorksAsExpected($logbook);
+            }
+
+            // Give an asynchronously rendered child a chance to appear before declaring it missing.
+            // WHY: a single find() returns immediately, so a child UI5 has not rendered yet is
+            // indistinguishable from one that does not exist at all. These failures were being recorded
+            // within hundredths of a millisecond, which is far too fast to be a trustworthy verdict.
             $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
             $childWidgetElement = $this->getNodeElement()->find('css', '#' . $childElementId);
         }
 
         if ($childWidgetElement === null) {
             $caption = $childWidget->getCaption();
-            if (! $caption) {
+            if (!$caption) {
                 $caption = 'with id "' . $childWidget->getId() . '"';
             } else {
                 $caption = '"' . $caption . '"';
@@ -141,10 +225,36 @@ class UI5ContainerNode extends UI5AbstractNode
             );
             $childResult = $resultEvent->getResult();
         } else {
-            $node = UI5FacadeNodeFactory::createFromWidgetType($childWidget->getWidgetType(), $childWidgetElement, $this->getSession(), $this->getBrowser());
+            $node = UI5FacadeNodeFactory::createFromWidgetType($childWidget->getWidgetType(), $childWidgetElement, $this->getSession(), $this->getBrowser(), $childWidget);
             $childResult = $node->checkWorksAsExpected($logbook);
         }
         return $childResult;
+    }
+
+    /**
+     * Tells whether UI5 knows a control with the given id although it has no DOM element.
+     *
+     * WHY this is needed next to isHiddenByUI5Placeholder(): UI5 marks a control with visible=false by
+     * replacing it with <span id="sap-ui-invisible-{controlId}">, which the placeholder check finds. A
+     * control whose renderer decides to write nothing at all - a sap.m.MessageStrip without text is
+     * the known case - leaves no placeholder and no element either. From the DOM alone that is
+     * indistinguishable from a control that was never created, i.e. from a real defect. The UI5
+     * control registry can tell the two apart: it still holds the control in the first case and knows
+     * nothing in the second.
+     *
+     * @param string $childElementId
+     * @return bool
+     */
+    private function isRenderedEmptyByUI5(string $childElementId) : bool
+    {
+        $idJs = json_encode($childElementId, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        return (bool) $this->getFromJavascript(<<<JS
+(function(sId){
+    var oCtrl = sap.ui.getCore().byId(sId);
+    return oCtrl !== undefined && oCtrl !== null && oCtrl.getDomRef() === null;
+})($idJs)
+JS
+        );
     }
 
     /**
@@ -160,7 +270,7 @@ class UI5ContainerNode extends UI5AbstractNode
      * @param string $childElementId
      * @return bool
      */
-    private function isHiddenByUI5Placeholder(string $childElementId) : bool
+    private function isHiddenByUI5Placeholder(string $childElementId): bool
     {
         $placeholder = $this->getNodeElement()->find('css', '#sap-ui-invisible-' . $childElementId);
         if ($placeholder === null) {

@@ -3,6 +3,7 @@ namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Behat\Common\ErrorManager;
 use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5AbstractNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ContainerNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5MenuButtonNode;
@@ -1372,7 +1373,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     public function iClickButton(string $caption): void
     {
         // Get the currently focused widget's node element
-        $widget = $this->getBrowser()->getFocusedNode()->getNodeElement();
+        $focusedNode = $this->getBrowser()->getFocusedNode();
+        $widget = $focusedNode->getNodeElement();
 
         if (!$widget) {
             throw new RuntimeException("No focused widget found");
@@ -1381,58 +1383,37 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // First, try standard Mink named button search within the widget
         $button = $widget->find('named', ['button', $caption]);
 
-        // If standard search fails, use alternative search strategies
-        if (!$button) {
-            // Find all buttons within the widget
-            $buttons = $widget->findAll('css', 'button');
+        // Then the loose search (text/tooltip, case insensitive) - first inside the focused widget,
+        // then page wide. Both used to be hand-written copies of the same loop; they now share
+        // findButtonInScopeByCaption() so a change to what "matches the caption" means is made once.
+        $button = $button ?? $this->getBrowser()->findButtonInScopeByCaption($widget, $caption);
 
-            foreach ($buttons as $btn) {
-                // Check the matches
-                if (stripos($btn->getText(), $caption) !== false) {
-                    $button = $btn;
-                    break;
-                }
-
-                // Title attribute control
-                if (
-                    $btn->getAttribute('title') &&
-                    stripos($btn->getAttribute('title'), $caption) !== false
-                ) {
-                    $button = $btn;
-                    break;
-                }
-            }
+        // Last resort: the toolbar overflow of the FOCUSED widget. WHY the instanceof: with nothing
+        // focused, getFocusedNode() returns a UI5PageNode, which is not a UI5AbstractNode and offers
+        // no overflow lookup at all. That is deliberate - opening a menu picked by guesswork would
+        // click a same-named button of some other widget and the step would still turn green.
+        if ($button === null && $focusedNode instanceof UI5AbstractNode) {
+            $button = $focusedNode->findInOverflow(function (NodeElement $menu) use ($caption) {
+                return $this->getBrowser()->findButtonInScopeByCaption($menu, $caption);
+            });
         }
 
-        // If still doesn't find, check it in entire page
         if (!$button) {
-            $page = $this->getSession()->getPage();
-            $buttons = $page->findAll('css', 'button');
-
-            foreach ($buttons as $btn) {
-                // Check button text for caption match
-                if (stripos($btn->getText(), $caption) !== false) {
-                    $button = $btn;
-                    break;
-                }
-            }
+            $hint = $focusedNode instanceof UI5AbstractNode
+                ? ' - it is not in the widget, on the page or behind its toolbar overflow'
+                : ' - no widget is focused, so the toolbar overflow was not searched. Focus one first,'
+                . ' e.g. with "I look at table 1", or name the table in the step';
+            throw new RuntimeException('Button "' . $caption . '" not found' . $hint);
         }
 
-        // If button is still not found, provide detailed debug information
-        if (!$button) {
-            // Log detailed search context for debugging
-            //$this->debugButtonSearchContext($caption, $widget);
-
-            throw new RuntimeException("Button '$caption' not found in the current widget or page");
-        }
-
-        // Make sure the button is not disabled before attempting to click it.
-        // Mirrors UI5ButtonNode::checkDisabled(), which treats the presence of the
-        // "disabled" attribute as the button being disabled. Clicking a disabled
-        // button would either be silently ignored by UI5 or throw an obscure driver
-        // error, so fail early with a clear assertion message instead.
+        // Make sure the button is not disabled before attempting to click it. WHY: UI5 silently
+        // swallows clicks on disabled buttons - the driver reports a successful click, the step turns
+        // green and nothing happened. WHY NOT ONLY THE `disabled` ATTRIBUTE: UI5 renders a disabled
+        // sap.m.Button via aria-disabled plus the sapMBtnDisabled class and frequently without the
+        // HTML attribute at all, so the attribute-only check let disabled buttons pass as clickable.
+        $buttonNode = UI5FacadeNodeFactory::createFromNodeElement($button, $this->getSession(), $this->browser);
         Assert::assertFalse(
-            $button->hasAttribute('disabled'),
+            $buttonNode->checkDisabled(),
             'Button "' . $caption . '" is disabled and cannot be clicked'
         );
 
@@ -2167,6 +2148,18 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         // Find the button
         $button = $this->getBrowser()->findButtonByCaption($buttonCaption, $targetTable);
+        if ($button === null) {
+            // The button may have been moved into this table's toolbar overflow popover, where no
+            // DOM search inside the table element can reach it. Scoping the fallback to the node of
+            // THIS table keeps the guarantee documented above: no page-wide search, so a same-named
+            // button of another table can still never be clicked by accident.
+            $tableNode = UI5FacadeNodeFactory::createFromNodeElement($targetTable, $this->getSession(), $this->getBrowser());
+            if ($tableNode instanceof UI5AbstractNode) {
+                $button = $tableNode->findInOverflow(function (NodeElement $menu) use ($buttonCaption) {
+                    return $this->getBrowser()->findButtonInScopeByCaption($menu, $buttonCaption);
+                });
+            }
+        }
         // Check and click the button
         Assert::assertNotNull($button, "Button '$buttonCaption' not found");
         Assert::assertTrue($button->isVisible(), "Button '$buttonCaption' is not visible");
@@ -2176,8 +2169,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // turns that false green into a clear message. Mirrors the identical check in
         // iClickButton() and UI5ButtonNode::checkDisabled(), which both treat the presence of
         // the "disabled" attribute as the button being disabled.
+        $buttonNode = UI5FacadeNodeFactory::createFromNodeElement($button, $this->getSession(), $this->browser);
         Assert::assertFalse(
-            $button->hasAttribute('disabled'),
+            $buttonNode->checkDisabled(),
             'Button "' . $buttonCaption . '" is disabled and cannot be clicked'
         );
         $this->getBrowser()->highlightWidget($button, 'Button', 0);
