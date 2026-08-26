@@ -31,9 +31,23 @@ interface ScreenshotProviderInterface
     /**
      * Get the name/identifier of the current screenshot.
      *
+     * This is the BASE name the next capture should use - the UID of the step row that would own the
+     * image. Consumers that need the file that was actually written must use getFileName().
+     *
      * @return string|null The screenshot name, or null if not set
      */
     public function getName(): ?string;
+
+    /**
+     * Get the name of the file that was actually written by the last capture.
+     *
+     * Kept separate from getName(): that one returns the base name a capture should use, this one the
+     * resulting file name including its extension. Consumers that build a stored path must use this
+     * method - using the base name produces a path to a file that does not exist.
+     *
+     * @return string|null The written file name, or null if nothing was captured
+     */
+    public function getFileName(): ?string;
 
     /**
      * Get the relative path to the screenshot file.
@@ -45,9 +59,25 @@ interface ScreenshotProviderInterface
     /**
      * Check if a screenshot has been captured.
      *
+     * Answers "was anything captured at all" and therefore cannot tell WHICH row the picture belongs
+     * to. Consumers that write the path onto a specific row must use isCapturedFor().
+     *
      * @return bool True if a screenshot was captured, false otherwise
      */
     public function isCaptured(): bool;
+
+    /**
+     * Check whether the last captured screenshot belongs to the given step.
+     *
+     * Needed because the picture is taken while the failing row is still open, but the row is closed
+     * several calls later - and failure cleanup, nested substeps or back navigation move the provider
+     * on to another row in between. Comparing the owner is the only way to attach the image to the
+     * row it actually shows.
+     *
+     * @param string|null $stepName The name/identifier the row was registered under
+     * @return bool True if a screenshot was captured for exactly that step
+     */
+    public function isCapturedFor(?string $stepName): bool;
 
     /**
      * Store the URL where the screenshot was captured.
@@ -81,4 +111,13 @@ interface ScreenshotProviderInterface
      * @return string|null The run UID, or null if not set
      */
     public function getRunUid(): ?string;
+
+    /**
+     * Forget the last captured screenshot, keeping the step the provider currently points at.
+     *
+     * Needed so a picture taken for one step can never be reported for the next one.
+     *
+     * @return void
+     */
+    public function reset(): void;
 }
