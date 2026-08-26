@@ -16,6 +16,7 @@ Each entry has four parts:
 
 | What you see | Go to |
 |---|---|
+| `"User authentication" ... field "Modified on" is required` on a fresh environment | [Timestamping guard killed the INSERT](#timestamping-guard-killed-the-insert) |
 | `finished_on` is NULL, run log empty, no diagnostic trace | [Invisible close-out](#invisible-close-out) |
 | Run completed on disk but DB rows are empty | [Silent DB write failure](#silent-db-write-failure) |
 | Deadlock victim errors during parallel runs | [Deadlock on shared writes](#deadlock-on-shared-writes) |
@@ -25,6 +26,42 @@ Each entry has four parts:
 | Chrome fails to launch, every login fails | [Cross-account profile reuse](#cross-account-profile-reuse) |
 | Real concurrency capped at ~2 lanes | [Xdebug serialized the fleet](#xdebug-serialized-the-fleet) |
 | Run duration in the DB is 1000× too small | [duration_ms holds seconds](#duration_ms-holds-seconds) |
+
+---
+
+## Timestamping guard killed the INSERT
+
+**Symptom.** On a **newly set up environment** every lane died right at login with
+`Cannot rollback transaction after error! Initial error: "User authentication" konnte nicht
+gespeichert werden. Das Feld "Modified on" ist erforderlich und darf nicht leer sein.`
+The same code ran fine on environments that had been used before.
+
+**Root cause.** `AuthenticatorTimeStampingTrait::withoutAuthenticatorTimeStamping()` called
+`$behavior->disable()` on the whole `TimeStampingBehavior` of `exface.Core.USER_AUTHENTICATOR`.
+`AbstractBehavior::disable()` unregisters **every** listener of the behavior — not just the
+optimistic-lock check on update, but also `OnBeforeCreateDataEvent → onCreateSetValues()`, which is
+what fills `CREATED_ON` / `MODIFIED_ON` / `*_BY_USER`.
+
+On an environment that had been used before, the authenticator row already exists, so
+`AbstractAuthenticator::logSuccessfulAuthentication()` issues an **UPDATE** that carries the
+previously read `MODIFIED_ON` value — nothing is ever NULL and the missing listener is invisible. On
+a fresh environment the row does not exist yet, so the very same code issues an **INSERT** with no
+timestamps at all, and `exf_user_authenticator.modified_on` is `datetime NOT NULL`. The database
+rejects it, the core turns that into a `DataQueryNotNullConstraintError` and the enclosing
+transaction can no longer be rolled back — hence the misleading rollback wrapper on top.
+
+The error message names an *attribute*, so it reads like a metamodel/required-flag problem. It is
+not: it is a plain NOT NULL violation reported through the attribute name.
+
+**Fix.** The guard only ever needed the conflict check gone, never the timestamps. It now flips
+`check_for_conflicts_on_update` off via `setCheckForConflictsOnUpdate(false)` and restores it in
+`finally`, instead of disabling the behavior. The "changed in the meantime" error the guard exists
+for is still suppressed, while creates and updates keep getting their timestamps.
+
+**How to recognize it again.** A NOT NULL / "field is required" error for a *system* attribute
+(`Modified on`, `Created on`) that appears only on environments where the affected row is being
+created for the first time. Whenever a behavior is switched off to suppress one of its checks, ask
+which of its *other* listeners went away with it.
 
 ---
 
