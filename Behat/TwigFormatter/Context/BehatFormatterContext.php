@@ -2,6 +2,7 @@
 namespace axenox\BDT\Behat\TwigFormatter\Context;
 
 use axenox\BDT\Behat\Common\BdtPaths;
+use axenox\BDT\Behat\Common\ErrorManager;
 use axenox\BDT\Behat\Common\ScreenshotAwareInterface;
 use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
 use Behat\Behat\Context\SnippetAcceptingContext;
@@ -20,7 +21,7 @@ use exface\Core\Exceptions\RuntimeException;
 class BehatFormatterContext extends MinkContext implements SnippetAcceptingContext, ScreenshotAwareInterface
 {
     private $currentScenario;
-    protected static $currentSuite;
+    protected static string $currentSuite;
 
     // Nullable with a default: the setter is called by the context initializer, and a capture that
     // somehow runs before it must degrade instead of raising an uninitialized-property fatal inside an
@@ -37,7 +38,7 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
      * @param BeforeFeatureScope $scope
      *
      */
-    public static function setUpScreenshotSuiteEnvironment4ElkanBehatFormatter(BeforeFeatureScope $scope)
+    public static function setUpScreenshotSuiteEnvironment(BeforeFeatureScope $scope)
     {
         self::$currentSuite = $scope->getSuite()->getName();
     }
@@ -45,7 +46,7 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
     /**
      * @BeforeScenario
      */
-    public function setUpScreenshotScenarioEnvironmentElkanBehatFormatter(BeforeScenarioScope $scope)
+    public function setUpScreenshotScenarioEnvironment(BeforeScenarioScope $scope)
     {
         $this->currentScenario = $scope->getScenario();
     }
@@ -72,7 +73,7 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
         try {
             $this->captureScreenshot();
         } catch (\Throwable $e) {
-            error_log('Screenshot capture failed for a failed step: ' . $e->getMessage());
+            ErrorManager::getInstance()->logException($e, $this->getWorkbench());
         }
     }
 

@@ -58,4 +58,17 @@ interface FacadeNodeInterface extends WorkbenchDependantInterface
     public function reset() : FacadeNodeInterface;
     
     public function checkDisabled(): bool;
+
+    /**
+     * Tells whether the facade renders this kind of widget as a control of its own.
+     *
+     * WHY this exists: not every widget of the model becomes a DOM element. A `Tabs` widget inside a
+     * maximized `Dialog` is the clearest case - the facade folds every `Tab` directly into the
+     * dialog's ObjectPageLayout and never creates a control for the `Tabs` widget itself. A node
+     * returning FALSE is handed the surrounding container's element as a search scope and locates its
+     * parts by itself. Everything else keeps the normal "find my element by id" behaviour.
+     *
+     * @return bool
+     */
+    public function usesOwnDomElement() : bool;
 }

@@ -1,41 +1,20 @@
 <?php
+
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
-use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
 use axenox\BDT\Interfaces\TestResultInterface;
-use exface\Core\Interfaces\Debug\LogBookInterface;
 use Behat\Mink\Element\NodeElement;
+use exface\Core\Interfaces\Debug\LogBookInterface;
 use PHPUnit\Framework\Assert;
 
 class UI5DialogNode extends UI5ContainerNode
 {
-    /**
-     * Returns the title text shown in this dialog's header.
-     *
-     * WHY an own implementation: a sap.m.Dialog does not carry its title in `aria-label` - it points to
-     * a separate <h1 id="<dialogId>-title"> via `aria-labelledby`. The inherited aria-label based
-     * caption therefore always came back empty for dialogs, which made every log line and every step
-     * that identifies a dialog by its title unusable.
-     */
-    public function getCaption() : string
-    {
-        $dialogId = $this->getNodeElement()->getAttribute('id');
-        if ($dialogId !== null && $dialogId !== '') {
-            $title = $this->getNodeElement()->find('css', '#' . $dialogId . '-title');
-            if ($title !== null) {
-                return trim($title->getText());
-            }
-        }
-
-        // Fall back to the generic aria-label based caption for dialogs rendered without a title control
-        return parent::getCaption();
-    }
-    
-    public function checkWorksAsExpected(LogBookInterface $logbook) : TestResultInterface
+    public function checkWorksAsExpected(LogBookInterface $logbook): TestResultInterface
     {
         $logbook->addLine('Seeing the dialog ' . $this->getCaption());
         $dialog = $this->getNodeElement();
 
+        $result = parent::checkWorksAsExpected($logbook);
         // Only look for the close button INSIDE this dialog. Searching the whole
         // page would match stale buttons of other UI5 navigation pages/dialogs
         // (e.g. the many "back" buttons left behind while navigating in and out).
@@ -67,7 +46,29 @@ class UI5DialogNode extends UI5ContainerNode
 
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
         $logbook->addIndent(-1);
-        return SubstepResult::createPassed($logbook);
+        return $result;
+    }
+
+    /**
+     * Returns the title text shown in this dialog's header.
+     *
+     * WHY an own implementation: a sap.m.Dialog does not carry its title in `aria-label` - it points to
+     * a separate <h1 id="<dialogId>-title"> via `aria-labelledby`. The inherited aria-label based
+     * caption therefore always came back empty for dialogs, which made every log line and every step
+     * that identifies a dialog by its title unusable.
+     */
+    public function getCaption(): string
+    {
+        $dialogId = $this->getNodeElement()->getAttribute('id');
+        if ($dialogId !== null && $dialogId !== '') {
+            $title = $this->getNodeElement()->find('css', '#' . $dialogId . '-title');
+            if ($title !== null) {
+                return trim($title->getText());
+            }
+        }
+
+        // Fall back to the generic aria-label based caption for dialogs rendered without a title control
+        return parent::getCaption();
     }
 
     /**
@@ -77,7 +78,7 @@ class UI5DialogNode extends UI5ContainerNode
      * @param string $captionKey translation key, e.g. ACTION.GENERIC.CLOSE
      * @return NodeElement|null
      */
-    private function findDialogButtonByCaption(NodeElement $dialog, string $captionKey) : ?NodeElement
+    private function findDialogButtonByCaption(NodeElement $dialog, string $captionKey): ?NodeElement
     {
         $caption = $this->getBrowser()
             ->getWorkbench()
@@ -115,7 +116,7 @@ class UI5DialogNode extends UI5ContainerNode
      * @param NodeElement $dialog
      * @return NodeElement|null
      */
-    private function findDialogBackButton(NodeElement $dialog) : ?NodeElement
+    private function findDialogBackButton(NodeElement $dialog): ?NodeElement
     {
         $dialogId = $dialog->getAttribute('id');
         if ($dialogId !== null && $dialogId !== '') {
@@ -143,7 +144,7 @@ class UI5DialogNode extends UI5ContainerNode
      * @param NodeElement $dialog
      * @return bool true if the ESC key could be dispatched
      */
-    private function pressEscapeOnDialog(NodeElement $dialog) : bool
+    private function pressEscapeOnDialog(NodeElement $dialog): bool
     {
         $dialogId = $dialog->getAttribute('id');
         if ($dialogId === null || $dialogId === '') {
@@ -166,6 +167,6 @@ class UI5DialogNode extends UI5ContainerNode
 })();
 JS;
 
-        return (bool) $this->getSession()->evaluateScript($script);
+        return (bool)$this->getSession()->evaluateScript($script);
     }
 }

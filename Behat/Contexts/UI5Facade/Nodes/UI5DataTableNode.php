@@ -32,34 +32,6 @@ use PHPUnit\Framework\Assert;
  */
 class UI5DataTableNode extends UI5DataNode
 {
-    /**
-     * CSS of the popup the overflow button is expected to open.
-     */
-    const CSS_OVERFLOW_MENU = '.sapMPopover, .sapMMenu, [role="menu"], .sapUiMenu';
-    
-    /**
-     * Suffix UI5 appends to an OverflowToolbar's id to build its overflow ("...") button.
-     *
-     * WHY A CONSTANT: the same toolbar id is the bridge between the button and the popup it opens
-     * (see OVERFLOW_MENU_ID_SUFFIX). Both suffixes have to be edited together if a UI5 upgrade ever
-     * changes them, so they live next to each other rather than being inlined at three call sites.
-     */
-    const OVERFLOW_BUTTON_ID_SUFFIX = '-overflowButton';
-
-    /**
-     * Suffix UI5 appends to an OverflowToolbar's id to build the popover holding the moved buttons.
-     */
-    const OVERFLOW_MENU_ID_SUFFIX = '-popover';
-
-    /**
-     * CSS of the toolbar overflow ("...") button.
-     *
-     * WHY ONLY THE ID SUFFIX AND NO LOOSER VARIANTS: the id is what makes the button traceable back
-     * to its toolbar and forward to its popover. A looser `id*="overflowButton"` match could pick an
-     * element that does not follow that naming and would then silently break the popover resolution.
-     */
-    const CSS_OVERFLOW_BUTTON = 'button[id$="' . self::OVERFLOW_BUTTON_ID_SUFFIX . '"]';
-
     public function getCaption(): string
     {
         return strstr($this->getNodeElement()->getAttribute('aria-label'), "\n", true);
@@ -253,8 +225,15 @@ class UI5DataTableNode extends UI5DataNode
      * row" error unless a row is selected first. Centralizing this here - instead of
      * reacting to the error at each call site - lets every caller (toolbar buttons,
      * menu-button entries, ...) satisfy the precondition deterministically from the
-     * action model. Re-selecting an already selected row is avoided, because clicking a
-     * selected row selector toggles it back off.
+     * action model.
+     *
+     * Why the selection is made exclusive instead of additive:
+     * This used to only check whether row 1 was selected. When a previously tested button
+     * left another row selected (the readiness loop walks rows until one enables the
+     * button), row 1 was not selected, so row 1 was added on top - two selected rows, and
+     * the action failed with "please select exactly 1 record". Reducing the selection to
+     * exactly the required rows makes the precondition independent of whatever the
+     * previous button left behind.
      *
      * @param ActionInterface $action
      * @return bool True if the precondition is satisfied (or not required); false if a
@@ -265,12 +244,15 @@ class UI5DataTableNode extends UI5DataNode
         if ($action->getInputRowsMin() < 1) {
             return true;
         }
-        if ($this->getLoadedRowCount() < 1) {
+        $loadedRowCount = $this->getLoadedRowCount();
+        if ($loadedRowCount < 1) {
             return false;
         }
-        if (! $this->isRowSelected(1)) {
-            $this->selectRow(1);
-        }
+        // Some actions require more than one row. Never ask for more rows than the first
+        // page actually holds - clicking a non-existent row selector would throw instead
+        // of letting the action report its own, far more readable error.
+        $requiredRowCount = min($action->getInputRowsMin(), $loadedRowCount);
+        $this->ensureExactlySelectedRows(range(1, $requiredRowCount));
         return true;
     }
 
@@ -279,21 +261,67 @@ class UI5DataTableNode extends UI5DataNode
         return count($this->getTableRows());
     }
 
+    /**
+     * Makes sure the given (1-based) row is selected, leaving every other row untouched.
+     *
+     * Why this is idempotent:
+     * The row selector is a toggle - clicking an already selected row deselects it. Callers
+     * that simply want "row N selected" (e.g. the "I select table row" step) would otherwise
+     * have to track the current state themselves, and getting that wrong silently turns a
+     * selection into a deselection. Checking first makes the method safe to call repeatedly.
+     * Rows other than N are deliberately left alone, so scenarios that select several rows
+     * on purpose keep working - use ensureExactlySelectedRows() when an exclusive selection
+     * is needed.
+     *
+     * @param int $rowNumber 1-based row number
+     * @return void
+     */
     public function selectRow(int $rowNumber)
     {
-        $rowIndex = $this->convertOrdinalToIndex($rowNumber);
+        // An overflow popover left open by a preceding button lookup swallows the next click on the
+        // page underneath it, so the row selector click would only close the popover instead of
+        // selecting the row. This is the single choke point through which every row click of this
+        // node goes (selectEachRowUntil, ensureExactlyOneRowSelected, the "I select table row" step),
+        // so closing it here covers all of them at once.
+        $this->closeOverflowMenuIfOpened();
+        
+        if (! $this->isRowSelected($rowNumber)) {
+            $this->toggleRowSelection($rowNumber);
+        }
+    }
 
-        // Find the rows
-        $rows = $this->getNodeElement()->findAll('css', '.sapUiTableTr, .sapMListTblRow');
-        Assert::assertNotEmpty($rows, "No rows found in table");
+    /**
+     * Clicks the row selector of the given (1-based) row, flipping its selection state.
+     *
+     * Why this is separated from selectRow():
+     * Clicking is the only way to change the selection like a user would, but a click means
+     * "toggle", not "select". Keeping the raw toggle private and exposing intent-named
+     * methods (selectRow / ensureExactlySelectedRows) on top of it prevents call sites from
+     * accidentally deselecting a row they meant to select.
+     *
+     * Why getTableRows() is used instead of an own DOM query:
+     * The previous implementation matched `.sapUiTableTr, .sapMListTblRow` directly, which
+     * also matches the rows of the fixed-column table. That list is longer than - and in a
+     * different order from - the one getLoadedRowCount() and every other row helper works
+     * with, so row number N could point at a different physical row depending on which
+     * helper asked. Sharing one row list keeps row numbers, selection state and click
+     * targets in a single consistent index space.
+     *
+     * @param int $rowNumber 1-based row number
+     * @throws RuntimeException if the row does not exist
+     * @return void
+     */
+    protected function toggleRowSelection(int $rowNumber): void
+    {
+        $rowIndex = $this->convertOrdinalToIndex($rowNumber);
+        $rows = $this->getTableRows();
+        Assert::assertNotEmpty($rows, 'No rows found in table');
 
         if (count($rows) < $rowIndex + 1) {
-            throw new RuntimeException("Row {$rowNumber} not found. Only " . count($rows) . " rows available.");
+            throw new RuntimeException("Row {$rowNumber} not found. Only " . count($rows) . ' rows available.');
         }
 
         $row = $rows[$rowIndex];
-
-        // Selecting process
         $rowSelector = $row->find('css', '.sapUiTableRowSelectionCell');
         if ($rowSelector) {
             $rowSelector->click();
@@ -305,58 +333,73 @@ class UI5DataTableNode extends UI5DataNode
     }
 
     /**
-     * Tells whether the given (1-based) row is currently marked as selected.
+     * Returns the 1-based numbers of all rows currently marked as selected.
      *
-     * Why both class names are checked:
-     * sap.ui.table marks the selected row with `sapUiTableRowSel`, while sap.m.Table marks
-     * it with `sapMLIBSelected`. Checking only the first one makes every sap.m.Table row look
-     * unselected, so selectEachRowUntil() never deselects the previous row and leaves several
-     * rows selected, while ensureExactlyOneRowSelected() clears nothing and then toggles the
-     * already selected row OFF - both produce the very "select exactly 1 record" error the
-     * retry is supposed to recover from.
+     * Why this exists:
+     * Selection used to be probed one row at a time, so the only question that actually
+     * matters before triggering a row-bound action - "how many rows are selected right
+     * now?" - could not be answered without N separate DOM round-trips, and every caller
+     * re-invented its own bookkeeping. Reading the full selection state at once, from the
+     * same row list toggleRowSelection() clicks on, is what makes an exclusive selection
+     * possible at all.
+     *
+     * Why the CSS class check is paired with aria-selected:
+     * sap.ui.table marks a selected row with `sapUiTableRowSel`, sap.m.Table with
+     * `sapMLIBSelected`. Both also expose `aria-selected`, which survives theme and UI5
+     * version changes, so it serves as a second, renaming-proof source of truth. Missing a
+     * selected row here is the worst possible failure mode: nothing gets deselected and the
+     * action ends up seeing two selected records.
+     *
+     * @return int[] 1-based row numbers in ascending order
      */
-    public function isRowSelected(int $rowNumber): bool
+    public function getSelectedRowNumbers(): array
     {
-        $rowIndex = $this->convertOrdinalToIndex($rowNumber);
-        $tableId = $this->getNodeElement()->getAttribute('id');
-        return (bool) $this->getSession()->evaluateScript(
-            "return jQuery('#{$tableId} .sapUiTableTr, #{$tableId} .sapMListTblRow').eq({$rowIndex}).is('.sapUiTableRowSel, .sapMLIBSelected');"
-        );
+        $selected = [];
+        $rowNumber = 0;
+        foreach ($this->getTableRows() as $row) {
+            $rowNumber++;
+            $classes = (string) $row->getAttribute('class');
+            if (strpos($classes, 'sapUiTableRowSel') !== false
+                || strpos($classes, 'sapMLIBSelected') !== false
+                || $row->getAttribute('aria-selected') === 'true'
+            ) {
+                $selected[] = $rowNumber;
+            }
+        }
+        return $selected;
     }
 
     /**
-     * Walks the rows of the first page, selecting one at a time, until the given
-     * predicate is satisfied.
+     * Tells whether the given (1-based) row is currently marked as selected.
      *
-     * Why this exists:
-     * Some actions are enabled only for specific rows, so callers must try rows until
-     * the target becomes actionable. Centralizing the row iteration here keeps the
-     * selection mechanics (toggle-off the previous row, select exactly one) in the
-     * DataTable, while the caller decides - via the predicate - what "actionable"
-     * means (e.g. a toolbar button becoming enabled, or a menu entry losing its
-     * aria-disabled state). Exactly one row is kept selected at a time, because
-     * clicking a selected row selector toggles it back off.
+     * Why this delegates:
+     * Selection detection lives in exactly one place (getSelectedRowNumbers()), so a table
+     * type or UI5 version that renders selection differently only has to be taught there.
+     * The previous version ran its own jQuery snippet against a row list that did not match
+     * the one used for clicking, which meant "row 2 is selected" and "click row 2" could
+     * refer to two different rows in tables with fixed columns.
      *
-     * @param callable $predicate Called after each row is selected; receives the
-     *                            1-based row number and returns true to stop.
-     * @return bool True if the predicate was satisfied on some row; false if no row
-     *              on the first page satisfied it (or the table is empty).
+     * @param int $rowNumber 1-based row number
+     * @return bool
      */
+    public function isRowSelected(int $rowNumber): bool
+    {
+        return in_array($this->convertOrdinalToIndex($rowNumber) + 1, $this->getSelectedRowNumbers(), true);
+    }
+
     public function selectEachRowUntil(callable $predicate): bool
     {
         $count = $this->getLoadedRowCount();
         if ($count < 1) {
             return false;
         }
-        $previous = null;
         for ($rowNumber = 1; $rowNumber <= $count; $rowNumber++) {
-            if ($previous !== null && $this->isRowSelected($previous)) {
-                $this->selectRow($previous);
-            }
-            if (! $this->isRowSelected($rowNumber)) {
-                $this->selectRow($rowNumber);
-            }
-            $previous = $rowNumber;
+            // Exclusive selection instead of remembering the previous row: the previously
+            // tried row is not necessarily the only other selected one - a selection left
+            // over from an earlier button survives into this loop and would add up to two
+            // selected rows, which is exactly the state the predicate is meant to test
+            // against a single row.
+            $this->ensureExactlySelectedRows([$rowNumber]);
             if ($predicate($rowNumber) === true) {
                 return true;
             }
@@ -365,32 +408,39 @@ class UI5DataTableNode extends UI5DataNode
     }
 
     /**
-     * Toggles off every selected row on the first page and then selects exactly the
-     * first one.
+     * Reduces the table selection to exactly the given (1-based) rows - no more, no less.
      *
-     * Why this exists:
-     * The "select exactly one record" precondition can be violated in two ways - no row
-     * is selected (the selection was silently dropped by a toolbar re-render), or more
-     * than one row is still selected from an earlier step. Clearing first and then
-     * selecting a single row recovers deterministically from both cases, which is what
-     * the row-selection retry (retryClickIfRowSelectionLost) needs before it re-clicks.
+     * Why this replaces ensureExactlyOneRowSelected():
+     * The "select exactly one record" precondition can be violated in two ways - nothing is
+     * selected (the selection was silently dropped by a toolbar re-render), or a row from an
+     * earlier button is still selected and the new one is added on top. Both are the same
+     * problem seen from different sides: no caller owned the *whole* selection state. This
+     * method does, and it takes a row list rather than a single row so actions requiring
+     * several input rows are covered by the same code path.
      *
+     * Why the deselect loop is driven by getSelectedRowNumbers():
+     * Iterating 1..getLoadedRowCount() and probing each row was not only N times slower, it
+     * also silently skipped selected rows whose number fell outside the counted range - the
+     * exact case that left two rows selected in tables with fixed columns.
+     *
+     * @param int[] $rowNumbers 1-based row numbers that must end up selected
      * @return void
      */
-    protected function ensureExactlyOneRowSelected(): void
+    public function ensureExactlySelectedRows(array $rowNumbers): void
     {
-        $count = $this->getLoadedRowCount();
-        if ($count < 1) {
+        if ($this->getLoadedRowCount() < 1) {
             return;
         }
-        // Toggle off any currently selected row: clicking a selected row selector
-        // deselects it, so a leftover multi-selection can never survive into the retry.
-        for ($rowNumber = 1; $rowNumber <= $count; $rowNumber++) {
-            if ($this->isRowSelected($rowNumber)) {
-                $this->selectRow($rowNumber);
+        // Toggle off everything that must not stay selected first: a leftover selection can
+        // never survive into the action this way, no matter which step produced it.
+        foreach ($this->getSelectedRowNumbers() as $selectedRowNumber) {
+            if (! in_array($selectedRowNumber, $rowNumbers, true)) {
+                $this->toggleRowSelection($selectedRowNumber);
             }
         }
-        $this->selectRow(1);
+        foreach ($rowNumbers as $rowNumber) {
+            $this->selectRow($rowNumber);
+        }
     }
 
     /**
@@ -499,7 +549,7 @@ class UI5DataTableNode extends UI5DataNode
         if ($beforeReselect !== null) {
             $beforeReselect();
         }
-        $this->ensureExactlyOneRowSelected();
+        $this->ensureExactlySelectedRows([1]);
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
         return $runClickSubstep();
     }
@@ -1067,7 +1117,6 @@ class UI5DataTableNode extends UI5DataNode
         // triggers a "Tag matching xpath //BUTTON[@id=..] not found" error.
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
 
-        $rowNumber = null;
         foreach ($dataWidget->getButtons() as $buttonWidget) {
             if ($buttonWidget->isHidden()) {
                 continue;
@@ -1105,11 +1154,10 @@ class UI5DataTableNode extends UI5DataNode
                 continue;
             }
 
-            $rowNumber = 1;
             switch (true) {
                 case $action === null:
                     $skippedButtons['Button has no action'][] = $buttonWidget->getCaption();
-                    $logbook->addLine('Skipping button ' . $this->getCaption() . ' because it has no action');
+                    $logbook->addLine('Skipping button ' . $buttonWidget->getCaption() . ' because it has no action');
                     continue 2;
                 case $action->getInputRowsMin() > 0:
                     $this->ensureRowSelectedForAction($action);
@@ -1178,12 +1226,21 @@ class UI5DataTableNode extends UI5DataNode
             }
             else {
                 $skippedButtons['Button cannot be enabled'][] = $buttonWidget->getCaption();
-                $logbook->addLine('Skipping button ' . $this->getCaption() . ' because there is no row to enable it');
+                $logbook->addLine('Skipping button ' . $buttonWidget->getCaption() . ' because there is no row to enable it');
             }
         }
-        if($rowNumber !== null) {
-            $this->selectRow($rowNumber);
+        // Leave the table in a predictable state for whatever runs after the button checks:
+        // exactly one selected row. The previous version re-clicked row 1 unconditionally
+        // with a variable that was always 1, so it either toggled the only selected row OFF
+        // or added row 1 on top of a row the readiness loop had left selected - the double
+        // selection that makes the next row-bound action fail with "select exactly 1 record".
+        if ($this->getLoadedRowCount() > 0) {
+            $this->ensureExactlySelectedRows([1]);
         }
+        // Leave no popover behind for the next check of this scenario: the button loop above may have
+        // opened one to reach an overflowed button and, if the last button did not close it by being
+        // clicked, it would still be on screen when the next widget is inspected.
+        $this->closeOverflowMenuIfOpened();
 
         // Log a SKIPPED substep for every reason to skip buttons
         foreach ($skippedButtons as $reason => $buttons) {
