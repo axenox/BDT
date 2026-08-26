@@ -610,6 +610,10 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         static::$stepLogbooks = [];
         // Reset so that onAfterStep can detect a failed DB record creation
         $this->stepDataSheet = null;
+        // A new step starts with no evidence of its own. This is the only place where dropping the
+        // capture state is safe - no picture can be in flight here, whereas a reset while a row is
+        // being closed would discard a screenshot that had just been written for it.
+        $this->provider->reset();
         if ($this->getOpenScenarioUid() === null) {
             $this->workbench->getLogger()->warning(
                 'BDT: step "' . $event->getStep()->getText() . '" not recorded - ' . $this->getScenarioSkipReason()
@@ -784,6 +788,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             if ($ds === null) {
                 array_pop($this->substepDataSheets);
                 array_pop($this->substepStarts);
+                $this->restoreScreenshotName();
                 return;
             }
 
@@ -792,9 +797,38 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             // Remove the top-most substep data sheet from the stack
             array_pop($this->substepDataSheets);
             array_pop($this->substepStarts);
+            $this->restoreScreenshotName();
         }
         catch(\Throwable $e){
             ErrorManager::getInstance()->logException($e, $this->workbench);
+        }
+    }
+
+    /**
+     * Points the screenshot provider back at the row that is now on top of the substep stack.
+     *
+     * WHY it exists: the provider holds exactly one name - the UID of the row a screenshot would
+     * belong to - and every substep overwrites it on entry. Nothing restored it on exit, so a PARENT
+     * substep that failed AFTER its children had run wrote its picture under the LAST CHILD's UID.
+     * The image landed on disk, but the parent row referenced a name no consumer resolves, which is
+     * why such failures looked as if no screenshot had been taken at all.
+     *
+     * WHY it walks the stack: entries can be null markers left by a failed row INSERT, so the nearest
+     * RECORDED ancestor - the main step if there is none - is the row that owns the screen from here
+     * on.
+     *
+     * @return void
+     */
+    private function restoreScreenshotName(): void
+    {
+        for ($i = count($this->substepDataSheets) - 1; $i >= 0; $i--) {
+            if ($this->substepDataSheets[$i] !== null) {
+                $this->provider->setName($this->substepDataSheets[$i]->getUidColumn()->getValue(0));
+                return;
+            }
+        }
+        if ($this->stepDataSheet !== null) {
+            $this->provider->setName($this->stepDataSheet->getUidColumn()->getValue(0));
         }
     }
 
@@ -862,8 +896,13 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         // back to the cause. Keying this block on FAILED alone would silently strip all of
         // it the moment a step is reclassified as TIMEOUT.
         if ($stepStatusCode === StepStatusDataType::FAILED || $stepStatusCode === StepStatusDataType::TIMEOUT) {
-            if($this->provider->isCaptured()) {
-                $screenshotRelativePath = $this->provider->getPath() . DIRECTORY_SEPARATOR . $this->provider->getName();
+            // Ask for THIS row, not for "anything at all": the picture is taken while the row is
+            // still open and several calls happen before it is closed - failure cleanup, nested
+            // substeps, back navigation - each of which points the provider at another row. A plain
+            // captured-flag was therefore either already cleared again or belonged to a sibling.
+            if ($this->provider->isCapturedFor($ds->getUidColumn()->getValue(0))) {
+                // getFileName(), not getName(): the latter is only the BASE name for the next capture.
+                $screenshotRelativePath = $this->provider->getPath() . DIRECTORY_SEPARATOR . $this->provider->getFileName();
                 $ds->setCellValue('screenshot_path', 0, $screenshotRelativePath);
                 $url = $this->provider->getUrl();
                 if ($url !== null) {

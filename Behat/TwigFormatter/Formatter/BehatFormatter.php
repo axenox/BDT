@@ -797,7 +797,9 @@ class BehatFormatter implements Formatter
 
         if (!$result->isPassed()) {
             if($this->provider->isCaptured()){
-                $screenshotPath = $this->basePath . DIRECTORY_SEPARATOR . $this->provider->getPath() . DIRECTORY_SEPARATOR . $this->provider->getName();
+                // getFileName(), not getName(): the latter is only the BASE name for the next capture,
+                // so building the path from it points at a file that was never written.
+                $screenshotPath = $this->basePath . DIRECTORY_SEPARATOR . $this->provider->getPath() . DIRECTORY_SEPARATOR . $this->provider->getFileName();
                 if (file_exists($screenshotPath)) {
                     $relativeWebPath = $this->getRelativeWebPath($this->printer->getOutputPath(), $screenshotPath);
                     $step->setScreenshot($relativeWebPath);

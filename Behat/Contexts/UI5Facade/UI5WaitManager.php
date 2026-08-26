@@ -262,7 +262,7 @@ class UI5WaitManager
             
             // Wait for UI5 framework to initialize
             if (!$this->waitForUI5Framework()) {
-                throw new Exception("UI5 framework failed to load");
+                throw new RuntimeException("UI5 framework failed to load");
             }
             $this->errorDetector->enableJsErrorTracer();
             // Extract application ID from URL and wait for it to be available
@@ -273,7 +273,7 @@ class UI5WaitManager
             $this->waitForPendingOperations(false, true, true);
 
         } catch (\Throwable $e) {
-            throw new Exception("Failed to load UI5 application DB: " . $e->getMessage(), 0, $e);
+            throw new RuntimeException("Failed to load UI5 application DB: " . $e->getMessage(), 0, $e);
         }
     }
 
