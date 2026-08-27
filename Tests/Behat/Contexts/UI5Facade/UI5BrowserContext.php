@@ -142,12 +142,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $token = new CliEnvAuthToken();
             // WHY THE GUARD: a fresh context instance - and therefore this authenticate() - runs for
             // EVERY scenario, and all parallel lanes run as the same OS user, so this call re-writes
-            // the one shared USER_AUTHENTICATOR row throughout the whole run. The guard applied at
-            // formatter boot protects only the formatter's OWN workbench; this is a second,
-            // independent workbench instance, so without its own guard two lanes starting scenarios
-            // at the same instant race on the row's optimistic lock and one dies with a
-            // "changed in the meantime" conflict. Disabling the check in THIS process is safe:
-            // last_authenticated_on is a last-writer-wins timestamp (see the trait's docblock).
+            // the one shared USER_AUTHENTICATOR row throughout the whole run. Without the guard, two
+            // lanes starting scenarios at the same instant race on the row's optimistic lock and one
+            // dies with a "changed in the meantime" conflict.
+            //
+            // WHY THE GUARD HAS TO BE APPLIED HERE AND NOT ONCE PER PROCESS: the guard works by
+            // flipping a flag on the TimeStampingBehavior instance held by the meta object of ONE
+            // workbench. This context builds its own Workbench above, so it owns its own behavior
+            // instances - a guard applied around a write on any other workbench in this process has
+            // no effect on this call. Every workbench that writes the row needs the guard at its own
+            // call site (see the trait's docblock).
+            //
+            // WHY IT IS SAFE: only the optimistic-lock check is suppressed, the timestamps keep being
+            // written, and last_authenticated_on is a last-writer-wins value anyway.
             self::withoutAuthenticatorTimeStamping(
                 $this->workbench,
                 fn() => $this->workbench->getSecurity()->authenticate($token)
