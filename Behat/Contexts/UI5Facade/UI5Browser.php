@@ -1298,13 +1298,19 @@ JS
     }
 
     /**
-     * Finds a visible button inside the given scope whose text or tooltip contains the caption.
+     * Finds a visible button inside the given scope whose text or tooltip matches the caption.
      *
      * WHY IT EXISTS: the caption match used by the click steps ("contains, case insensitive") was
      * written out three times - once for the focused widget, once for the page and once more for the
      * table variant - and the copies had already drifted apart (only one of them looked at the title
      * attribute). One implementation means the overflow fallback matches captions exactly the way the
      * regular search does, which is the whole point of a fallback.
+     *
+     * WHY AN EXACT MATCH WINS OVER A LOOSE ONE, AND WHY THE SCAN CONTINUES TO FIND IT: a substring
+     * match makes "Speichern" match "Speichern und Schließen" as well, so whichever of the two the
+     * facade happens to render first would be clicked. Returning on the first loose hit therefore made
+     * the outcome depend on DOM order rather than on what the scenario asked for. The loose candidate
+     * is remembered instead and only used once the whole scope is known to hold no exact match.
      *
      * WHY IT SKIPS INVISIBLE CANDIDATES INSTEAD OF RETURNING THEM: an invisible button cannot be
      * clicked, and returning it would end the search before the visible twin - or the overflow entry -
@@ -1316,19 +1322,38 @@ JS
      */
     public function findButtonInScopeByCaption($scope, string $caption): ?NodeElement
     {
+        $needle = trim($caption);
+        $looseMatch = null;
+
         foreach ($scope->findAll('css', 'button') as $btn) {
             if (! $btn->isVisible()) {
                 continue;
             }
-            if (stripos($btn->getText(), $caption) !== false) {
+
+            // Read the text ONCE: every accessor on a Mink element is a separate synchronous CDP
+            // round trip, and this loop runs over every button of the scope - page wide in the
+            // fallback of the click steps.
+            $text = trim($btn->getText());
+            if ($text === $needle) {
                 return $btn;
+            }
+
+            // A candidate is enough: skip the tooltip round trip for every further button once one
+            // loose match is known - the scan from here on only looks for an exact match.
+            if ($looseMatch !== null) {
+                continue;
+            }
+            if (stripos($text, $needle) !== false) {
+                $looseMatch = $btn;
+                continue;
             }
             $title = $btn->getAttribute('title');
-            if ($title !== null && stripos($title, $caption) !== false) {
-                return $btn;
+            if ($title !== null && stripos($title, $needle) !== false) {
+                $looseMatch = $btn;
             }
         }
-        return null;
+
+        return $looseMatch;
     }
 
     /**
@@ -1400,7 +1425,40 @@ JS
             $this->waitManager->waitForDOMElements($cssSelector, $number, $timeoutInSeconds);
         }
 
-        return $this->findWidgetNodesInScope($containerNode->getNodeElement(), $widgetType, null, $cssSelector);
+        return $this->findWidgetNodesInScope($this->resolveContainerElement($containerNode), $widgetType, null, $cssSelector);
+    }
+
+    /**
+     * Resolves the DOM element of a container that a scoped search must not leave.
+     *
+     * WHY: unlike findWidgetNodes(), a scoped search has no page-wide fallback - so when the container
+     * has meanwhile disappeared from the DOM (a dialog closed by a previous step, a re-rendered
+     * toolbar), Mink aborts with a raw "Tag matching xpath //DIV[@id=...] not found". That message
+     * names an internal element id and sends whoever reads it looking for a rendering bug, while the
+     * real problem is that the step is looking at something that is no longer there.
+     *
+     * @param FacadeNodeInterface $containerNode
+     * @return ElementInterface
+     * @throws RuntimeException If the container is no longer part of the DOM
+     */
+    protected function resolveContainerElement(FacadeNodeInterface $containerNode): ElementInterface
+    {
+        try {
+            $el = $containerNode->getNodeElement();
+            $valid = $el !== null && $el->isValid();
+        } catch (Throwable $e) {
+            $valid = false;
+        }
+
+        if ($valid !== true) {
+            throw new RuntimeException(
+                'Cannot search inside the "' . $containerNode->getWidgetType() . '" currently in focus: '
+                . 'it is no longer part of the page - it was probably closed or re-rendered by an earlier step. '
+                . 'Focus a widget that is still visible (e.g. "I look at table 1") before this step.'
+            );
+        }
+
+        return $el;
     }
 
     /**
@@ -1668,11 +1726,43 @@ JS
      */
     public function getFocusedNode(): FacadeNodeInterface
     {
+        $this->pruneDeadFocus();
         if (empty($this->focusStack)) {
             return new UI5PageNode($this->getPageAliasFromCurrentUrl(), $this->getSession(), $this);
         }
         $top = end($this->focusStack);
         return $top;
+    }
+
+    /**
+     * Discards focus entries whose DOM element is no longer part of the page.
+     *
+     * WHY THIS EXISTS: the focus stack outlives the DOM. Nothing pops a dialog off the stack when
+     * it closes - there is no "unfocus" step and no close event - so a dialog focused by
+     * "I see 1 widget of type Dialog" is still the top of the stack after "Save" removed it from
+     * the page. Every reader of the stack then hands that dead element to the driver, which aborts
+     * with a raw "Tag matching xpath //DIV[@id=..._Dialog] not found". That message names an
+     * internal element id and sends whoever reads it looking for a rendering bug, while the real
+     * problem is that the framework is still looking at something that no longer exists.
+     *
+     * WHY IT IS DONE ON READ AND NOT ON CLOSE: a widget can leave the DOM in many ways - a dialog
+     * closed by a save, by cancel, by ESC, a toolbar re-rendered after a refresh, a table replaced
+     * by navigation. Detecting each of those would mean a growing list of special cases that is
+     * wrong the moment a new one appears. Checking validity where the stack is consumed covers all
+     * of them with one rule.
+     */
+    private function pruneDeadFocus(): void
+    {
+        while (! empty($this->focusStack)) {
+            try {
+                if (end($this->focusStack)->getNodeElement()->isValid()) {
+                    return;
+                }
+            } catch (Throwable $e) {
+                // A stale handle throws instead of reporting itself as invalid - same conclusion
+            }
+            array_pop($this->focusStack);
+        }
     }
 
     /**

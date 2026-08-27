@@ -445,6 +445,22 @@ JS;
     }
 
     /**
+     * Looks for a button behind the toolbar overflow using the loose caption match of the click steps.
+     *
+     * WHY IT IS SEPARATE FROM findButtonInOverflowByCaption(): that one matches captions exactly and
+     * translates them first, which is right for framework-driven checks. The click steps match
+     * "contains, case insensitive" on text and tooltip, and the overflow fallback must match captions
+     * exactly the way the regular search of the same step does - otherwise a button that the step
+     * would have clicked in the toolbar becomes unreachable once UI5 moves it into the overflow.
+     */
+    public function findButtonInOverflowByCaptionLoose(string $caption): ?NodeElement
+    {
+        return $this->findInOverflow(function (NodeElement $menu) use ($caption) {
+            return $this->getBrowser()->findButtonInScopeByCaption($menu, $caption);
+        });
+    }
+
+    /**
      * Clicks the given overflow button and returns the popover it opened.
      *
      * WHY IT IS SEPARATE FROM clickOverflowButton(): the click-wait-retry mechanics are identical for
