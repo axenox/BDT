@@ -1421,12 +1421,17 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Checks that one or more buttons are visible on the page.
+     * Checks that one or more buttons are present on the page.
      *
      * Use this to confirm the user has access to certain actions. You can name a single button
      * or several separated by commas. Add "on the :tableName" to look for the buttons only in
      * the toolbar of the named table (or dialog/panel) - name it the way the app shows it, or
      * by the data object behind it. Each found button is briefly highlighted.
+     *
+     * The step only asks whether the button is THERE. A button that is greyed out counts as seen:
+     * the user can see the action, they just cannot trigger it right now, and whether they may
+     * trigger it is what "I click button ..." is for. A button that the toolbar moved behind its
+     * "..." overflow menu counts as seen as well.
      *
      * Usage examples:
      *
@@ -1446,7 +1451,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * @param string $buttonText The text of the button to find
      * @param string|null $tableName Optional caption or object of the widget to search in
-     * @throws \Exception If button is not found
+     * @throws \Exception If a button is not found
      */
     public function iSeeButton(string $buttonText, string $tableName = null): void
     {
@@ -1467,10 +1472,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             );
         }
 
-        $buttons = $this->explodeList($buttonText);
+        // Captions the regular search could not answer, kept as keys so a caption named twice in the
+        // step is only looked for once. They are collected FIRST and handed to the overflow fallback
+        // as one batch further down: opening an overflow popover costs a click plus the wait for its
+        // open and close animation, so a comma separated list must not pay that price per caption.
+        $missing = [];
         // WHY a separate loop variable: reusing $buttonText here would overwrite the parameter and
         // make every message built after the first iteration report the wrong step arguments.
-        foreach ($buttons as $buttonCaption) {
+        foreach ($this->explodeList($buttonText) as $buttonCaption) {
             if (empty($scopeNodes)) {
                 $button = $this->getBrowser()->findButtonByCaption($buttonCaption);
             } else {
@@ -1487,16 +1496,94 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 }
             }
 
-            Assert::assertNotNull(
-                $button,
-                $tableName === null || $tableName === ''
-                    ? "Button with text '{$buttonCaption}' not found."
-                    : "Button with text '{$buttonCaption}' not found at '{$tableName}'."
-            );
+            if ($button === null) {
+                $missing[$buttonCaption] = true;
+                continue;
+            }
 
             // Highlight the button for debugging purposes
             $this->getBrowser()->highlightWidget($button, 'Button', 0);
         }
+
+        if (empty($missing)) {
+            return;
+        }
+
+        // Last resort: the toolbar overflow. WHY: UI5 does not hide the buttons that do not fit into
+        // a toolbar - it MOVES them into the overflow popover, and their DOM elements do not exist at
+        // all until that popover was opened once. "Not on the page" and "did not fit into the toolbar"
+        // are therefore indistinguishable to the search above, and a button the user can reach in two
+        // clicks was reported as missing. Nothing here looks at the enabled state, so a greyed out
+        // entry answers this step just like an active one does.
+        $overflowHint = null;
+        foreach ($this->getOverflowSearchNodes($scopeNodes) as $node) {
+            try {
+                // One pass per toolbar resolves ALL remaining captions while the menu is open.
+                $node->findInOverflow(function (NodeElement $menu) use (&$missing) {
+                    $firstFound = null;
+                    foreach (array_keys($missing) as $caption) {
+                        $entry = $this->getBrowser()->findButtonInScopeByCaption($menu, $caption);
+                        if ($entry === null) {
+                            continue;
+                        }
+                        unset($missing[$caption]);
+                        // Highlight right here, while the popover is still open: closing it hides the
+                        // moved buttons again, so an element kept for later would point at something
+                        // that is no longer on screen and the highlight would fail or land nowhere.
+                        $this->getBrowser()->highlightWidget($entry, 'Button', 0);
+                        $firstFound = $firstFound ?? $entry;
+                    }
+                    return $firstFound;
+                });
+            } catch (RuntimeException $e) {
+                // An ambiguous scope means we cannot tell which toolbar to open - keep the
+                // explanation for the failure message and try the remaining nodes, so a
+                // second, unambiguous toolbar can still answer the question.
+                $overflowHint = $overflowHint ?? ' ' . $e->getMessage();
+                continue;
+            } finally {
+                // Always leave the page as we found it, including when the search or the highlight
+                // above threw: an open popover swallows the first click of whatever step follows.
+                $node->closeOverflowMenuIfOpened();
+            }
+
+            if (empty($missing)) {
+                break;
+            }
+        }
+
+        Assert::assertEmpty(
+            $missing,
+            (count($missing) === 1 ? "Button with text '" : "Buttons with text '")
+            . implode("', '", array_keys($missing)) . "'"
+            . ($tableName === null || $tableName === ''
+                ? ' not found.'
+                : " not found at '{$tableName}'.")
+            . ($overflowHint ?? '')
+        );
+    }
+
+    /**
+     * Returns the nodes whose toolbar overflow menus may hold a button this step is looking for.
+     *
+     * WHY IT IS NOT A PAGE-WIDE SEARCH: an overflowed button can only be reached through the overflow
+     * of the widget it belongs to. Opening a menu picked by guesswork would find a same-named button
+     * of a neighbouring widget and the assertion would turn green for the wrong toolbar. When the step
+     * names a widget, that widget is the owner; otherwise the focused one is - and with nothing
+     * focused getFocusedNode() returns a UI5PageNode, which offers no overflow lookup at all, so the
+     * fallback is simply skipped.
+     *
+     * @param FacadeNodeInterface[] $scopeNodes Nodes the step was scoped to, empty for a page wide step
+     * @return UI5AbstractNode[]
+     */
+    protected function getOverflowSearchNodes(array $scopeNodes): array
+    {
+        if (! empty($scopeNodes)) {
+            return array_values(array_filter($scopeNodes, fn($node) => $node instanceof UI5AbstractNode));
+        }
+
+        $focusedNode = $this->getBrowser()->getFocusedNode();
+        return $focusedNode instanceof UI5AbstractNode ? [$focusedNode] : [];
     }
 
     /**
