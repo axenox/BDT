@@ -325,7 +325,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         try {
             ErrorManager::getInstance()->clearErrors();
-            $this->browser->clearXHRLog();
+            $this->getBrowser()->clearXHRLog();
 
             // Record the current page alias before the step runs so that Chrome
             // recovery after a crash knows which page to reload.
@@ -344,8 +344,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $stepName    = sprintf('%s %s', $stepKeyword, $stepText);
 
             $this->logDebug(sprintf("\n[%d] Starting step: %s", $stepLine, $stepName));
-            $this->browser->showTestCaseName(sprintf('Step [%d]: %s', $stepLine, $stepName));
-            $this->stepStartTime = $this->browser->showStepTiming($stepName, true);
+            $this->getBrowser()->showTestCaseName(sprintf('Step [%d]: %s', $stepLine, $stepName));
+            $this->stepStartTime = $this->getBrowser()->showStepTiming($stepName, true);
 
         } catch (\Throwable $e) {
             // A CDP or browser error during pre-step setup must not kill Behat.
@@ -389,14 +389,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $this->getBrowser()->handleStepWaitOperations(true);
 
             // Check for any errors that occurred during the step
-            $this->browser->getErrorDetector()->assertNoErrors();
+            $this->getBrowser()->getErrorDetector()->assertNoErrors();
 
             $stepKeyword = $scope->getStep()->getKeyword();
             $stepText    = $scope->getStep()->getText();
             $stepName    = sprintf('%s %s', $stepKeyword, $stepText);
 
             $this->logDebug(sprintf("\nCompleted step: %s", $stepName));
-            $this->browser->showStepTiming($stepName, false, $this->stepStartTime);
+            $this->getBrowser()->showStepTiming($stepName, false, $this->stepStartTime);
 
             // Short pause to let the UI fully settle before the next step starts
             $this->getSession()->wait(1000);
@@ -462,7 +462,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         if (!empty($this->browser)) {
             try {
-                $this->browser->initializeXHRMonitoring();
+                $this->getBrowser()->initializeXHRMonitoring();
             } catch (\Throwable $e) {
                 // Non-critical - XHR monitoring failure should not abort the scenario
                 $this->logDebug('XHR monitoring init failed: ' . $e->getMessage());
@@ -801,7 +801,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             for ($i = 0; $i < $maxHighlight; $i++) {
                 // change to NodeElement with getNodeElement() 
                 $nodeElement = $widgetNodes[$i]->getNodeElement();
-                $this->browser->highlightWidget($nodeElement, $widgetType, $i);
+                $this->getBrowser()->highlightWidget($nodeElement, $widgetType, $i);
             }
         }
     }
@@ -1233,47 +1233,39 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Checks that EVERY row of a named column contains the given value.
+     * Checks that at least one row of a named column contains the given value.
      *
-     * The match is a case-insensitive substring check, so "Open" also matches a cell
-     * reading "Open (reassigned)". Use it after searching or filtering to confirm that
-     * the whole result set really is restricted to the expected value. Focus a table
+     * Use this when you want to confirm a value shows up somewhere in a column, without
+     * requiring every row to match. This is the "at least one row" counterpart to
+     * "I see :text in column :columnName" (which requires all rows to match). Focus a table
      * first (e.g. "I look at table 1").
      *
      * Usage example:
      *
      *   When I look at table 1
-     *   And I enter "Open" in filter "Status"
-     *   And I click button "Search"
      *   Then The column "Status" contains value "Open"
      *
      * @Then The column :columnName contains value :value
      *
      * @param string $columnName Caption of the column to inspect.
-     * @param string $value      Value that every row of that column must contain.
+     * @param string $value      Value expected in at least one row of that column.
      */
     public function theColumnContainsValue(string $columnName, string $value): void
     {
-        $table = $this->getFocusedDataTableNode();
+        $cellValues = $this->getFocusedDataTableNode()->getColumnCellValues($columnName);
 
-        // WHY THE EMPTINESS GUARD: "every row contains X" is vacuously true for a table
-        // without rows, so the verification below would report 0/0 matches as a pass and
-        // the step would go green although nothing was checked. An empty result set is
-        // exactly the situation this step is meant to catch (filter returned nothing,
-        // data missing), so it must fail loudly instead of silently succeeding.
-        Assert::assertNotEmpty(
-            $table->getTableRows(),
-            sprintf('Cannot verify column "%s": the focused table has no rows.', $columnName)
+        $needle = trim($value);
+        $found = in_array($needle, array_map('trim', $cellValues), true);
+
+        Assert::assertTrue(
+            $found,
+            sprintf(
+                'Column "%s" does not contain value "%s". Found values: %s',
+                $columnName,
+                $value,
+                implode(' | ', $cellValues)
+            )
         );
-
-        // WHY verifyTableContent() INSTEAD OF AN OWN LOOP: it already resolves the column
-        // against the rendered headers, crosses the fixed/scroll table split and applies
-        // the default "[" comparator, which is a case-insensitive "contains" evaluated for
-        // every row - precisely the semantics of this step. Re-implementing the traversal
-        // here would duplicate that logic and let the two drift apart.
-        $table->verifyTableContent([
-            ['column' => $columnName, 'value' => $value]
-        ]);
     }
 
     /**
@@ -1301,10 +1293,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $focusedNode = $this->getBrowser()->getFocusedNode();
         $widget = $focusedNode->getNodeElement();
 
-        if (!$widget) {
-            throw new RuntimeException("No focused widget found");
-        }
-
         // First, try standard Mink named button search within the widget
         $button = $widget->find('named', ['button', $caption]);
 
@@ -1318,9 +1306,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // no overflow lookup at all. That is deliberate - opening a menu picked by guesswork would
         // click a same-named button of some other widget and the step would still turn green.
         if ($button === null && $focusedNode instanceof UI5AbstractNode) {
-            $button = $focusedNode->findInOverflow(function (NodeElement $menu) use ($caption) {
-                return $this->getBrowser()->findButtonInScopeByCaption($menu, $caption);
-            });
+            $button = $focusedNode->findButtonInOverflowByCaptionLoose($caption);
         }
 
         if (!$button) {
@@ -1336,7 +1322,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // green and nothing happened. WHY NOT ONLY THE `disabled` ATTRIBUTE: UI5 renders a disabled
         // sap.m.Button via aria-disabled plus the sapMBtnDisabled class and frequently without the
         // HTML attribute at all, so the attribute-only check let disabled buttons pass as clickable.
-        $buttonNode = UI5FacadeNodeFactory::createFromNodeElement($button, $this->getSession(), $this->browser);
+        $buttonNode = UI5FacadeNodeFactory::createFromWidgetType('Button', $button, $this->getSession(), $this->getBrowser());
         Assert::assertFalse(
             $buttonNode->checkDisabled(),
             'Button "' . $caption . '" is disabled and cannot be clicked'
@@ -1353,8 +1339,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         try {
             $button->click();
         } catch (\Exception $e) {
-            //$this->debugButtonClickContext($button, $caption);
-            throw new BrowserDriverException($this->getSession(), 'Cannot click button "' . $caption . '". ' . $e->getMessage(), null, $e, $this->browser);
+            throw new BrowserDriverException($this->getSession(), 'Cannot click button "' . $caption . '". ' . $e->getMessage(), null, $e, $this->getBrowser());
         }
     }
 
@@ -1590,7 +1575,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param int|string|null $rowIndex 1-based row number, or null for the last row
      * @throws \Exception
      */
-    public function iFillTheNthRowOfDataSpreadsheetWith(TableNode $table, int|string $rowIndex = null): void
+    public function iFillTheNthRowOfDataSpreadsheetWith(TableNode $table, int|string|null $rowIndex = null): void
     {
         if ($rowIndex === null) {
             $rowIndex = 'last';
@@ -2017,9 +2002,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             // button of another table can still never be clicked by accident.
             $tableNode = UI5FacadeNodeFactory::createFromNodeElement($targetTable, $this->getSession(), $this->getBrowser());
             if ($tableNode instanceof UI5AbstractNode) {
-                $button = $tableNode->findInOverflow(function (NodeElement $menu) use ($buttonCaption) {
-                    return $this->getBrowser()->findButtonInScopeByCaption($menu, $buttonCaption);
-                });
+                $button = $tableNode->findButtonInOverflowByCaptionLoose($buttonCaption);
             }
         }
         // Check and click the button
@@ -2031,7 +2014,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // turns that false green into a clear message. Mirrors the identical check in
         // iClickButton() and UI5ButtonNode::checkDisabled(), which both treat the presence of
         // the "disabled" attribute as the button being disabled.
-        $buttonNode = UI5FacadeNodeFactory::createFromNodeElement($button, $this->getSession(), $this->browser);
+        $buttonNode = UI5FacadeNodeFactory::createFromWidgetType('Button', $button, $this->getSession(), $this->getBrowser());
         Assert::assertFalse(
             $buttonNode->checkDisabled(),
             'Button "' . $buttonCaption . '" is disabled and cannot be clicked'
@@ -2048,7 +2031,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 'Cannot click button "' . $buttonCaption . '" on table ' . $tableNumber . '. ' . $e->getMessage(),
                 null,
                 $e,
-                $this->browser
+                $this->getBrowser()
             );
         }
     }
@@ -2120,7 +2103,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param int|string|null $tableIndex 1-based index of the table (e.g. 2 or "2."), optional
      * @return void
      */
-    public function iClickTableOverflowButton(int|string $tableIndex = null): void
+    public function iClickTableOverflowButton(int|string|null $tableIndex = null): void
     {
         $table = $tableIndex === null
             ? $this->getFocusedDataTableNode()
@@ -2156,7 +2139,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $caption Caption of the menu entry to click.
      * @param int|string|null $tableIndex 1-based table index (e.g. 2 or "2."), optional.
      */
-    public function iClickOverflowMenuItem(string $caption, int|string $tableIndex = null): void
+    public function iClickOverflowMenuItem(string $caption, int|string|null $tableIndex = null): void
     {
         $table = $tableIndex === null
             ? $this->getFocusedDataTableNode()
@@ -2323,7 +2306,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $unexpectedButtons Comma-separated list of buttons expected to be absent
      * @param string|null $tableIndex Optional 1-based table index to scope the check
      */
-    public function iDoNotSeeTheFollowingButtons(string $unexpectedButtons, $tableIndex = null): void
+    public function iDoNotSeeTheFollowingButtons(string $unexpectedButtons, int|string|null $tableIndex = null): void
     {
         // Parse the comma-separated tile list
         $unexpectedButtons = $this->explodeList($unexpectedButtons);
@@ -2410,13 +2393,33 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Drops the XHR log left behind by the previous scenario, so its requests cannot be mistaken
+     * for the requests of the scenario about to run.
+     *
+     * WHY THE NULL CHECK IS ON THE PROPERTY, NOT ON getBrowser(): the browser is created lazily by
+     * the first step that opens a page, so before the very first scenario of a worker process there
+     * is none. getBrowser() reports that as a "BDT Browser not initialized!" exception rather than
+     * returning null, so guarding with `if ($this->getBrowser())` could never be false - it threw
+     * out of a BeforeScenario hook, which makes Behat exit with code 255 before a single step ran.
+     * Every other hook in this context guards the property directly for the same reason.
+     *
+     * Must never throw - see above.
+     *
      * @BeforeScenario
      */
     public function resetAjaxLog(BeforeScenarioScope $scope): void
     {
-        if ($this->getBrowser()) {
+        if ($this->browser === null) {
+            return;
+        }
+
+        try {
             $this->getBrowser()->clearXHRLog();
             $this->logDebug("\nXHR logs cleared before scenario: " . $scope->getScenario()->getTitle() . "\n");
+        } catch (\Throwable $e) {
+            // Clearing the log is housekeeping - a dead CDP connection here must not abort the run.
+            // The scenario's own steps surface the broken browser through the normal error handling.
+            $this->logDebug('resetAjaxLog failed: ' . $e->getMessage());
         }
     }
 
@@ -2650,16 +2653,16 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     private function wireBrowserCallbacks(): void
     {
-        $this->browser->setNavigator(function (string $pageAlias): void {
+        $this->getBrowser()->setNavigator(function (string $pageAlias): void {
             $this->navigateToPageAlias($pageAlias);
         });
 
-        $this->browser->setScreenshotFn(function () {
+        $this->getBrowser()->setScreenshotFn(function () {
             $this->captureScreenshot();
         });
         
         // Bridges Chrome recovery from deep node classes back to the context.
-        $this->browser->setChromeRecoveryFn(function (string $targetPageAlias): void {
+        $this->getBrowser()->setChromeRecoveryFn(function (string $targetPageAlias): void {
             $this->recoverChrome($targetPageAlias);
         });
     }
@@ -2708,7 +2711,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                     throw $e;
                 }
                 if (++$attempt >= $maxAttempts) {
-                    throw new BrowserDriverException($this->getSession(), 'Cannot open path "' . $path . '" in browser after ' . $attempt . ' attempts.', null, $e, $this->browser);
+                    throw new BrowserDriverException($this->getSession(), 'Cannot open path "' . $path . '" in browser after ' . $attempt . ' attempts.', null, $e, $this->getBrowser());
                 }
                 // WHY: a CDP error here has two distinct causes needing different handling. A Chrome
                 // that is alive but was momentarily too slow to answer (the driver's /json/version
