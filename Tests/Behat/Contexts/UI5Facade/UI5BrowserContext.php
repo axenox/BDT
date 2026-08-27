@@ -670,7 +670,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         try {
             // Find the correct authenticator tab. Keep retrying for 5
             $this->getBrowser()->goToTab($tabCaption, null, 5);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $this->getBrowser()->logOutIfAlreadyLoggedIn($this->getMinkParameter('base_url'));
             $this->browser = null;
             $this->iVisitPage($url);
@@ -1345,7 +1345,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // button click process
         try {
             $button->click();
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             throw new BrowserDriverException($this->getSession(), 'Cannot click button "' . $caption . '". ' . $e->getMessage(), null, $e, $this->getBrowser());
         }
     }
