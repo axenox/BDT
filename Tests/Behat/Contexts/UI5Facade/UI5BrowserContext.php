@@ -142,12 +142,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $token = new CliEnvAuthToken();
             // WHY THE GUARD: a fresh context instance - and therefore this authenticate() - runs for
             // EVERY scenario, and all parallel lanes run as the same OS user, so this call re-writes
-            // the one shared USER_AUTHENTICATOR row throughout the whole run. The guard applied at
-            // formatter boot protects only the formatter's OWN workbench; this is a second,
-            // independent workbench instance, so without its own guard two lanes starting scenarios
-            // at the same instant race on the row's optimistic lock and one dies with a
-            // "changed in the meantime" conflict. Disabling the check in THIS process is safe:
-            // last_authenticated_on is a last-writer-wins timestamp (see the trait's docblock).
+            // the one shared USER_AUTHENTICATOR row throughout the whole run. Without the guard, two
+            // lanes starting scenarios at the same instant race on the row's optimistic lock and one
+            // dies with a "changed in the meantime" conflict.
+            //
+            // WHY THE GUARD HAS TO BE APPLIED HERE AND NOT ONCE PER PROCESS: the guard works by
+            // flipping a flag on the TimeStampingBehavior instance held by the meta object of ONE
+            // workbench. This context builds its own Workbench above, so it owns its own behavior
+            // instances - a guard applied around a write on any other workbench in this process has
+            // no effect on this call. Every workbench that writes the row needs the guard at its own
+            // call site (see the trait's docblock).
+            //
+            // WHY IT IS SAFE: only the optimistic-lock check is suppressed, the timestamps keep being
+            // written, and last_authenticated_on is a last-writer-wins value anyway.
             self::withoutAuthenticatorTimeStamping(
                 $this->workbench,
                 fn() => $this->workbench->getSecurity()->authenticate($token)
@@ -500,12 +507,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $manager->restart();
 
             // Force the stale session out of its started state so Mink's own reset talks to the NEW
-            // browser. stop() addresses the dead process and is expected to fail - that failure is
-            // irrelevant, the goal is a session that reconnects instead of reusing a dead socket.
-            try {
-                $this->getSession()->stop();
-            } catch (\Throwable $ignored) {}
-            $this->getSession()->start();
+            // browser instead of reusing a dead socket.
+            $this->reconnectSession();
         } catch (\Throwable $e) {
             $this->logDebug('ensureChromeAliveAfterScenario failed: ' . $e->getMessage());
             try {
@@ -663,7 +666,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         try {
             // Find the correct authenticator tab. Keep retrying for 5
             $this->getBrowser()->goToTab($tabCaption, null, 5);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $this->getBrowser()->logOutIfAlreadyLoggedIn($this->getMinkParameter('base_url'));
             $this->browser = null;
             $this->iVisitPage($url);
@@ -1338,7 +1341,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // button click process
         try {
             $button->click();
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             throw new BrowserDriverException($this->getSession(), 'Cannot click button "' . $caption . '". ' . $e->getMessage(), null, $e, $this->getBrowser());
         }
     }
@@ -1418,12 +1421,17 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Checks that one or more buttons are visible on the page.
+     * Checks that one or more buttons are present on the page.
      *
      * Use this to confirm the user has access to certain actions. You can name a single button
      * or several separated by commas. Add "on the :tableName" to look for the buttons only in
      * the toolbar of the named table (or dialog/panel) - name it the way the app shows it, or
      * by the data object behind it. Each found button is briefly highlighted.
+     *
+     * The step only asks whether the button is THERE. A button that is greyed out counts as seen:
+     * the user can see the action, they just cannot trigger it right now, and whether they may
+     * trigger it is what "I click button ..." is for. A button that the toolbar moved behind its
+     * "..." overflow menu counts as seen as well.
      *
      * Usage examples:
      *
@@ -1443,7 +1451,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * @param string $buttonText The text of the button to find
      * @param string|null $tableName Optional caption or object of the widget to search in
-     * @throws \Exception If button is not found
+     * @throws \Exception If a button is not found
      */
     public function iSeeButton(string $buttonText, string $tableName = null): void
     {
@@ -1464,10 +1472,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             );
         }
 
-        $buttons = $this->explodeList($buttonText);
+        // Captions the regular search could not answer, kept as keys so a caption named twice in the
+        // step is only looked for once. They are collected FIRST and handed to the overflow fallback
+        // as one batch further down: opening an overflow popover costs a click plus the wait for its
+        // open and close animation, so a comma separated list must not pay that price per caption.
+        $missing = [];
         // WHY a separate loop variable: reusing $buttonText here would overwrite the parameter and
         // make every message built after the first iteration report the wrong step arguments.
-        foreach ($buttons as $buttonCaption) {
+        foreach ($this->explodeList($buttonText) as $buttonCaption) {
             if (empty($scopeNodes)) {
                 $button = $this->getBrowser()->findButtonByCaption($buttonCaption);
             } else {
@@ -1484,16 +1496,94 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 }
             }
 
-            Assert::assertNotNull(
-                $button,
-                $tableName === null || $tableName === ''
-                    ? "Button with text '{$buttonCaption}' not found."
-                    : "Button with text '{$buttonCaption}' not found at '{$tableName}'."
-            );
+            if ($button === null) {
+                $missing[$buttonCaption] = true;
+                continue;
+            }
 
             // Highlight the button for debugging purposes
             $this->getBrowser()->highlightWidget($button, 'Button', 0);
         }
+
+        if (empty($missing)) {
+            return;
+        }
+
+        // Last resort: the toolbar overflow. WHY: UI5 does not hide the buttons that do not fit into
+        // a toolbar - it MOVES them into the overflow popover, and their DOM elements do not exist at
+        // all until that popover was opened once. "Not on the page" and "did not fit into the toolbar"
+        // are therefore indistinguishable to the search above, and a button the user can reach in two
+        // clicks was reported as missing. Nothing here looks at the enabled state, so a greyed out
+        // entry answers this step just like an active one does.
+        $overflowHint = null;
+        foreach ($this->getOverflowSearchNodes($scopeNodes) as $node) {
+            try {
+                // One pass per toolbar resolves ALL remaining captions while the menu is open.
+                $node->findInOverflow(function (NodeElement $menu) use (&$missing) {
+                    $firstFound = null;
+                    foreach (array_keys($missing) as $caption) {
+                        $entry = $this->getBrowser()->findButtonInScopeByCaption($menu, $caption);
+                        if ($entry === null) {
+                            continue;
+                        }
+                        unset($missing[$caption]);
+                        // Highlight right here, while the popover is still open: closing it hides the
+                        // moved buttons again, so an element kept for later would point at something
+                        // that is no longer on screen and the highlight would fail or land nowhere.
+                        $this->getBrowser()->highlightWidget($entry, 'Button', 0);
+                        $firstFound = $firstFound ?? $entry;
+                    }
+                    return $firstFound;
+                });
+            } catch (RuntimeException $e) {
+                // An ambiguous scope means we cannot tell which toolbar to open - keep the
+                // explanation for the failure message and try the remaining nodes, so a
+                // second, unambiguous toolbar can still answer the question.
+                $overflowHint = $overflowHint ?? ' ' . $e->getMessage();
+                continue;
+            } finally {
+                // Always leave the page as we found it, including when the search or the highlight
+                // above threw: an open popover swallows the first click of whatever step follows.
+                $node->closeOverflowMenuIfOpened();
+            }
+
+            if (empty($missing)) {
+                break;
+            }
+        }
+
+        Assert::assertEmpty(
+            $missing,
+            (count($missing) === 1 ? "Button with text '" : "Buttons with text '")
+            . implode("', '", array_keys($missing)) . "'"
+            . ($tableName === null || $tableName === ''
+                ? ' not found.'
+                : " not found at '{$tableName}'.")
+            . ($overflowHint ?? '')
+        );
+    }
+
+    /**
+     * Returns the nodes whose toolbar overflow menus may hold a button this step is looking for.
+     *
+     * WHY IT IS NOT A PAGE-WIDE SEARCH: an overflowed button can only be reached through the overflow
+     * of the widget it belongs to. Opening a menu picked by guesswork would find a same-named button
+     * of a neighbouring widget and the assertion would turn green for the wrong toolbar. When the step
+     * names a widget, that widget is the owner; otherwise the focused one is - and with nothing
+     * focused getFocusedNode() returns a UI5PageNode, which offers no overflow lookup at all, so the
+     * fallback is simply skipped.
+     *
+     * @param FacadeNodeInterface[] $scopeNodes Nodes the step was scoped to, empty for a page wide step
+     * @return UI5AbstractNode[]
+     */
+    protected function getOverflowSearchNodes(array $scopeNodes): array
+    {
+        if (! empty($scopeNodes)) {
+            return array_values(array_filter($scopeNodes, fn($node) => $node instanceof UI5AbstractNode));
+        }
+
+        $focusedNode = $this->getBrowser()->getFocusedNode();
+        return $focusedNode instanceof UI5AbstractNode ? [$focusedNode] : [];
     }
 
     /**
@@ -2711,20 +2801,70 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                     throw $e;
                 }
                 if (++$attempt >= $maxAttempts) {
-                    throw new BrowserDriverException($this->getSession(), 'Cannot open path "' . $path . '" in browser after ' . $attempt . ' attempts.', null, $e, $this->getBrowser());
+                    // $this->browser instead of getBrowser(): the browser is not initialised yet on
+                    // the very first visit, and getBrowser() throws "BDT Browser not initialized!"
+                    // there - replacing the real CDP cause with a misleading error.
+                    throw new BrowserDriverException($this->getSession(), 'Cannot open path "' . $path . '" in browser after ' . $attempt . ' attempts. Last driver error: ' . $e->getMessage(), null, $e, $this->browser);
                 }
-                // WHY: a CDP error here has two distinct causes needing different handling. A Chrome
-                // that is alive but was momentarily too slow to answer (the driver's /json/version
-                // probe on the first visit) clears on its own, so a plain backoff + retry is enough.
-                // A Chrome that actually died will never answer again, and retrying against a dead
-                // process burns every attempt on the same socket failure. ensureChromeAlive() tells
-                // the two apart: it is a no-op when isAlive() is true, and restarts (or, if a login
-                // already happened, recovers) Chrome when it is gone - so the retry below lands on a
-                // live browser. It never throws, so calling it inside this loop is safe.
-                $this->ensureChromeAlive();
+                $this->logDebug('visitPath("' . $path . '") hit a CDP connection error on attempt ' . $attempt . ': ' . $e->getMessage());
+                // WHY: a CDP error here has two distinct causes needing different handling and the
+                // browser process is the only reliable way to tell them apart.
+                //
+                // Chrome is GONE: every retry would hit the same dead socket, so the process must be
+                // restarted first. ensureChromeAlive() does that (and replays the login when one
+                // already happened) and never throws, so calling it here is safe.
+                //
+                // Chrome is ALIVE: the process still answers /json/version and the page may even have
+                // loaded already - what broke is THIS session's WebSocket to it. Retrying over that
+                // stale socket fails identically on every attempt and produces the misleading
+                // "Cannot open path ... after N attempts" for a page that is visibly open in the
+                // browser. Reattaching the session gives the retry a working connection. Chrome keeps
+                // running, so its cookies - and therefore the login - survive, and no re-login is
+                // needed. A failed reattach is not fatal here: the retry still runs and either
+                // succeeds or ends in the regular error above.
+                if (ChromeManager::getInstance()->isAlive()) {
+                    $this->reconnectSession();
+                } else {
+                    $this->ensureChromeAlive();
+                }
                 // CDP transient — give a still-alive-but-slow browser time to settle, then retry.
                 $this->sleepBeforeVisitRetry($attempt);
             }
+        }
+    }
+
+    /**
+     * Reattaches the Mink session to the Chrome process that is already running.
+     *
+     * Use this when Chrome itself is healthy but this session's CDP/WebSocket connection
+     * broke: the driver is forced out of its started state and reconnected, so the next
+     * driver call opens a fresh socket instead of reusing the dead one. Because the Chrome
+     * process is left untouched, its cookies and therefore the current login survive - no
+     * re-authentication is required, unlike a full Chrome restart via recoverChrome().
+     *
+     * Deliberately not Session::restart(): that calls stop() and start() unguarded, and on a
+     * broken socket the stop() throws - so start() never runs and the session stays dead. Here
+     * the stop() failure is expected and swallowed on purpose; only start() has to succeed.
+     *
+     * Never throws, so it is safe to call from retry loops and hooks: a failed reattach is
+     * reported as FALSE and logged, leaving the caller free to retry or fail normally.
+     *
+     * @return bool TRUE if the session was reconnected, FALSE if reconnecting failed.
+     */
+    private function reconnectSession(): bool
+    {
+        try {
+            // Talking to the broken socket is expected to fail - the point is not a clean
+            // shutdown but forcing the driver out of its "started" state so start() reconnects.
+            try {
+                $this->getSession()->stop();
+            } catch (\Throwable $ignored) {}
+            $this->getSession()->start();
+            $this->logDebug('Mink session reattached to the running Chrome after a lost CDP connection.');
+            return true;
+        } catch (\Throwable $e) {
+            $this->logDebug('Could not reattach the Mink session: ' . $e->getMessage());
+            return false;
         }
     }
 
@@ -2782,8 +2922,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Step 1: Restart the Chrome process via ChromeManager.
         ChromeManager::getInstance()->restart();
 
-        // Step 2: Reconnect the Mink session to the freshly started Chrome.
-        $this->getSession()->restart();
+        // Step 2: Reconnect the Mink session to the freshly started Chrome. Session::restart() is
+        // not usable here: its stop() talks to the Chrome that was just killed and throws, so its
+        // start() would never run and the session would stay bound to the dead process.
+        $this->reconnectSession();
 
         // Step 3: Re-authenticate the BROWSER only — replay just the login form with the values
         // cached on the first login. We are continuing the same scenario, so the DB user/roles/
@@ -2844,13 +2986,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             // because it requires cached login parameters that do not exist yet.
             if ($this->lastLoginUrl === null) {
                 ChromeManager::getInstance()->restart();
-                // stop() talks to the dead browser and will normally fail — that failure is expected
-                // and irrelevant, the point is to force the session out of its stale state so that
-                // start() opens a new WebSocket to the new process.
-                try {
-                    $this->getSession()->stop();
-                } catch (\Throwable $ignored) {}
-                $this->getSession()->start();
+                // Reattach the session so it opens a new WebSocket to the new process instead of
+                // reusing the socket of the one that just died.
+                $this->reconnectSession();
                 $this->logDebug('Chrome restarted before login — session reattached.');
                 return;
             }

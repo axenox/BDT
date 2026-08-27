@@ -156,6 +156,23 @@ class UI5DataNode extends UI5AbstractNode
                 continue;
             }
 
+            try {
+                if (($hiddenIf = $filter->getHiddenIf()) !== null && $hiddenIf->evaluate()) {
+                    $logbook->continueLine(' - skipped: hidden_if evaluates to true for the current user');
+                    $skippedFilters['Conditionally hidden'][] = $filter->getCaption();
+                    continue;
+                }
+                if (($disabledIf = $filter->getDisabledIf()) !== null && $disabledIf->evaluate()) {
+                    $logbook->continueLine(' - skipped: disabled_if evaluates to true for the current user');
+                    $skippedFilters['Conditionally disabled'][] = $filter->getCaption();
+                    continue;
+                }
+            } catch (Throwable $e) {
+                $logbook->continueLine(' - skipped: conditional visibility could not be evaluated: ' . $e->getMessage());
+                $skippedFilters['Conditional visibility not evaluable'][] = $filter->getCaption();
+                continue;
+            }
+
             // TODO how need to test filter in the configurator dialog too!
             if (!$hasHeader) {
                 $logbook->addLine('Skipping filter ' . $filter->getCaption() . ' - hidden headers not yet supported');
@@ -163,10 +180,21 @@ class UI5DataNode extends UI5AbstractNode
                 continue;
             }
 
-            if (/* fiter not supported */ false) {
-                $logbook->addLine('Filtering ' . $filter->getCaption() . ' skipped');
+            // Decide up front whether this filter can be driven by a stored literal at all. The value is
+            // supplied by getFilterValueAttribute() - for an InputComboTable that is the text attribute,
+            // not the filter's relation - and that attribute is often a label built by a formula or an SQL
+            // concatenation. Such a value is assembled at read time, so no literal exists that could be
+            // typed into the filter and then be found again cell-by-cell in the table. This runs before
+            // findColumnWithAttribute() so we do not scan the rendered headers, read the data source and
+            // drive the whole filter round-trip only to throw the outcome away afterwards.
+            $valueAttr = $this->getFilterValueAttribute($filter);
+            if ($this->isCalculatedAttribute($valueAttr)) {
+                $logbook->continueLine(' - skipped: `' . $valueAttr->getAliasWithRelationPath()
+                    . '` is calculated (formula or SQL expression in its data address), no literal value to filter by');
                 $skippedFilters['Filter not supported'][] = $filter->getCaption();
+                continue;
             }
+
             $filterNode = $this->findFilterByCaption($filter->getCaption());
             $substepResult = $this->runAsSubstep(
                 function (SubstepResult $result) use ($filter, $dataWidget, $filterNode) {
