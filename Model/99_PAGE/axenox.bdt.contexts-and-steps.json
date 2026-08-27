@@ -77,6 +77,15 @@
                         "columns": [
                             {
                                 "attribute_alias": "STEP"
+                            },
+                            {
+                                "attribute_alias": "FULL_DESCRIPTION",
+                                "caption": "Definition",
+                                "width": "60%",
+                                "nowrap": false,
+                                "cell_widget": {
+                                    "widget_type": "Markdown"
+                                }
                             }
                         ],
                         "buttons": [

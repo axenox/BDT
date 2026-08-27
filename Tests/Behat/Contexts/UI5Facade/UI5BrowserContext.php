@@ -507,12 +507,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $manager->restart();
 
             // Force the stale session out of its started state so Mink's own reset talks to the NEW
-            // browser. stop() addresses the dead process and is expected to fail - that failure is
-            // irrelevant, the goal is a session that reconnects instead of reusing a dead socket.
-            try {
-                $this->getSession()->stop();
-            } catch (\Throwable $ignored) {}
-            $this->getSession()->start();
+            // browser instead of reusing a dead socket.
+            $this->reconnectSession();
         } catch (\Throwable $e) {
             $this->logDebug('ensureChromeAliveAfterScenario failed: ' . $e->getMessage());
             try {
@@ -2718,20 +2714,70 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                     throw $e;
                 }
                 if (++$attempt >= $maxAttempts) {
-                    throw new BrowserDriverException($this->getSession(), 'Cannot open path "' . $path . '" in browser after ' . $attempt . ' attempts.', null, $e, $this->getBrowser());
+                    // $this->browser instead of getBrowser(): the browser is not initialised yet on
+                    // the very first visit, and getBrowser() throws "BDT Browser not initialized!"
+                    // there - replacing the real CDP cause with a misleading error.
+                    throw new BrowserDriverException($this->getSession(), 'Cannot open path "' . $path . '" in browser after ' . $attempt . ' attempts. Last driver error: ' . $e->getMessage(), null, $e, $this->browser);
                 }
-                // WHY: a CDP error here has two distinct causes needing different handling. A Chrome
-                // that is alive but was momentarily too slow to answer (the driver's /json/version
-                // probe on the first visit) clears on its own, so a plain backoff + retry is enough.
-                // A Chrome that actually died will never answer again, and retrying against a dead
-                // process burns every attempt on the same socket failure. ensureChromeAlive() tells
-                // the two apart: it is a no-op when isAlive() is true, and restarts (or, if a login
-                // already happened, recovers) Chrome when it is gone - so the retry below lands on a
-                // live browser. It never throws, so calling it inside this loop is safe.
-                $this->ensureChromeAlive();
+                $this->logDebug('visitPath("' . $path . '") hit a CDP connection error on attempt ' . $attempt . ': ' . $e->getMessage());
+                // WHY: a CDP error here has two distinct causes needing different handling and the
+                // browser process is the only reliable way to tell them apart.
+                //
+                // Chrome is GONE: every retry would hit the same dead socket, so the process must be
+                // restarted first. ensureChromeAlive() does that (and replays the login when one
+                // already happened) and never throws, so calling it here is safe.
+                //
+                // Chrome is ALIVE: the process still answers /json/version and the page may even have
+                // loaded already - what broke is THIS session's WebSocket to it. Retrying over that
+                // stale socket fails identically on every attempt and produces the misleading
+                // "Cannot open path ... after N attempts" for a page that is visibly open in the
+                // browser. Reattaching the session gives the retry a working connection. Chrome keeps
+                // running, so its cookies - and therefore the login - survive, and no re-login is
+                // needed. A failed reattach is not fatal here: the retry still runs and either
+                // succeeds or ends in the regular error above.
+                if (ChromeManager::getInstance()->isAlive()) {
+                    $this->reconnectSession();
+                } else {
+                    $this->ensureChromeAlive();
+                }
                 // CDP transient — give a still-alive-but-slow browser time to settle, then retry.
                 $this->sleepBeforeVisitRetry($attempt);
             }
+        }
+    }
+
+    /**
+     * Reattaches the Mink session to the Chrome process that is already running.
+     *
+     * Use this when Chrome itself is healthy but this session's CDP/WebSocket connection
+     * broke: the driver is forced out of its started state and reconnected, so the next
+     * driver call opens a fresh socket instead of reusing the dead one. Because the Chrome
+     * process is left untouched, its cookies and therefore the current login survive - no
+     * re-authentication is required, unlike a full Chrome restart via recoverChrome().
+     *
+     * Deliberately not Session::restart(): that calls stop() and start() unguarded, and on a
+     * broken socket the stop() throws - so start() never runs and the session stays dead. Here
+     * the stop() failure is expected and swallowed on purpose; only start() has to succeed.
+     *
+     * Never throws, so it is safe to call from retry loops and hooks: a failed reattach is
+     * reported as FALSE and logged, leaving the caller free to retry or fail normally.
+     *
+     * @return bool TRUE if the session was reconnected, FALSE if reconnecting failed.
+     */
+    private function reconnectSession(): bool
+    {
+        try {
+            // Talking to the broken socket is expected to fail - the point is not a clean
+            // shutdown but forcing the driver out of its "started" state so start() reconnects.
+            try {
+                $this->getSession()->stop();
+            } catch (\Throwable $ignored) {}
+            $this->getSession()->start();
+            $this->logDebug('Mink session reattached to the running Chrome after a lost CDP connection.');
+            return true;
+        } catch (\Throwable $e) {
+            $this->logDebug('Could not reattach the Mink session: ' . $e->getMessage());
+            return false;
         }
     }
 
@@ -2789,8 +2835,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // Step 1: Restart the Chrome process via ChromeManager.
         ChromeManager::getInstance()->restart();
 
-        // Step 2: Reconnect the Mink session to the freshly started Chrome.
-        $this->getSession()->restart();
+        // Step 2: Reconnect the Mink session to the freshly started Chrome. Session::restart() is
+        // not usable here: its stop() talks to the Chrome that was just killed and throws, so its
+        // start() would never run and the session would stay bound to the dead process.
+        $this->reconnectSession();
 
         // Step 3: Re-authenticate the BROWSER only — replay just the login form with the values
         // cached on the first login. We are continuing the same scenario, so the DB user/roles/
@@ -2851,13 +2899,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             // because it requires cached login parameters that do not exist yet.
             if ($this->lastLoginUrl === null) {
                 ChromeManager::getInstance()->restart();
-                // stop() talks to the dead browser and will normally fail — that failure is expected
-                // and irrelevant, the point is to force the session out of its stale state so that
-                // start() opens a new WebSocket to the new process.
-                try {
-                    $this->getSession()->stop();
-                } catch (\Throwable $ignored) {}
-                $this->getSession()->start();
+                // Reattach the session so it opens a new WebSocket to the new process instead of
+                // reusing the socket of the one that just died.
+                $this->reconnectSession();
                 $this->logDebug('Chrome restarted before login — session reattached.');
                 return;
             }
