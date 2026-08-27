@@ -853,7 +853,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             'name' => mb_ucfirst($title),
             'line' => $line,
             'started_on' => DateTimeDataType::now(),
-            'status' => 10
+            'status' => StepStatusDataType::STARTED
         ];
         if ($parentStepUid !== null) {
             $row['parent_step'] = $parentStepUid;
