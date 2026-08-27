@@ -682,25 +682,7 @@ class UI5DataTableNode extends UI5DataNode
 
         // Get a valid value for filtering
         $filterAttr = $filter->getAttribute();
-        // Decide up front whether this filter can be driven by a stored literal at all. The value is
-        // supplied by getFilterValueAttribute() - for an InputComboTable that is the text attribute,
-        // not the filter's relation - and that attribute is often a label built by a formula or an SQL
-        // concatenation. Such a value is assembled at read time, so no literal exists that could be
-        // typed into the filter and then be found again cell-by-cell in the table. This runs before
-        // findColumnWithAttribute() so we do not scan the rendered headers, read the data source and
-        // drive the whole filter round-trip only to throw the outcome away afterwards.
-        $valueAttr = $this->getFilterValueAttribute($filter);
-        if ($this->isCalculatedAttribute($valueAttr)) {
-            $logbook->continueLine(' - skipped: `' . $valueAttr->getAliasWithRelationPath()
-                . '` is calculated (formula or SQL expression in its data address), no literal value to filter by');
-            $result->setTitle($result->getTitle() . ' (skipped: calculated attribute)');
-            return SubstepResult::createSkipped(
-                'Filter `' . $filter->getCaption() . '` is driven by the calculated attribute `'
-                . $valueAttr->getAliasWithRelationPath()
-                . '`; its value is computed at read time and can neither be filtered nor verified by a literal',
-                $logbook
-            );
-        }
+        
 
         // Look for a value it the table
         // Verify the first DataTable contains the expected text in the specified column
