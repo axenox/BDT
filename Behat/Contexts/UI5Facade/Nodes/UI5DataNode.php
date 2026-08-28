@@ -191,7 +191,7 @@ class UI5DataNode extends UI5AbstractNode
             if ($this->isCalculatedAttribute($valueAttr)) {
                 $logbook->continueLine(' - skipped: `' . $valueAttr->getAliasWithRelationPath()
                     . '` is calculated (formula or SQL expression in its data address), no literal value to filter by');
-                $skippedFilters['Filter not supported'][] = $filter->getCaption();
+                $skippedFilters['Filter not supported because it is a calculated attribute'][] = $filter->getCaption();
                 continue;
             }
 
@@ -845,19 +845,33 @@ class UI5DataNode extends UI5AbstractNode
      * Tries to set a filter value and retries once with a fresh data-source value
      * if UI5 rejects the first attempt (valueState=Error or validation mismatch).
      *
-     * Returns the accepted value on success, or null if no value could be set.
+     * Returns the accepted value on success, or null if no value could be set. For filters with
+     * a value list (autosuggest, combo table, select) the returned value is the one the widget
+     * really ended up with after picking an entry from the list - it may differ from the value
+     * that was typed (e.g. the typed text was only a part of the selected entry). Callers should
+     * verify the table content against the returned value, not against their own candidate.
+     *
+     * @param UI5FilterNode $filterNode
+     * @param iFilterData $filter
+     * @param MetaAttributeInterface $filterAttr
+     * @param iShowData $dataWidget
+     * @param LogBookInterface $logbook
+     * @param DataColumn|null $column The column showing the filter attribute, if the caller
+     * already found it - saves searching for it again here.
+     * @return string|null
      */
     protected function trySetFilterValue(
         UI5FilterNode          $filterNode,
         iFilterData            $filter,
         MetaAttributeInterface $filterAttr,
         iShowData              $dataWidget,
-        LogBookInterface       $logbook
+        LogBookInterface       $logbook,
+        ?DataColumn            $column = null
     ): ?string
     {
         $candidates = [];
 
-        $col = $this->findColumnWithAttribute($dataWidget, $filterAttr, $logbook);
+        $col = $column ?? $this->findColumnWithAttribute($dataWidget, $filterAttr, $logbook);
         if ($col !== null) {
             $val = $this->findValueInColumn($col, $logbook);
             if (trim($val ?? '') !== '') {
@@ -887,6 +901,20 @@ class UI5DataNode extends UI5AbstractNode
                 if ($i > 0) {
                     $logbook->continueLine(' (retry with value `' . $val . '`)');
                 }
+
+                // Widgets with a value list (combo table, autosuggest, select) do not necessarily keep
+                // the typed text: setValueVisible() picks a matching entry from the suggestion list and
+                // the widget then shows the full text of that entry - e.g. typing `Mus` may end up as
+                // `Mustermann GmbH`. Verifying the table against the typed text would fail in that case,
+                // so take over whatever the widget really shows now.
+                if ($filter->getInputWidget() instanceof iSupportLazyLoading) {
+                    $selectedVal = $filterNode->getValueVisible();
+                    if (is_string($selectedVal) && trim($selectedVal) !== '' && $selectedVal !== $val) {
+                        $logbook->continueLine(' (selected `' . $selectedVal . '` from the list)');
+                        return $selectedVal;
+                    }
+                }
+
                 return $val;
 
             } catch (Throwable $e) {
