@@ -61,6 +61,30 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
     const CSS_OVERFLOW_BUTTON = 'button[id$="' . self::OVERFLOW_BUTTON_ID_SUFFIX . '"]';
 
     /**
+     * Translation key of the title of the core's "unsaved changes" confirmation.
+     *
+     * WHY THE KEY AND NOT THE TEXT: the core renders this MessageBox
+     * (getConfirmationsForUnsavedChanges()) in the language of the logged-in test user, so its
+     * caption reads "Änderungen verwerfen?" on a German system and "Unsaved changes?" on an
+     * English one. Matching the translated key is the only locale-independent way to tell this
+     * particular dialog apart from every other sap.m message dialog - and the only way that does
+     * not silently swallow a genuine warning that happens to look similar.
+     */
+    const TRANSLATION_DISCARD_CHANGES_TITLE = 'MESSAGE.DISCARD_CHANGES.TITLE';
+
+    /**
+     * Translation key of the button that leaves the dialog and drops the unsaved changes.
+     *
+     * WHY THIS BUTTON AND NOT ITS CSS CLASS: UI5 marks it as `sapMDialogBeginButton`, but that
+     * class only says "this is the primary action of a MessageBox" - it would just as happily
+     * match a "Save" button in a differently built confirmation. The caption key names the
+     * intent. Discarding is also the only correct choice for the framework: a validation run
+     * must never persist the values it typed into the dialog, and pressing Cancel would leave
+     * the dialog open forever.
+     */
+    const TRANSLATION_DISCARD_CHANGES_CONTINUE = 'MESSAGE.DISCARD_CHANGES.CONTINUE';
+
+    /**
      * How many action-triggered checks may be nested into each other.
      *
      * WHY 3: a dialog opening a detail dialog opening a lookup dialog is a real pattern and must stay
@@ -249,11 +273,7 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
     public function findVisibleButtonByCaption(string $caption, bool $isTranslated, ?NodeElement $scope = null): ?NodeElement
     {
         if (!$isTranslated) {
-            $caption = $this->getBrowser()
-                ->getWorkbench()
-                ->getCoreApp()
-                ->getTranslator($this->getBrowser()->getLocale())
-                ->translate($caption);
+            $caption = $this->translate($caption);
         }
 
         $xpath = sprintf(
@@ -1103,5 +1123,98 @@ JS
         $nodeCaption = $this->getCaption();
         Assert::assertEquals(trim($widgetCaption), trim($nodeCaption), 'Widget caption "' . $widgetCaption . '" does not match rendered caption "' . $nodeCaption . '"');
         return $this;
+    }
+
+    /**
+     * Returns the core's open "unsaved changes" confirmation, or null if none is on screen.
+     *
+     * WHY THE TITLE IS PART OF THE SELECTOR: `sapMMessageDialog` is worn by every MessageBox the
+     * core raises - delete confirmations, error popups, "discard inputs" warnings. Dismissing
+     * whatever wears that class would hide real problems instead of solving one. The dialog is
+     * therefore identified by the combination of "is an open dialog" and "carries exactly this
+     * translated title".
+     *
+     * @return NodeElement|null
+     */
+    protected function findDiscardChangesConfirmation(): ?NodeElement
+    {
+        $title = $this->translate(self::TRANSLATION_DISCARD_CHANGES_TITLE);
+        $xpath = sprintf(
+            '//div[contains(concat(" ", normalize-space(@class), " "), " sapMDialogOpen ")]'
+            . '[.//h1[contains(concat(" ", normalize-space(@class), " "), " sapMDialogTitle ")]'
+            . '[normalize-space(.)=%s]]',
+            $this->xpathLiteral($title)
+        );
+
+        // Prefer the last match: UI5 appends newly opened dialogs, so the last one is the
+        // top-most. Earlier matches can be leftovers of dialogs that were already dismissed.
+        foreach (array_reverse($this->getSession()->getPage()->findAll('xpath', $xpath)) as $el) {
+            if ($this->isElementVisibleInBrowser($el)) {
+                return $el;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Confirms the core's "unsaved changes" MessageBox if it is currently blocking the screen.
+     *
+     * WHY THIS IS NOT DONE IN waitForPendingOperations(): that method is called from read-only
+     * assertions as well, and a side effect that dismisses dialogs would silently break any
+     * scenario that deliberately tests the unsaved-changes protection. The confirmation is
+     * answered only where the framework itself provoked it - while closing a dialog it has just
+     * validated.
+     *
+     * @param LogBookInterface|null $logbook
+     * @return bool True if a confirmation was on screen and was confirmed.
+     */
+    public function confirmDiscardChangesIfPresent(?LogBookInterface $logbook = null): bool
+    {
+        $confirmation = $this->findDiscardChangesConfirmation();
+        if ($confirmation === null) {
+            return false;
+        }
+
+        $continueBtn = $this->findVisibleButtonByCaption(
+            self::TRANSLATION_DISCARD_CHANGES_CONTINUE,
+            false,
+            $confirmation
+        );
+
+        // Not a case to swallow: the confirmation is on screen and blocks everything behind it,
+        // so failing to answer it must be reported as the cause instead of leaving the run to
+        // collapse into unrelated "element not found" errors a few steps later.
+        if ($continueBtn === null) {
+            throw new RuntimeException(
+                'Cannot answer the "unsaved changes" confirmation: no visible button captioned "'
+                . $this->translate(self::TRANSLATION_DISCARD_CHANGES_CONTINUE) . '" inside it.'
+            );
+        }
+
+        $continueBtn->click();
+        $logbook?->addLine('Answering the "unsaved changes" confirmation - discarding the values entered while testing');
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+
+        return true;
+    }
+
+    /**
+     * Translates a core translation key into the language of the current browser session.
+     *
+     * WHY A HELPER: the chain workbench -> core app -> translator -> translate() was repeated
+     * verbatim in every place that needs a caption to compare against the DOM. Having it once
+     * means the locale used for lookups can never drift apart between call sites.
+     *
+     * @param string $key
+     * @return string
+     */
+    public function translate(string $key): string
+    {
+        return $this->getBrowser()
+            ->getWorkbench()
+            ->getCoreApp()
+            ->getTranslator($this->getBrowser()->getLocale())
+            ->translate($key);
     }
 }
