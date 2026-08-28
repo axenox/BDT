@@ -11,7 +11,7 @@
     "created_by_user_selector": "0x11eca7f5b092f284a7f5005056bea39f",
     "created_on": "2025-10-08 18:22:39",
     "modified_by_user_selector": "0x11efa72c1fb56dfea72c025041000001",
-    "modified_on": "2026-08-25 11:03:09",
+    "modified_on": "2026-08-28 14:27:00",
     "contents": {
         "object_alias": "exface.Core.DUMMY",
         "widget_type": "SplitHorizontal",
@@ -47,7 +47,30 @@
                                                 "attribute_alias": "APP",
                                                 "caption": "App / Suite",
                                                 "input_widget": {
-                                                    "widget_type": "Input"
+                                                    "widget_type": "InputComboTable",
+                                                    "value_attribute_alias": "PACKAGE",
+                                                    "text_attribute_alias": "LABEL",
+                                                    "table": {
+                                                        "object_alias": "exface.Core.APP",
+                                                        "columns": [
+                                                            {
+                                                                "attribute_alias": "PACKAGE",
+                                                                "hidden": true
+                                                            },
+                                                            {
+                                                                "attribute_alias": "NAME"
+                                                            },
+                                                            {
+                                                                "attribute_alias": "ALIAS"
+                                                            }
+                                                        ],
+                                                        "sorters": [
+                                                            {
+                                                                "attribute_alias": "ALIAS",
+                                                                "direction": "asc"
+                                                            }
+                                                        ]
+                                                    }
                                                 }
                                             }
                                         ],
@@ -75,7 +98,74 @@
                                         ],
                                         "buttons": [
                                             {
-                                                "action_alias": "exface.Core.ShowObjectCreateDialog"
+                                                "action": {
+                                                    "alias": "exface.Core.ShowObjectCreateDialog",
+                                                    "widget": {
+                                                        "widget_type": "Dialog",
+                                                        "widgets": [
+                                                            {
+                                                                "attribute_alias": "CONTENTS",
+                                                                "widget_type": "axenox.BDT.InputGherkin",
+                                                                "width": 2,
+                                                                "height": "max",
+                                                                "hide_caption": true,
+                                                                "disabled": false
+                                                            },
+                                                            {
+                                                                "attribute_alias": "APP",
+                                                                "widget_type": "InputComboTable",
+                                                                "caption": "App / Test suite",
+                                                                "hint": "The app the new feature file belongs to. The file will be placed in the Tests/Behat/Features folder of this app.",
+                                                                "width": 2,
+                                                                "required": true,
+                                                                "disabled": false,
+                                                                "value_attribute_alias": "PACKAGE",
+                                                                "text_attribute_alias": "LABEL",
+                                                                "table": {
+                                                                    "object_alias": "exface.Core.APP",
+                                                                    "columns": [
+                                                                        {
+                                                                            "attribute_alias": "PACKAGE",
+                                                                            "hidden": true
+                                                                        },
+                                                                        {
+                                                                            "attribute_alias": "NAME"
+                                                                        },
+                                                                        {
+                                                                            "attribute_alias": "ALIAS"
+                                                                        }
+                                                                    ],
+                                                                    "sorters": [
+                                                                        {
+                                                                            "attribute_alias": "ALIAS",
+                                                                            "direction": "asc"
+                                                                        }
+                                                                    ]
+                                                                }
+                                                            },
+                                                            {
+                                                                "attribute_alias": "FOLDER_NAME",
+                                                                "caption": "Tests/Behat/Features/",
+                                                                "hint": "Name of the folder inside Tests/Behat/Features of the selected app - e.g. WorksAsExpected. The folder is created if it does not exist yet. Only letters, digits, - and _ are allowed.",
+                                                                "width": 2,
+                                                                "required": true,
+                                                                "disabled": false
+                                                            },
+                                                            {
+                                                                "attribute_alias": "FILENAME",
+                                                                "width": 2,
+                                                                "disabled": false
+                                                            }
+                                                        ],
+                                                        "buttons": [
+                                                            {
+                                                                "action_alias": "exface.Core.CreateData",
+                                                                "visibility": "promoted",
+                                                                "align": "opposite"
+                                                            }
+                                                        ]
+                                                    }
+                                                }
                                             },
                                             {
                                                 "action_alias": "exface.Core.ShowObjectEditDialog",
