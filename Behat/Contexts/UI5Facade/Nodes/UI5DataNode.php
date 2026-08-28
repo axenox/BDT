@@ -191,7 +191,7 @@ class UI5DataNode extends UI5AbstractNode
             if ($this->isCalculatedAttribute($valueAttr)) {
                 $logbook->continueLine(' - skipped: `' . $valueAttr->getAliasWithRelationPath()
                     . '` is calculated (formula or SQL expression in its data address), no literal value to filter by');
-                $skippedFilters['Filter not supported'][] = $filter->getCaption();
+                $skippedFilters['Filter not supported because it is a calculated attribute'][] = $filter->getCaption();
                 continue;
             }
 
