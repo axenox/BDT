@@ -690,22 +690,27 @@ class UI5DataTableNode extends UI5DataNode
         $columnCaption = null;
         $column = $this->findColumnWithAttribute($dataWidget, $filterAttr, $logbook);
 
-        if ($column !== null) {
-            $columnCaption = $column->getCaption();
+        if ($column === null) {
+            $logbook->continueLine(' - filter `' . $filterAttr->getName() . '` has no corresponding column in the table, skipping content verification');
+            return SubstepResult::createSkipped(
+                'Filter `' . $filterAttr->getName() . '` has no corresponding column in the table, skipping content verification',
+                $logbook
+            );
+        }
+        $columnCaption = $column->getCaption();
 
-            // Columns defined in the page with visibility "optional" (or "hidden") are
-            // rendered by the UI5 facade with `visible: false` (see UI5DataConfigurator),
-            // so their header never appears in the DOM. verifyTableContent() could not find
-            // such a column and would fail with "Column '...' not found in table". Since the
-            // column is intentionally not shown, we skip the content verification for this
-            // filter instead of failing the step.
-            if ($column->isHidden() || $column->getVisibility() === EXF_WIDGET_VISIBILITY_OPTIONAL) {
-                $logbook->continueLine(' - column `' . $columnCaption . '` is optional/hidden, skipping content verification');
-                return SubstepResult::createSkipped(
-                    'Column `' . $columnCaption . '` for filter `' . $filter->getCaption() . '` is optional/hidden and is not rendered in the table',
-                    $logbook
-                );
-            }
+        // Columns defined in the page with visibility "optional" (or "hidden") are
+        // rendered by the UI5 facade with `visible: false` (see UI5DataConfigurator),
+        // so their header never appears in the DOM. verifyTableContent() could not find
+        // such a column and would fail with "Column '...' not found in table". Since the
+        // column is intentionally not shown, we skip the content verification for this
+        // filter instead of failing the step.
+        if ($column->isHidden() || $column->getVisibility() === EXF_WIDGET_VISIBILITY_OPTIONAL) {
+            $logbook->continueLine(' - column `' . $columnCaption . '` is optional/hidden, skipping content verification');
+            return SubstepResult::createSkipped(
+                'Column `' . $columnCaption . '` for filter `' . $filter->getCaption() . '` is optional/hidden and is not rendered in the table',
+                $logbook
+            );
         }
 
         if ($filterNode instanceof UI5RangeFilterNode) {
@@ -746,13 +751,10 @@ class UI5DataTableNode extends UI5DataNode
             return $result;
         }
 
-        $filterVal = null;
-        if ($column !== null) {
-            $filterVal = $this->trySetFilterValue($filterNode, $filter, $filterAttr, $dataWidget, $logbook);
-            if ($filterVal !== null) {
-                $logbook->continueLine(' with value `' . $filterVal . '` found in data source');
-            }
-        }
+        $filterVal = $this->trySetFilterValue($filterNode, $filter, $filterAttr, $dataWidget, $logbook, $column);
+        if ($filterVal !== null) {
+            $logbook->continueLine(' with value `' . $filterVal . '` found in data source');
+        }        
 
         // Skip filters whose extracted test value is an unevaluated formula (e.g. "=TabelleAnfragen!Id").
         // Such values come from calculated attributes that have no concrete row value, so the data source
@@ -780,13 +782,6 @@ class UI5DataTableNode extends UI5DataNode
         $loadedRowCount = $this->getLoadedRowCount();
 
         $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');
-
-
-        // See if our 
-        if ($columnCaption === null) {
-            $logbook->continueLine(' - No column found');
-            return SubstepResult::createSkipped('No column found for filter `' . $filter->getCaption() . '`', $logbook);
-        }
 
         $this->verifyTableContent([
             ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
