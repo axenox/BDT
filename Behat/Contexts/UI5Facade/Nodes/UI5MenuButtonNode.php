@@ -11,6 +11,7 @@ use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Interfaces\Widgets\iHaveButtons;
+use exface\Core\Widgets\DataTable;
 
 /**
  * Facade node for UI5 MenuButton widgets (e.g. the "Aktionen" toolbar button).
@@ -87,6 +88,33 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
     private ?string $triggerButtonId = null;
 
     /**
+     * Stable DOM id of the MenuButton container.
+     *
+     * WHY: UI5 replaces the container after nested dialogs, while this node object survives and its
+     * constructor-time NodeElement then points to an element that no longer exists.
+     */
+    private ?string $menuButtonContainerId = null;
+
+    /**
+     * DOM id of the toolbar overflow button that currently contains this MenuButton.
+     *
+     * WHY: selecting a table row closes the toolbar overflow popover and removes this MenuButton
+     * from the DOM. Its own menu cannot be opened again until the outer overflow is reopened first.
+     */
+    private ?string $outerOverflowButtonId = null;
+
+    /**
+     * Logbook of the check currently running on this node, if there is one.
+     *
+     * WHY IT IS HELD AS A FIELD: openMenu() is called from six places inside checkWorksAsExpected(),
+     * several of them from inside closures, and from clickItem() which has no logbook at all.
+     * Threading the logbook through all of them would change every one of those call sites for a
+     * value that is the same throughout the check. The field is written once, at the start of the
+     * check, and is simply null for the user-facing clickItem() path.
+     */
+    private ?LogBookInterface $logbook = null;
+
+    /**
      * Opens the menu and validates every visible entry as its own button action.
      *
      * @param LogBookInterface $logbook
@@ -99,6 +127,11 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
             // Nothing to validate if the model does not expose child buttons.
             return SubstepResult::createSkipped('MenuButton `' . $this->getCaption() . '` has no child buttons', $logbook);
         }
+
+        // Remember the logbook of this check so the failure paths below can write their technical
+        // details somewhere other than the exception message - see $this->logbook.
+        $this->logbook = $logbook;
+        $this->rememberOuterOverflowButton();
 
         $failed = false;
         foreach ($widget->getButtons() as $entryWidget) {
@@ -260,12 +293,31 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
      */
     protected function getMenuButtonContainer(): NodeElement
     {
+        if ($this->menuButtonContainerId === null && $this->widget !== null) {
+            $this->menuButtonContainerId = $this->getBrowser()->getElementIdFromWidget($this->widget);
+        }
+        if ($this->menuButtonContainerId !== null) {
+            $fresh = $this->getSession()->getPage()->findById($this->menuButtonContainerId);
+            if ($fresh !== null) {
+                return $fresh;
+            }
+            // The id was resolved from the widget model, so it is correct - the element simply is
+            // not rendered. That is a normal state for a button sitting in a closed toolbar
+            // overflow, which is why the message names that instead of blaming the id.
+            throw new RuntimeException(
+                'The menu "' . ($this->widget !== null ? $this->widget->getCaption() : '?')
+                . '" is currently not displayed anywhere on the screen.'
+            );
+        }
+
         $el = $this->getNodeElement();
         if ($el->hasClass('exfw-MenuButton')) {
+            $this->menuButtonContainerId = $el->getAttribute('id');
             return $el;
         }
         while ($parent = $el->getParent()) {
             if ($parent->hasClass('exfw-MenuButton')) {
+                $this->menuButtonContainerId = $parent->getAttribute('id');
                 return $parent;
             }
             $el = $parent;
@@ -314,17 +366,12 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
             $this->triggerButtonId = null;
         }
 
-        $el = $this->getNodeElement();
-        if ($el->getTagName() === 'button' && $el->getAttribute('aria-haspopup') === 'menu') {
-            $trigger = $el;
-        } else {
-            $container = $this->getMenuButtonContainer();
-            $trigger = $container->find('css', 'button[aria-haspopup="menu"]')
-                ?? $container->find('css', 'button[aria-haspopup="true"]')
-                ?? $container->find('css', 'button[aria-haspopup]');
-        }
+        $container = $this->getMenuButtonContainer();
+        $trigger = $container->find('css', 'button[aria-haspopup="menu"]')
+            ?? $container->find('css', 'button[aria-haspopup="true"]')
+            ?? $container->find('css', 'button[aria-haspopup]');
         if ($trigger === null) {
-            throw new RuntimeException('Cannot find the trigger button of menu `' . trim($this->getMenuButtonContainer()->getText() ?? '') . '`: no button with aria-haspopup="menu" inside the menu container.');
+            throw new RuntimeException('Cannot find the trigger button of menu `' . trim($container->getText() ?? '') . '`: no button with aria-haspopup="menu" inside the menu container.');
         }
 
         $id = $trigger->getAttribute('id');
@@ -339,21 +386,37 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
      * Why this exists:
      * Menu entries whose action requires selected rows can only be triggered after a
      * row is selected in the owning table. The MenuButton sits in the DataTable
-     * toolbar, so the table node is resolved by walking up to the closest
-     * .exfw-DataTable ancestor and building the proper node for it.
+     * toolbar, so the table node is resolved by walking up the widget model to the
+     * closest DataTable ancestor and locating its rendered node.
+     *
+     * WHY THE WIDGET MODEL IS WALKED INSTEAD OF THE DOM: once the MenuButton overflows into the
+     * DataTable toolbar's "..." popover, its DOM subtree is rendered inside that popover and is no
+     * longer a descendant of `.exfw-DataTable` at all - a DOM ancestor walk climbs past <html>
+     * without ever finding it (and used to crash there, see history). The widget model has no such
+     * problem: it is unaffected by where UI5 chose to render anything, so the owning DataTable is
+     * found by walking widget parents instead, then located on the page the same way
+     * UI5FacadeNodeFactory::createFromWidget() always does - by id, from the whole page, not by DOM
+     * ancestry.
      *
      * @return UI5DataTableNode|null
      */
     protected function getOwningDataTableNode(): ?UI5DataTableNode
     {
-        $el = $this->getMenuButtonContainer();
-        while ($el = $el->getParent()) {
-            if ($el->hasClass('exfw-DataTable')) {
-                $node = UI5FacadeNodeFactory::createFromNodeElement($el, $this->getSession(), $this->getBrowser());
-                return $node instanceof UI5DataTableNode ? $node : null;
-            }
+        $tableWidget = $this->getWidget()->getParent();
+        while ($tableWidget !== null && !($tableWidget instanceof DataTable)) {
+            $tableWidget = $tableWidget->getParent();
         }
-        return null;
+        if ($tableWidget === null) {
+            return null;
+        }
+
+        try {
+            $node = UI5FacadeNodeFactory::createFromWidget($tableWidget, $this->getSession(), $this->getBrowser());
+        } catch (\Throwable $e) {
+            // The table is not (yet) rendered on the page - nothing to precondition against.
+            return null;
+        }
+        return $node instanceof UI5DataTableNode ? $node : null;
     }
 
     /**
@@ -377,27 +440,50 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
      */
     protected function openMenu(): void
     {
+        $this->ensureOuterOverflowOpen();
         if ($this->isMenuOpen()) {
             return;
         }
-        
+
         // A modal dialog left on screen swallows every click on the toolbar behind it, so polling the
         // trigger would burn all attempts and then blame the trigger. Say what is actually in the way.
         if ($this->getSession()->getPage()->find('css', '.sapMDialog.sapMDialogOpen') !== null) {
-            throw new RuntimeException('Menu `' . $this->getCaption() . '` cannot be opened: a modal dialog is still open in front of it.');
+            throw new RuntimeException(
+                'The menu "' . $this->getWidget()->getCaption() . '" could not be opened because another dialog was open in front of it.'
+            );
         }
 
         $attempt = 0;
         while ($attempt < self::MENU_OPEN_ATTEMPTS) {
             $attempt++;
+
+            // WAS: called once, before this loop.
+            // NOW: before every attempt. Whatever made the previous click miss has usually also
+            // taken this button out of reach, so attempts 2 and 3 were guaranteed no-ops that only
+            // delayed the error by two more clicks into empty space.
+            $this->ensureOuterOverflowOpen();
+
             $trigger = $this->getTriggerButton();
-            // Clicking a disabled button does nothing, so the loop would spend all its attempts and
-            // then blame the popover. Name the actual state instead.
+            // Clicking a switched-off button does nothing, so the loop would spend all its attempts
+            // and then blame the popover. Name the actual state instead.
             if ($trigger->hasAttribute('disabled')
                 || $trigger->getAttribute('aria-disabled') === 'true'
                 || $trigger->hasClass('sapMBtnDisabled')
             ) {
-                throw new RuntimeException('Menu `' . $this->getCaption() . '` cannot be opened: ' . $this->describeDisabledTrigger());
+                throw new RuntimeException(
+                    'The menu "' . $this->getWidget()->getCaption() . '" could not be opened: ' . $this->describeDisabledTrigger()
+                );
+            }
+
+            // NEW. Mink clicks by dispatching a mouse event at the element's centre COORDINATES. A
+            // control inside a closed toolbar overflow has a 0x0 box at 0,0, so all three attempts
+            // were dispatched at the top left corner of the page and landed on the shell brand
+            // element instead. That is not merely a wasted attempt - the shell brand is a navigation
+            // target, so the framework was clicking it three times per failure. clickOverflowButton()
+            // already guards against exactly this for the overflow button itself; the same guard
+            // belongs here.
+            if (! $this->isElementVisibleInBrowser($trigger)) {
+                throw new RuntimeException($this->explainMenuOpenFailure());
             }
 
             $trigger->click();
@@ -413,7 +499,345 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
             $this->triggerButtonId = null;
         }
 
-        throw new RuntimeException('Menu `' . $this->getCaption() . '` did not open after ' . $attempt . ' attempts on its trigger button.');
+        throw new RuntimeException($this->explainMenuOpenFailure());
+    }
+
+    /**
+     * Remembers the outer toolbar overflow while this MenuButton is still rendered inside it.
+     *
+     * WHY: after row selection the popover and this node disappear, so ownership can no longer be
+     * inferred from the DOM at the moment it is needed.
+     *
+     * @return void
+     */
+    private function rememberOuterOverflowButton(): void
+    {
+        // Tolerant on purpose: while a toolbar overflow is closed, UI5 does not render the controls
+        // it holds at all, so there is legitimately no container to derive an owner from. Letting
+        // that throw aborted checkWorksAsExpected() before the entry loop had even started, which
+        // is where the "Cannot find the rendered container of menu ..." failures came from. The
+        // owner is resolved again by ensureOuterOverflowOpen() before every click anyway.
+        try {
+            $this->rememberOuterOverflowButtonFromContainer($this->getMenuButtonContainer());
+        } catch (\Throwable $e) {
+            // Nothing to remember yet - not an error at this point.
+        }
+    }
+
+    /**
+     * Reopens the toolbar overflow that owns this MenuButton when row interaction closed it.
+     *
+     * @return void
+     * @throws RuntimeException If the remembered toolbar overflow cannot be reopened
+     */
+    private function ensureOuterOverflowOpen(): void
+    {
+        if ($this->menuButtonContainerId === null) {
+            $this->menuButtonContainerId = $this->getBrowser()->getElementIdFromWidget($this->getWidget());
+        }
+
+        $container = $this->getSession()->getPage()->findById($this->menuButtonContainerId);
+        if ($container !== null && $this->isElementVisibleInBrowser($container)) {
+            $this->rememberOuterOverflowButtonFromContainer($container);
+            return;
+        }
+
+        if ($this->outerOverflowButtonId !== null) {
+            $button = $this->getSession()->getPage()->findById($this->outerOverflowButtonId);
+            if ($button !== null && $this->pressOverflowButton($button) !== null) {
+                $container = $this->getSession()->getPage()->findById($this->menuButtonContainerId);
+            }
+        }
+
+        if ($container === null || !$this->isElementVisibleInBrowser($container)) {
+            $table = $this->getOwningDataTableNode();
+            $container = $table?->findElementInOverflowById($this->menuButtonContainerId);
+        }
+
+        if ($container === null || !$this->isElementVisibleInBrowser($container)) {
+            throw new RuntimeException(
+                'The menu "' . $this->getWidget()->getCaption() . '" is hidden in the toolbar\'s "..." menu'
+                . ' and that menu could not be opened, so the button could not be reached.'
+            );
+        }
+
+        $this->rememberOuterOverflowButtonFromContainer($container);
+        $this->triggerButtonId = null;
+    }
+
+    /**
+     * Refreshes the generated toolbar id from the popover containing the current MenuButton element.
+     *
+     * WHY: UI5 assigns a new `__toolbarN` id after nested dialog rendering, so the owner captured
+     * before the dialog cannot reopen the replacement toolbar.
+     *
+     * @param NodeElement $container
+     * @return void
+     */
+    private function rememberOuterOverflowButtonFromContainer(NodeElement $container): void
+    {
+        $popover = $container->find('xpath',
+            'ancestor::*[substring(@id, string-length(@id) - string-length("' . self::OVERFLOW_MENU_ID_SUFFIX . '") + 1) = "' . self::OVERFLOW_MENU_ID_SUFFIX . '"][1]'
+        );
+        if ($popover === null) {
+            return;
+        }
+
+        $popoverId = (string) $popover->getAttribute('id');
+        $toolbarId = substr($popoverId, 0, -strlen(self::OVERFLOW_MENU_ID_SUFFIX));
+        $this->outerOverflowButtonId = $toolbarId . self::OVERFLOW_BUTTON_ID_SUFFIX;
+    }
+
+    /**
+     * Reads every signal the page can offer about why this menu is not open.
+     *
+     * WHY IT RETURNS DATA AND NOT A SENTENCE: the same readings serve two different readers. A
+     * person looking at the test report needs one sentence telling them what to do; whoever fixes
+     * the framework needs the raw values. Producing the sentence here would force the raw values
+     * into the report's error column, where they are both unreadable and long enough to be cut off
+     * mid-word - which is exactly what happened before this split.
+     *
+     * WHY THE MENU POPUP IS RESOLVED DOWNWARDS: this UI5 version renders sap.m.Menu through its own
+     * ResponsivePopover ("<menuId>-rp-popover"), which is a CHILD of the menu. Walking the control
+     * tree upwards from the menu can never reach it - a MenuButton's parents are the toolbar and the
+     * view, and OverflowToolbar holds overflowed content by association, so not even the overflow
+     * popover is a parent. The upward walk this replaced reported null on every single failure.
+     *
+     * WHY IT NEVER THROWS: it runs while an error is already being built. A diagnostic that fails
+     * must degrade into an empty reading, never replace the real error with its own.
+     *
+     * @return array Empty when nothing could be read at all.
+     */
+    private function collectMenuOpenDiagnostics(): array
+    {
+        try {
+            $triggerId = (string) $this->getTriggerButton()->getAttribute('id');
+            $idJs = json_encode($triggerId, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            // Taken from the constant rather than written out again: the day UI5 renames the popover
+            // suffix, this must not keep looking for the old one and quietly report "not in any
+            // overflow" for every overflowed button.
+            $suffixJs = json_encode(self::OVERFLOW_MENU_ID_SUFFIX, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+            $json = $this->getFromJavascript(<<<JS
+(function(){
+    var btn = document.getElementById($idJs);
+    if (! btn) { return JSON.stringify({triggerInDom: false, triggerId: $idJs}); }
+
+    var describe = function(el) {
+        if (! el) { return null; }
+        if (el.id) { return el.id; }
+        var sClass = (el.className && typeof el.className === 'string') ? el.className : '';
+        return el.tagName + (sClass === '' ? '' : '.' + sClass.split(/\s+/).join('.'));
+    };
+
+    var out = {
+        triggerInDom: true,
+        ariaExpanded: btn.getAttribute('aria-expanded'),
+        ariaControls: btn.getAttribute('aria-controls'),
+        ariaDisabled: btn.getAttribute('aria-disabled')
+    };
+
+    // --- Could a mouse click have reached the trigger at all? --------------------------------
+    var rect = btn.getBoundingClientRect();
+    var cx = rect.left + rect.width / 2;
+    var cy = rect.top + rect.height / 2;
+    out.triggerWidth = Math.round(rect.width);
+    out.triggerHeight = Math.round(rect.height);
+    out.triggerBox = out.triggerWidth + 'x' + out.triggerHeight
+        + ' @ ' + Math.round(rect.left) + ',' + Math.round(rect.top);
+    out.viewportWidth = window.innerWidth;
+    out.viewportHeight = window.innerHeight;
+    out.triggerCentreInViewport = (cx >= 0 && cy >= 0 && cx <= window.innerWidth && cy <= window.innerHeight);
+
+    var hit = out.triggerCentreInViewport ? document.elementFromPoint(cx, cy) : null;
+    out.elementAtTriggerCentre = describe(hit);
+    out.clickWouldReachTrigger = false;
+    // A descendant counts as a hit: UI5 buttons render inner spans and a click on those bubbles up
+    // to the button. An unrelated element - an overlay, a popup block layer, the page behind a
+    // closed popover - does not.
+    for (var h = hit; h; h = h.parentElement) {
+        if (h === btn) { out.clickWouldReachTrigger = true; break; }
+    }
+
+    // --- Is the toolbar overflow that currently holds this button open? ----------------------
+    var sSuffix = $suffixJs;
+    out.overflowPopoverId = null;
+    out.overflowPopoverVisible = null;
+    for (var p = btn.parentElement; p; p = p.parentElement) {
+        if (p.id && p.id.length > sSuffix.length && p.id.slice(-sSuffix.length) === sSuffix) {
+            out.overflowPopoverId = p.id;
+            var pcs = window.getComputedStyle(p);
+            var prect = p.getBoundingClientRect();
+            out.overflowPopoverVisible = !! (pcs
+                && pcs.display !== 'none'
+                && pcs.visibility !== 'hidden'
+                && parseFloat(pcs.opacity || '1') > 0
+                && prect && (prect.width > 0 || prect.height > 0));
+            break;
+        }
+    }
+    out.inStaticArea = !! btn.closest('#sap-ui-static');
+
+    // --- Is the dialog stack this button belongs to still on screen? -------------------------
+    // A control whose dialog was closed keeps its UI5 instance and a stale DOM in the static area,
+    // so every other reading here looks plausible while the whole widget is in fact gone.
+    var oDialog = btn.closest('.sapMDialog');
+    out.dialogAncestorId = describe(oDialog);
+    out.dialogAncestorOpen = oDialog ? oDialog.classList.contains('sapMDialogOpen') : null;
+
+    // --- What does UI5 itself think about this button and its menu? --------------------------
+    out.controlFoundFor = null;
+    out.controlIsBusy = null;
+    out.controlEnabled = null;
+    out.menuControlType = null;
+    out.menuItemCount = null;
+    out.menuPopupId = null;
+    out.menuPopupState = null;
+    if (window.sap && sap.ui && typeof sap.ui.getCore === 'function') {
+        var oCore = sap.ui.getCore();
+        // The OUTER control first: sap.m.MenuButton renders an inner plain sap.m.Button under
+        // "<id>-internalBtn", and only the outer one carries getMenu().
+        var oBtn = oCore.byId(btn.id.replace(/-internalBtn\$/, '')) || oCore.byId(btn.id);
+        if (oBtn) {
+            out.controlFoundFor = oBtn.getMetadata ? oBtn.getMetadata().getName() : typeof oBtn;
+            out.controlIsBusy = (typeof oBtn.getBusy === 'function') ? oBtn.getBusy() : null;
+            out.controlEnabled = (typeof oBtn.getEnabled === 'function') ? oBtn.getEnabled() : null;
+        }
+        if (oBtn && typeof oBtn.getMenu === 'function') {
+            var oMenu = oBtn.getMenu();
+            if (oMenu) {
+                out.menuControlType = oMenu.getMetadata ? oMenu.getMetadata().getName() : typeof oMenu;
+                out.menuItemCount = (typeof oMenu.getItems === 'function' && oMenu.getItems())
+                    ? oMenu.getItems().length : null;
+                // The inner Popover is tried before the ResponsivePopover wrapping it, because only
+                // the inner one owns the sap.ui.core.Popup whose state is the authoritative answer.
+                var aCandidates = [
+                    oCore.byId(oMenu.getId() + '-rp-popover'),
+                    oCore.byId(oMenu.getId() + '-rp'),
+                    (typeof oMenu._getPopover === 'function' ? oMenu._getPopover() : null)
+                ];
+                for (var k = 0; k < aCandidates.length; k++) {
+                    var oPopover = aCandidates[k];
+                    if (! oPopover) { continue; }
+                    out.menuPopupId = oPopover.getId ? oPopover.getId() : null;
+                    var oPopup = oPopover.oPopup
+                        || (typeof oPopover.getPopup === 'function' ? oPopover.getPopup() : null);
+                    if (oPopup && typeof oPopup.getOpenState === 'function') {
+                        out.menuPopupState = String(oPopup.getOpenState());
+                        break;
+                    }
+                    if (typeof oPopover.isOpen === 'function') {
+                        out.menuPopupState = oPopover.isOpen() ? 'OPEN' : 'CLOSED';
+                        break;
+                    }
+                }
+                if (out.menuPopupId === null) {
+                    // No popup instance exists yet. UI5 creates it on the first open, so this means
+                    // the menu has never been opened once - the press handler never ran.
+                    out.menuPopupState = 'NEVER_OPENED';
+                }
+            }
+        }
+    }
+
+    // --- Anything modal sitting in front of the whole page ------------------------------------
+    var aBlockLayers = document.querySelectorAll('.sapUiBLy, #sap-ui-blocklayer-popup');
+    var iBlockLayers = 0;
+    for (var b = 0; b < aBlockLayers.length; b++) {
+        var bcs = window.getComputedStyle(aBlockLayers[b]);
+        if (bcs && bcs.display !== 'none' && bcs.visibility !== 'hidden') { iBlockLayers++; }
+    }
+    out.visibleBlockLayers = iBlockLayers;
+    out.openDialogs = document.querySelectorAll('.sapMDialog.sapMDialogOpen').length;
+
+    return JSON.stringify(out);
+})();
+JS
+            );
+
+            $data = is_string($json) ? json_decode($json, true) : null;
+            return is_array($data) ? $data : [];
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * Turns the readings of collectMenuOpenDiagnostics() into one sentence a tester can act on.
+     *
+     * WHY THE REPORT GETS A SENTENCE AND NOT THE READINGS: the person reading a test report is not
+     * debugging the framework. They need to know whether the application is broken, whether the test
+     * environment is wrong, or whether the framework failed - and what to change. "triggerBox:
+     * 0x0 @ 0,0" answers none of those questions, and it filled the report's error column so
+     * completely that the message was cut off mid-word. The readings are written to the step log
+     * instead, one click away for whoever needs them.
+     *
+     * WHY THE CASES ARE ORDERED FROM SPECIFIC TO GENERAL: several readings are true at once in a
+     * broken state (a closed dialog also means an unreachable button), and naming the outermost
+     * cause first is what makes the message actionable rather than merely accurate.
+     *
+     * WHY THE CAPTION COMES FROM THE WIDGET AND NOT FROM THE DOM: getCaption() reads the rendered
+     * text of the trigger, which is empty for exactly the buttons this method describes - so the
+     * message would have read `Menu "" ...` in every case that matters.
+     *
+     * @return string
+     */
+    private function explainMenuOpenFailure(): string
+    {
+        $diag = $this->collectMenuOpenDiagnostics();
+        // Written where the report shows it next to the failing step, instead of into the message.
+        if ($diag !== [] && $this->logbook !== null) {
+            $this->logbook->addLine('Menu open diagnostics: ' . json_encode($diag, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+        }
+
+        try {
+            $name = '"' . $this->getWidget()->getCaption() . '"';
+        } catch (\Throwable $e) {
+            $name = 'this menu';
+        }
+
+        if ($diag === []) {
+            return 'The menu ' . $name . ' did not open and the reason could not be determined.';
+        }
+        if (($diag['triggerInDom'] ?? true) === false) {
+            return 'The menu ' . $name . ' is no longer on the page - the screen it belongs to was closed or rebuilt before the menu could be checked.';
+        }
+        if (($diag['dialogAncestorOpen'] ?? null) === false) {
+            return 'The menu ' . $name . ' belongs to a dialog that was already closed at this point, so it could not be opened any more.';
+        }
+        if (($diag['menuPopupState'] ?? null) === 'OPEN') {
+            return 'The menu ' . $name . ' did open, but the test could not read it. This is a fault in the test framework, not in the application.';
+        }
+        if (($diag['controlEnabled'] ?? null) === false) {
+            return 'The menu ' . $name . ' is switched off in the application and cannot be opened.';
+        }
+        if (($diag['controlIsBusy'] ?? null) === true) {
+            return 'The menu ' . $name . ' did not open because the button was still loading.';
+        }
+        if (($diag['openDialogs'] ?? 0) > 0 || ($diag['visibleBlockLayers'] ?? 0) > 0) {
+            return 'The menu ' . $name . ' could not be opened because another dialog was open in front of it.';
+        }
+        if (($diag['overflowPopoverId'] ?? null) !== null && ($diag['overflowPopoverVisible'] ?? null) === false) {
+            return 'The menu ' . $name . ' is not on screen: the browser window is only '
+                . ($diag['viewportWidth'] ?? '?') . ' pixels wide, so the toolbar does not fit and this'
+                . ' button was moved into the toolbar\'s "..." menu, which was closed. Run the test in a'
+                . ' wider browser window.';
+        }
+        if (($diag['clickWouldReachTrigger'] ?? true) === false) {
+            if (($diag['triggerCentreInViewport'] ?? true) === false) {
+                return 'The menu ' . $name . ' is scrolled out of view and could not be clicked.';
+            }
+            if (($diag['triggerWidth'] ?? 1) === 0 && ($diag['triggerHeight'] ?? 1) === 0) {
+                return 'The menu ' . $name . ' is present but invisible, so clicking it had no effect.';
+            }
+            return 'The menu ' . $name . ' could not be clicked because "'
+                . ($diag['elementAtTriggerCentre'] ?? 'another element') . '" was on top of it.';
+        }
+        if (($diag['menuItemCount'] ?? null) === 0) {
+            return 'The menu ' . $name . ' has no entries, so there was nothing to open.';
+        }
+
+        return 'The menu ' . $name . ' was clicked but never opened, and no cause could be identified.';
     }
 
     /**
@@ -474,8 +898,11 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
         var oCore = sap.ui.getCore();
         var oCtrl = sMenuId ? oCore.byId(sMenuId) : null;
         if (! oCtrl) {
-            // sap.m.MenuButton renders an inner button; the menu hangs off the outer control.
-            var oBtn = oCore.byId(btn.id) || oCore.byId(btn.id.replace(/-internalBtn\$/, ''));
+            // sap.m.MenuButton renders an inner button; the menu hangs off the OUTER control, so its
+            // id (with the "-internalBtn" suffix stripped) is tried first. Trying the raw btn.id first
+            // used to resolve the INNER plain sap.m.Button instead (it has no getMenu()), which
+            // silently skipped straight past the real MenuButton and left oCtrl null.
+            var oBtn = oCore.byId(btn.id.replace(/-internalBtn\$/, '')) || oCore.byId(btn.id);
             if (oBtn && typeof oBtn.getMenu === 'function') { oCtrl = oBtn.getMenu(); }
         }
         // Walk up until the control owning the sap.ui.core.Popup is reached. The nesting differs
@@ -489,7 +916,11 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
         }
     }
     if (btn.getAttribute('aria-expanded') === 'true') { return 'OPEN'; }
-    var el = sMenuId ? document.getElementById(sMenuId) : document.querySelector('ul.sapMMenuList[role="menu"]');
+    // Not scoped to a class name: the popup can render as sap.m.Menu's own list or, on desktop, as
+    // the sap.ui.unified.Menu it delegates to underneath - each uses a different CSS class, but both
+    // carry role="menu" on their root element. Matching only "ul.sapMMenuList" missed the desktop
+    // variant entirely and reported a genuinely open menu as closed.
+    var el = sMenuId ? document.getElementById(sMenuId) : document.querySelector('[role="menu"]');
     if (! el) { return 'CLOSED'; }
     var cs = window.getComputedStyle(el);
     if (! cs || cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity || '1') <= 0) { return 'CLOSED'; }

@@ -2640,7 +2640,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $logbook->setIndentActive(1);
         DatabaseFormatter::addTestLogbook($logbook);
         $result = $node->checkWorksAsExpected($logbook);
-        Assert::assertNotTrue($result->isFailed(), 'Widget "' . ($node->getCaption() ?? $node->getWidgetType()) . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details'));
+        $title = $node->getCaption() === null ||  $node->getCaption() === "" ? $node->getWidgetType() : $node->getCaption();
+        Assert::assertNotTrue($result->isFailed(), 'Widget "' . $title . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details'));
     }
 
     /**

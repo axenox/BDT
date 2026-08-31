@@ -486,9 +486,15 @@ class UI5DataNode extends UI5AbstractNode
                 if ($buttonNodeElement === null) {
                     return null;
                 }
-                $buttonNode = UI5FacadeNodeFactory::createFromWidgetType($buttonWidget->getWidgetType(), $buttonNodeElement, $this->getSession(), $this->getBrowser());
-                // Touch the element once so a stale handle surfaces here (inside the
-                // retry loop) rather than later in checkDisabled()/click().
+                $buttonNode = UI5FacadeNodeFactory::createFromWidgetType($buttonWidget->getWidgetType(), $buttonNodeElement, $this->getSession(), $this->getBrowser(), $buttonWidget);
+                // Touch the element once so a stale handle surfaces here (inside the retry loop)
+                // rather than later in checkWorksAsExpected()/checkDisabled()/click(). checkDisabled()
+                // alone is NOT enough for this: it is a no-op stub for several node types (e.g.
+                // UI5MenuButtonNode never reads the DOM there), so a handle that is about to go stale
+                // - most commonly because an overflow popover is still settling its just-moved content
+                // when it is grabbed - sailed straight through and only surfaced minutes later as a raw
+                // "Tag matching xpath ... not found" deep inside the button's own check.
+                $buttonNode->getNodeElement()->getAttribute('id');
                 $buttonNode->checkDisabled();
                 return $buttonNode;
             } catch (Throwable $e) {
