@@ -675,7 +675,7 @@ JS;
      * @param string $elementId
      * @return NodeElement|null
      */
-    protected function findElementInOverflowById(string $elementId): ?NodeElement
+    public function findElementInOverflowById(string $elementId): ?NodeElement
     {
         foreach ($this->findOverflowButtons() as $button) {
             if (! $this->isElementVisibleInBrowser($button)) {
@@ -1086,6 +1086,56 @@ JS
         $resultEvent = new AfterSubstep($result, $result->getTitle(), $category);
         $dispatcher->dispatch($resultEvent);
         return $resultEvent;
+    }
+
+    /**
+     * Tells whether a real mouse click at the centre of the given element would actually reach it.
+     *
+     * WHY isElementVisibleInBrowser() IS NOT ENOUGH: that method answers "does this element have a
+     * box and is it not display:none / visibility:hidden / opacity:0". Mink clicks by dispatching a
+     * mouse event at the element's centre COORDINATES, so two further conditions decide whether the
+     * click lands and neither is covered there: the centre must lie inside the viewport, and the
+     * top-most element at that point must be the element itself. A control living in a popover in
+     * the static area fails both as soon as that popover is closed - it keeps a real box, so the
+     * visibility check still passes, while every click silently goes somewhere else. That is how
+     * "did not open after 3 attempts" is produced without a single error on the way.
+     *
+     * WHY IT REUSES isElementVisibleInBrowser(): the cheap disqualifiers stay in one place, this
+     * only adds the two questions that are specific to clicking.
+     *
+     * @param NodeElement $el
+     * @return bool
+     */
+    public function isElementClickable(NodeElement $el): bool
+    {
+        if (! $this->isElementVisibleInBrowser($el)) {
+            return false;
+        }
+        $id = $el->getAttribute('id');
+        if (! $id) {
+            return false;
+        }
+        $idJs = json_encode($id, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        return (bool) $this->getSession()->evaluateScript(<<<JS
+(function(){
+    var el = document.getElementById($idJs);
+    if (! el) { return false; }
+    var r = el.getBoundingClientRect();
+    var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    // Outside the viewport there is nothing to hit: elementFromPoint() returns null and the
+    // dispatched mouse event lands on whatever happens to sit at those coordinates.
+    if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight) { return false; }
+    // A descendant counts as a hit: UI5 buttons render inner spans and a click on those bubbles
+    // up to the button. An unrelated element (an overlay, a block layer, the page behind a
+    // closed popover) does not.
+    for (var hit = document.elementFromPoint(cx, cy); hit; hit = hit.parentElement) {
+        if (hit === el) { return true; }
+    }
+    return false;
+})();
+JS
+        );
     }
 
     /**
