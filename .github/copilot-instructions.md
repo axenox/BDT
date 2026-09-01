@@ -4,7 +4,7 @@ Conventions for anyone (human or AI assistant) writing code in this repository.
 GitHub Copilot: treat this file as binding. When a suggestion conflicts with a rule here, the rule
 wins.
 
-<!-- If anything here is unclear, the exface\Core framework (the main/core app, as the name says) has further base rules: ../../../exface/core -->
+<!-- If anything here is unclear, the exface\Core framework (the main/core app) has further base rules: ../../../exface/core -->
 
 ---
 
