@@ -4,6 +4,8 @@ Conventions for anyone (human or AI assistant) writing code in this repository.
 GitHub Copilot: treat this file as binding. When a suggestion conflicts with a rule here, the rule
 wins.
 
+<!-- Für weitere Informationen zum exface\Core Framework schaue hier: ../../../exface/core -->
+
 ---
 
 ## 1. Language
