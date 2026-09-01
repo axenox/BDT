@@ -2,6 +2,8 @@
 namespace axenox\BDT;
 
 use axenox\BDT\Common\Installer\BDTConfigInstaller;
+use exface\Core\CommonLogic\AppInstallers\StaticEventListenerInstaller;
+use exface\Core\Events\Workbench\OnCleanUpEvent;
 use exface\Core\Interfaces\InstallerInterface;
 use exface\Core\CommonLogic\Model\App;
 use exface\Core\CommonLogic\AppInstallers\AbstractSqlDatabaseInstaller;
@@ -16,6 +18,11 @@ class BDTApp extends App
     public function getInstaller(InstallerInterface $injected_installer = null)
     {
         $installer = parent::getInstaller($injected_installer);
+
+        // Static listeners.
+        $staticListenersInstaller = new StaticEventListenerInstaller($this->getSelector());
+        $staticListenersInstaller->addListenerToInstall(OnCleanUpEvent::getEventName(),"\\axenox\\BDT\\Behat\\DatabaseFormatter\\DatabaseFormatter::onCleanUp");
+        $installer->addInstaller($staticListenersInstaller);
         
         // BDT SQL schema
         $modelLoader = $this->getWorkbench()->model()->getModelLoader();

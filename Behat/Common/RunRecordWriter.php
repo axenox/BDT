@@ -2,6 +2,7 @@
 
 namespace axenox\BDT\Behat\Common;
 
+use axenox\BDT\Behat\Common\Traits\DeadlockRetryTrait;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\DataTypes\DateTimeDataType;
 use exface\Core\Interfaces\WorkbenchInterface;
@@ -22,6 +23,7 @@ use exface\Core\Interfaces\DataSheets\DataSheetInterface;
  */
 final class RunRecordWriter
 {
+    use DeadlockRetryTrait;
     /**
      * Creates a new run row and returns the datasheet carrying the generated UID.
      *
@@ -42,7 +44,15 @@ final class RunRecordWriter
             'started_on'    =>  DateTimeDataType::now(),
             'behat_command' => $behatCommand
         ]);
-        $ds->dataCreate(false);
+        // The run row is the anchor every worker attaches to - if its INSERT loses a lock race the
+        // whole run has nowhere to write, so it is retried rather than lost.
+        self::runWithDeadlockRetry(
+            function () use ($ds) {
+                $ds->dataCreate(false);
+            },
+            'run row creation',
+            $workbench->getLogger()
+        );
         return $ds;
     }
 
@@ -67,7 +77,13 @@ final class RunRecordWriter
     {
         $runSheet->setCellValue('expected_feature_count', 0, $featureCount);
         $runSheet->setCellValue('expected_scenario_count', 0, $scenarioCount);
-        $runSheet->dataUpdate(false);
+        self::runWithDeadlockRetry(
+            function () use ($runSheet) {
+                $runSheet->dataUpdate(false);
+            },
+            'run expected-count update',
+            $runSheet->getWorkbench()->getLogger()
+        );
     }
 
     /**
@@ -83,7 +99,17 @@ final class RunRecordWriter
         $runSheet->setCellValue('finished_on', 0, $finished_on);
         $durationMs = $this->computeDurationSeconds($runSheet->getRow()['started_on'], $finished_on);
         $runSheet->setCellValue('duration_ms', 0, $durationMs);
-        $runSheet->dataUpdate(false);
+        // WHY THIS ONE MATTERS MOST: this single update carries finished_on, duration_ms AND the
+        // staged run log (setRunLog only stages into the sheet, it issues no write of its own). If it
+        // is lost, the run row stays open forever and the entire coordinator-level diagnostic digest
+        // is gone - which is indistinguishable from "the coordinator crashed without a trace".
+        self::runWithDeadlockRetry(
+            function () use ($runSheet) {
+                $runSheet->dataUpdate(false);
+            },
+            'run finalization',
+            $runSheet->getWorkbench()->getLogger()
+        );
     }
 
     /**
@@ -97,5 +123,27 @@ final class RunRecordWriter
         $start = new \DateTimeImmutable((string) $startedOn);
         $end   = new \DateTimeImmutable((string) $finishedOn);
         return (float) ($end->getTimestamp() - $start->getTimestamp());
+    }
+
+    /**
+     * Stages the run's log digest (summary + failure blocks) onto the run sheet WITHOUT
+     * issuing its own update.
+     *
+     * Why no dataUpdate here: the coordinator calls this immediately before finalize(), so the log
+     * value rides along in finalize()'s single dataUpdate. That keeps the run row's whole close-out
+     * (finished_on, duration, log) in ONE write, avoiding a second optimistic-locking round-trip on
+     * a row whose only writer is the coordinator anyway.
+     *
+     * Why it lives here rather than in the coordinator: this class is the single source of truth for
+     * the run-row schema, so the log column name stays owned in one place and the two run writers
+     * cannot drift on it.
+     *
+     * @param DataSheetInterface $runSheet The sheet returned by create().
+     * @param string $log The log digest to write into the run row.
+     * @return void
+     */
+    public function setRunLog(DataSheetInterface $runSheet, string $log): void
+    {
+        $runSheet->setCellValue('log', 0, $log);
     }
 }

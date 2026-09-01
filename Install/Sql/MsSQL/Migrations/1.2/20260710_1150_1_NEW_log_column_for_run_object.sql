@@ -1,0 +1,4 @@
+-- UP
+ALTER TABLE bdt_run ADD [log] NVARCHAR(MAX) NULL;
+-- DOWN
+ALTER TABLE bdt_run DROP COLUMN [log];

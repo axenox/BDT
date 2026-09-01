@@ -1,24 +1,27 @@
 <?php
+
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ButtonNode;
 use axenox\BDT\Exceptions\WidgetNodeNotFoundException;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Mink\Element\NodeElement;
+use Behat\Mink\Session;
+use Exception;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Factories\WidgetFactory;
 use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Widgets\AbstractWidget;
-use Behat\Mink\Session;
-use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ButtonNode;
+use ReflectionClass;
 
 /**
  * UI5FacadeNodeFactory
- * 
- * A factory class responsible for creating appropriate node objects 
+ *
+ * A factory class responsible for creating appropriate node objects
  * based on the type of UI5 widget or HTML element.
- * 
+ *
  * This factory helps in dynamic node creation for different UI components
  * in UI5 applications, allowing flexible and extensible testing.
  */
@@ -27,35 +30,29 @@ class UI5FacadeNodeFactory
     private static $classesByWidgetType = [];
 
     /**
-     * Creates a node object for a specific widget type
-     *
-     * This method attempts to find the appropriate node class for a given
-     * widget type and creates an instance with the provided node element
-     * and session.
-     *
-     * @param string $widgetType The type of widget to create a node for
-     * @param NodeElement $nodeElement The HTML/UI5 element to wrap
-     * @param Session $session The current browser session
-     * @param UI5Browser $browser
-     * @return FacadeNodeInterface The created node object
-     * @throws \Exception If node creation fails
+     * Cache for resolved widget type hierarchy checks, keyed by "<type>|<baseType>".
      */
-    public static function createFromWidgetType(string $widgetType, NodeElement $nodeElement, Session $session, UI5Browser $browser): FacadeNodeInterface
+    private static $widgetTypeHierarchyCache = [];
+
+    /**
+     * Finds the DOM node matching the id of the widget and creates a FacadeNode for it
+     *
+     * @param WidgetInterface $widget
+     * @param Session $session
+     * @param UI5Browser $browser
+     * @return FacadeNodeInterface
+     */
+    public static function createFromWidget(WidgetInterface $widget, Session $session, UI5Browser $browser): FacadeNodeInterface
     {
-        try {
-            // Resolve the appropriate node class for the widget type
-            $class = self::getNodeClassForWidgetType($widgetType);
-            // FIXME Find the outer node with the .exfw class (ideally matching the $widgetType). For DataTable: <div class="exfw exfw-DataTable".
-            // $nodeElement = $class::findWidgetNode($nodeElement);
-            // Create and return a new node instance
-            return new $class($nodeElement, $session, $browser);
-        } catch (\Exception $e) {
-            // Detailed Error Info
-            echo "Error in createFromWidgetType: " . $e->getMessage() . "\n";
-            echo "Widget Type: " . $widgetType . "\n";
-            echo "Class Exists: " . (class_exists(UI5ButtonNode::class) ? 'Yes' : 'No') . "\n";
-            throw $e;
+        if (!$widget->getPage()->isExactly($browser->getPageCurrent())) {
+            throw new RuntimeException('Cannot get facade node for widget from page "' . $widget->getPage()->getAliasWithNamespace() . '" when browsing page "' . $browser->getPageCurrent()->getAliasWithNamespace() . '"!');
         }
+        $nodeId = $browser->getElementIdFromWidget($widget);
+        $node = $session->getPage()->findById($nodeId);
+        if (!$node) {
+            throw new RuntimeException('Cannot find node with id "' . $nodeId . '" on page "' . $browser->getPageCurrent()->getAliasWithNamespace() . '"!');
+        }
+        return static::createFromNodeElement($node, $session, $browser, $widget);
     }
 
     /**
@@ -65,11 +62,17 @@ class UI5FacadeNodeFactory
      * @return FacadeNodeInterface
      * @throws WidgetNodeNotFoundException
      */
-    public static function createFromNodeElement(NodeElement $nodeElement, Session $session, UI5Browser $browser) : FacadeNodeInterface
+    public static function createFromNodeElement(NodeElement $nodeElement, Session $session, UI5Browser $browser, ?WidgetInterface $widget = null): FacadeNodeInterface
     {
+        // If the caller knows the widget, the model decides the node class.
+        // WHY: the CSS-class route below only works for controls that actually carry `exfw-<Type>`,
+        // which not every facade element adds. Knowing the widget makes that lookup unnecessary.
+        if ($widget !== null) {
+            return self::createFromWidgetType($widget->getWidgetType(), $nodeElement, $session, $browser, $widget);
+        }
         $cssClassString = $nodeElement->getAttribute('class');
         $cssClasses = explode(' ', $cssClassString);
-        if (! in_array('exfw', $cssClasses)) {
+        if (!in_array('exfw', $cssClasses)) {
             $widgetNode = self::findParentWithWidgetClass($nodeElement);
             if ($widgetNode) {
                 return self::createFromNodeElement($widgetNode, $session, $browser);
@@ -86,75 +89,46 @@ class UI5FacadeNodeFactory
     }
 
     /**
-     * Finds the DOM node matching the id of the widget and creates a FacadeNode for it
-     * 
-     * @param WidgetInterface $widget
-     * @param Session $session
-     * @param UI5Browser $browser
-     * @return FacadeNodeInterface
-     */
-    public static function createFromWidget(WidgetInterface $widget, Session $session, UI5Browser $browser) : FacadeNodeInterface
-    {
-        if (! $widget->getPage()->isExactly($browser->getPageCurrent())) {
-            throw new RuntimeException('Cannot get facade node for widget from page "' . $widget->getPage()->getAliasWithNamespace() . '" when browsing page "' . $browser->getPageCurrent()->getAliasWithNamespace() . '"!');
-        }
-        $nodeId = $browser->getElementIdFromWidget($widget);
-        $node = $session->getPage()->findById($nodeId);
-        if (! $node) {
-            throw new RuntimeException('Cannot find node with id "' . $nodeId . '" on page "' . $browser->getPageCurrent()->getAliasWithNamespace() . '"!');
-        }
-        return static::createFromNodeElement($node, $session, $browser);
-    }
-
-    /**
-     * Extracts the widget type from the .exfw-<WidgetType> CSS class the given DOM element
-     * 
-     * @param NodeElement $nodeElement
-     * @return string|null
-     */
-    public static function findWidgetType(NodeElement $nodeElement) : ?string
-    {
-        $cssClassString = $nodeElement->getAttribute('class');
-        $cssClasses = explode(' ', $cssClassString);
-        if (! in_array('exfw', $cssClasses)) {
-            return null;
-        }
-        foreach ($cssClasses as $cssClass) {
-            if (StringDataType::startsWith($cssClass, 'exfw-')) {
-                return StringDataType::substringAfter($cssClass, 'exfw-');
-            }
-        }
-        return null;
-    }
-
-
-    /**
-     * Returns the closest parent DOM element, that has the .exfw CSS class
+     * Creates a node object for a specific widget type
      *
-     * @param NodeElement $nodeElement
-     * @return string|null
+     * This method attempts to find the appropriate node class for a given
+     * widget type and creates an instance with the provided node element
+     * and session.
+     *
+     * @param string $widgetType The type of widget to create a node for
+     * @param NodeElement $nodeElement The HTML/UI5 element to wrap
+     * @param Session $session The current browser session
+     * @param UI5Browser $browser
+     * @return FacadeNodeInterface The created node object
+     * @throws Exception If node creation fails
      */
-    public static function findParentWithWidgetClass(NodeElement $nodeElement) : ?NodeElement
+    public static function createFromWidgetType(string $widgetType, NodeElement $nodeElement, Session $session, UI5Browser $browser, ?WidgetInterface $widget = null): FacadeNodeInterface
     {
-        while ($parent = $nodeElement->getParent()) {
-            if ($parent->hasClass('exfw')) {
-                return $parent;
-            } else {
-                $nodeElement = $parent;
-            }
+        try {
+            // Resolve the appropriate node class for the widget type
+            $class = self::getNodeClassForWidgetType($widgetType);
+            // FIXME Find the outer node with the .exfw class (ideally matching the $widgetType). For DataTable: <div class="exfw exfw-DataTable".
+            // $nodeElement = $class::findWidgetNode($nodeElement);
+            // Create and return a new node instance
+            return new $class($nodeElement, $session, $browser, $widget);
+        } catch (Exception $e) {
+            // Detailed Error Info
+            echo "Error in createFromWidgetType: " . $e->getMessage() . "\n";
+            echo "Widget Type: " . $widgetType . "\n";
+            echo "Class Exists: " . (class_exists(UI5ButtonNode::class) ? 'Yes' : 'No') . "\n";
+            throw $e;
         }
-        return null;
     }
 
     /**
      * Determines the appropriate node class for a given widget type
-     * 
+     *
      * This method uses a sophisticated resolution strategy:
      * 1. Check if a node class is already cached
      * 2. Try to find a direct match for the widget type
      * 3. Fallback to parent widget classes if no direct match exists
      * 4. Use GenericHtmlNode as a last resort
-     * 
+     *
      * @param string $widgetType The widget type to resolve
      * @return string The fully qualified class name for the node
      */
@@ -186,7 +160,7 @@ class UI5FacadeNodeFactory
                 // Handle special cases for abstract classes
                 if (class_exists($nodeClass)) {
                     // Special handling for the AbstractWidget
-                    $reflection = new \ReflectionClass($nodeClass);
+                    $reflection = new ReflectionClass($nodeClass);
                     if ($reflection->isAbstract()) {
                         $nodeClass = GenericHtmlNode::class;
                     }
@@ -200,17 +174,97 @@ class UI5FacadeNodeFactory
         }
         return $nodeClass;
     }
-    
+
     /**
      * Generates the expected node class name based on widget type
-     * 
+     *
      * Follows a naming convention: Namespace\Nodes\UI5{WidgetType}Node
-     * 
+     *
      * @param string $widgetType The widget type to convert to a class name
      * @return string The generated class name
      */
     private static function getNodeClass(string $widgetType): string
     {
         return __NAMESPACE__ . '\\Nodes\\UI5' . $widgetType . 'Node';
+    }
+
+    /**
+     * Returns the closest parent DOM element, that has the .exfw CSS class
+     *
+     * @param NodeElement $nodeElement
+     * @return string|null
+     */
+    public static function findParentWithWidgetClass(NodeElement $nodeElement): ?NodeElement
+    {
+        while ($parent = $nodeElement->getParent()) {
+            if ($parent->hasClass('exfw')) {
+                return $parent;
+            } else {
+                $nodeElement = $parent;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Extracts the widget type from the .exfw-<WidgetType> CSS class the given DOM element
+     *
+     * @param NodeElement $nodeElement
+     * @return string|null
+     */
+    public static function findWidgetType(NodeElement $nodeElement): ?string
+    {
+        $cssClassString = $nodeElement->getAttribute('class');
+        $cssClasses = explode(' ', $cssClassString);
+        if (!in_array('exfw', $cssClasses)) {
+            return null;
+        }
+        foreach ($cssClasses as $cssClass) {
+            if (StringDataType::startsWith($cssClass, 'exfw-')) {
+                return StringDataType::substringAfter($cssClass, 'exfw-');
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Tells whether a widget type is the given base type itself or is derived from it.
+     *
+     * WHY: Gherkin steps address widgets by a single type name (e.g. `widget of type "Input"`),
+     * while the rendered DOM only ever carries the CONCRETE widget type as a CSS class. Without a
+     * hierarchy check, every step would have to enumerate all specialisations by hand and a step
+     * like `it has 2 widget of type "Input"` would silently under-count an `InputComboTable`,
+     * `InputDate` or `InputNumber` although the metamodel derives all of them from `Input`.
+     * Resolving the question against the metamodel widget classes keeps feature files readable and
+     * automatically covers widget types added to the core later on.
+     *
+     * @param string $widgetType The concrete widget type found in the DOM
+     * @param string $baseWidgetType The widget type requested by the test step
+     * @return bool
+     */
+    public static function isWidgetTypeDerivedFrom(string $widgetType, string $baseWidgetType): bool
+    {
+        $cacheKey = $widgetType . '|' . $baseWidgetType;
+        if (array_key_exists($cacheKey, self::$widgetTypeHierarchyCache)) {
+            return self::$widgetTypeHierarchyCache[$cacheKey];
+        }
+
+        if (strcasecmp($widgetType, $baseWidgetType) === 0) {
+            return self::$widgetTypeHierarchyCache[$cacheKey] = true;
+        }
+
+        // getWidgetClassFromType() returns a leading-backslash FQCN - strip it, so the value can be
+        // used as an array key and compared consistently.
+        $class = ltrim(WidgetFactory::getWidgetClassFromType($widgetType), '\\');
+        $baseClass = ltrim(WidgetFactory::getWidgetClassFromType($baseWidgetType), '\\');
+
+        // Widget types read from the DOM may come from an app outside the core or may have no PHP
+        // class at all. Treat those as unrelated instead of letting is_a() trigger the autoloader
+        // for a class that will never exist.
+        if (!class_exists($class) || !class_exists($baseClass)) {
+            return self::$widgetTypeHierarchyCache[$cacheKey] = false;
+        }
+
+        return self::$widgetTypeHierarchyCache[$cacheKey] = is_a($class, $baseClass, true);
     }
 }

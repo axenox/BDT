@@ -85,26 +85,29 @@
     ],
     "rows": [
         {
-            "_EXPORT_SUMMARY": "BDT run suite stats [axenox.BDT.run_suite_stats]",
-            "CREATED_ON": "2025-07-31 13:08:30",
-            "MODIFIED_ON": "2025-07-31 13:10:14",
-            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "UID": "0x11f0b1e8b104e7a4b1e8025041000001",
+            "_EXPORT_SUMMARY": "Test data file [axenox.BDT.TEST_DATA_FILE]",
+            "CREATED_ON": "2026-08-25 17:40:30",
+            "MODIFIED_ON": "2026-08-25 17:40:30",
+            "CREATED_BY_USER": "0x31000000000000000000000000000000",
+            "MODIFIED_BY_USER": "0x31000000000000000000000000000000",
+            "UID": "0x11f1b2a04d32a510b2a0025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
             "COMMENTS": "",
             "DOCS": "",
-            "NAME": "BDT run suite stats",
-            "INHERIT_DATA_SOURCE_BASE_OBJECT": 0,
-            "DATA_SOURCE": "0x11f0aee48b2814e8aee4025041000001",
+            "NAME": "Test data file",
+            "INHERIT_DATA_SOURCE_BASE_OBJECT": 1,
+            "DATA_SOURCE": "0x11e6afd8d2fa47e78943e4b318306b9a",
             "APP": "0x11efa2214f96c8b8a221025041000001",
             "SHORT_DESCRIPTION": "",
             "PARENT_OBJECT": null,
-            "DATA_ADDRESS_PROPS": null,
+            "DATA_ADDRESS_PROPS": {
+                "folder_depth": 0,
+                "delete_empty_folders": true
+            },
             "DEFAULT_EDITOR_UXON": null,
-            "ALIAS": "run_suite_stats",
-            "DATA_ADDRESS": "bdt_run_suite_stats"
+            "ALIAS": "TEST_DATA_FILE",
+            "DATA_ADDRESS": "*/*/Tests/Data/*/*.json"
         }
     ],
     "totals_rows": [],

@@ -2,6 +2,7 @@
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use axenox\BDT\Interfaces\FacadeNodeInterface;
+use Behat\Mink\Element\NodeElement;
 use PHPUnit\Framework\Assert;
 
 /**
@@ -58,13 +59,25 @@ JS
         return $val;
     }
 
+    /**
+     * Types the given value and picks a matching entry from the suggestion list.
+     *
+     * The suggestions are loaded asynchronously, so the list is not there right after typing. This
+     * method waits for the list to appear and then selects the entry matching the typed value best:
+     * an exact match if there is one, otherwise the first suggestion. Without this selection the
+     * combo table would keep the raw text and UI5 would mark the input as invalid.
+     *
+     * @param string $value
+     * @param bool $validate
+     * @return FacadeNodeInterface
+     */
     public function setValueVisible($value, bool $validate = true): FacadeNodeInterface
     {
         parent::setValueVisible($value, false);
         $this->waitWhileBusy();
-        
-        if ($dropdownFirstRowNode = $this->getBrowser()->getPage()->find('css', "#{$this->getElementId()}-popup-table tbody tr:first-of-type")) {
-            $dropdownFirstRowNode->click();
+
+        if ($suggestionNode = $this->waitForSuggestion((string) $value)) {
+            $suggestionNode->click();
             $this->waitWhileBusy(5);
         }
 
@@ -76,6 +89,134 @@ JS
         }
         
         return $this;
+    }
+
+    /**
+     * Waits for the suggestion list to be rendered and returns the entry to select - NULL if there
+     * are no suggestions at all within the timeout.
+     *
+     * WHY THIS EXISTS: the suggestions are fetched from the server, so simply looking for the popup
+     * right after typing often finds nothing yet and no entry gets selected at all.
+     *
+     * @param string $value
+     * @param int|float $timeoutSeconds
+     * @return NodeElement|null
+     */
+    protected function waitForSuggestion(string $value, int|float $timeoutSeconds = 10): ?NodeElement
+    {
+        $deadline = microtime(true) + $timeoutSeconds;
+        do {
+            if ($node = $this->findSuggestion($value)) {
+                return $node;
+            }
+            usleep(250000);
+        } while (microtime(true) < $deadline);
+        return null;
+    }
+
+    /**
+     * Returns the suggestion entry matching the given value best or NULL if the list is not (yet) there.
+     *
+     * Entries are matched in this order: a row with a cell equal to the value, a row containing the
+     * value, the first row. The last two cases mean the widget will end up with a different text than
+     * the one typed - that is intentional, as picking a real entry is better than leaving the input
+     * with a value UI5 will reject.
+     *
+     * @param string $value
+     * @return NodeElement|null
+     */
+    protected function findSuggestion(string $value): ?NodeElement
+    {
+        $rows = $this->findSuggestionNodes();
+        if (empty($rows)) {
+            return null;
+        }
+
+        $needle = $this->normalizeSuggestionText($value);
+        $firstRow = null;
+        $containingRow = null;
+        foreach ($rows as $row) {
+            try {
+                if (! $row->isVisible()) {
+                    continue;
+                }
+                $rowText = $this->normalizeSuggestionText($row->getText());
+                $cellTexts = [];
+                foreach ($row->findAll('css', 'td, .sapMSLITitle, .sapMSLIDiv') as $cell) {
+                    $cellTexts[] = $this->normalizeSuggestionText($cell->getText());
+                }
+            } catch (\Throwable $e) {
+                // The popup may re-render while we are reading it, making elements stale. Such rows
+                // are simply skipped - the next polling cycle will see the re-rendered list.
+                continue;
+            }
+
+            if ($rowText === '') {
+                continue;
+            }
+            if ($firstRow === null) {
+                $firstRow = $row;
+            }
+            if ($rowText === $needle || in_array($needle, $cellTexts, true)) {
+                return $row;
+            }
+            if ($containingRow === null && $needle !== '' && mb_strpos($rowText, $needle) !== false) {
+                $containingRow = $row;
+            }
+        }
+
+        return $containingRow ?? $firstRow;
+    }
+
+    /**
+     * Returns all DOM nodes representing selectable entries of the suggestion popup.
+     *
+     * Depending on the widget configuration UI5 renders the suggestions either as a table
+     * (`-popup-table`) or as a list (`-popup-list`), so both are looked up here. Header rows and the
+     * "no data" placeholder are excluded because they cannot be selected.
+     *
+     * @return NodeElement[]
+     */
+    protected function findSuggestionNodes(): array
+    {
+        $id = $this->getElementId();
+        $page = $this->getBrowser()->getPage();
+        $selectors = [
+            // Attribute selectors instead of `#id` because UI5 element ids may contain characters
+            // that would have to be escaped in a CSS id selector
+            '[id="' . $id . '-popup-table"] tbody tr.sapMListTblRow',
+            '[id="' . $id . '-popup-table"] tbody tr',
+            '[id="' . $id . '-popup-list"] li.sapMSLI',
+            '[id="' . $id . '-popup-list"] li'
+        ];
+        foreach ($selectors as $selector) {
+            $nodes = $page->findAll('css', $selector);
+            $nodes = array_values(array_filter($nodes, function (NodeElement $node) {
+                $nodeId = (string) $node->getAttribute('id');
+                if (str_ends_with($nodeId, '-nodata') || str_ends_with($nodeId, '-trigger')) {
+                    return false;
+                }
+                return ! $node->hasClass('sapMListTblHeader')
+                    && ! $node->hasClass('sapMListNoData')
+                    && ! $node->hasClass('sapMGHLI');
+            }));
+            if (! empty($nodes)) {
+                return $nodes;
+            }
+        }
+        return [];
+    }
+
+    /**
+     * Normalizes a text for comparing typed values with suggestion texts: trims, collapses
+     * whitespace (UI5 separates table cells with tabs and line breaks) and lowercases.
+     *
+     * @param string|null $text
+     * @return string
+     */
+    protected function normalizeSuggestionText(?string $text): string
+    {
+        return mb_strtolower(trim(preg_replace('/\s+/u', ' ', (string) $text)));
     }
 
     public function setValueEmpty(bool $validate = true) : FacadeNodeInterface

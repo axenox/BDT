@@ -67,9 +67,9 @@
         {
             "_EXPORT_SUMMARY": "BDT test run: Run test [RunTestDialog]",
             "CREATED_ON": "2025-09-30 13:51:47",
-            "MODIFIED_ON": "2025-09-30 13:56:07",
+            "MODIFIED_ON": "2026-07-07 09:08:50",
             "CREATED_BY_USER": "0x11eca7f5b092f284a7f5005056bea39f",
-            "MODIFIED_BY_USER": "0x11eca7f5b092f284a7f5005056bea39f",
+            "MODIFIED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
             "UID": "0x11f0ab0bd8373118ab0b00155de44ed2",
             "OBJECT": "0x11f08c1d222cd23e8c1d025041000001",
             "ACTION_PROTOTYPE": "exface/core/Actions/ShowDialog.php",
@@ -99,7 +99,7 @@
                                             ],
                                             "start_commands": [
                                                 "vendor/bin/action axenox.BDT:Behat init",
-                                                "vendor/bin/Behat [#behat_command#]"
+                                                "[#behat_command#]"
                                             ]
                                         }
                                     ]

@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
+use axenox\BDT\Behat\Common\Traits\ChromeProfileReaperTrait;
 use axenox\BDT\Exceptions\ConfigException;
 use exface\Core\CommonLogic\Debugger\LogBooks\MarkdownLogBook;
 use exface\Core\DataTypes\FilePathDataType;
@@ -46,6 +47,16 @@ use GuzzleHttp\Client;
  */
 class ChromeManager
 {
+    /**
+     * WHY THIS TRAIT: the PID is not a reliable identity for a Chrome instance (see stop()), but the
+     * profile dir is - every Chrome carries it in its --user-data-dir switch. The trait owns the one
+     * correct way to parse that switch out of a command line and to kill everything bound to a given
+     * profile dir. Sharing it with RunParallel/RunTest guarantees the three code paths can never drift
+     * apart in HOW they match a Chrome to its profile - a drift that previously left hundreds of zombie
+     * chrome.exe processes and their profile dirs behind.
+     */
+    use ChromeProfileReaperTrait;
+
     /** @var static|null Singleton instance; supports subclassing via late static binding */
     private static ?self $instance = null;
 
@@ -54,6 +65,16 @@ class ChromeManager
 
     /** @var int|null Port on which Chrome's remote debugging API is listening */
     private ?int $port = null;
+
+    /**
+     * @var string|null Absolute user_data_dir of the Chrome instance managed here, as resolved by start().
+     *
+     * WHY IT IS KEPT: the profile dir - not the PID - is the durable identity of our Chrome. stop()
+     * needs it to verify that the browser really is gone, because the PID it holds can be stale or was
+     * never resolved at all (see stop()). Stored at resolve time in start() so every later teardown has
+     * it, including a teardown that happens after Chrome silently replaced its own process.
+     */
+    private ?string $userDataDir = null;
 
     /**
      * @var DatabaseFormatter|null
@@ -77,6 +98,18 @@ class ChromeManager
     private array $startHistory = [];
     /** App-config key deciding Chrome window visibility; see resolveHeadless(). */
     private const CFG_CHROME_HEADLESS = 'PARALLEL.CHROME_HEADLESS';
+
+    /**
+     * Wall-clock ceiling for a single health probe, in seconds.
+     *
+     * WHY SO SHORT: isAlive() runs before EVERY step, so its cost is paid on the hot path.
+     * A live Chrome answers /json/version on loopback in single-digit milliseconds; anything
+     * that needs more than this is, for our purposes, not usable as a browser anyway. The
+     * ceiling also bounds the WEDGED case, where Chrome still accepts the TCP connection but
+     * never writes a response - without an explicit timeout such a probe would block forever
+     * and turn the health check itself into the hang it is meant to detect.
+     */
+    private const HEALTH_PROBE_TIMEOUT_SECONDS = 2.0;
 
     /**
      * Private constructor enforces singleton usage via getInstance().
@@ -163,6 +196,14 @@ class ChromeManager
     {
         $this->getLogbook()->addLine('ChromeManager::start() called');
         $this->getLogbook()->addIndent(+1);
+        // WHY AN IDEMPOTENCY GUARD: the docblock has always promised that a second start() is a
+        // no-op, but nothing enforced it - every caller that lost the PID race silently spawned a
+        // second Chrome tree on the same profile dir, which is both a ProcessSingleton conflict and
+        // a leak. Liveness (not the PID) is the correct condition, for the reasons isAlive() states.
+        if ($this->port !== null && $this->isAlive()) {
+            $this->getLogbook()->addLine('start(): a healthy Chrome is already running on port ' . $this->port . ' - reusing it');
+            return new ChromeStartResult(port: $this->port, pid: $this->pid, startupMs: 0.0);
+        }
         $this->databaseFormatter?->getWorkbench()->getLogger()->info('Using Chrome for BDT', [], $this->getLogbook());
         $config = $this->config;
         $startTime = microtime(true);
@@ -176,12 +217,18 @@ class ChromeManager
         if ($executable !== null && FilePathDataType::isRelative($executable)) {
             $executable = getcwd() . DIRECTORY_SEPARATOR . $executable;
         }
-        // Resolve relative to cwd only when the key is actually present; a missing key must stay
-        // null so the mandatory-config guard below fails loudly instead of silently letting Chrome
-        // use cwd itself as the profile dir. (?? binds looser than ., so the old one-liner never worked.)
-        $userDataDir = isset($config['user_data_dir'])
-            ? getcwd() . DIRECTORY_SEPARATOR . $config['user_data_dir']
-            : null;
+        // Resolve user_data_dir the SAME way as executable above: a RELATIVE path is joined to the
+        // installation root, an ABSOLUTE path is used AS-IS. Without the isRelative() guard an
+        // absolute user_data_dir would be double-prepended into a broken "C:\...\C:\..." path, and
+        // Chrome would silently fall back to the real default profile (profile picker / shared
+        // state), defeating the per-run profile isolation. A missing key stays null so the
+        // mandatory-config guard below fails loudly instead of using cwd itself as the profile dir.
+        $userDataDir = null;
+        if (isset($config['user_data_dir'])) {
+            $userDataDir = FilePathDataType::isRelative($config['user_data_dir'])
+                ? getcwd() . DIRECTORY_SEPARATOR . $config['user_data_dir']
+                : $config['user_data_dir'];
+        }
         $port = $config['port'] ?? 9222;
 
         $this->getLogbook()->addLine("Config resolved — executable: {$executable}, userDataDir: {$userDataDir}, port: {$port}");
@@ -193,6 +240,10 @@ class ChromeManager
             $this->getLogbook()->addIndent(-1);
             throw new ConfigException($msg, null, null);
         }
+
+        // Remember the profile dir BEFORE anything can be killed. The leftover-cleanup right below
+        // already calls stop(), and stop()'s profile-based verification sweep depends on this value.
+        $this->userDataDir = $userDataDir;
 
         // Deal with any process already occupying this port BEFORE launching. We only kill it if
         // it is provably OUR OWN leftover Chrome (same user_data_dir on its command line); a live
@@ -256,12 +307,33 @@ class ChromeManager
             . ($headless ? ' --headless --no-sandbox' : '')
             . ' --window-size=1920,1080 --disable-extensions --disable-gpu'
             . ' --disable-dev-shm-usage'
+            // Cut Chrome's background "phone home" services. Every fresh lane profile
+            // tries to register with Google push messaging (GCM) on startup; with several
+            // lanes starting from the same server IP Google throttles the registrations,
+            // producing the PHONE_REGISTRATION_ERROR / DEPRECATED_ENDPOINT / QUOTA_EXCEEDED
+            // noise in the lane logs. These flags stop the requests at the source instead
+            // of merely hiding the log lines. Page-level test traffic is NOT affected.
+            . ' --disable-background-networking'
+            . ' --disable-sync'
+            . ' --disable-component-update'
+            . ' --disable-default-apps'
+            // Let only FATAL messages reach stderr - suppresses the remaining harmless
+            // ERROR spam (geolocation COM class, on-device model backend) that would
+            // otherwise interleave with Behat output in the lane log.
+            . ' --log-level=3'
             . ' --remote-debugging-port=' . $port
             . ' --remote-debugging-address=127.0.0.1'
             . ' --hide-crash-restore-bubble'
             . ' --no-first-run'
             . ' --no-default-browser-check'
-            . ' --user-data-dir="' . $userDataDir . '"';
+            . ' --user-data-dir="' . $userDataDir . '"'
+            // Discard Chrome's own stderr: the "DevTools listening on ws://..." line plus the absl
+            // InitializeLog WARNING and voice_transcription INFO lines. With "start /B" Chrome
+            // inherits this process's console handles, so without the redirect that noise leaks into
+            // the Behat output the tester watches - and only Behat's output belongs there. A real
+            // launch failure is still surfaced loudly by waitUntilReady() below, so redirecting
+            // Chrome's stderr loses no diagnostic signal.
+            . ' 2>nul';
 
         $this->getLogbook()->addLine("Launching Chrome (" . ($headless ? "headless" : "visible") . ") with command: {$cmd}");
         pclose(popen($cmd, 'r'));
@@ -297,31 +369,64 @@ class ChromeManager
     }
 
     /**
-     * Stops only the Chrome process that was started by this manager.
+     * Stops the Chrome instance managed here: kills its PID tree, then verifies via its profile dir.
      *
-     * Targets the specific PID captured at start time so that other Chrome
-     * instances running on different ports (e.g. belonging to other projects)
-     * are not affected. Uses taskkill /T to also terminate child processes
-     * spawned by Chrome.
+     * WHY THE PID ALONE IS NOT ENOUGH: the PID is resolved once, at launch, from netstat. It goes stale
+     * in several ordinary situations - Chrome relaunches its own browser process after an internal
+     * crash-recovery, findPidByPort() loses the race and returns null, or the tree was partially killed
+     * and only children survive. In every one of those cases a PID-only stop() kills nothing and reports
+     * success, and the browser plus its locked profile dir stay behind forever. That is one of the ways
+     * the server accumulated zombie chrome.exe processes.
+     *
+     * WHY THE PROFILE DIR IS THE REAL IDENTITY: every Chrome we launch carries --user-data-dir with a
+     * per-run, per-lane profile path that no other process on the machine uses. Sweeping by that dir
+     * catches exactly our own instance and its children - including an orphaned child whose parent has
+     * already died - and can never touch a foreign browser, which lives under a different profile path.
+     *
+     * WHY IT NEVER THROWS: teardown runs from hooks and finally blocks that are forbidden to throw. A
+     * browser that could not be killed is logged, never escalated.
      */
     public function stop(): void
     {
         $this->getLogbook()->addLine("ChromeManager::stop() called");
         $this->getLogbook()->addIndent(+1);
 
-        if ($this->pid === null) {
+        if ($this->pid === null && $this->userDataDir === null) {
             $this->getLogbook()->addLine("No Chrome process is being managed — nothing to do");
             $this->getLogbook()->addIndent(-1);
             return;
         }
 
-        $this->getLogbook()->addLine("Stopping Chrome process PID {$this->pid} (taskkill /F /PID /T)...");
+        if ($this->pid !== null) {
+            $this->getLogbook()->addLine("Stopping Chrome process PID {$this->pid} (taskkill /F /PID /T)...");
+            // /T also terminates child processes spawned by Chrome
+            exec('taskkill /F /PID ' . $this->pid . ' /T 2>nul');
+        } else {
+            $this->getLogbook()->addLine("No PID recorded — relying on the profile-dir sweep below");
+        }
 
-        // /T also terminates child processes spawned by Chrome
-        exec('taskkill /F /PID ' . $this->pid . ' /T 2>nul');
+        // Verification sweep: whatever the PID kill did or did not achieve, nothing bound to OUR
+        // profile dir may survive this call. Never throws (see the docblock).
+        if ($this->userDataDir !== null) {
+            try {
+                $survivors = $this->reapChromeProfileDir($this->userDataDir, $this->listChromeProcessCommandLines());
+                if ($survivors !== []) {
+                    $this->getLogbook()->addLine(
+                        'Profile sweep killed ' . count($survivors) . ' Chrome process(es) the PID kill missed: '
+                        . implode(', ', $survivors)
+                    );
+                }
+            } catch (\Throwable $e) {
+                $this->getLogbook()->addLine(
+                    '**WARNING** Profile-dir sweep failed: ' . get_class($e) . ' — ' . $e->getMessage()
+                );
+            }
+        }
 
         $this->pid  = null;
         $this->port = null;
+        // userDataDir is deliberately NOT cleared: it comes from the config, is identical for the next
+        // start() on this manager, and a later teardown (restart, AfterScenario) still needs it to sweep.
         $this->getLogbook()->addLine("taskkill executed — PID and port state reset");
         $this->getLogbook()->addIndent(-1);
     }
@@ -401,6 +506,88 @@ class ChromeManager
     }
 
     /**
+     * Returns TRUE if the Chrome process managed by this instance is reachable and able to
+     * serve CDP requests right now.
+     *
+     * WHY THIS EXISTS: today a dead Chrome is only discovered INDIRECTLY - some step calls the
+     * Mink session, the driver fails to open its WebSocket, and a low-level socket exception is
+     * thrown from wherever that call happened to be. When that call sits inside a step, the
+     * AfterStep hook can still translate it into a restart; when it sits inside Mink's own
+     * session lifecycle (reset/stop between scenarios), the exception escapes every guard we
+     * own and kills the whole Behat process with exit code 255, taking the entire lane and its
+     * DB recording down with it. A cheap, explicit liveness probe lets callers ASK whether the
+     * browser is usable, instead of finding out by crashing into it.
+     *
+     * WHY /json/version AND NOT /json/list: version is the smallest endpoint Chrome serves and
+     * needs no tab enumeration, so it stays cheap enough to run before every step. It answers
+     * the only question asked here - "is a CDP-speaking Chrome listening on our port" - while
+     * tab-level readiness (a navigable page with a WebSocket URL) remains the job of
+     * waitUntilReady() at startup.
+     *
+     * WHY NOT getPid(): the PID is recorded at launch and is never invalidated when Chrome dies
+     * or is reaped, so a non-null PID proves nothing about the CURRENT state. Only the port
+     * answers.
+     *
+     * Never throws: a failed probe IS the answer (FALSE). Callers use it to decide on a restart,
+     * so it must be safe to call from hooks that are forbidden to throw.
+     *
+     * @param int|null $port Port to probe; falls back to the currently managed port when omitted
+     * @return bool TRUE if Chrome answered a CDP request within HEALTH_PROBE_TIMEOUT_SECONDS
+     */
+    public function isAlive(?int $port = null): bool
+    {
+        $port = $port ?? $this->port;
+        if ($port === null) {
+            // Chrome was never started by this manager - there is nothing that could be alive.
+            return false;
+        }
+
+        try {
+            // 127.0.0.1 rather than "localhost" on purpose: on Windows "localhost" may resolve to
+            // ::1 first, and when Chrome only binds IPv4 the probe pays a connect timeout before
+            // falling back - turning a healthy browser into a "dead" verdict.
+            $client   = new Client([
+                // connect_timeout bounds an unreachable port, timeout bounds a wedged Chrome that
+                // accepts the connection but never answers. Both are required: either one alone
+                // leaves a way for the probe to block.
+                'connect_timeout' => self::HEALTH_PROBE_TIMEOUT_SECONDS,
+                'timeout'         => self::HEALTH_PROBE_TIMEOUT_SECONDS,
+                // A non-200 answer is a health verdict, not an exceptional situation - handle it
+                // as data instead of paying for exception unwinding on the hot path.
+                'http_errors'     => false
+            ]);
+            $response = $client->request('GET', 'http://127.0.0.1:' . $port . '/json/version');
+
+            if ($response->getStatusCode() !== 200) {
+                $this->getLogbook()->addLine(
+                    "isAlive({$port}): Chrome answered with HTTP " . $response->getStatusCode() . ' - treating as dead'
+                );
+                return false;
+            }
+
+            $body = json_decode($response->getBody()->__toString(), true);
+            // A CDP-capable Chrome always advertises a browser-level WebSocket endpoint here.
+            // Requiring it rules out the case where some FOREIGN service occupies our port and
+            // happens to answer 200 - attaching to that would fail in a far more confusing way.
+            if (! is_array($body) || ($body['webSocketDebuggerUrl'] ?? '') === '') {
+                $this->getLogbook()->addLine(
+                    "isAlive({$port}): the listener on this port is not a CDP endpoint - treating as dead"
+                );
+                return false;
+            }
+
+            return true;
+        } catch (\Throwable $e) {
+            // Connection refused, DNS, timeout, malformed response - all mean the same thing to
+            // the caller. Logged (not swallowed silently) so a flapping browser is traceable.
+            $this->getLogbook()->addLine(
+                "isAlive({$port}): probe failed - " . get_class($e) . ' - ' . $e->getMessage()
+            );
+            return false;
+        }
+    }
+
+    /**
      * Returns the list of open Chrome tabs by querying the /json/list debug endpoint.
      *
      * Each entry in the returned array represents one tab and contains fields such as
@@ -411,12 +598,17 @@ class ChromeManager
      * Useful for diagnostics when a connection error occurs: if the list is empty or
      * null the root cause is in Chrome itself rather than the WebSocket layer.
      *
+     * WHY 127.0.0.1 AND NOT "localhost": on Windows "localhost" resolves to ::1 before 127.0.0.1.
+     * Chrome binds its debug port on IPv4 only, so every call would first pay a failed IPv6
+     * connect attempt before falling back - inflating startup polling and, worse, making a
+     * healthy Chrome look unreachable whenever the probe timeout is short.
+     *
      * @param int|null $port Port to query; falls back to the currently managed port if omitted
      * @return array Decoded JSON tab list, or an empty array if the endpoint could not be reached
      */
     public function getTabList(?int $port = null): array
     {
-        return $this->runGuzzleApi('http://localhost:' . ($port ?? $this->getPort()) . '/json/list');
+        return $this->runGuzzleApi('http://127.0.0.1:' . ($port ?? $this->getPort()) . '/json/list');
     }
 
     /**
@@ -484,34 +676,53 @@ class ChromeManager
         return $commandLine;
     }
 
+
     /**
-     * Decides whether a command line belongs to OUR leftover Chrome instance.
+     * Decides whether a command line belongs to one of OUR leftover Chrome instances.
      *
-     * WHY MATCH ON user_data_dir: it is the one launch argument that is unique per BDT
-     * run/lane by construction (per-lane and per-port profile dirs), so its presence in the
-     * command line proves the process was started for THIS configuration. The comparison is
-     * Windows-tolerant: case-insensitive with normalized backslashes, because CIM output and
-     * our config may disagree on casing or slash direction.
+     * WHY MATCH ON THE chrome_profiles ROOT (not just this exact lane dir): profile dirs are now
+     * run-scoped ("<run_uid>_laneN"), so a zombie Chrome left behind by a PREVIOUS run has a
+     * DIFFERENT user_data_dir than the current run's lane. Matching only the current exact dir would
+     * classify that previous-run zombie as foreign and make start() fail loudly instead of reclaiming
+     * the port it still holds. Because every BDT Chrome - across all runs and lanes - is launched with
+     * its profile under this installation's data\axenox\BDT\chrome_profiles tree, treating any process
+     * whose user_data_dir sits under that root as ours lets us reclaim our own zombies on a reused port
+     * while never touching a genuinely foreign browser (a human's Chrome or another project's fleet
+     * live under entirely different profile paths).
      *
-     * WHY THE FULL QUOTED ARGUMENT FORM instead of a bare substring: a bare directory match
-     * has a prefix trap - "...\lane1" is a substring of "...\lane10", so lane 1 would treat
-     * lane 10's LIVE Chrome as its own leftover and kill it. Every Chrome this manager launches
-     * carries exactly --user-data-dir="<absolute dir>" (see the launch command in start()), so
-     * matching that complete quoted argument is both precise and guaranteed to recognize our own
-     * leftovers. Anything that does not match this exact form is treated as foreign - the safe
-     * default, since foreign means "fail loudly", never "kill".
+     * SAFETY - no prefix trap and no foreign kill: (1) the switch VALUE is parsed out and tested against
+     * the profiles root followed by a directory separator, so "...\chrome_profiles\" never bleeds into a
+     * sibling like "...\chrome_profiles_backup\". (2) This check only runs against the single process
+     * occupying THIS lane's unique port, so a concurrently LIVE sibling lane (on its own distinct port)
+     * is never a candidate for killing. Anything whose user_data_dir is NOT under our profiles root stays
+     * foreign - the safe default of "fail loudly, never kill".
+     *
+     * WHY THE PARSED VALUE AND NOT A SUBSTRING OF THE COMMAND LINE: our launch command writes
+     * --user-data-dir="<dir>" WITH quotes, but Chrome re-serializes the same switch for its own
+     * renderer/gpu/utility children WITHOUT quotes whenever the path contains no spaces. A quoted-only
+     * substring needle therefore recognized only the browser process. When the process holding the port
+     * was an orphaned CHILD of a previous run - the common case once its parent had been killed - it was
+     * misclassified as FOREIGN and start() failed the whole lane loudly instead of reclaiming the port.
+     * extractUserDataDir() handles both serializations, so ownership is decided on the actual path.
+     *
+     * The comparison is Windows-tolerant: case-insensitive with normalized backslashes, because CIM
+     * output and our config may disagree on casing or slash direction.
      *
      * @param string $commandLine         Full command line of the occupying process
-     * @param string $userDataDirAbsolute Our resolved absolute user_data_dir
-     * @return bool TRUE if the process is our own leftover and safe to kill
+     * @param string $userDataDirAbsolute Our resolved absolute user_data_dir (a child of the profiles root)
+     * @return bool TRUE if the process is one of our leftovers and safe to kill
      */
     private function isOwnLeftover(string $commandLine, string $userDataDirAbsolute): bool
     {
-        $normalize = function (string $path): string {
-            return strtolower(str_replace('/', '\\', $path));
-        };
-        $needle = '--user-data-dir="' . $normalize($userDataDirAbsolute) . '"';
-        return str_contains($normalize($commandLine), $needle);
+        $foreignDir = $this->extractUserDataDir($commandLine);
+        if ($foreignDir === null) {
+            // Not a Chrome, or a Chrome launched without an explicit profile: never ours, never killed.
+            return false;
+        }
+        // Derive the shared chrome_profiles root from this lane's dir (its parent) and require the
+        // trailing separator so the match cannot bleed into a same-prefixed sibling directory.
+        $profilesRoot = $this->normalizeWindowsPath(dirname($userDataDirAbsolute)) . '\\';
+        return str_starts_with($foreignDir, $profilesRoot);
     }
 
     /**
@@ -527,7 +738,7 @@ class ChromeManager
      */
     private function waitUntilReady(int $port, int $timeoutSeconds = 10): void
     {
-        $this->getLogbook()->addLine("waitUntilReady(): polling http://localhost:{$port}/json/list (timeout: {$timeoutSeconds}s)...");
+        $this->getLogbook()->addLine("waitUntilReady(): polling http://127.0.0.1:{$port}/json/list (timeout: {$timeoutSeconds}s)...");
         $this->getLogbook()->addIndent(+1);
 
         $start   = time();
@@ -581,13 +792,25 @@ class ChromeManager
      * persistent HTTP client. Guzzle exceptions are caught, logged, and swallowed so
      * that callers such as waitUntilReady() can simply retry on the next iteration.
      *
-     * @param string $url Full URL of the CDP endpoint (e.g. http://localhost:9222/json/list)
+     * WHY EXPLICIT TIMEOUTS: Guzzle's default request timeout is UNLIMITED. A Chrome that binds
+     * the port but never answers - exactly the wedged state we are trying to detect - would make
+     * this call block forever, and the caller's own timeout loop (waitUntilReady) would never get
+     * to re-evaluate its wall-clock condition. The whole "give up after N seconds" contract of
+     * every caller therefore depends on the two timeouts below being set here.
+     *
+     * @param string $url Full URL of the CDP endpoint (e.g. http://127.0.0.1:9222/json/list)
      * @return array Decoded JSON response body, or an empty array on any error
      */
     private function runGuzzleApi(string $url): array
     {
         try {
-            $client   = new Client();
+            $client   = new Client([
+                // connect_timeout bounds a closed port, timeout bounds a Chrome that accepts the
+                // connection but never writes a response. Both are needed - either alone still
+                // leaves a path for the call to hang indefinitely.
+                'connect_timeout' => self::HEALTH_PROBE_TIMEOUT_SECONDS,
+                'timeout'         => self::HEALTH_PROBE_TIMEOUT_SECONDS
+            ]);
             $response = $client->request('GET', $url);
 
             if ($response->getStatusCode() === 200) {

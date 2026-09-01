@@ -1,16 +1,3 @@
-CREATE TABLE bdt_run_suite (
-    oid uuid PRIMARY KEY,
-    created_on timestamp NOT NULL,
-    modified_on timestamp NOT NULL,
-    created_by_user_oid uuid NOT NULL,
-    modified_by_user_oid uuid NOT NULL,
-    app_alias varchar(100) NOT NULL,
-    run_oid uuid NOT NULL,
-    total_page_count integer NOT NULL,
-    effected_page_count integer NOT NULL,
-    coverage numeric(19,2) NOT NULL
-);
-
 CREATE TABLE bdt_run (
     oid uuid PRIMARY KEY,
     created_on timestamp NOT NULL,

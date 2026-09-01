@@ -59,7 +59,7 @@
         {
             "_EXPORT_SUMMARY": "Behat tasks",
             "CREATED_ON": "2025-08-14 11:47:14",
-            "MODIFIED_ON": "2026-06-25 11:21:10",
+            "MODIFIED_ON": "2026-08-17 11:59:58",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
             "UID": "0x11f0b189a8acf06ab189025041000001",
@@ -69,7 +69,7 @@
             "ALIAS": "BEHAT_TASKS",
             "ALLOW_MULTI_QUEUE_HANDLING": 0,
             "CONFIG_UXON": {
-                "output_folder": "../../data/axenox/BDT/Logs",
+                "command_timeout": 14400,
                 "topics": {
                     "all_of": [
                         "behat"
@@ -80,12 +80,8 @@
                     "CHROME_API_URL": "http://localhost:9223"
                 },
                 "allowed_commands": [
-                    "#^vendor/bin/behat(?:\\.bat)?(?:\\s|$)#i",
-                    "#^vendor/bin/action(?:\\.bat)?(?:\\s|$)#i",
-                    "#^vendor/bin/action(?:\\:RunParallel)?(?:\\s|$)#i",
-                    "#^start\\s+\"\"\\s+data/axenox/BDT/[a-zA-Z0-9_-]+\\.bat(?:\\s|$)#i",
-                    "#^data/axenox/BDT/[a-zA-Z0-9_-]+\\.bat(?:\\s|$)#i",
-                    "#^C:/wamp/www/exface/exface/data/axenox/BDT/Chrome/GoogleChromePortable/GoogleChromePortable\\.exe(?:\\s|$)#i"
+                    "#^vendor/bin/action(?:\\:RunTest)?(?:\\s|$)#i",
+                    "#^vendor/bin/action(?:\\:RunParallel)?(?:\\s|$)#i"
                 ]
             },
             "NAME": "Behat tasks"

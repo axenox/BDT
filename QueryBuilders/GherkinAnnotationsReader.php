@@ -1,23 +1,15 @@
 <?php
 namespace axenox\BDT\QueryBuilders;
 
-use exface\Core\CommonLogic\QueryBuilder\AbstractQueryBuilder;
-use exface\Core\CommonLogic\DataQueries\PhpAnnotationsDataQuery;
 use exface\Core\QueryBuilders\PhpAnnotationsReader;
 use Wingu\OctopusCore\Reflection\ReflectionMethod;
 use Wingu\OctopusCore\Reflection\ReflectionClass;
-use exface\Core\CommonLogic\Filemanager;
 use exface\Core\Exceptions\QueryBuilderException;
 use Wingu\OctopusCore\Reflection\ReflectionDocComment;
 use exface\Core\Exceptions\DataSources\DataQueryFailedError;
-use exface\Core\Interfaces\Model\MetaAttributeInterface;
 use exface\Core\Interfaces\DataSources\DataConnectionInterface;
 use exface\Core\Interfaces\DataSources\DataQueryResultDataInterface;
 use exface\Core\CommonLogic\DataQueries\DataQueryResultData;
-use exface\Core\DataTypes\BooleanDataType;
-use exface\Core\Interfaces\Model\MetaObjectInterface;
-use Wingu\OctopusCore\Reflection\ReflectionProperty;
-use Wingu\OctopusCore\Reflection\ReflectionConstant;
 
 /**
  * A query builder to read annotations for PHP classes, their methods, properties and constants.
@@ -33,7 +25,6 @@ use Wingu\OctopusCore\Reflection\ReflectionConstant;
  */
 class GherkinAnnotationsReader extends PhpAnnotationsReader
 {
-
     /**
      * 
      * {@inheritDoc}
@@ -125,11 +116,17 @@ class GherkinAnnotationsReader extends PhpAnnotationsReader
     }
 
     /**
+     * Builds one result row per Gherkin step annotation found in the doc comment of the given method.
+     *
+     * A single method may be annotated with multiple `@Given`/`@When`/`@Then`/`@And` tags - each of
+     * them becomes a separate row. All these rows share the same doc comment, but must have unique
+     * UIDs: otherwise reading a single step (e.g. to prefill a details dialog) would yield multiple
+     * rows and the widgets would remain empty. Therefore the UID gets the index of the annotation
+     * appended to the FQSEN, while the FQSEN attribute itself keeps its plain value.
      *
      * @param ReflectionClass $class            
-     * @param ReflectionMethod $property            
-     * @param array $row            
-     * @return string
+     * @param ReflectionMethod $method            
+     * @return array
      */
     protected function buildRowsFromMethodAllTags(ReflectionClass $class, ReflectionMethod $method) : array
     {
@@ -140,6 +137,7 @@ class GherkinAnnotationsReader extends PhpAnnotationsReader
         // If at least one exact match was found, this method is a valid row.
         // Now add enrich the row with general comment fields (description, etc.) and fields from the class level
         
+        $fqsen = $class->getName() . '::' . $method->getName() . '()';
         foreach ($rows as $i => $row) {
             if (! $this->getIgnoreCommentsWithoutMatchingTags($this->getMainObject()) || count($row) > 0) {
                 $rows[$i] = $this->buildRowFromClass($class, $row);
@@ -147,7 +145,8 @@ class GherkinAnnotationsReader extends PhpAnnotationsReader
                 // Add the FQSEN (Fully Qualified Structural Element Name) if we are on method level
                 foreach ($this->getAttributesMissingInRow($rows[$i]) as $qpart) {
                     if (strcasecmp($qpart->getDataAddress(), 'fqsen') === 0) {
-                        $rows[$i][$qpart->getColumnKey()] = $class->getName() . '::' . $method->getName() . '()';
+                        $attr = $qpart->getAttribute();
+                        $rows[$i][$qpart->getColumnKey()] = ($attr !== null && $attr->isUidForObject()) ? $fqsen . ':' . $i : $fqsen;
                     }
                 }
             }
