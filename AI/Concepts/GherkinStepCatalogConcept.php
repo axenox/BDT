@@ -27,6 +27,7 @@ use exface\Core\Factories\DataSheetFactory;
  *      "gherkin_step_catalog": {
  *          "class": "\\axenox\\BDT\\AI\\Concepts\\GherkinStepCatalogConcept",
  *          "include_contexts": true,
+ *          "include_step_descriptions": true,
  *          "max_steps": 200
  *      }
  *  }
@@ -58,6 +59,8 @@ class GherkinStepCatalogConcept extends AbstractConcept
     private bool $includeContexts = false;
 
     private bool $includeHeading = true;
+
+    private bool $includeStepDescriptions = true;
 
     private int $headingLevel = 2;
 
@@ -141,6 +144,22 @@ class GherkinStepCatalogConcept extends AbstractConcept
     protected function setIncludeHeading(bool $trueOrFalse): GherkinStepCatalogConcept
     {
         $this->includeHeading = $trueOrFalse;
+        return $this;
+    }
+
+    /**
+     * Set to FALSE to omit each step's full Markdown description and only print the step itself.
+     *
+     * @uxon-property include_step_descriptions
+     * @uxon-type boolean
+     * @uxon-default true
+     *
+     * @param bool $trueOrFalse
+     * @return GherkinStepCatalogConcept
+     */
+    protected function setIncludeStepDescriptions(bool $trueOrFalse): GherkinStepCatalogConcept
+    {
+        $this->includeStepDescriptions = $trueOrFalse;
         return $this;
     }
 
@@ -341,7 +360,7 @@ class GherkinStepCatalogConcept extends AbstractConcept
         $markdown = [
             $this->renderGherkinCodeBlock([$step['step']]),
         ];
-        if ($step['full_description'] !== '') {
+        if ($this->includeStepDescriptions === true && $step['full_description'] !== '') {
             $markdown[] = $step['full_description'];
         }
 
