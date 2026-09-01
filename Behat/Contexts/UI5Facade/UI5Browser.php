@@ -1795,15 +1795,18 @@ JS
      *   that cannot exist, which surfaced as "UI Page with alias ... not found!" although the dialog
      *   had opened correctly.
      * - A widget route is recognisable without guessing: it always starts with the alias of the page
-     *   loaded from the ".html" file, followed by a dot. A real sub-page route is a different alias
-     *   and never carries that prefix. So whenever the prefix is present, we are still on the
-     *   ".html" page itself.
+     *   that was current before the widget opened, followed by a dot. That page can itself be an SPA
+     *   route and therefore differ from the page loaded from the ".html" file. A real sub-page route
+     *   is a different alias and never carries either prefix. So whenever a prefix is present, we
+     *   return the page that owns the widget instead of treating the widget id as part of a page alias.
      *
      * Examples:
      *   /nbr.onelink.trasse-ausfuehrung.html#/nbr.onelink.trasse-ausfuehrung-trasse/%257B...
      *     -> nbr.onelink.trasse-ausfuehrung-trasse   (real page route)
      *   /onelink.bmdb.alle-massnahmen.html#/onelink.bmdb.alle-massnahmen.DataTable_..._Dialog/...
      *     -> onelink.bmdb.alle-massnahmen            (dialog route, the page did not change)
+     *   /onelink.trasseac.trasse-ausfuehrung.html#/onelink.trasseac.trasse-ausfuehrung-trasse.SplitHorizontal_..._Dialog/...
+     *     -> onelink.trasseac.trasse-ausfuehrung-trasse (dialog opened from an SPA-routed page)
      */
     public function getPageAliasFromCurrentUrl(): ?string
     {
@@ -1829,6 +1832,12 @@ JS
             $alias = strtok($hash, '/');
             if ($alias !== false && $alias !== '') {
                 $alias = urldecode($alias);
+                $currentLogicalAlias = end($this->pagesVisited);
+                if (is_string($currentLogicalAlias) && StringDataType::startsWith($alias, $currentLogicalAlias . '.')) {
+                    // Widget route opened from the current logical page, including an SPA-routed page
+                    // whose alias differs from the physically loaded .html page.
+                    return $currentLogicalAlias;
+                }
                 if ($aliasFromFile !== null && StringDataType::startsWith($alias, $aliasFromFile . '.')) {
                     // Widget route (dialog, detail view, ...) inside the page we are already on.
                     return $aliasFromFile;
