@@ -1573,9 +1573,12 @@ JS
      * object alias made every scenario using the other notation return zero matches, which reads like
      * "the widget is not on the page" instead of "you named it differently than this filter expects".
      *
-     * WHY the metamodel and not the DOM: neither caption nor alias is rendered anywhere reliable, so
-     * matching against visible text would let a caption or a table cell that happens to contain the same
-     * words pass as a match - exactly the kind of false green this filter exists to prevent.
+     * WHY the metamodel AND the rendering: neither caption nor alias is rendered in a place that is
+     * reliable for every widget type, so the model stays the primary source. But captions that are only
+     * assigned while an action builds its widget - a dialog title like "Bearbeiten: Bestellung" - are not
+     * reproduced by a plain model lookup, so the caption the node reads from its own header is accepted
+     * as well. Both sources are read from the widget's OWN identity, never from arbitrary page text, so a
+     * table cell that happens to contain the same words still cannot pass as a match.
      *
      * The comparison is case insensitive and accepts the object alias in both notations - fully qualified
      * ("my.App.CUSTOMER") and short ("CUSTOMER") - because the namespace is noise in most steps.
@@ -1595,22 +1598,34 @@ JS
         $name = trim($name);
         $filtered = [];
         foreach ($nodes as $node) {
-            // A node whose widget cannot be resolved from the page model cannot be proven to match, so it
-            // counts as a non-match. WHY not let it bubble up: one unrelated widget on the page would
-            // otherwise turn a filtered assertion into a fatal error instead of a clean count mismatch.
+            $candidates = [];
+
+            // The caption AS RENDERED comes first. WHY: many captions only exist at runtime - a dialog
+            // opened by ShowObjectEditDialog gets its title from the action (ShowDialog::getDialogCaption()),
+            // so the title the test author reads in the browser ("Bearbeiten: Bestellung") is not
+            // necessarily what the widget resolved from the page model reports. Matching the model alone
+            // made such steps fail with "found 0" although the caption was plainly visible on screen.
+            try {
+                $candidates[] = $node->getCaption();
+            } catch (Throwable $e) {
+                // A node without a readable caption simply contributes no candidate here - the model
+                // based candidates below still get their chance.
+            }
+
+            // A node whose widget cannot be resolved from the page model can still match by its rendered
+            // caption, so a failure here must not discard the node. WHY not let it bubble up: one unrelated
+            // widget on the page would otherwise turn a filtered assertion into a fatal error instead of a
+            // clean count mismatch.
             try {
                 $widget = $node->getWidget();
                 $object = $widget->getMetaObject();
+                $candidates[] = $widget->getCaption();
+                $candidates[] = $object->getName();
+                $candidates[] = $object->getAlias();
+                $candidates[] = $object->getAliasWithNamespace();
             } catch (Throwable $e) {
-                continue;
+                // Keep whatever the DOM gave us above.
             }
-
-            $candidates = [
-                $widget->getCaption(),
-                $object->getName(),
-                $object->getAlias(),
-                $object->getAliasWithNamespace()
-            ];
 
             foreach ($candidates as $candidate) {
                 if ($candidate !== null && $candidate !== '' && strcasecmp(trim($candidate), $name) === 0) {
