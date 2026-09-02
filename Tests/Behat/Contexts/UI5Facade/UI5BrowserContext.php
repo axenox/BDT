@@ -2180,29 +2180,68 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iClickMenuItemInMenu(string $item, string $menu): void
     {
-        // Prefer the focused widget (e.g. the table the scenario is currently working
-        // on) so that, when several tables expose a menu button with the same caption,
-        // the right one is targeted - and so the menu button stays coherent with the
-        // table where rows were selected. Fall back to a page-wide search when nothing
-        // is focused or the focused widget does not contain the menu button.
-        $scope = null;
-        $focused = $this->getBrowser()->getFocusedNode();
-        if (! $focused instanceof UI5PageNode) {
-            $scope = $focused->getNodeElement();
-        }
-
-        $menuEl = $scope !== null ? $this->getBrowser()->findButtonByCaption($menu, $scope) : null;
-        if ($menuEl === null) {
-            // Page-wide fallback: nothing focused, or the menu button lives outside the
-            // focused widget's subtree.
-            $menuEl = $this->getBrowser()->findButtonByCaption($menu);
-        }
-        Assert::assertNotNull($menuEl, 'Menu button "' . $menu . '" not found.');
-
-        $menuNode = UI5FacadeNodeFactory::createFromNodeElement($menuEl, $this->getSession(), $this->getBrowser());
-        Assert::assertInstanceOf(UI5MenuButtonNode::class, $menuNode, 'Button "' . $menu . '" is not a MenuButton.');
-
+        $menuNode = $this->getBrowser()->findWidgetNodes('MenuButton', 15, $menu)[0] ?? null;
+        Assert::assertInstanceOf(UI5MenuButtonNode::class, $menuNode, 'Menu button "' . $menu . '" not found.');
         $menuNode->clickItem($item);
+    }
+
+    /**
+     * Checks that a named MenuButton exposes all listed entries without triggering them.
+     *
+     * WHY this is menu-scoped: menu entries are list items in detached popovers, so ordinary button
+     * lookup cannot see them and relying on a previously opened popover makes the result depend on
+     * preceding steps. The node opens this exact menu and closes it after reading, including when an
+     * assertion fails.
+     *
+     * Usage example:
+     *
+     *   Then the button menu "Aktionen" has items "Neu, Bearbeiten, Duplizieren"
+     *
+     * @Then the button menu :menu has item :expectedItems
+     * @Then the button menu :menu has items :expectedItems
+     *
+     * @param string $menu Visible caption of the MenuButton to inspect
+     * @param string $expectedItems Comma-separated entry captions expected to be present
+     */
+    public function buttonMenuHasItems(string $menu, string $expectedItems): void
+    {
+        $menuNode = $this->getBrowser()->findWidgetNodes('MenuButton', 15, $menu)[0] ?? null;
+        Assert::assertInstanceOf(UI5MenuButtonNode::class, $menuNode, 'Menu button "' . $menu . '" not found.');
+        $actualItems = $menuNode->getItemLabels();
+        foreach ($this->explodeList($expectedItems) as $expectedItem) {
+            Assert::assertContains(
+                $expectedItem,
+                $actualItems,
+                'Menu "' . $menu . '" does not contain item "' . $expectedItem . '". Found: ' . implode(', ', $actualItems)
+            );
+        }
+    }
+
+    /**
+     * Checks that a named MenuButton exposes none of the listed entries.
+     *
+     * WHY this has its own negative form: permission scenarios must prove that forbidden actions
+     * are absent without clicking them and changing application state. Reading through the node also
+     * guarantees that the inspected menu is closed before this assertion runs.
+     *
+     * @Then the button menu :menu does not have item :unexpectedItems
+     * @Then the button menu :menu does not have items :unexpectedItems
+     *
+     * @param string $menu Visible caption of the MenuButton to inspect
+     * @param string $unexpectedItems Comma-separated entry captions expected to be absent
+     */
+    public function buttonMenuDoesNotHaveItems(string $menu, string $unexpectedItems): void
+    {
+        $menuNode = $this->getBrowser()->findWidgetNodes('MenuButton', 15, $menu)[0] ?? null;
+        Assert::assertInstanceOf(UI5MenuButtonNode::class, $menuNode, 'Menu button "' . $menu . '" not found.');
+        $actualItems = $menuNode->getItemLabels();
+        foreach ($this->explodeList($unexpectedItems) as $unexpectedItem) {
+            Assert::assertNotContains(
+                $unexpectedItem,
+                $actualItems,
+                'Menu "' . $menu . '" unexpectedly contains item "' . $unexpectedItem . '".'
+            );
+        }
     }
 
     /**

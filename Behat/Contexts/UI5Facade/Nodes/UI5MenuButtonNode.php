@@ -1059,6 +1059,36 @@ JS
     }
 
     /**
+     * Reads the visible entry captions without triggering their actions.
+     *
+     * WHY it owns the complete open/read/close lifecycle: assertions must inspect this specific
+     * MenuButton rather than whichever detached popover is already open, and must not leave a modal
+     * popover behind to swallow the following step. Disabled entries are deliberately included
+     * because they are still exposed to the user.
+     *
+     * @return string[]
+     */
+    public function getItemLabels(): array
+    {
+        try {
+            $this->openMenu();
+            $labels = [];
+            foreach ($this->getOpenMenuElement()->findAll('css', 'li.sapMMenuItem') as $item) {
+                if (! $item->isVisible()) {
+                    continue;
+                }
+                $label = $this->getItemLabel($item);
+                if ($label !== '') {
+                    $labels[] = $label;
+                }
+            }
+            return $labels;
+        } finally {
+            $this->closeMenuIfOpen();
+        }
+    }
+
+    /**
      * Returns the open menu list element controlled by THIS MenuButton's trigger.
      *
      * Why this is scoped via aria-controls instead of an id prefix:
