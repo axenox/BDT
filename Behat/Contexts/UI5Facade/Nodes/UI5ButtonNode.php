@@ -124,7 +124,7 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
                     return $result;
                 },
                 $this->buildMessageClicking(false),
-                'Pages',
+                static::CATEGORY_BUTTONS,
                 $logbook,
                 function () use ($urlBeforeClick) {
                     // If the click caused a full page navigation, we must go back.

@@ -217,41 +217,6 @@ JS
     }
 
     /**
-     * Finds a visible button with the given caption WITHIN this dialog only.
-     *
-     * @param NodeElement $dialog
-     * @param string $captionKey translation key, e.g. ACTION.GENERIC.CLOSE
-     * @return NodeElement|null
-     */
-    private function findDialogButtonByCaption(NodeElement $dialog, string $captionKey): ?NodeElement
-    {
-        $caption = $this->getBrowser()
-            ->getWorkbench()
-            ->getCoreApp()
-            ->getTranslator($this->getBrowser()->getLocale())
-            ->translate($captionKey);
-
-        $literal = $this->xpathLiteral($caption);
-        $xpath = sprintf(
-            ".//button[
-                .//bdi[normalize-space(.)=%1\$s]
-                or normalize-space(@title)=%1\$s
-                or normalize-space(@aria-label)=%1\$s
-            ]",
-            $literal
-        );
-
-        // Prefer the last matching button (the one of the current/top-most page)
-        foreach (array_reverse($dialog->findAll('xpath', $xpath)) as $el) {
-            if ($this->isElementVisibleInBrowser($el)) {
-                return $el;
-            }
-        }
-
-        return null;
-    }
-
-    /**
      * Dispatches an ESC keydown/keyup on this dialog to make UI5 close it.
      *
      * This is the last-resort fallback used when the dialog exposes neither a
