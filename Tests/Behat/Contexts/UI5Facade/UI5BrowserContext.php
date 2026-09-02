@@ -1272,6 +1272,39 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Checks that the values of a named column are highlighted in a given colour.
+     *
+     * Use this to verify colour coding - for example that relevant records stand out in blue.
+     * Every non-empty value of the column must be shown in that colour, so filter the table down
+     * to the rows you expect to be highlighted first. Focus a table first (e.g. "I look at table 1").
+     *
+     * A CSS colour such as "#0a6ed1", "rgb(10, 110, 209)" or "DodgerBlue" is compared exactly first
+     * after normalizing its notation. If the exact shade differs, the colour family is checked as a
+     * fallback. Add a lightness qualifier when the shade range matters - "light blue", "dark blue",
+     * "pale green" or "dark red". Multi-word colours have to be quoted. Both the text colour and the
+     * background of the value are taken into account, so filled and text-only colour codings work.
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   And I enter "Ja" in filter "BF Relevant"
+     *   Then I see "Ja" in column "BF Relevant"
+     *   And I see the value in column "BF Relevant" highlighted in blue
+     *   And I see the value in column "Status" highlighted in "dark green"
+     *
+     * @Then I see the value in column :columnName highlighted in :color
+     * @Then I see the values in column :columnName highlighted in :color
+     *
+     * @param string $columnName Caption of the column to inspect.
+     * @param string $color      Colour family with an optional lightness qualifier (e.g. "blue" or
+     *                           "light blue"), HTML colour name or hex value.
+     */
+    public function iSeeTheValueInColumnHighlightedIn(string $columnName, string $color): void
+    {
+        $this->getFocusedDataTableNode()->assertColumnValuesColored($columnName, $color);
+    }
+
+    /**
      * Clicks a button by the text shown on it.
      *
      * This is the everyday "press this button" step. It first looks inside the widget you are
