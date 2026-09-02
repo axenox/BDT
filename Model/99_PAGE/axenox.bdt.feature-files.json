@@ -11,7 +11,7 @@
     "created_by_user_selector": "0x11eca7f5b092f284a7f5005056bea39f",
     "created_on": "2025-10-08 18:22:39",
     "modified_by_user_selector": "0x11efa72c1fb56dfea72c025041000001",
-    "modified_on": "2026-08-28 14:27:00",
+    "modified_on": "2026-09-02 10:27:44",
     "contents": {
         "object_alias": "exface.Core.DUMMY",
         "widget_type": "SplitHorizontal",
@@ -145,7 +145,7 @@
                                                             },
                                                             {
                                                                 "attribute_alias": "FOLDER_NAME",
-                                                                "caption": "Tests/Behat/Features/",
+                                                                "//caption": "Folder Name",
                                                                 "hint": "Name of the folder inside Tests/Behat/Features of the selected app - e.g. WorksAsExpected. The folder is created if it does not exist yet. Only letters, digits, - and _ are allowed.",
                                                                 "width": 2,
                                                                 "required": true,
