@@ -1488,39 +1488,51 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeButton(string $buttonText, string $tableName = null): void
     {
-        // Resolve the search scope ONCE, before the button loop - the scope depends on the step,
-        // not on the individual button, and resolving it per button would repeat the DOM type scan
-        // for every entry of a comma separated list.
-        // WHY at all: the "at the :tableName" wording used to be parsed and then thrown away, so the
-        // step searched the whole page. A button that exists somewhere else entirely - e.g. in the
-        // toolbar of another table or in a still-open dialog - then satisfied an assertion that was
-        // written to check exactly one widget.
-        $scopeNodes = [];
-        $tableName = $tableName === null ? null : trim($tableName);
-        if ($tableName !== null && $tableName !== '') {
-            $scopeNodes = $this->getBrowser()->findWidgetNodesByName($tableName, 15);
+        $result = $this->findVisibleButtons($buttonText, $tableName);
+
+        Assert::assertEmpty(
+            $result['missing'],
+            (count($result['missing']) === 1 ? "Button with text '" : "Buttons with text '")
+            . implode("', '", array_keys($result['missing'])) . "'"
+            . ($tableName === null || $tableName === ''
+                ? ' not found.'
+                : " not found at '{$tableName}'.")
+            . ($result['overflowHint'] ?? '')
+        );
+    }
+
+    /**
+     * Answers which requested buttons the user can see in the named widget and its overflow.
+     *
+     * WHY BOTH ASSERTIONS USE THIS METHOD: presence and absence are complements only when they search
+     * the same rendered buttons, resolve the same named scope and inspect the same toolbar overflow.
+     * Keeping the complete lookup here prevents a permission check from silently passing because its
+     * negative form forgot one of the places where the positive form can find an action.
+     *
+     * @param string $buttonText Comma-separated button captions
+     * @param string|null $scopeName Optional caption or object of the widget to search in
+     * @param FacadeNodeInterface[] $scopeNodes Pre-resolved widgets for callers with another scope vocabulary
+     * @return array{found: array<string, true>, missing: array<string, true>, overflowHint: string|null}
+     * @throws \Exception If the named scope cannot be found
+     */
+    protected function findVisibleButtons(string $buttonText, ?string $scopeName = null, array $scopeNodes = []): array
+    {
+        $scopeName = $scopeName === null ? null : trim($scopeName);
+        if ($scopeName !== null && $scopeName !== '') {
+            $scopeNodes = $this->getBrowser()->findWidgetNodesByName($scopeName, 15);
             Assert::assertNotEmpty(
                 $scopeNodes,
-                'Cannot find a widget named "' . $tableName . '" to look for buttons in.'
+                'Cannot find a widget named "' . $scopeName . '" to look for buttons in.'
             );
         }
 
-        // Captions the regular search could not answer, kept as keys so a caption named twice in the
-        // step is only looked for once. They are collected FIRST and handed to the overflow fallback
-        // as one batch further down: opening an overflow popover costs a click plus the wait for its
-        // open and close animation, so a comma separated list must not pay that price per caption.
+        $found = [];
         $missing = [];
-        // WHY a separate loop variable: reusing $buttonText here would overwrite the parameter and
-        // make every message built after the first iteration report the wrong step arguments.
         foreach ($this->explodeList($buttonText) as $buttonCaption) {
+            $button = null;
             if (empty($scopeNodes)) {
                 $button = $this->getBrowser()->findButtonByCaption($buttonCaption);
             } else {
-                // Several widgets may legitimately carry the same name - a table and the table inside
-                // the dialog it opens, for example. Accept the first scope that actually contains the
-                // button instead of failing on ambiguity: the assertion stays strict, because a button
-                // outside ALL matching widgets still fails.
-                $button = null;
                 foreach ($scopeNodes as $scopeNode) {
                     $button = $this->getBrowser()->findButtonByCaption($buttonCaption, $scopeNode->getNodeElement());
                     if ($button !== null) {
@@ -1534,49 +1546,37 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 continue;
             }
 
-            // Highlight the button for debugging purposes
+            $found[$buttonCaption] = true;
             $this->getBrowser()->highlightWidget($button, 'Button', 0);
         }
 
         if (empty($missing)) {
-            return;
+            return ['found' => $found, 'missing' => [], 'overflowHint' => null];
         }
 
-        // Last resort: the toolbar overflow. WHY: UI5 does not hide the buttons that do not fit into
-        // a toolbar - it MOVES them into the overflow popover, and their DOM elements do not exist at
-        // all until that popover was opened once. "Not on the page" and "did not fit into the toolbar"
-        // are therefore indistinguishable to the search above, and a button the user can reach in two
-        // clicks was reported as missing. Nothing here looks at the enabled state, so a greyed out
-        // entry answers this step just like an active one does.
         $overflowHint = null;
         foreach ($this->getOverflowSearchNodes($scopeNodes) as $node) {
             try {
-                // One pass per toolbar resolves ALL remaining captions while the menu is open.
-                $node->findInOverflow(function (NodeElement $menu) use (&$missing) {
+                $node->findInOverflow(function (NodeElement $menu) use (&$found, &$missing) {
                     $firstFound = null;
                     foreach (array_keys($missing) as $caption) {
                         $entry = $this->getBrowser()->findButtonInScopeByCaption($menu, $caption);
                         if ($entry === null) {
                             continue;
                         }
+                        $found[$caption] = true;
                         unset($missing[$caption]);
-                        // Highlight right here, while the popover is still open: closing it hides the
-                        // moved buttons again, so an element kept for later would point at something
-                        // that is no longer on screen and the highlight would fail or land nowhere.
                         $this->getBrowser()->highlightWidget($entry, 'Button', 0);
                         $firstFound = $firstFound ?? $entry;
                     }
                     return $firstFound;
                 });
             } catch (RuntimeException $e) {
-                // An ambiguous scope means we cannot tell which toolbar to open - keep the
-                // explanation for the failure message and try the remaining nodes, so a
-                // second, unambiguous toolbar can still answer the question.
                 $overflowHint = $overflowHint ?? ' ' . $e->getMessage();
                 continue;
             } finally {
-                // Always leave the page as we found it, including when the search or the highlight
-                // above threw: an open popover swallows the first click of whatever step follows.
+                // The lookup is observational: a popover opened to inspect moved buttons must never
+                // swallow the following step, even when matching or highlighting throws.
                 $node->closeOverflowMenuIfOpened();
             }
 
@@ -1585,15 +1585,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             }
         }
 
-        Assert::assertEmpty(
-            $missing,
-            (count($missing) === 1 ? "Button with text '" : "Buttons with text '")
-            . implode("', '", array_keys($missing)) . "'"
-            . ($tableName === null || $tableName === ''
-                ? ' not found.'
-                : " not found at '{$tableName}'.")
-            . ($overflowHint ?? '')
-        );
+        return ['found' => $found, 'missing' => $missing, 'overflowHint' => $overflowHint];
     }
 
     /**
@@ -1706,8 +1698,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         $dataSpreadSheetNode = $this->getBrowser()->findWidgetNodes("DataSpreadSheet", 15);
 
-
-        // get headers
         $headers = $dataSpreadSheetNode[0]->getNodeElement()->findAll('css', "table.jexcel thead tr td");
 
         $headerMap = [];
@@ -2447,8 +2437,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * Checks that the named buttons are NOT visible.
      *
      * Perfect for permission tests: confirm that a user without certain rights does not see
-     * actions like "Delete" or "Approve". Name one or more buttons separated by commas. Add
-     * "on the :tableIndex table" to restrict the check to a specific table's toolbar.
+    * actions like "Delete" or "Approve". Name one or more buttons separated by commas. Add
+    * "on the :tableIndex table" to restrict the check to a specific table's toolbar.
      *
      * Usage examples:
      *
@@ -2466,31 +2456,27 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @Then I should not see the buttons :unexpectedButtons on the :tableIndex table
      *
      * @param string $unexpectedButtons Comma-separated list of buttons expected to be absent
-     * @param string|null $tableIndex Optional 1-based table index to scope the check
+     * @param int|string|null $tableIndex Optional 1-based table index to scope the check
      */
-    public function iDoNotSeeTheFollowingButtons(string $unexpectedButtons, int|string|null $tableIndex = null): void
+    public function iDoNotSeeButton(string $unexpectedButtons, int|string|null $tableIndex = null): void
     {
-        // Parse the comma-separated tile list
-        $unexpectedButtons = $this->explodeList($unexpectedButtons);
-
-        // Resolve the scope once instead of per button: the table does not change between
-        // iterations, and the shared resolver adds the range check this step was missing.
-        $scope = null;
+        $scopeNodes = [];
         $tableNumber = $this->parseTableIndex($tableIndex);
         if ($tableNumber !== null) {
-            $scope = $this->findTableElementByIndex($tableNumber);
+            $scopeNodes[] = $this->getWidgetNodeByIndex('DataTable', $tableNumber);
         }
 
-        foreach ($unexpectedButtons as $btn) {
-            $foundButton = $scope === null
-                ? $this->getBrowser()->findButtonByCaption($btn)
-                : $this->getBrowser()->findButtonByCaption($btn, $scope);
-
-            if (! empty($foundButton)) {
-                $this->getBrowser()->highlightWidget($foundButton, 'Button', 0);
-            }
-            Assert::assertEmpty($foundButton, 'Unexpected buttons found: ' . $btn);
-        }
+        $result = $this->findVisibleButtons($unexpectedButtons, null, $scopeNodes);
+        Assert::assertNull(
+            $result['overflowHint'],
+            'Cannot prove that the requested buttons are absent because the overflow search was incomplete.'
+            . ($result['overflowHint'] ?? '')
+        );
+        Assert::assertEmpty(
+            $result['found'],
+            (count($result['found']) === 1 ? 'Unexpected button found: ' : 'Unexpected buttons found: ')
+            . implode(', ', array_keys($result['found']))
+        );
     }
 
     /**
