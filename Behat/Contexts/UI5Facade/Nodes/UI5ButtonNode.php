@@ -64,7 +64,7 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
                     'Clicking ' . $this->getWidgetType() . ' "' . $this->getCaption() . '"',
                     StepStatusDataType::SKIPPED,
                     $reason,
-                    self::CATEGORY_BUTTONS
+                    static::CATEGORY_BUTTONS
                 );
                 $result = SubstepResult::createSkipped($reason, $logbook);
                 $logbook->addLine('Skipping button ' . $this->getCaption() . ' because action ' . $action->getAliasOfPrototype() . ' not supported yet');
@@ -216,7 +216,7 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
                         return $dialogNode->checkWorksAsExpected($logbook);
                     },
                     'Seeing ' . $this->getBrowser()->getNodeWidgetType($dialogNodeElement),
-                    'Dialogs',
+                    static::CATEGORY_BUTTONS,
                     $logbook
                 );
             });

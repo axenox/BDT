@@ -423,7 +423,7 @@ class UI5DataNode extends UI5AbstractNode
                         return $buttonNode->checkWorksAsExpected($logbook);
                     },
                     'Clicking ' . $buttonWidget->getCaption(),
-                    'Dialogs',
+                    static::CATEGORY_BUTTONS,
                     $logbook
                 );
 
