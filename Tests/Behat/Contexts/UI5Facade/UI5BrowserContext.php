@@ -19,6 +19,7 @@ use Behat\Behat\Context\Context;
 use Behat\Behat\Tester\Result\UndefinedStepResult;
 use Behat\Mink\Element\NodeElement;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
+use Behat\Mink\Session;
 use exface\Core\CommonLogic\Debugger\LogBooks\MarkdownLogBook;
 use exface\Core\CommonLogic\Model\Expression;
 use exface\Core\CommonLogic\Security\AuthenticationToken\CliEnvAuthToken;
@@ -636,7 +637,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->setLocale($userLocale);
 
         // Fill the form
-        $this->browserLogin($url, $tabCaption, $btnCaption, $loginFields, $userRolesArray);
+        $this->browserLogin($url, $tabCaption, $btnCaption, $loginFields);
     }
 
     /**
@@ -653,10 +654,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $tabCaption Caption of the authenticator tab to open
      * @param string $btnCaption Caption of the login submit button
      * @param array $loginFields Form fields as caption => value (without the _tab/_button keys)
-     * @param array $userRoles Array of user roles
      * @throws \Exception
      */
-    private function browserLogin(string $url, string $tabCaption, string $btnCaption, array $loginFields, array $userRoles): void
+    private function browserLogin(string $url, string $tabCaption, string $btnCaption, array $loginFields): void
     {
         // Go to the page
         $this->iVisitPage($url);
@@ -673,10 +673,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $this->getBrowser()->goToTab($tabCaption, null, 5);
         }
         
-        // Store the active roles on the browser instance so that nodes can build
-        // role-aware cache keys for works-as-expected deduplication without having
-        // to carry the role array through every call chain.
-        $this->getBrowser()->setCurrentRoles($userRoles);
         // Fill out the login form
         foreach ($loginFields as $caption => $value) {
             $input = $this->getBrowser()->findInputByCaption($caption);
@@ -1961,16 +1957,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
             // Navigate using full URL
             $currentSession->visit($fullUrl);
-
-            // Initialize browser with current session
-            $this->browser = new UI5Browser(
-                $this->getWorkbench(),
-                $currentSession,
-                $this->getEventDispatcher(),
-                $url,
-                $this->getLocale()
-            );
-            $this->wireBrowserCallbacks();
+            $this->createBrowser($url);
             // Verify page loaded
             $this->iShouldSeeThePage();
         }
@@ -2790,17 +2777,50 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->logDebug("Debug - New page is loading: {$url}\n");
 
         // Initialize the UI5Browser with the current session and URL
+        $this->createBrowser($url);
+    }
+
+    /**
+     * Builds a UI5Browser for the given URL and hands it everything the context owns.
+     *
+     * WHY THIS EXISTS: a UI5Browser is navigation-scoped - a new one is constructed on every page
+     * change - while several pieces of state it needs are scenario-scoped and known only to the
+     * context. Construction and hand-over were two separate steps repeated at each construction
+     * site, so a site that forgot the second step produced a browser that looked healthy and
+     * silently lacked part of its state. Building and binding in one place makes that impossible:
+     * there is no way to obtain a browser that has not been bound.
+     *
+     * @param string $url URL the browser is being opened on, used for the initial load wait.
+     * @param Session|null $session Session to bind to, or NULL to use the context's current one.
+     */
+    private function createBrowser(string $url, ?Session $session = null): void
+    {
         $this->browser = new UI5Browser(
             $this->getWorkbench(),
-            $this->getSession(),
+            $session ?? $this->getSession(),
             $this->getEventDispatcher(),
             $url,
             $this->getLocale()
         );
-        $this->wireBrowserCallbacks();
+        $this->wireBrowserToScenario();
     }
 
-    private function wireBrowserCallbacks(): void
+    /**
+     * Re-attaches the per-scenario state a freshly built UI5Browser cannot know about.
+     *
+     * WHY THIS EXISTS: navigateToPageAlias() constructs a NEW UI5Browser on every navigation,
+     * so anything the context established on the previous instance is gone the moment the
+     * scenario moves to another page. Everything that must outlive a navigation is restored
+     * here, in one place, instead of being re-set by whichever caller happens to remember.
+     *
+     * WHY THE ROLES BELONG HERE: the role set is not an observation of the application, it is
+     * the label the framework attaches to what it validated. The browser session stays
+     * authenticated across a navigation and the server keeps enforcing the same roles - only
+     * the framework's record of them was being dropped. Losing that label collapses two
+     * genuinely different role environments onto the same value, which is exactly what the
+     * label exists to keep apart.
+     */
+    private function wireBrowserToScenario(): void
     {
         $this->getBrowser()->setNavigator(function (string $pageAlias): void {
             $this->navigateToPageAlias($pageAlias);
@@ -2809,11 +2829,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->getBrowser()->setScreenshotFn(function () {
             $this->captureScreenshot();
         });
-        
+
         // Bridges Chrome recovery from deep node classes back to the context.
         $this->getBrowser()->setChromeRecoveryFn(function (string $targetPageAlias): void {
             $this->recoverChrome($targetPageAlias);
         });
+
+        // Restore the roles of the current scenario onto the new browser instance. NULL means no
+        // login step has run yet in this scenario, which is not the same as "the user has no
+        // roles" - a roleless user cannot log in at all. The two cases must stay distinguishable,
+        // so nothing is written here when the roles are unknown.
+        if ($this->lastLoginUserRoles !== null) {
+            $this->getBrowser()->setCurrentRoles($this->lastLoginUserRoles);
+        }
     }
 
     /**
@@ -2996,8 +3024,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $this->lastLoginUrl,
             $this->lastLoginTabCaption,
             $this->lastLoginButtonCaption,
-            $this->lastLoginFields,
-            $this->lastLoginUserRoles ?? []
+            $this->lastLoginFields
         );
 
         // Step 4: Navigate directly to the target page without going via the tile
