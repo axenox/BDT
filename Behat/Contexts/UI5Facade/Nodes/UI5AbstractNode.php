@@ -33,8 +33,24 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
 {
     use CdpConnectionDetectorTrait;
 
+    /**
+     * The closed set of work kinds a works-as-expected sweep can report.
+     *
+     * WHY IT IS CLOSED AND WHY IT LIVES HERE: the category is what tells a consumer which part of a
+     * sweep a substep belongs to, so a lookup and a record must never be able to name the same work
+     * differently. Bare strings at the call sites made that possible and it happened: pressing a
+     * button was reported under one name while skipping a button was reported under another, from
+     * inside the same loop. Naming every kind once, in the base every node already extends, removes
+     * the room for a second spelling.
+     *
+     * WHY THERE IS NO SEPARATE DIALOG KIND: a dialog is not a kind of work, it is one of the things
+     * a button press can lead to - and only one of them, since a button may equally navigate, run
+     * its action inline or open a menu. What was validated is carried by the substep title and by
+     * the identity of the element, not by the category.
+     */
     const CATEGORY_FILTERING = 'Filtering';
     const CATEGORY_BUTTONS = 'Buttons';
+    
     /**
      * Suffix UI5 appends to an OverflowToolbar's id to build its overflow ("...") button.
      *

@@ -218,7 +218,7 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
                         return $entryNode->checkWorksAsExpected($logbook);
                     },
                     'Clicking menu item "' . $entryWidget->getCaption() . '"',
-                    'Dialogs',
+                    static::CATEGORY_BUTTONS,
                     $logbook,
                     function () use ($urlBeforeClick) {
                         if ($this->getSession()->getCurrentUrl() !== $urlBeforeClick) {
