@@ -557,7 +557,7 @@ JS
      * - Outline and border styles from previously highlighted elements
      * - Global highlight indicators
      *
-     * @throws \RuntimeException If script execution fails
+     * @throws RuntimeException If script execution fails
      */
     public function clearWidgetHighlights(): void
     {
@@ -584,7 +584,7 @@ JS
             JS;
 
             $this->session->executeScript($debugScript);
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             // Throw a more specific RuntimeException with the original exception as the previous exception
             throw new RuntimeException(
                 "Failed to clear widget highlights: " . $e->getMessage(),
@@ -2192,7 +2192,7 @@ JS
     public function recoverChrome(string $targetPageAlias): void
     {
         if ($this->chromeRecoveryFn === null) {
-            throw new \RuntimeException('Chrome recovery callback not configured. Call setChromeRecoveryFn() first.');
+            throw new RuntimeException('Chrome recovery callback not configured. Call setChromeRecoveryFn() first.');
         }
         ($this->chromeRecoveryFn)($targetPageAlias);
     }
