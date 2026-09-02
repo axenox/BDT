@@ -1278,12 +1278,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * Every non-empty value of the column must be shown in that colour, so filter the table down
      * to the rows you expect to be highlighted first. Focus a table first (e.g. "I look at table 1").
      *
-     * The colour is matched by colour family, not by an exact shade: any blue tone satisfies
-     * "blue". Add a lightness qualifier when the shade matters - "light blue", "dark blue",
-     * "pale green" or "dark red". Multi-word colours have to be quoted. You may also name a
-     * specific colour ("DodgerBlue") or a hex value ("#0a6ed1") - it is then treated as the family
-     * that colour belongs to. Both the text colour and the background of the value are taken into
-     * account, so filled and text-only colour codings both work.
+     * A CSS colour such as "#0a6ed1", "rgb(10, 110, 209)" or "DodgerBlue" is compared exactly first
+     * after normalizing its notation. If the exact shade differs, the colour family is checked as a
+     * fallback. Add a lightness qualifier when the shade range matters - "light blue", "dark blue",
+     * "pale green" or "dark red". Multi-word colours have to be quoted. Both the text colour and the
+     * background of the value are taken into account, so filled and text-only colour codings work.
      *
      * Usage example:
      *

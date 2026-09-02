@@ -937,12 +937,11 @@ JS
     /**
      * Asserts that every non-empty value of a named column is rendered in the given colour.
      *
-     * WHY A COLOUR FAMILY AND NOT AN EXACT VALUE: the shade a facade produces for "blue" depends on
-     * the UI5 theme and on whether the model used a semantic colour or an explicit one. Pinning the
-     * exact value would turn every theme update into a mass test failure, while what the scenario
-     * actually states is only "this value stands out in blue". Where the shade does matter, the
-     * family can be narrowed down by a lightness qualifier - `light blue` and `dark blue` both
-     * require blue, but only one of them accepts a pale tone.
+     * CSS colors are checked exactly first after normalizing their notation. If the exact value does
+     * not match, the check falls back to the color family: `#0a6ed1` therefore matches the equivalent
+     * `rgb(10, 110, 209)` exactly, but can still match another blue shade. Qualified families such as
+     * `light blue` and `dark blue` skip the exact check because they describe a range, not one CSS
+     * color.
      *
      * Empty cells are skipped - they carry no value that could be highlighted. If the column has no
      * non-empty value at all, the assertion fails: a check that silently verifies nothing is worse
@@ -956,11 +955,13 @@ JS
     public function assertColumnValuesColored(string $columnCaption, string $color): void
     {
         $spec = ColorDataType::parseColorSpec($color);
-        if ($spec === null) {
+        $isCssColor = ColorDataType::isCssColor($color);
+        if (! $isCssColor && $spec === null) {
             throw new RuntimeException(
                 'Cannot check the color of column `' . $columnCaption . '`: "' . $color
-                . '" is not a known color. Use a color family with an optional lightness (e.g. "blue" '
-                . 'or "light blue"), an HTML color name (e.g. "DodgerBlue") or a hex value (e.g. "#0a6ed1").'
+                . '" is neither a valid CSS color nor a known color family. Use a CSS color '
+                . '(e.g. "DodgerBlue", "#0a6ed1", "rgb(10, 110, 209)" or "hsl(210, 91%, 43%)") '
+                . 'or a family with optional lightness (e.g. "blue" or "light blue").'
             );
         }
 
@@ -973,6 +974,9 @@ JS
             $checked++;
             $colors = array_merge($cell['text_colors'], $cell['background_colors']);
             foreach ($colors as $rendered) {
+                if ($isCssColor && ColorDataType::areColorsEqual($rendered, $color)) {
+                    continue 2;
+                }
                 if (ColorDataType::isColorInFamily($rendered, $color)) {
                     continue 2;
                 }
@@ -987,7 +991,8 @@ JS
         );
         Assert::assertEmpty(
             $mismatches,
-            'Not every value in column "' . $columnCaption . '" is highlighted in ' . $spec['name'] . '. '
+            'Not every value in column "' . $columnCaption . '" is highlighted in '
+            . ($spec['name'] ?? $color) . '. '
             . 'Values rendered in another color: ' . implode(' | ', $mismatches)
         );
     }
