@@ -85,9 +85,9 @@
     ],
     "rows": [
         {
-            "_EXPORT_SUMMARY": "Run Coverage Registry [axenox.BDT.run_coverage_registry]",
+            "_EXPORT_SUMMARY": "BDT Coverage Registry [axenox.BDT.run_coverage_registry]",
             "CREATED_ON": "2026-09-02 20:27:41",
-            "MODIFIED_ON": "2026-09-02 20:28:07",
+            "MODIFIED_ON": "2026-09-02 20:56:13",
             "CREATED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
             "MODIFIED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
             "UID": "0x11f1a8cffba05b36a8cf025041000001",
@@ -95,7 +95,7 @@
             "WRITABLE_FLAG": 1,
             "COMMENTS": "",
             "DOCS": "",
-            "NAME": "Run Coverage Registry",
+            "NAME": "BDT Coverage Registry",
             "INHERIT_DATA_SOURCE_BASE_OBJECT": 1,
             "DATA_SOURCE": "0x32000000000000000000000000000000",
             "APP": "0x11efa2214f96c8b8a221025041000001",
