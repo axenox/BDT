@@ -11,7 +11,7 @@
     "created_by_user_selector": "0x11eca7f5b092f284a7f5005056bea39f",
     "created_on": "2025-10-08 18:22:39",
     "modified_by_user_selector": "0x11efa72c1fb56dfea72c025041000001",
-    "modified_on": "2026-09-04 19:56:58",
+    "modified_on": "2026-09-04 20:35:05",
     "contents": {
         "object_alias": "exface.Core.DUMMY",
         "widget_type": "SplitHorizontal",
@@ -331,14 +331,14 @@
                                 "caption": "Run test",
                                 "hint": "Runs Behat in a single process with live output. Fill at least one of suite, tags or feature.",
                                 "commands": [
-                                    "vendor/bin/action axenox.BDT:RunTest --suite=\"<suite>\" --tags=\"<tags>\" --feature=\"<feature>\""
+                                    "vendor/bin/action axenox.BDT:RunTest --suite=\"<Suite>\" --tags=\"<Tags>\" --feature=\"<File Path>\""
                                 ]
                             },
                             {
                                 "caption": "Run parallel",
                                 "hint": "Runs Behat across parallel lanes and records one run. Fill at least one of suite, tags or feature.",
                                 "commands": [
-                                    "vendor/bin/action axenox.BDT:RunParallel --suite=\"<suite>\" --tags=\"<tags>\" --feature=\"<feature>\""
+                                    "vendor/bin/action axenox.BDT:RunParallel --suite=\"<Suite>\" --tags=\"<Tags>\" --feature=\"<File Path>\""
                                 ]
                             },
                             {
