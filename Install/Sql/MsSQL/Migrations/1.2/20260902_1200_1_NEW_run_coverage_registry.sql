@@ -1,3 +1,5 @@
+-- UP
+
 IF OBJECT_ID(N'dbo.bdt_run_coverage_registry', N'U') IS NULL
 BEGIN
 CREATE TABLE dbo.bdt_run_coverage_registry (
@@ -27,4 +29,7 @@ CREATE TABLE dbo.bdt_run_coverage_registry (
 
 CREATE NONCLUSTERED INDEX IX_run_coverage_registry_run
         ON dbo.bdt_run_coverage_registry (run_uid);
-END
+       
+-- DOWN
+
+-- Do not delete tables!
