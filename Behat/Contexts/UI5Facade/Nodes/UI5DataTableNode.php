@@ -1,7 +1,6 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
-use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
 use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Exceptions\FacadeNodeException;
@@ -10,6 +9,7 @@ use Behat\Gherkin\Node\TableNode;
 use Behat\Mink\Element\NodeElement;
 use exface\Core\CommonLogic\Model\Expression;
 use exface\Core\DataTypes\BooleanDataType;
+use exface\Core\DataTypes\ColorDataType;
 use exface\Core\DataTypes\DateDataType;
 use exface\Core\DataTypes\NumberDataType;
 use exface\Core\DataTypes\NumberEnumDataType;
@@ -690,22 +690,27 @@ class UI5DataTableNode extends UI5DataNode
         $columnCaption = null;
         $column = $this->findColumnWithAttribute($dataWidget, $filterAttr, $logbook);
 
-        if ($column !== null) {
-            $columnCaption = $column->getCaption();
+        if ($column === null) {
+            $logbook->continueLine(' - filter `' . $filterAttr->getName() . '` has no corresponding column in the table, skipping content verification');
+            return SubstepResult::createSkipped(
+                'Filter `' . $filterAttr->getName() . '` has no corresponding column in the table, skipping content verification',
+                $logbook
+            );
+        }
+        $columnCaption = $column->getCaption();
 
-            // Columns defined in the page with visibility "optional" (or "hidden") are
-            // rendered by the UI5 facade with `visible: false` (see UI5DataConfigurator),
-            // so their header never appears in the DOM. verifyTableContent() could not find
-            // such a column and would fail with "Column '...' not found in table". Since the
-            // column is intentionally not shown, we skip the content verification for this
-            // filter instead of failing the step.
-            if ($column->isHidden() || $column->getVisibility() === EXF_WIDGET_VISIBILITY_OPTIONAL) {
-                $logbook->continueLine(' - column `' . $columnCaption . '` is optional/hidden, skipping content verification');
-                return SubstepResult::createSkipped(
-                    'Column `' . $columnCaption . '` for filter `' . $filter->getCaption() . '` is optional/hidden and is not rendered in the table',
-                    $logbook
-                );
-            }
+        // Columns defined in the page with visibility "optional" (or "hidden") are
+        // rendered by the UI5 facade with `visible: false` (see UI5DataConfigurator),
+        // so their header never appears in the DOM. verifyTableContent() could not find
+        // such a column and would fail with "Column '...' not found in table". Since the
+        // column is intentionally not shown, we skip the content verification for this
+        // filter instead of failing the step.
+        if ($column->isHidden() || $column->getVisibility() === EXF_WIDGET_VISIBILITY_OPTIONAL) {
+            $logbook->continueLine(' - column `' . $columnCaption . '` is optional/hidden, skipping content verification');
+            return SubstepResult::createSkipped(
+                'Column `' . $columnCaption . '` for filter `' . $filter->getCaption() . '` is optional/hidden and is not rendered in the table',
+                $logbook
+            );
         }
 
         if ($filterNode instanceof UI5RangeFilterNode) {
@@ -746,13 +751,10 @@ class UI5DataTableNode extends UI5DataNode
             return $result;
         }
 
-        $filterVal = null;
-        if ($column !== null) {
-            $filterVal = $this->trySetFilterValue($filterNode, $filter, $filterAttr, $dataWidget, $logbook);
-            if ($filterVal !== null) {
-                $logbook->continueLine(' with value `' . $filterVal . '` found in data source');
-            }
-        }
+        $filterVal = $this->trySetFilterValue($filterNode, $filter, $filterAttr, $dataWidget, $logbook, $column);
+        if ($filterVal !== null) {
+            $logbook->continueLine(' with value `' . $filterVal . '` found in data source');
+        }        
 
         // Skip filters whose extracted test value is an unevaluated formula (e.g. "=TabelleAnfragen!Id").
         // Such values come from calculated attributes that have no concrete row value, so the data source
@@ -780,13 +782,6 @@ class UI5DataTableNode extends UI5DataNode
         $loadedRowCount = $this->getLoadedRowCount();
 
         $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');
-
-
-        // See if our 
-        if ($columnCaption === null) {
-            $logbook->continueLine(' - No column found');
-            return SubstepResult::createSkipped('No column found for filter `' . $filter->getCaption() . '`', $logbook);
-        }
 
         $this->verifyTableContent([
             ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
@@ -829,6 +824,176 @@ class UI5DataTableNode extends UI5DataNode
             $unexpectedCaptions,
             $this->getRenderedColumnCaptionsInOrder(),
             'column'
+        );
+    }
+
+    /**
+     * Returns the colours actually rendered in a single named column, one entry per table row.
+     *
+     * WHY IT READS COMPUTED STYLES AND NOT THE MODEL: a `color_scale` in the model only says which
+     * colour SHOULD be used. Whether it arrives on screen depends on the facade, the theme and the
+     * control that ended up rendering the cell (plain text, ObjectStatus, icon). Asking the browser
+     * for the computed style is the only way to test what the user really sees.
+     *
+     * WHY BACKGROUNDS ARE READ FROM THE CONTENT ONLY, NOT FROM THE CELL: a selected row paints the
+     * table cells in the theme's (blue) selection colour. Taking that background into account would
+     * make any "highlighted in blue" check pass as soon as a row happens to be selected. Colour
+     * scales always paint the control inside the cell, never the cell itself, so descendants are
+     * both the correct and the safe scope.
+     *
+     * WHY ONLY ELEMENTS CARRYING TEXT: the colour of a wrapper that renders no text says nothing
+     * about the value - including those would drown the real colour in a list of inherited defaults.
+     *
+     * @param string $columnCaption
+     * @throws RuntimeException When the column is not rendered or the table DOM cannot be located.
+     * @return array<int, array{value: string, text_colors: string[], background_colors: string[]}>
+     */
+    public function getColumnCellColors(string $columnCaption): array
+    {
+        [$columnIndex, $colId] = $this->resolveRenderedColumn($columnCaption);
+        if ($columnIndex === null) {
+            throw new RuntimeException('Column `' . $columnCaption . '` not found in table');
+        }
+
+        $rootIdJs = json_encode($this->getElementId(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $colIdJs = json_encode($colId, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $colIndexJs = json_encode($columnIndex);
+
+        $json = $this->getFromJavascript(<<<JS
+(function(sRootId, sColId, iColIdx){
+    var oRoot = document.getElementById(sRootId);
+    if (! oRoot) { return null; }
+
+    var fnCarriesText = function(oEl) {
+        // Icons render their glyph via a CSS pseudo element, so they have no text node at all -
+        // yet their `color` IS the colour of the value (boolean columns are rendered this way).
+        if (oEl.classList && oEl.classList.contains('sapUiIcon')) { return true; }
+        for (var i = 0; i < oEl.childNodes.length; i++) {
+            var oNode = oEl.childNodes[i];
+            if (oNode.nodeType === 3 && oNode.nodeValue.trim() !== '') { return true; }
+        }
+        return false;
+    };
+    var fnPush = function(aList, sColor) {
+        if (sColor && aList.indexOf(sColor) === -1) { aList.push(sColor); }
+    };
+
+    var aResult = [];
+    var oSeenRows = {};
+    var iAnonymous = 0;
+    var aRows = oRoot.querySelectorAll('tr.sapUiTableTr.sapUiTableContentRow, tr.sapMListTblRow');
+
+    Array.prototype.forEach.call(aRows, function(oRow){
+        if (oRow.getAttribute('aria-hidden') === 'true') { return; }
+        if (oRow.classList.contains('sapUiTableRowHidden')) { return; }
+        if (oRow.classList.contains('sapUiTableRowFirstFixedBottom')) { return; }
+
+        var oCell = sColId
+            ? oRow.querySelector('td[data-sap-ui-colid="' + sColId + '"]')
+            : (oRow.querySelectorAll('.sapUiTableCell, .sapMListTblCell')[iColIdx] || null);
+        // Frozen columns split the grid into a fixed and a scrollable table, so every logical row
+        // is rendered twice - but the requested column exists in exactly one of the two halves.
+        if (oCell === null) { return; }
+
+        var sRowKey = oRow.getAttribute('data-sap-ui-rowindex');
+        if (sRowKey === null) { sRowKey = 'anonymous-' + (iAnonymous++); }
+        if (oSeenRows[sRowKey] === true) { return; }
+        oSeenRows[sRowKey] = true;
+
+        var aTextColors = [];
+        var aBackgroundColors = [];
+        var aInner = oCell.querySelectorAll('*');
+        Array.prototype.forEach.call(aInner, function(oEl){
+            var oStyle = window.getComputedStyle(oEl);
+            if (! oStyle) { return; }
+            fnPush(aBackgroundColors, oStyle.backgroundColor);
+            if (fnCarriesText(oEl)) { fnPush(aTextColors, oStyle.color); }
+        });
+        // Fallback for cells rendering their value as a bare text node without any wrapper.
+        if (aTextColors.length === 0 && fnCarriesText(oCell)) {
+            var oCellStyle = window.getComputedStyle(oCell);
+            if (oCellStyle) { fnPush(aTextColors, oCellStyle.color); }
+        }
+
+        aResult.push({
+            value: (oCell.innerText || oCell.textContent || '').replace(/\s+/g, ' ').trim(),
+            text_colors: aTextColors,
+            background_colors: aBackgroundColors
+        });
+    });
+
+    return JSON.stringify(aResult);
+})($rootIdJs, $colIdJs, $colIndexJs)
+JS
+        );
+
+        if (! is_string($json)) {
+            throw new RuntimeException('Cannot read the colors of column `' . $columnCaption . '`: table DOM not found');
+        }
+
+        return json_decode($json, true) ?? [];
+    }
+
+    /**
+     * Asserts that every non-empty value of a named column is rendered in the given colour.
+     *
+     * CSS colors are checked exactly first after normalizing their notation. If the exact value does
+     * not match, the check falls back to the color family: `#0a6ed1` therefore matches the equivalent
+     * `rgb(10, 110, 209)` exactly, but can still match another blue shade. Qualified families such as
+     * `light blue` and `dark blue` skip the exact check because they describe a range, not one CSS
+     * color.
+     *
+     * Empty cells are skipped - they carry no value that could be highlighted. If the column has no
+     * non-empty value at all, the assertion fails: a check that silently verifies nothing is worse
+     * than a red test.
+     *
+     * @param string $columnCaption Caption of the column to inspect.
+     * @param string $color         Colour family with an optional lightness qualifier (`blue`,
+     *                              `light blue`, `dark green`, ...), HTML colour name or hex value.
+     * @throws RuntimeException When the colour name cannot be interpreted.
+     */
+    public function assertColumnValuesColored(string $columnCaption, string $color): void
+    {
+        $spec = ColorDataType::parseColorSpec($color);
+        $isCssColor = ColorDataType::isCssColor($color);
+        if (! $isCssColor && $spec === null) {
+            throw new RuntimeException(
+                'Cannot check the color of column `' . $columnCaption . '`: "' . $color
+                . '" is neither a valid CSS color nor a known color family. Use a CSS color '
+                . '(e.g. "DodgerBlue", "#0a6ed1", "rgb(10, 110, 209)" or "hsl(210, 91%, 43%)") '
+                . 'or a family with optional lightness (e.g. "blue" or "light blue").'
+            );
+        }
+
+        $checked = 0;
+        $mismatches = [];
+        foreach ($this->getColumnCellColors($columnCaption) as $cell) {
+            if ($cell['value'] === '') {
+                continue;
+            }
+            $checked++;
+            $colors = array_merge($cell['text_colors'], $cell['background_colors']);
+            foreach ($colors as $rendered) {
+                if ($isCssColor && ColorDataType::areColorsEqual($rendered, $color)) {
+                    continue 2;
+                }
+                if (ColorDataType::isColorInFamily($rendered, $color)) {
+                    continue 2;
+                }
+            }
+            $mismatches[] = '"' . $cell['value'] . '" (' . (empty($colors) ? 'no color' : implode(', ', $colors)) . ')';
+        }
+
+        Assert::assertGreaterThan(
+            0,
+            $checked,
+            'Cannot check the color of column "' . $columnCaption . '": the column has no values.'
+        );
+        Assert::assertEmpty(
+            $mismatches,
+            'Not every value in column "' . $columnCaption . '" is highlighted in '
+            . ($spec['name'] ?? $color) . '. '
+            . 'Values rendered in another color: ' . implode(' | ', $mismatches)
         );
     }
 
