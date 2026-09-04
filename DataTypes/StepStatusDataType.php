@@ -38,7 +38,7 @@ class StepStatusDataType extends IntegerDataType implements EnumDataTypeInterfac
         if (empty($this->labels)) {
             $translator = $this->getWorkbench()->getCoreApp()->getTranslator();
             
-            foreach (static::getValuesStatic() as $const => $val) {
+            foreach (static::getValuesOfConstants() as $const => $val) {
                 $this->labels[$val] = mb_ucfirst(mb_strtolower(str_replace('_', ' ', $const)));
             }
         }
