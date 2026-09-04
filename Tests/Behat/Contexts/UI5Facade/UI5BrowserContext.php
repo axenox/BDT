@@ -109,9 +109,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     /**
      * @var array|null Roles used by the most recent iLogInToPage() call.
      *
-     * Cached because browserLogin() requires them and recoverChrome() must be able to replay the
-     * exact same browser-side login on a freshly started Chrome. Without this the recovery path
-     * cannot even call browserLogin() with a complete argument list.
+        * Cached so every UI5Browser built during the scenario can recover the same role-aware state.
+        * Null means no login step has established the scenario roles yet, while an array is the known
+        * role set that bindBrowserToScenario() must restore after navigation or Chrome recovery.
      */
     private ?array $lastLoginUserRoles = null;
 
@@ -615,6 +615,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         
         // Setup the user and get the required login data
         $userRolesArray = $this->splitArgument($userRoles);
+        Assert::assertNotNull($userRolesArray, 'User roles must be provided for login');
         $loginFields = UI5Browser::setupUser($this->getWorkbench(), $userRolesArray, $userLocale);
         if ($userLocale === null) {
             $userLocale = $this->getWorkbench()->getConfig()->getOption('SERVER.DEFAULT_LOCALE');
@@ -630,8 +631,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->lastLoginFields = $loginFields;
         $this->lastLoginTabCaption = $tabCaption;
         $this->lastLoginButtonCaption = $btnCaption;
-        // Roles are cached alongside the other login parameters because browserLogin() needs them
-        // and recoverChrome() replays exactly this call after a Chrome restart.
+        // Roles belong to the whole scenario and must be restored on every browser built later.
         $this->lastLoginUserRoles = $userRolesArray;
         
         $this->setLocale($userLocale);
@@ -1957,7 +1957,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
             // Navigate using full URL
             $currentSession->visit($fullUrl);
-            $this->createBrowser($url);
+
+            // Initialize browser with current session
+            $this->createBrowser($url, $currentSession);
             // Verify page loaded
             $this->iShouldSeeThePage();
         }
@@ -2790,8 +2792,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * silently lacked part of its state. Building and binding in one place makes that impossible:
      * there is no way to obtain a browser that has not been bound.
      *
-     * @param string $url URL the browser is being opened on, used for the initial load wait.
-     * @param Session|null $session Session to bind to, or NULL to use the context's current one.
+     * @param string $url URL the browser is being opened on, used for the initial load wait
+     * @param Session|null $session Session to bind to, or null to use the context's current one
+     * @return void
      */
     private function createBrowser(string $url, ?Session $session = null): void
     {
