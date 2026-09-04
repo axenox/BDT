@@ -1292,7 +1292,7 @@ JS
                         return $menuNode->checkWorksAsExpected($logbook);
                     },
                     'Checking menu "' . $buttonWidget->getCaption() . '"',
-                    'Dialogs',
+                    static::CATEGORY_BUTTONS,
                     $logbook
                 );
                 if ($menuResult->isFailed()) {
@@ -1347,7 +1347,7 @@ JS
                             return $node->checkWorksAsExpected($logbook);
                         },
                         'Clicking "' . $buttonWidget->getCaption() . '"',
-                        'Dialogs',
+                        static::CATEGORY_BUTTONS,
                         $logbook,
                         function() use ($urlBeforeClick) {
                             // If the dialog caused a full-page navigation (large dialogs rendered as
