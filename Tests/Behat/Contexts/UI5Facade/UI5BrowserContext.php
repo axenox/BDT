@@ -19,6 +19,7 @@ use Behat\Behat\Context\Context;
 use Behat\Behat\Tester\Result\UndefinedStepResult;
 use Behat\Mink\Element\NodeElement;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
+use Behat\Mink\Session;
 use exface\Core\CommonLogic\Debugger\LogBooks\MarkdownLogBook;
 use exface\Core\CommonLogic\Model\Expression;
 use exface\Core\CommonLogic\Security\AuthenticationToken\CliEnvAuthToken;
@@ -636,7 +637,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->setLocale($userLocale);
 
         // Fill the form
-        $this->browserLogin($url, $tabCaption, $btnCaption, $loginFields, $userRolesArray);
+        $this->browserLogin($url, $tabCaption, $btnCaption, $loginFields);
     }
 
     /**
@@ -653,10 +654,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $tabCaption Caption of the authenticator tab to open
      * @param string $btnCaption Caption of the login submit button
      * @param array $loginFields Form fields as caption => value (without the _tab/_button keys)
-     * @param array $userRoles Array of user roles
      * @throws \Exception
      */
-    private function browserLogin(string $url, string $tabCaption, string $btnCaption, array $loginFields, array $userRoles): void
+    private function browserLogin(string $url, string $tabCaption, string $btnCaption, array $loginFields): void
     {
         // Go to the page
         $this->iVisitPage($url);
@@ -673,10 +673,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $this->getBrowser()->goToTab($tabCaption, null, 5);
         }
         
-        // Store the active roles on the browser instance so that nodes can build
-        // role-aware cache keys for works-as-expected deduplication without having
-        // to carry the role array through every call chain.
-        $this->getBrowser()->setCurrentRoles($userRoles);
         // Fill out the login form
         foreach ($loginFields as $caption => $value) {
             $input = $this->getBrowser()->findInputByCaption($caption);
@@ -1272,6 +1268,39 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Checks that the values of a named column are highlighted in a given colour.
+     *
+     * Use this to verify colour coding - for example that relevant records stand out in blue.
+     * Every non-empty value of the column must be shown in that colour, so filter the table down
+     * to the rows you expect to be highlighted first. Focus a table first (e.g. "I look at table 1").
+     *
+     * A CSS colour such as "#0a6ed1", "rgb(10, 110, 209)" or "DodgerBlue" is compared exactly first
+     * after normalizing its notation. If the exact shade differs, the colour family is checked as a
+     * fallback. Add a lightness qualifier when the shade range matters - "light blue", "dark blue",
+     * "pale green" or "dark red". Multi-word colours have to be quoted. Both the text colour and the
+     * background of the value are taken into account, so filled and text-only colour codings work.
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   And I enter "Ja" in filter "BF Relevant"
+     *   Then I see "Ja" in column "BF Relevant"
+     *   And I see the value in column "BF Relevant" highlighted in blue
+     *   And I see the value in column "Status" highlighted in "dark green"
+     *
+     * @Then I see the value in column :columnName highlighted in :color
+     * @Then I see the values in column :columnName highlighted in :color
+     *
+     * @param string $columnName Caption of the column to inspect.
+     * @param string $color      Colour family with an optional lightness qualifier (e.g. "blue" or
+     *                           "light blue"), HTML colour name or hex value.
+     */
+    public function iSeeTheValueInColumnHighlightedIn(string $columnName, string $color): void
+    {
+        $this->getFocusedDataTableNode()->assertColumnValuesColored($columnName, $color);
+    }
+
+    /**
      * Clicks a button by the text shown on it.
      *
      * This is the everyday "press this button" step. It first looks inside the widget you are
@@ -1455,39 +1484,51 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeButton(string $buttonText, string $tableName = null): void
     {
-        // Resolve the search scope ONCE, before the button loop - the scope depends on the step,
-        // not on the individual button, and resolving it per button would repeat the DOM type scan
-        // for every entry of a comma separated list.
-        // WHY at all: the "at the :tableName" wording used to be parsed and then thrown away, so the
-        // step searched the whole page. A button that exists somewhere else entirely - e.g. in the
-        // toolbar of another table or in a still-open dialog - then satisfied an assertion that was
-        // written to check exactly one widget.
-        $scopeNodes = [];
-        $tableName = $tableName === null ? null : trim($tableName);
-        if ($tableName !== null && $tableName !== '') {
-            $scopeNodes = $this->getBrowser()->findWidgetNodesByName($tableName, 15);
+        $result = $this->findVisibleButtons($buttonText, $tableName);
+
+        Assert::assertEmpty(
+            $result['missing'],
+            (count($result['missing']) === 1 ? "Button with text '" : "Buttons with text '")
+            . implode("', '", array_keys($result['missing'])) . "'"
+            . ($tableName === null || $tableName === ''
+                ? ' not found.'
+                : " not found at '{$tableName}'.")
+            . ($result['overflowHint'] ?? '')
+        );
+    }
+
+    /**
+     * Answers which requested buttons the user can see in the named widget and its overflow.
+     *
+     * WHY BOTH ASSERTIONS USE THIS METHOD: presence and absence are complements only when they search
+     * the same rendered buttons, resolve the same named scope and inspect the same toolbar overflow.
+     * Keeping the complete lookup here prevents a permission check from silently passing because its
+     * negative form forgot one of the places where the positive form can find an action.
+     *
+     * @param string $buttonText Comma-separated button captions
+     * @param string|null $scopeName Optional caption or object of the widget to search in
+     * @param FacadeNodeInterface[] $scopeNodes Pre-resolved widgets for callers with another scope vocabulary
+     * @return array{found: array<string, true>, missing: array<string, true>, overflowHint: string|null}
+     * @throws \Exception If the named scope cannot be found
+     */
+    protected function findVisibleButtons(string $buttonText, ?string $scopeName = null, array $scopeNodes = []): array
+    {
+        $scopeName = $scopeName === null ? null : trim($scopeName);
+        if ($scopeName !== null && $scopeName !== '') {
+            $scopeNodes = $this->getBrowser()->findWidgetNodesByName($scopeName, 15);
             Assert::assertNotEmpty(
                 $scopeNodes,
-                'Cannot find a widget named "' . $tableName . '" to look for buttons in.'
+                'Cannot find a widget named "' . $scopeName . '" to look for buttons in.'
             );
         }
 
-        // Captions the regular search could not answer, kept as keys so a caption named twice in the
-        // step is only looked for once. They are collected FIRST and handed to the overflow fallback
-        // as one batch further down: opening an overflow popover costs a click plus the wait for its
-        // open and close animation, so a comma separated list must not pay that price per caption.
+        $found = [];
         $missing = [];
-        // WHY a separate loop variable: reusing $buttonText here would overwrite the parameter and
-        // make every message built after the first iteration report the wrong step arguments.
         foreach ($this->explodeList($buttonText) as $buttonCaption) {
+            $button = null;
             if (empty($scopeNodes)) {
                 $button = $this->getBrowser()->findButtonByCaption($buttonCaption);
             } else {
-                // Several widgets may legitimately carry the same name - a table and the table inside
-                // the dialog it opens, for example. Accept the first scope that actually contains the
-                // button instead of failing on ambiguity: the assertion stays strict, because a button
-                // outside ALL matching widgets still fails.
-                $button = null;
                 foreach ($scopeNodes as $scopeNode) {
                     $button = $this->getBrowser()->findButtonByCaption($buttonCaption, $scopeNode->getNodeElement());
                     if ($button !== null) {
@@ -1501,49 +1542,37 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 continue;
             }
 
-            // Highlight the button for debugging purposes
+            $found[$buttonCaption] = true;
             $this->getBrowser()->highlightWidget($button, 'Button', 0);
         }
 
         if (empty($missing)) {
-            return;
+            return ['found' => $found, 'missing' => [], 'overflowHint' => null];
         }
 
-        // Last resort: the toolbar overflow. WHY: UI5 does not hide the buttons that do not fit into
-        // a toolbar - it MOVES them into the overflow popover, and their DOM elements do not exist at
-        // all until that popover was opened once. "Not on the page" and "did not fit into the toolbar"
-        // are therefore indistinguishable to the search above, and a button the user can reach in two
-        // clicks was reported as missing. Nothing here looks at the enabled state, so a greyed out
-        // entry answers this step just like an active one does.
         $overflowHint = null;
         foreach ($this->getOverflowSearchNodes($scopeNodes) as $node) {
             try {
-                // One pass per toolbar resolves ALL remaining captions while the menu is open.
-                $node->findInOverflow(function (NodeElement $menu) use (&$missing) {
+                $node->findInOverflow(function (NodeElement $menu) use (&$found, &$missing) {
                     $firstFound = null;
                     foreach (array_keys($missing) as $caption) {
                         $entry = $this->getBrowser()->findButtonInScopeByCaption($menu, $caption);
                         if ($entry === null) {
                             continue;
                         }
+                        $found[$caption] = true;
                         unset($missing[$caption]);
-                        // Highlight right here, while the popover is still open: closing it hides the
-                        // moved buttons again, so an element kept for later would point at something
-                        // that is no longer on screen and the highlight would fail or land nowhere.
                         $this->getBrowser()->highlightWidget($entry, 'Button', 0);
                         $firstFound = $firstFound ?? $entry;
                     }
                     return $firstFound;
                 });
             } catch (RuntimeException $e) {
-                // An ambiguous scope means we cannot tell which toolbar to open - keep the
-                // explanation for the failure message and try the remaining nodes, so a
-                // second, unambiguous toolbar can still answer the question.
                 $overflowHint = $overflowHint ?? ' ' . $e->getMessage();
                 continue;
             } finally {
-                // Always leave the page as we found it, including when the search or the highlight
-                // above threw: an open popover swallows the first click of whatever step follows.
+                // The lookup is observational: a popover opened to inspect moved buttons must never
+                // swallow the following step, even when matching or highlighting throws.
                 $node->closeOverflowMenuIfOpened();
             }
 
@@ -1552,15 +1581,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             }
         }
 
-        Assert::assertEmpty(
-            $missing,
-            (count($missing) === 1 ? "Button with text '" : "Buttons with text '")
-            . implode("', '", array_keys($missing)) . "'"
-            . ($tableName === null || $tableName === ''
-                ? ' not found.'
-                : " not found at '{$tableName}'.")
-            . ($overflowHint ?? '')
-        );
+        return ['found' => $found, 'missing' => $missing, 'overflowHint' => $overflowHint];
     }
 
     /**
@@ -1673,8 +1694,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         $dataSpreadSheetNode = $this->getBrowser()->findWidgetNodes("DataSpreadSheet", 15);
 
-
-        // get headers
         $headers = $dataSpreadSheetNode[0]->getNodeElement()->findAll('css', "table.jexcel thead tr td");
 
         $headerMap = [];
@@ -1938,16 +1957,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
             // Navigate using full URL
             $currentSession->visit($fullUrl);
-
-            // Initialize browser with current session
-            $this->browser = new UI5Browser(
-                $this->getWorkbench(),
-                $currentSession,
-                $this->getEventDispatcher(),
-                $url,
-                $this->getLocale()
-            );
-            $this->wireBrowserCallbacks();
+            $this->createBrowser($url);
             // Verify page loaded
             $this->iShouldSeeThePage();
         }
@@ -2147,29 +2157,68 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iClickMenuItemInMenu(string $item, string $menu): void
     {
-        // Prefer the focused widget (e.g. the table the scenario is currently working
-        // on) so that, when several tables expose a menu button with the same caption,
-        // the right one is targeted - and so the menu button stays coherent with the
-        // table where rows were selected. Fall back to a page-wide search when nothing
-        // is focused or the focused widget does not contain the menu button.
-        $scope = null;
-        $focused = $this->getBrowser()->getFocusedNode();
-        if (! $focused instanceof UI5PageNode) {
-            $scope = $focused->getNodeElement();
-        }
-
-        $menuEl = $scope !== null ? $this->getBrowser()->findButtonByCaption($menu, $scope) : null;
-        if ($menuEl === null) {
-            // Page-wide fallback: nothing focused, or the menu button lives outside the
-            // focused widget's subtree.
-            $menuEl = $this->getBrowser()->findButtonByCaption($menu);
-        }
-        Assert::assertNotNull($menuEl, 'Menu button "' . $menu . '" not found.');
-
-        $menuNode = UI5FacadeNodeFactory::createFromNodeElement($menuEl, $this->getSession(), $this->getBrowser());
-        Assert::assertInstanceOf(UI5MenuButtonNode::class, $menuNode, 'Button "' . $menu . '" is not a MenuButton.');
-
+        $menuNode = $this->getBrowser()->findWidgetNodes('MenuButton', 15, $menu)[0] ?? null;
+        Assert::assertInstanceOf(UI5MenuButtonNode::class, $menuNode, 'Menu button "' . $menu . '" not found.');
         $menuNode->clickItem($item);
+    }
+
+    /**
+     * Checks that a named MenuButton exposes all listed entries without triggering them.
+     *
+     * WHY this is menu-scoped: menu entries are list items in detached popovers, so ordinary button
+     * lookup cannot see them and relying on a previously opened popover makes the result depend on
+     * preceding steps. The node opens this exact menu and closes it after reading, including when an
+     * assertion fails.
+     *
+     * Usage example:
+     *
+     *   Then the button menu "Aktionen" has items "Neu, Bearbeiten, Duplizieren"
+     *
+     * @Then the button menu :menu has item :expectedItems
+     * @Then the button menu :menu has items :expectedItems
+     *
+     * @param string $menu Visible caption of the MenuButton to inspect
+     * @param string $expectedItems Comma-separated entry captions expected to be present
+     */
+    public function buttonMenuHasItems(string $menu, string $expectedItems): void
+    {
+        $menuNode = $this->getBrowser()->findWidgetNodes('MenuButton', 15, $menu)[0] ?? null;
+        Assert::assertInstanceOf(UI5MenuButtonNode::class, $menuNode, 'Menu button "' . $menu . '" not found.');
+        $actualItems = $menuNode->getItemLabels();
+        foreach ($this->explodeList($expectedItems) as $expectedItem) {
+            Assert::assertContains(
+                $expectedItem,
+                $actualItems,
+                'Menu "' . $menu . '" does not contain item "' . $expectedItem . '". Found: ' . implode(', ', $actualItems)
+            );
+        }
+    }
+
+    /**
+     * Checks that a named MenuButton exposes none of the listed entries.
+     *
+     * WHY this has its own negative form: permission scenarios must prove that forbidden actions
+     * are absent without clicking them and changing application state. Reading through the node also
+     * guarantees that the inspected menu is closed before this assertion runs.
+     *
+     * @Then the button menu :menu does not have item :unexpectedItems
+     * @Then the button menu :menu does not have items :unexpectedItems
+     *
+     * @param string $menu Visible caption of the MenuButton to inspect
+     * @param string $unexpectedItems Comma-separated entry captions expected to be absent
+     */
+    public function buttonMenuDoesNotHaveItems(string $menu, string $unexpectedItems): void
+    {
+        $menuNode = $this->getBrowser()->findWidgetNodes('MenuButton', 15, $menu)[0] ?? null;
+        Assert::assertInstanceOf(UI5MenuButtonNode::class, $menuNode, 'Menu button "' . $menu . '" not found.');
+        $actualItems = $menuNode->getItemLabels();
+        foreach ($this->explodeList($unexpectedItems) as $unexpectedItem) {
+            Assert::assertNotContains(
+                $unexpectedItem,
+                $actualItems,
+                'Menu "' . $menu . '" unexpectedly contains item "' . $unexpectedItem . '".'
+            );
+        }
     }
 
     /**
@@ -2375,8 +2424,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * Checks that the named buttons are NOT visible.
      *
      * Perfect for permission tests: confirm that a user without certain rights does not see
-     * actions like "Delete" or "Approve". Name one or more buttons separated by commas. Add
-     * "on the :tableIndex table" to restrict the check to a specific table's toolbar.
+    * actions like "Delete" or "Approve". Name one or more buttons separated by commas. Add
+    * "on the :tableIndex table" to restrict the check to a specific table's toolbar.
      *
      * Usage examples:
      *
@@ -2394,31 +2443,27 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @Then I should not see the buttons :unexpectedButtons on the :tableIndex table
      *
      * @param string $unexpectedButtons Comma-separated list of buttons expected to be absent
-     * @param string|null $tableIndex Optional 1-based table index to scope the check
+     * @param int|string|null $tableIndex Optional 1-based table index to scope the check
      */
-    public function iDoNotSeeTheFollowingButtons(string $unexpectedButtons, int|string|null $tableIndex = null): void
+    public function iDoNotSeeButton(string $unexpectedButtons, int|string|null $tableIndex = null): void
     {
-        // Parse the comma-separated tile list
-        $unexpectedButtons = $this->explodeList($unexpectedButtons);
-
-        // Resolve the scope once instead of per button: the table does not change between
-        // iterations, and the shared resolver adds the range check this step was missing.
-        $scope = null;
+        $scopeNodes = [];
         $tableNumber = $this->parseTableIndex($tableIndex);
         if ($tableNumber !== null) {
-            $scope = $this->findTableElementByIndex($tableNumber);
+            $scopeNodes[] = $this->getWidgetNodeByIndex('DataTable', $tableNumber);
         }
 
-        foreach ($unexpectedButtons as $btn) {
-            $foundButton = $scope === null
-                ? $this->getBrowser()->findButtonByCaption($btn)
-                : $this->getBrowser()->findButtonByCaption($btn, $scope);
-
-            if (! empty($foundButton)) {
-                $this->getBrowser()->highlightWidget($foundButton, 'Button', 0);
-            }
-            Assert::assertEmpty($foundButton, 'Unexpected buttons found: ' . $btn);
-        }
+        $result = $this->findVisibleButtons($unexpectedButtons, null, $scopeNodes);
+        Assert::assertNull(
+            $result['overflowHint'],
+            'Cannot prove that the requested buttons are absent because the overflow search was incomplete.'
+            . ($result['overflowHint'] ?? '')
+        );
+        Assert::assertEmpty(
+            $result['found'],
+            (count($result['found']) === 1 ? 'Unexpected button found: ' : 'Unexpected buttons found: ')
+            . implode(', ', array_keys($result['found']))
+        );
     }
 
     /**
@@ -2640,7 +2685,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $logbook->setIndentActive(1);
         DatabaseFormatter::addTestLogbook($logbook);
         $result = $node->checkWorksAsExpected($logbook);
-        Assert::assertNotTrue($result->isFailed(), 'Widget "' . ($node->getCaption() ?? $node->getWidgetType()) . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details'));
+        $title = $node->getCaption() === null ||  $node->getCaption() === "" ? $node->getWidgetType() : $node->getCaption();
+        Assert::assertNotTrue($result->isFailed(), 'Widget "' . $title . '" did not work as expected: ' . ($result->getException()?->getMessage() ?? 'see substeps for details'));
     }
 
     /**
@@ -2731,17 +2777,50 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->logDebug("Debug - New page is loading: {$url}\n");
 
         // Initialize the UI5Browser with the current session and URL
+        $this->createBrowser($url);
+    }
+
+    /**
+     * Builds a UI5Browser for the given URL and hands it everything the context owns.
+     *
+     * WHY THIS EXISTS: a UI5Browser is navigation-scoped - a new one is constructed on every page
+     * change - while several pieces of state it needs are scenario-scoped and known only to the
+     * context. Construction and hand-over were two separate steps repeated at each construction
+     * site, so a site that forgot the second step produced a browser that looked healthy and
+     * silently lacked part of its state. Building and binding in one place makes that impossible:
+     * there is no way to obtain a browser that has not been bound.
+     *
+     * @param string $url URL the browser is being opened on, used for the initial load wait.
+     * @param Session|null $session Session to bind to, or NULL to use the context's current one.
+     */
+    private function createBrowser(string $url, ?Session $session = null): void
+    {
         $this->browser = new UI5Browser(
             $this->getWorkbench(),
-            $this->getSession(),
+            $session ?? $this->getSession(),
             $this->getEventDispatcher(),
             $url,
             $this->getLocale()
         );
-        $this->wireBrowserCallbacks();
+        $this->wireBrowserToScenario();
     }
 
-    private function wireBrowserCallbacks(): void
+    /**
+     * Re-attaches the per-scenario state a freshly built UI5Browser cannot know about.
+     *
+     * WHY THIS EXISTS: navigateToPageAlias() constructs a NEW UI5Browser on every navigation,
+     * so anything the context established on the previous instance is gone the moment the
+     * scenario moves to another page. Everything that must outlive a navigation is restored
+     * here, in one place, instead of being re-set by whichever caller happens to remember.
+     *
+     * WHY THE ROLES BELONG HERE: the role set is not an observation of the application, it is
+     * the label the framework attaches to what it validated. The browser session stays
+     * authenticated across a navigation and the server keeps enforcing the same roles - only
+     * the framework's record of them was being dropped. Losing that label collapses two
+     * genuinely different role environments onto the same value, which is exactly what the
+     * label exists to keep apart.
+     */
+    private function wireBrowserToScenario(): void
     {
         $this->getBrowser()->setNavigator(function (string $pageAlias): void {
             $this->navigateToPageAlias($pageAlias);
@@ -2750,11 +2829,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->getBrowser()->setScreenshotFn(function () {
             $this->captureScreenshot();
         });
-        
+
         // Bridges Chrome recovery from deep node classes back to the context.
         $this->getBrowser()->setChromeRecoveryFn(function (string $targetPageAlias): void {
             $this->recoverChrome($targetPageAlias);
         });
+
+        // Restore the roles of the current scenario onto the new browser instance. NULL means no
+        // login step has run yet in this scenario, which is not the same as "the user has no
+        // roles" - a roleless user cannot log in at all. The two cases must stay distinguishable,
+        // so nothing is written here when the roles are unknown.
+        if ($this->lastLoginUserRoles !== null) {
+            $this->getBrowser()->setCurrentRoles($this->lastLoginUserRoles);
+        }
     }
 
     /**
@@ -2937,8 +3024,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $this->lastLoginUrl,
             $this->lastLoginTabCaption,
             $this->lastLoginButtonCaption,
-            $this->lastLoginFields,
-            $this->lastLoginUserRoles ?? []
+            $this->lastLoginFields
         );
 
         // Step 4: Navigate directly to the target page without going via the tile

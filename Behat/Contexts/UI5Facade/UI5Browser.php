@@ -557,7 +557,7 @@ JS
      * - Outline and border styles from previously highlighted elements
      * - Global highlight indicators
      *
-     * @throws \RuntimeException If script execution fails
+     * @throws RuntimeException If script execution fails
      */
     public function clearWidgetHighlights(): void
     {
@@ -584,7 +584,7 @@ JS
             JS;
 
             $this->session->executeScript($debugScript);
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             // Throw a more specific RuntimeException with the original exception as the previous exception
             throw new RuntimeException(
                 "Failed to clear widget highlights: " . $e->getMessage(),
@@ -1573,9 +1573,12 @@ JS
      * object alias made every scenario using the other notation return zero matches, which reads like
      * "the widget is not on the page" instead of "you named it differently than this filter expects".
      *
-     * WHY the metamodel and not the DOM: neither caption nor alias is rendered anywhere reliable, so
-     * matching against visible text would let a caption or a table cell that happens to contain the same
-     * words pass as a match - exactly the kind of false green this filter exists to prevent.
+     * WHY the metamodel AND the rendering: neither caption nor alias is rendered in a place that is
+     * reliable for every widget type, so the model stays the primary source. But captions that are only
+     * assigned while an action builds its widget - a dialog title like "Bearbeiten: Bestellung" - are not
+     * reproduced by a plain model lookup, so the caption the node reads from its own header is accepted
+     * as well. Both sources are read from the widget's OWN identity, never from arbitrary page text, so a
+     * table cell that happens to contain the same words still cannot pass as a match.
      *
      * The comparison is case insensitive and accepts the object alias in both notations - fully qualified
      * ("my.App.CUSTOMER") and short ("CUSTOMER") - because the namespace is noise in most steps.
@@ -1595,22 +1598,34 @@ JS
         $name = trim($name);
         $filtered = [];
         foreach ($nodes as $node) {
-            // A node whose widget cannot be resolved from the page model cannot be proven to match, so it
-            // counts as a non-match. WHY not let it bubble up: one unrelated widget on the page would
-            // otherwise turn a filtered assertion into a fatal error instead of a clean count mismatch.
+            $candidates = [];
+
+            // The caption AS RENDERED comes first. WHY: many captions only exist at runtime - a dialog
+            // opened by ShowObjectEditDialog gets its title from the action (ShowDialog::getDialogCaption()),
+            // so the title the test author reads in the browser ("Bearbeiten: Bestellung") is not
+            // necessarily what the widget resolved from the page model reports. Matching the model alone
+            // made such steps fail with "found 0" although the caption was plainly visible on screen.
+            try {
+                $candidates[] = $node->getCaption();
+            } catch (Throwable $e) {
+                // A node without a readable caption simply contributes no candidate here - the model
+                // based candidates below still get their chance.
+            }
+
+            // A node whose widget cannot be resolved from the page model can still match by its rendered
+            // caption, so a failure here must not discard the node. WHY not let it bubble up: one unrelated
+            // widget on the page would otherwise turn a filtered assertion into a fatal error instead of a
+            // clean count mismatch.
             try {
                 $widget = $node->getWidget();
                 $object = $widget->getMetaObject();
+                $candidates[] = $widget->getCaption();
+                $candidates[] = $object->getName();
+                $candidates[] = $object->getAlias();
+                $candidates[] = $object->getAliasWithNamespace();
             } catch (Throwable $e) {
-                continue;
+                // Keep whatever the DOM gave us above.
             }
-
-            $candidates = [
-                $widget->getCaption(),
-                $object->getName(),
-                $object->getAlias(),
-                $object->getAliasWithNamespace()
-            ];
 
             foreach ($candidates as $candidate) {
                 if ($candidate !== null && $candidate !== '' && strcasecmp(trim($candidate), $name) === 0) {
@@ -1780,15 +1795,18 @@ JS
      *   that cannot exist, which surfaced as "UI Page with alias ... not found!" although the dialog
      *   had opened correctly.
      * - A widget route is recognisable without guessing: it always starts with the alias of the page
-     *   loaded from the ".html" file, followed by a dot. A real sub-page route is a different alias
-     *   and never carries that prefix. So whenever the prefix is present, we are still on the
-     *   ".html" page itself.
+     *   that was current before the widget opened, followed by a dot. That page can itself be an SPA
+     *   route and therefore differ from the page loaded from the ".html" file. A real sub-page route
+     *   is a different alias and never carries either prefix. So whenever a prefix is present, we
+     *   return the page that owns the widget instead of treating the widget id as part of a page alias.
      *
      * Examples:
      *   /nbr.onelink.trasse-ausfuehrung.html#/nbr.onelink.trasse-ausfuehrung-trasse/%257B...
      *     -> nbr.onelink.trasse-ausfuehrung-trasse   (real page route)
      *   /onelink.bmdb.alle-massnahmen.html#/onelink.bmdb.alle-massnahmen.DataTable_..._Dialog/...
      *     -> onelink.bmdb.alle-massnahmen            (dialog route, the page did not change)
+     *   /onelink.trasseac.trasse-ausfuehrung.html#/onelink.trasseac.trasse-ausfuehrung-trasse.SplitHorizontal_..._Dialog/...
+     *     -> onelink.trasseac.trasse-ausfuehrung-trasse (dialog opened from an SPA-routed page)
      */
     public function getPageAliasFromCurrentUrl(): ?string
     {
@@ -1814,6 +1832,12 @@ JS
             $alias = strtok($hash, '/');
             if ($alias !== false && $alias !== '') {
                 $alias = urldecode($alias);
+                $currentLogicalAlias = end($this->pagesVisited);
+                if (is_string($currentLogicalAlias) && StringDataType::startsWith($alias, $currentLogicalAlias . '.')) {
+                    // Widget route opened from the current logical page, including an SPA-routed page
+                    // whose alias differs from the physically loaded .html page.
+                    return $currentLogicalAlias;
+                }
                 if ($aliasFromFile !== null && StringDataType::startsWith($alias, $aliasFromFile . '.')) {
                     // Widget route (dialog, detail view, ...) inside the page we are already on.
                     return $aliasFromFile;
@@ -2168,7 +2192,7 @@ JS
     public function recoverChrome(string $targetPageAlias): void
     {
         if ($this->chromeRecoveryFn === null) {
-            throw new \RuntimeException('Chrome recovery callback not configured. Call setChromeRecoveryFn() first.');
+            throw new RuntimeException('Chrome recovery callback not configured. Call setChromeRecoveryFn() first.');
         }
         ($this->chromeRecoveryFn)($targetPageAlias);
     }

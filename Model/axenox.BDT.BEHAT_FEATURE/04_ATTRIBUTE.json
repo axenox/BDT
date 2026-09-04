@@ -337,7 +337,7 @@
         {
             "_EXPORT_SUMMARY": "Folder path [PATH_RELATIVE]",
             "CREATED_ON": "2026-06-09 16:39:53",
-            "MODIFIED_ON": "2026-06-09 16:50:07",
+            "MODIFIED_ON": "2026-08-28 14:27:00",
             "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
             "UID": "0x11f1ab7e1395405eab7e025041000001",
@@ -353,7 +353,7 @@
             "COPY_WITH_RELATED_OBJECT": 0,
             "DELETE_WITH_RELATED_OBJECT": 0,
             "DEFAULT_DISPLAY_UXON": null,
-            "COMMENTS": "IMPORTANT: since this is a file path, the delimiter MUST be something, that is not allowed in a file system - e.g. a pipe (`|`)",
+            "COMMENTS": "IMPORTANT: since this is a file path, the delimiter MUST be something, that is not allowed in a file system - e.g. a pipe (`|`)\n\nThe default value composes the path from the app and the folder name, so that a feature file can be created by picking an app and typing a folder name instead of typing the whole path. It is only applied if no path was provided explicitly - e.g. when copying an existing feature file the path of the copy is used as-is.",
             "NAME": "Folder path",
             "RELATION_CARDINALITY": "",
             "TYPE": "D",
@@ -380,7 +380,7 @@
             "DATA_ADDRESS_PROPS": {
                 "filter_locally": 1
             },
-            "DEFAULT_VALUE": "",
+            "DEFAULT_VALUE": "=Concatenate(APP, '/Tests/Behat/Features/', FOLDER_NAME)",
             "FIXED_VALUE": "",
             "CUSTOM_DATA_TYPE": {
                 "validation_regex_for_good_values": "/^[A-Za-z0-9_-]+([\\/][A-Za-z0-9_-]+)*$/i"
