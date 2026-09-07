@@ -4,10 +4,12 @@ namespace axenox\BDT\Behat\DatabaseFormatter;
 use axenox\BDT\Behat\Common\ExpectedTestCountCalculator;
 use axenox\BDT\Behat\Common\RunRecordWriter;
 use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
+use axenox\BDT\Behat\Common\Traits\DeadlockRetryTrait;
 use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
 use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
+use axenox\BDT\Behat\Events\SubstepCoverageIdentity;
 use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Exceptions\BrowserTimeoutException;
 use axenox\BDT\Interfaces\TestResultInterface;
@@ -35,6 +37,7 @@ use exface\Core\DataTypes\PhpFilePathDataType;
 use exface\Core\DataTypes\SortingDirectionsDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Events\Workbench\OnCleanUpEvent;
+use exface\Core\Exceptions\DataSources\DataQueryUniqueConstraintError;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\UiPageFactory;
@@ -47,6 +50,8 @@ use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 
 class DatabaseFormatter implements Formatter, TestRunObserverInterface
 {
+    use DeadlockRetryTrait;
+
     private static $eventDispatcher;
 
     private WorkbenchInterface  $workbench;
@@ -62,6 +67,16 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private ?DataSheetInterface $scenarioDataSheet = null;
     private float               $scenarioStart;
     private static array        $scenarioPages = [];
+    /**
+     * The formatter instance serving the current process.
+     *
+     * WHY A STATIC HANDLE: the coverage lookup is called from UI5AbstractNode::runAsSubstep(), which
+     * holds no reference to the formatter and must not be given one - a node knowing about the
+     * reporting layer would invert the dependency. The predecessor of this lookup was static for the
+     * same reason. Behat instantiates exactly one formatter per process, so the handle is
+     * unambiguous; it stays null during a dry run, where nothing is recorded and nothing is skipped.
+     */
+    private static ?self $activeInstance = null;
 
     /**
      * App-config key holding the run retention window in days.
@@ -109,21 +124,6 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     // behat.yml and its imports - used once at run start to compute the expected scope.
     private SuiteRegistry $suiteRegistry;
     private bool $expectedResultsCalculated = false;
-
-    /**
-     * Tracks which page/widget + role-set combinations have already been verified by a
-     * works-as-expected check during the current test run.
-     *
-     * Keys are built by {@see buildRolesKey()} and follow the format:
-     *   - Page level:   "RoleA|RoleB::page::exface.Core.Logs"
-     *   - Widget level: "RoleA|RoleB::widget::Filter::Name"
-     *
-     * Values are the {@see TestResultInterface} returned when the check was first executed,
-     * so callers can return the cached result without repeating the test.
-     *
-     * @var array<string, TestResultInterface>
-     */
-    private static array        $testedEnvironments = [];
 
     private ScreenshotProviderInterface $provider;
     /** @var MarkdownLogBook[]  */
@@ -213,6 +213,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                 $this->bindRunUidToProvider();
             }
         }
+        self::$activeInstance = $this;
     }
 
     public static function getSubscribedEvents(): array
@@ -232,7 +233,10 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             AfterStepTested::AFTER => 'onAfterStep',
             // Custom events
             BeforeSubstep::class => 'onBeforeSubstep',
-            AfterSubstep::class => 'onAfterSubstep',
+            AfterSubstep::class => [
+                ['onAfterSubstep'],
+                ['onAfterSubstepCoverage'],
+            ],
             AfterPageVisited::class => 'onAfterPageVisited',
         ];
     }
@@ -805,6 +809,264 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     }
 
     /**
+     * Inserts the immutable identity of one completed works-as-expected operation.
+     *
+     * WHY ONLY THE AFTER EVENT: reserving identity before execution creates false coverage when the
+     * process dies mid-operation. One plain INSERT after completion lets the registry's unique
+     * constraint provide the only de-duplication mechanism, including across parallel lanes.
+     *
+        * WHY UNIQUE VIOLATIONS ARE SILENT: parallel lanes may complete the same identity concurrently;
+        * the unique hash makes the first write authoritative and the later write expected. Every other
+        * failure remains visible through ErrorManager, but none may escape this hook and terminate Behat.
+     */
+    public function onAfterSubstepCoverage(AfterSubstep $event): void
+    {
+        $identity = null; $runUid = null; $category = null;
+        try {
+            if ($this->isDryRun) {
+                return;
+            }
+
+            $category = $event->getCategory();
+            if ($category === null) {
+                $this->workbench->getLogger()->warning(
+                    'BDT: works-as-expected coverage was not recorded for substep "'
+                    . $event->getSubstepName()
+                    . '" because its category is null; a categorized call site was missed.'
+                );
+                return;
+            }
+
+            $identity = $event->getCoverageIdentity();
+            if ($identity === null || $identity->getRoles() === null) {
+                return;
+            }
+
+            // Only a substep that returned early from a registry hit already has its record. The
+            // result code cannot answer this: runAsSubstep() adopts its callback's return value, so a
+            // single replayed descendant marks every substep above it as replayed too. Deciding by
+            // the code would then silently drop the coverage of every ancestor that did real work -
+            // their identities would never reach the registry and would be re-swept on every run.
+            if ($event->isServedFromRegistry()) {
+                return;
+            }
+
+            $runUid = $this->getCurrentRunUid();
+            if ($runUid === null || $runUid === '') {
+                throw new RuntimeException('Cannot record works-as-expected coverage without an active run UID.');
+            }
+
+            $coverageSheet = DataSheetFactory::createFromObjectIdOrAlias(
+                $this->workbench,
+                'axenox.BDT.run_coverage_registry'
+            );
+            $coverageSheet->addRow([
+                'run_uid' => $runUid,
+                'screen_slug' => $identity->getScreenSlug(),
+                'screen_kind' => $identity->getScreenKind(),
+                'widget_id' => $identity->getWidgetId(),
+                'object_uid' => $identity->getObjectUid(),
+                'role_key' => self::buildRolesKey($identity->getRoles()),
+                'work_category' => $category,
+                'element' => $identity->getElement(),
+                'action_fingerprint' => $identity->getActionFingerprint(),
+                'identity_hash' => self::buildCoverageIdentityHash($identity, $runUid, $category),
+                'status' => $event->getResultCode(),
+                'started_on' => $identity->getStartedOn(),
+                'finished_on' => DateTimeDataType::now(),
+            ]);
+            self::runWithDeadlockRetry(
+                function () use ($coverageSheet) {
+                    $coverageSheet->dataCreate(false);
+                },
+                'works-as-expected coverage registry insert',
+                $this->workbench->getLogger()
+            );
+        } catch (\Throwable $e) {
+            if ($identity !== null && $runUid !== null && $category !== null && self::isUniqueConstraintViolation($e))
+            {
+                // The row exists, which is the expected outcome when two lanes finish the same
+                // identity - but "exists" is not the same as "already says the right thing". A row
+                // left at a skipped or failed outcome would keep the work being repeated for the
+                // rest of the run, and only an update can retire it.
+                $this->raiseCoverageStatus(
+                    self::buildCoverageIdentityHash($identity, $runUid, $category),
+                    $event->getResultCode()
+                );
+                return;
+            }
+            ErrorManager::getInstance()->logException($e, $this->workbench);
+        }
+    }
+
+    /**
+     * Lifts an existing coverage record to a better outcome, never to a worse one.
+     *
+     * WHY THE READ HAPPENS FIRST: two lanes may reach this at the same moment with different verdicts.
+     * Comparing ranks before writing means the stored value converges on the best outcome regardless
+     * of who arrives last, so no lane can undo another's pass.
+     *
+     * WHY A FAILURE HERE IS ONLY LOGGED: the coverage registry is an optimisation. Losing an upgrade
+     * costs a repeated check on the next encounter; letting the exception escape would kill the hook
+     * and with it the Behat process.
+     *
+     * @param string $identityHash Hash of the record to lift.
+     * @param int $status Outcome just observed by this lane.
+     */
+    private function raiseCoverageStatus(string $identityHash, int $status): void
+    {
+        try {
+            $sheet = DataSheetFactory::createFromObjectIdOrAlias(
+                $this->workbench,
+                'axenox.BDT.run_coverage_registry'
+            );
+            $sheet->getColumns()->addFromExpression('status');
+            $sheet->getColumns()->addFromExpression('finished_on');
+            $sheet->getFilters()->addConditionFromString(
+                'identity_hash',
+                $identityHash,
+                ComparatorDataType::EQUALS
+            );
+            $sheet->dataRead();
+            if ($sheet->countRows() === 0) {
+                return;
+            }
+
+            $stored = (int)$sheet->getCellValue('status', 0);
+            if (StepStatusDataType::getCoverageRank($status) <= StepStatusDataType::getCoverageRank($stored)) {
+                return;
+            }
+
+            $sheet->setCellValue('status', 0, $status);
+            $sheet->setCellValue('finished_on', 0, DateTimeDataType::now());
+            self::runWithDeadlockRetry(
+                function () use ($sheet) {
+                    $sheet->dataUpdate(false);
+                },
+                'works-as-expected coverage registry upgrade',
+                $this->workbench->getLogger()
+            );
+        } catch (\Throwable $e) {
+            ErrorManager::getInstance()->logException($e, $this->workbench);
+        }
+    }
+
+    /**
+     * Defines the complete identity of one coverage record in one run.
+     *
+     * WHY THIS IS THE SINGLE DEFINITION: the database now enforces uniqueness through this hash
+     * instead of its readable columns. Any field later added to the coverage identity must also be
+     * added here; forgetting it makes distinct identities collide silently and skips work that
+     * should have run. JSON preserves field boundaries that a delimiter join cannot represent.
+     */
+    private static function buildCoverageIdentityHash(
+        SubstepCoverageIdentity $identity,
+        string $runUid,
+        string $workCategory
+    ): string
+    {
+        $identityFields = [
+            $runUid,
+            $identity->getScreenSlug(),
+            $identity->getScreenKind(),
+            $identity->getWidgetId(),
+            $identity->getObjectUid(),
+            self::buildRolesKey($identity->getRoles()),
+            $workCategory,
+            $identity->getElement(),
+            $identity->getActionFingerprint(),
+        ];
+
+        return hash('sha256', json_encode($identityFields, JSON_THROW_ON_ERROR));
+    }
+
+    /**
+     * Answers whether the given operation was already validated in this run.
+     *
+     * WHY THE LOOKUP IS BY HASH ALONE: the hash is built by the same method the writer uses, from the
+     * same fields, so the question asked here and the record written there can never drift apart. The
+     * run uid is part of the hash, so the query is already scoped to this run and needs no further
+     * filter.
+     *
+     * WHY ONLY CONCLUSIVE OUTCOMES COUNT: a skipped or timed-out record describes a condition under
+     * which the work could not be judged - a hidden header, a button that could not be enabled - not
+     * a verdict about the thing itself. Treating those as covered would let the first lane that
+     * happened to meet an unfavourable condition suppress every later attempt, which is the failure
+     * direction that actually hides defects.
+     *
+     * WHY FAILURES ARE RETURNED RATHER THAN RETRIED: a broken screen is broken for every lane. One
+     * report of it is the useful one; repeating it once per lane buries the rest of the run.
+     *
+     * @return SubstepResult|null Previous outcome if already validated, NULL to run the work.
+     */
+    public static function findCoveredSubstep(
+        SubstepCoverageIdentity $identity,
+        ?string $workCategory
+    ): ?SubstepResult
+    {
+        $formatter = self::$activeInstance;
+        if ($formatter === null || $formatter->isDryRun) {
+            return null;
+        }
+        if ($workCategory === null || $identity->getRoles() === null) {
+            return null;
+        }
+
+        try {
+            $runUid = $formatter->getCurrentRunUid();
+            if ($runUid === null || $runUid === '') {
+                return null;
+            }
+
+            $sheet = DataSheetFactory::createFromObjectIdOrAlias(
+                $formatter->workbench,
+                'axenox.BDT.run_coverage_registry'
+            );
+            $sheet->getColumns()->addFromExpression('status');
+            $sheet->getFilters()->addConditionFromString(
+                'identity_hash',
+                self::buildCoverageIdentityHash($identity, $runUid, $workCategory),
+                ComparatorDataType::EQUALS
+            );
+            $sheet->dataRead();
+
+            if ($sheet->countRows() === 0) {
+                return null;
+            }
+
+            $status = (int)$sheet->getCellValue('status', 0);
+            if (! StepStatusDataType::suppressesRetest($status)) {
+                return null;
+            }
+
+            return SubstepResult::createFromRecordedStatus($status);
+        } catch (\Throwable $e) {
+            // A lookup failure must never decide that work should be skipped. Falling through to a
+            // re-run costs time; the opposite would silently drop coverage.
+            ErrorManager::getInstance()->logException($e, $formatter->workbench);
+            return null;
+        }
+    }
+
+    /**
+     * Recognizes the driver's portable unique-constraint signal through DataSheet wrappers.
+     *
+     * WHY THE CHAIN IS WALKED: DataSheet converts query failures to DataSheetWriteError while
+     * retaining the connector's DataQueryUniqueConstraintError as a previous exception. Checking
+     * the classified exception avoids database-specific and locale-dependent message matching.
+     */
+    private static function isUniqueConstraintViolation(\Throwable $error): bool
+    {
+        for ($current = $error; $current !== null; $current = $current->getPrevious()) {
+            if ($current instanceof DataQueryUniqueConstraintError) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Points the screenshot provider back at the row that is now on top of the substep stack.
      *
      * WHY it exists: the provider holds exactly one name - the UID of the row a screenshot would
@@ -1101,80 +1363,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         sort($sorted);
         return implode('|', $sorted);
     }
-
-    /**
-     * Determines whether the given page has already been fully verified (works-as-expected)
-     * for the supplied set of roles during the current test run.
-     *
-     * Use this check before navigating to a page just to run a works-as-expected assertion:
-     * if the same page was already validated for the same user environment (same role set),
-     * the navigation can be skipped entirely and the cached result reused.
-     *
-     * @param string[] $roles     Role aliases active in the current scenario.
-     * @param string   $pageAlias Fully-qualified page alias, e.g. "exface.Core.Logs".
-     * @return TestResultInterface|null  The previous result if already tested, null otherwise.
-     */
-    public static function hasTestedPage(array $roles, string $pageAlias): ?TestResultInterface
-    {
-        $key = self::buildRolesKey($roles) . '::page::' . $pageAlias;
-        return self::$testedEnvironments[$key] ?? null;
-    }
-
-    /**
-     * Records that the given page has been fully verified (works-as-expected) for the
-     * supplied role set.
-     *
-     * Call this immediately after a successful or failed page-level works-as-expected check
-     * so that subsequent calls to {@see hasTestedPage()} can return the cached result.
-     *
-     * @param string[]             $roles     Role aliases active in the current scenario.
-     * @param string               $pageAlias Fully-qualified page alias, e.g. "exface.Core.Logs".
-     * @param TestResultInterface  $result    The result produced by the works-as-expected check.
-     * @return void
-     */
-    public static function markPageAsTested(array $roles, string $pageAlias, TestResultInterface $result): void
-    {
-        $key = self::buildRolesKey($roles) . '::page::' . $pageAlias;
-        self::$testedEnvironments[$key] = $result;
-    }
-
-    /**
-     * Determines whether a specific widget has already been verified (works-as-expected)
-     * for the supplied role set during the current test run.
-     *
-     * The widget is identified by its DOM element ID (e.g. "0x1a2b3c__FilterName"), which
-     * is unique per widget per page. Use {@see UI5AbstractNode::getElementId()} or
-     * {@see UI5Browser::getElementIdFromWidget()} to obtain this value.
-     *
-     * @param string[] $roles     Role aliases active in the current scenario.
-     * @param string   $widgetId  DOM element ID of the widget, e.g. "0x1a2b3c__FilterName".
-     * @return TestResultInterface|null  The previous result if already tested, null otherwise.
-     */
-    public static function hasTestedWidget(array $roles, string $widgetId): ?TestResultInterface
-    {
-        $key = self::buildRolesKey($roles) . '::widget::' . $widgetId;
-        return self::$testedEnvironments[$key] ?? null;
-    }
-
-    /**
-     * Records that a specific widget has been verified (works-as-expected) for the
-     * supplied role set.
-     *
-     * Call this immediately after a widget-level works-as-expected check so that
-     * subsequent calls to {@see hasTestedWidget()} can return the cached result
-     * without re-executing the check.
-     *
-     * @param string[]            $roles    Role aliases active in the current scenario.
-     * @param string              $widgetId DOM element ID of the widget, e.g. "0x1a2b3c__FilterName".
-     * @param TestResultInterface $result   The result produced by the works-as-expected check.
-     * @return void
-     */
-    public static function markWidgetAsTested(array $roles, string $widgetId, TestResultInterface $result): void
-    {
-        $key = self::buildRolesKey($roles) . '::widget::' . $widgetId;
-        self::$testedEnvironments[$key] = $result;
-    }
-
+    
     /**
      * Guaranteed to run even on fatal PHP errors and uncaught exceptions.
      *
