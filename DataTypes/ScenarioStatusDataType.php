@@ -43,7 +43,7 @@ class ScenarioStatusDataType extends StringDataType implements EnumDataTypeInter
         if (empty($this->labels)) {
             $translator = $this->getWorkbench()->getCoreApp()->getTranslator();
 
-            foreach (static::getValuesStatic() as $const => $val) {
+            foreach (static::getValuesOfConstants() as $const => $val) {
                 $lower = mb_strtolower($val);
                 $this->labels[$val] = mb_strtoupper(mb_substr($lower, 0, 1)) . mb_substr($lower, 1);
             }
