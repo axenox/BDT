@@ -5,7 +5,6 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
-use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use axenox\BDT\Interfaces\TestResultInterface;
 use Behat\Mink\Element\NodeElement;
@@ -16,7 +15,6 @@ use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\UiPageInterface;
 use exface\Core\Interfaces\WidgetInterface;
 use PHPUnit\Framework\Assert;
-use Throwable;
 
 class UI5PageNode implements FacadeNodeInterface
 {
@@ -97,20 +95,26 @@ class UI5PageNode implements FacadeNodeInterface
         return false;
     }
 
+    /**
+     * Validates the page root as one screen-level operation.
+     *
+     * WHY THERE IS NO SKIP CHECK HERE ANY MORE: the question "was this already validated in this
+     * run" is asked once, inside runAsSubstep(), for every kind of covered work. The in-memory cache
+     * this method used to consult answered the same question from process memory, which meant it was
+     * rebuilt at every feature boundary and invisible to the other lanes - a page reached by three
+     * lanes was swept three times, and two scenarios of one feature running under different roles
+     * shared its entries.
+     *
+     * WHY THE SUBSTEP IS CONDITIONAL: runAsSubstep() and the identity builder are declared on
+     * UI5AbstractNode, and the factory may return a node that does not extend it. Requiring that type
+     * would make coverage recording a precondition of testing the page at all - a screen the registry
+     * cannot describe would fail instead of simply going unrecorded and being repeated.
+     */
     public function checkWorksAsExpected(LogBookInterface $logbook): TestResultInterface
     {
         $alias = $this->pageSelector;
-        $roles = $this->getBrowser()->getCurrentRoles();
         $logbook ??= new MarkdownLogBook($this->getCaption());
         DatabaseFormatter::addTestLogbook($logbook);
-
-        // Skip re-testing if the same page was already verified for this exact role set.
-        // This covers pages that appear in multiple menu locations: a works-as-expected
-        // check on any one of them is sufficient for the same user environment.
-        if (null !== $prevResult = DatabaseFormatter::hasTestedPage($roles, $alias)) {
-            $logbook->addLine('Page already validated for this role set — reusing previous result.');
-            return SubstepResult::createFromPrevious($prevResult);
-        }
 
         $rootWidget = $this->getUiPage()->getWidgetRoot();
         $rootElementId = $this->getBrowser()->getElementIdFromWidget($rootWidget);
@@ -127,14 +131,27 @@ class UI5PageNode implements FacadeNodeInterface
             $rootWidget
         );
 
-        try {
-            $result = $facadeNode->checkWorksAsExpected($logbook);
-            DatabaseFormatter::markPageAsTested($roles, $alias, $result);
-        } catch (Throwable $e) {
-            $failed = SubstepResult::createFailed($e, $logbook);
-            DatabaseFormatter::markPageAsTested($roles, $alias, $failed);
-            throw $e;
+        if (! $facadeNode instanceof UI5AbstractNode) {
+            return $facadeNode->checkWorksAsExpected($logbook);
         }
+
+        $result = $facadeNode->runAsSubstep(
+            function () use ($facadeNode, $logbook) {
+                return $facadeNode->checkWorksAsExpected($logbook);
+            },
+            'Checking page "' . $alias . '"',
+            UI5AbstractNode::CATEGORY_SCREENS,
+            $logbook,
+            null,
+            $facadeNode->buildWholeScreenSubstepCoverageIdentity($rootWidget)
+        );
+
+        // runAsSubstep() converts a failure into a result instead of letting it escape, but callers of
+        // this method rely on the exception to abort the surrounding work.
+        if ($result->isFailed() && $result->getException() !== null) {
+            throw $result->getException();
+        }
+
         return $result;
     }
 

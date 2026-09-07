@@ -6,6 +6,7 @@ use axenox\BDT\Behat\Common\Traits\ChromeProfileReaperTrait;
 use axenox\BDT\Behat\Common\Traits\PortProbingTrait;
 use exface\Core\CommonLogic\AbstractActionDeferred;
 use exface\Core\CommonLogic\Actions\ServiceParameter;
+use exface\Core\DataTypes\FilePathDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Interfaces\Actions\iCanBeCalledFromCLI;
 use exface\Core\Interfaces\DataSources\DataTransactionInterface;
@@ -102,29 +103,55 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
      * WHY VALIDATE HERE BUT ALLOCATE THE PORT LATER: a free port must be bound as close as possible
      * to launching Chrome to keep the probe->bind race window small, so it stays in performDeferred.
      *
+     * WHY THE RUN SCOPE IS READ AND CHECKED FIRST: an unscoped invocation is the tester's own
+     * mistake and the cheapest thing to detect, so it must be the first thing reported. Resolving
+     * behat_config and chrome_path first would answer a mis-clicked, empty console preset with an
+     * infrastructure error about a path the tester never typed, hiding what actually went wrong.
+     *
      * @return array{0:string,1:string,2:string,3:string,4:string,5:string} arguments for performDeferred()
      */
     protected function performImmediately(TaskInterface $task, DataTransactionInterface $transaction, ResultMessageStreamInterface $result): array
     {
+        // --- Run scope first: read the three pass-through selectors and refuse an unscoped run ---
+        // Without any of them Behat runs the ENTIRE test base with no filter - a run that takes
+        // hours, reports on features nobody asked about and hides the one the tester meant to check.
+        // The wording matches RunParallel's identical guard on purpose: both console-preset buttons
+        // sit next to each other on the feature-files page, so a tester who leaves all three inputs
+        // empty must get the same sentence whichever button was pressed.
+        $suite       = $this->getTaskParam($task, self::OPT_SUITE, '');
+        $tags        = $this->getTaskParam($task, self::OPT_TAGS, '');
+        $feature     = $this->getTaskParam($task, self::OPT_FEATURE, '');
+
+        if ($tags === '' && $feature === '' && $suite === '') {
+            throw new RuntimeException('Provide at least one of --tags, --feature or --suite; refusing to run the whole test base unscoped.');
+        }
         // --- Resolve inputs (option first, then app-config fallback, else loud failure) ---
         // behat_config additionally falls back to the installation-root behat.yml (see
         // resolveBehatConfig), so a tester never has to set anything; chrome_path has no safe
         // default and still fails loudly when unresolved.
         $behatConfig = $this->resolveBehatConfig($task);
         $chromePath  = $this->resolvePathParam($task, self::OPT_CHROME_PATH, self::CFG_CHROME_PATH, 'chrome.exe');
-        $suite       = $this->getTaskParam($task, self::OPT_SUITE, '');
-        $tags        = $this->getTaskParam($task, self::OPT_TAGS, '');
-        $feature     = $this->getTaskParam($task, self::OPT_FEATURE, '');
-
+        
         if (! is_file($chromePath)) {
             throw new RuntimeException('chrome_path is not a file: ' . $chromePath
                 . ' (must be chrome.exe, NOT GoogleChromePortable.exe - its single-instance lock breaks concurrent runs)');
         }
-        if ($feature !== '' && ! file_exists($feature)) {
-            throw new RuntimeException('feature does not exist: ' . $feature);
-        }
-
+        
         $cwd = $this->getWorkbench()->getInstallationPath();
+        
+        // The feature path must be checked against the directory BEHAT will run in, not against the
+        // PHP process's own working directory: under IIS those are different, so a relative path -
+        // the natural thing to type into the console preset - would be rejected here even though
+        // Behat resolves it fine. Only the existence check is resolved; the original value is passed
+        // on unchanged, because Behat applies exactly the same base.
+        if ($feature !== '') {
+            $featureAbs = FilePathDataType::isRelative($feature)
+                ? FilePathDataType::normalize($cwd . DIRECTORY_SEPARATOR . $feature)
+                : $feature;
+            if (! file_exists($featureAbs)) {
+                throw new RuntimeException('feature does not exist: ' . $feature . ' (resolved to ' . $featureAbs . ')');
+            }
+        }
 
         // These become the positional arguments of performDeferred() - order MUST match its
         // signature. The deferred generator only starts when the facade drains the result, so the
@@ -277,6 +304,55 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
     }
 
     /**
+     * Returns the value quoted and escaped, ready to be concatenated into the Behat command line.
+     *
+     * WHY IT EXISTS: buildBehatCommand() produces a string that is handed to
+     * Process::fromShellCommandline(), so the shell parses it - and suite, tags and feature reach
+     * this action from the free-text console presets on the feature-files page. Concatenated raw, a
+     * value could close its own argument and append commands that then run as the web-server user.
+     *
+     * WHY escapeshellarg() RATHER THAN HAND-WRITTEN QUOTES: the previous "..." wrapping broke on any
+     * value that ended in a backslash - a Windows directory path typed with a trailing separator
+     * produced "...\Features\", where the backslash escapes the closing quote and corrupts the rest
+     * of the command line. escapeshellarg() counts trailing backslashes correctly, and it quotes for
+     * the platform it is actually running on.
+     *
+     * WHY THE CALLER MUST NOT ADD QUOTES: the returned string already carries its own quotes (double
+     * on Windows, single elsewhere). Wrapping it again would put literal quotes inside the value.
+     *
+     * WHY THREE CHARACTERS ARE STILL REFUSED ON WINDOWS: escapeshellarg() does not escape ", % and !
+     * there - it silently REPLACES each with a space. Behat would then run with a value the tester
+     * never typed, and a run that quietly tests something other than what was asked for is exactly
+     * the failure this framework exists to catch. None of the three belongs in a suite name, a tag
+     * expression or a feature path, so refusing loudly loses nothing.
+     *
+     * WHY LINE BREAKS ARE REFUSED ON EVERY PLATFORM: a newline survives quoting and becomes part of
+     * the value, corrupting the run silently instead of failing. It only ever gets in by pasting
+     * several lines into a single-line preset input, which is a mistake worth reporting.
+     *
+     * @param string $value The value about to be placed on the command line.
+     * @param string $what  Human-readable name of the value, used in the error message.
+     * @throws RuntimeException if the value cannot reach the command line unchanged.
+     */
+    private function shellArg(string $value, string $what): string
+    {
+        if (preg_match('/[\r\n]/', $value) === 1) {
+            throw new RuntimeException(
+                'Refusing to build the Behat command: the ' . $what . ' contains a line break. Got: '
+                . var_export($value, true)
+            );
+        }
+        if (PHP_OS_FAMILY === 'Windows' && strpbrk($value, '"%!') !== false) {
+            throw new RuntimeException(
+                'Refusing to build the Behat command: the ' . $what . ' contains one of the characters " % ! , '
+                . 'which the Windows command line cannot carry without silently altering the value. Got: '
+                . var_export($value, true)
+            );
+        }
+        return escapeshellarg($value);
+    }
+
+    /**
      * Reads and clears a process's incremental stdout+stderr in one call.
      *
      * WHY incremental + clearOutput: getIncrementalOutput()/getIncrementalErrorOutput() are
@@ -406,20 +482,27 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
      * the exact trap already documented for the fleet's worker command. We deliberately do NOT
      * add --colors: this output is forwarded to a captured stream, and forcing ANSI colours on a
      * non-TTY would inject escape codes into the result; Behat's own TTY auto-detection is right.
+     *
+     * WHY EVERY INTERPOLATED VALUE GOES THROUGH shellArg(): this string is handed to
+     * Process::fromShellCommandline(), so the shell parses it, and suite/tags/feature reach this
+     * action from the free-text console presets on the feature-files page. Concatenated raw, a
+     * value could close its argument and append commands that then run as the web-server user.
+     * shellArg() supplies the quoting itself, which is why none of the values is wrapped in quotes
+     * here any more - doing so would put literal quotes inside the value.
      */
     private function buildBehatCommand(string $configPath, string $suite, string $tags, string $feature): string
     {
         $cmd = 'vendor\\bin\\behat ';
         if ($suite !== '') {
-            $cmd .= ' --suite="' . $suite . '"';
+            $cmd .= ' --suite=' . $this->shellArg($suite, 'suite name');
         }
         if ($tags !== '') {
-            $cmd .= ' --tags="' . $tags . '"';
+            $cmd .= ' --tags=' . $this->shellArg($tags, 'tag expression');
         }
         if ($feature !== '') {
-            $cmd .= ' "' . $feature . '"';
+            $cmd .= ' ' . $this->shellArg($feature, 'feature path');
         }
-        return $cmd . ' --config "' . $configPath . '"';
+        return $cmd . ' --config ' . $this->shellArg($configPath, 'behat config path');
     }
 
     /**
@@ -629,13 +712,25 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
      * WHY separate from resolvePathParam: suite/tags/feature are genuine optionals with an empty
      * default and no config fallback - an absent one simply means "do not add this flag", so it
      * must never throw the way a missing mandatory path does.
+     *
+     * WHY IT TRIMS: these values now arrive from free-text console-preset inputs a tester fills in
+     * by hand, and every consumer decides on them with an exact === '' comparison - the scope guard
+     * in performImmediately(), the flag assembly in buildBehatCommand(), the run description in
+     * describeInvocation(). A stray space passes all three and reaches Behat as --tags=" ", which
+     * matches no scenario and exits 0: a run that reports green while having tested nothing, the
+     * exact failure this framework exists to catch. Trimming here makes "whitespace only" and "not
+     * provided" indistinguishable for every consumer at once, instead of asking each call site to
+     * remember it.
      */
     private function getTaskParam(TaskInterface $task, string $name, string $default = ''): string
     {
         if ($task->hasParameter($name)) {
             $val = $task->getParameter($name);
-            if ($val !== null && $val !== '') {
-                return (string) $val;
+            if ($val !== null) {
+                $val = trim((string) $val);
+                if ($val !== '') {
+                    return $val;
+                }
             }
         }
         return $default;

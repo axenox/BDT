@@ -64,6 +64,16 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private static array        $scenarioPages = [];
     
     const CLEANUP_AREA_BDT = 'BDT';
+    /**
+     * The formatter instance serving the current process.
+     *
+     * WHY A STATIC HANDLE: the coverage lookup is called from UI5AbstractNode::runAsSubstep(), which
+     * holds no reference to the formatter and must not be given one - a node knowing about the
+     * reporting layer would invert the dependency. The predecessor of this lookup was static for the
+     * same reason. Behat instantiates exactly one formatter per process, so the handle is
+     * unambiguous; it stays null during a dry run, where nothing is recorded and nothing is skipped.
+     */
+    private static ?self $activeInstance = null;
 
     /**
      * App-config key holding the run retention window in days.
@@ -1569,9 +1579,6 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
      */
     public static function onCleanUp(OnCleanUpEvent $event) : void
     {
-        if (! $event->isAreaToBeCleaned(self::CLEANUP_AREA_BDT)) {
-            return;
-        }
         $workbench = $event->getWorkbench();
         $config = $workbench->getApp('axenox.BDT')->getConfig();
 
