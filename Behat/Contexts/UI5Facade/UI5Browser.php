@@ -74,7 +74,7 @@ class UI5Browser
      *
      * @var string[]
      */
-    private array $currentRoles = [];
+    private ?array $currentRoles = null;
     /** @var callable|null */
     private $navigator = null;
     /** @var callable|null */
@@ -485,9 +485,13 @@ class UI5Browser
      * Nodes use this to build the role-aware cache keys required by
      * {@see DatabaseFormatter::hasTestedPage()} and {@see DatabaseFormatter::hasTestedWidget()}.
      *
-     * @return string[] Sorted role alias array, or an empty array when no roles were set.
+    * WHY NULL BEFORE LOGIN: an empty set cannot authenticate a test user and therefore never
+    * describes a real environment. Null preserves the distinction between unknown roles and a
+    * role set established by the login step so coverage cannot be filed under a false identity.
+    *
+    * @return string[]|null Sorted role alias array, or null before login established the roles.
      */
-    public function getCurrentRoles(): array
+    public function getCurrentRoles(): ?array
     {
         return $this->currentRoles;
     }
