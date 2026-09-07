@@ -83,4 +83,30 @@ class StepStatusDataType extends IntegerDataType implements EnumDataTypeInterfac
         return $status === self::PASSED;
     }
 
+    /**
+     * Ranks recorded outcomes so a later write can only ever improve what the registry already holds.
+     *
+     * WHY A TOTAL ORDER: several lanes can finish the same identity in any order, and a rule phrased
+     * as "the newest write wins" would make the stored verdict depend on scheduling. Ranking the
+     * outcomes instead makes the result the same whatever the order: a claim yields to any real
+     * verdict, a failure yields to a pass, and a pass yields to nothing. No row ever moves backwards.
+     *
+     * WHY A PASS OUTRANKS A FAILURE: only a pass suppresses re-testing, so a failure has to stay
+     * replaceable - otherwise a screen that failed once would be re-swept on every encounter for the
+     * rest of the run even after it started passing. The failure itself is not lost: it was already
+     * written to the step report when it happened.
+     *
+     * @return int Higher wins. Unknown statuses rank lowest so they can never overwrite a verdict.
+     */
+    public static function getCoverageRank(int $status): int
+    {
+        switch ($status) {
+            case self::PASSED: return 40;
+            case self::FAILED: return 30;
+            case self::SKIPPED:
+            case self::TIMEOUT: return 20;
+            case self::STARTED: return 10;
+            default: return 0;
+        }
+    }
 }

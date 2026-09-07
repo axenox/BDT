@@ -821,6 +821,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
      */
     public function onAfterSubstepCoverage(AfterSubstep $event): void
     {
+        $identity = null; $runUid = null; $category = null;
         try {
             if ($this->isDryRun) {
                 return;
@@ -882,9 +883,70 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                 $this->workbench->getLogger()
             );
         } catch (\Throwable $e) {
-            if (self::isUniqueConstraintViolation($e)) {
+            if ($identity !== null && $runUid !== null && $category !== null && self::isUniqueConstraintViolation($e))
+            {
+                // The row exists, which is the expected outcome when two lanes finish the same
+                // identity - but "exists" is not the same as "already says the right thing". A row
+                // left at a skipped or failed outcome would keep the work being repeated for the
+                // rest of the run, and only an update can retire it.
+                $this->raiseCoverageStatus(
+                    self::buildCoverageIdentityHash($identity, $runUid, $category),
+                    $event->getResultCode()
+                );
                 return;
             }
+            ErrorManager::getInstance()->logException($e, $this->workbench);
+        }
+    }
+
+    /**
+     * Lifts an existing coverage record to a better outcome, never to a worse one.
+     *
+     * WHY THE READ HAPPENS FIRST: two lanes may reach this at the same moment with different verdicts.
+     * Comparing ranks before writing means the stored value converges on the best outcome regardless
+     * of who arrives last, so no lane can undo another's pass.
+     *
+     * WHY A FAILURE HERE IS ONLY LOGGED: the coverage registry is an optimisation. Losing an upgrade
+     * costs a repeated check on the next encounter; letting the exception escape would kill the hook
+     * and with it the Behat process.
+     *
+     * @param string $identityHash Hash of the record to lift.
+     * @param int $status Outcome just observed by this lane.
+     */
+    private function raiseCoverageStatus(string $identityHash, int $status): void
+    {
+        try {
+            $sheet = DataSheetFactory::createFromObjectIdOrAlias(
+                $this->workbench,
+                'axenox.BDT.run_coverage_registry'
+            );
+            $sheet->getColumns()->addFromExpression('status');
+            $sheet->getColumns()->addFromExpression('finished_on');
+            $sheet->getFilters()->addConditionFromString(
+                'identity_hash',
+                $identityHash,
+                ComparatorDataType::EQUALS
+            );
+            $sheet->dataRead();
+            if ($sheet->countRows() === 0) {
+                return;
+            }
+
+            $stored = (int)$sheet->getCellValue('status', 0);
+            if (StepStatusDataType::getCoverageRank($status) <= StepStatusDataType::getCoverageRank($stored)) {
+                return;
+            }
+
+            $sheet->setCellValue('status', 0, $status);
+            $sheet->setCellValue('finished_on', 0, DateTimeDataType::now());
+            self::runWithDeadlockRetry(
+                function () use ($sheet) {
+                    $sheet->dataUpdate(false);
+                },
+                'works-as-expected coverage registry upgrade',
+                $this->workbench->getLogger()
+            );
+        } catch (\Throwable $e) {
             ErrorManager::getInstance()->logException($e, $this->workbench);
         }
     }
