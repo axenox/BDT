@@ -14,19 +14,20 @@ CREATE TABLE IF NOT EXISTS bdt_run_coverage_registry (
     role_key                varchar(400)    NOT NULL,
     work_category           varchar(50)     NOT NULL,
     element                 varchar(160)    NOT NULL,
-    action_fingerprint      char(64)        NOT NULL,
-    identity_hash           char(64)        NOT NULL,
-    status                  integer         NOT NULL,
+    -- varchar, not char: PostgreSQL's bpchar pads to length and ignores trailing spaces on
+    -- comparison, which would make two differently-padded hashes compare equal.
+    action_fingerprint      varchar(64)     NOT NULL,
+    identity_hash           varchar(64)     NOT NULL,
+    status                  integer         NOT NULL DEFAULT 0,
     started_on              timestamp(0)    NOT NULL,
     finished_on             timestamp(0)    NULL,
-    CONSTRAINT pk_run_coverage_registry PRIMARY KEY (oid),
-    CONSTRAINT ck_run_coverage_registry_screen_kind
+    CONSTRAINT pk_bdt_run_coverage_registry PRIMARY KEY (oid),
+    CONSTRAINT ck_bdt_run_coverage_registry_screen_kind
     CHECK (screen_kind IN ('page', 'dialog', 'popup')),
-    CONSTRAINT uq_run_coverage_registry_identity UNIQUE (identity_hash)
+    CONSTRAINT ck_bdt_run_coverage_registry_finished
+    CHECK (finished_on IS NULL OR finished_on >= started_on),
+    CONSTRAINT uq_bdt_run_coverage_registry_identity UNIQUE (run_uid, identity_hash)
     );
-
-CREATE INDEX IF NOT EXISTS ix_run_coverage_registry_run
-    ON bdt_run_coverage_registry (run_uid);
 
 -- DOWN
 
