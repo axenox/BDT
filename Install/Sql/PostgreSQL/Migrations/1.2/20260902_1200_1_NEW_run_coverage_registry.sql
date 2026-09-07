@@ -1,12 +1,12 @@
 -- UP
 
 CREATE TABLE IF NOT EXISTS bdt_run_coverage_registry (
-    oid                     bytea           NOT NULL,
+    oid                     uuid           NOT NULL,
     created_on              timestamp(0)    NOT NULL,
     modified_on             timestamp(0)    NOT NULL,
-    created_by_user_oid     bytea           NOT NULL,
-    modified_by_user_oid    bytea           NOT NULL,
-    run_uid                 bytea           NOT NULL,
+    created_by_user_oid     uuid           NOT NULL,
+    modified_by_user_oid    uuid           NOT NULL,
+    run_uid                 uuid           NOT NULL,
     screen_slug             varchar(160)    NOT NULL,
     screen_kind             varchar(10)     NOT NULL,
     widget_id               varchar(160)    NOT NULL,
