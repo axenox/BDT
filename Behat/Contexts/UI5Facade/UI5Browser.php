@@ -67,6 +67,7 @@ class UI5Browser
     private array $focusStack = [];
     private array $pagesVisited = [];
     private string $locale;
+    
     /**
      * Role aliases that were applied to the test user in the current scenario via
      * {@see setupUser()}. Stored here so that any node can retrieve them through
@@ -86,6 +87,14 @@ class UI5Browser
     // be the reason a lane is declared hung.
     /** @var callable|null */
     private $chromeRecoveryFn = null;
+
+    /**
+     * The token that separates the lane slot from the base username in a per-lane test user.
+     *
+     * Public because the naming convention is not private knowledge any more: the coordinator's data
+     * cleanup has to recognise a test user without being able to create one.
+     */
+    public const LANE_USERNAME_TOKEN = '_lane';
 
     /**
      * Constructor - initializes the UI5Browser with necessary dependencies
@@ -114,7 +123,6 @@ class UI5Browser
     public static function setupUser(WorkbenchInterface $workbench, array $roles, string $locale = null): array
     {
         $config = $workbench->getApp('axenox.BDT')->getConfig();
-        $baseUsername = $config->getOption('TEST_USER.USERNAME');
         $testRunnerPassword = $config->getOption('TEST_USER.PASSWORD');
 
         // In a parallel run each worker carries a lane_id (wired through DatabaseFormatter). Give every
@@ -128,10 +136,7 @@ class UI5Browser
         // test users stays bounded to the worker count and is reused on every nightly run instead of
         // piling up a fresh row each night. In the single-process path getLaneId() is null, so the
         // username and all existing behavior are unchanged.
-        $laneId = DatabaseFormatter::getLaneId();
-        $testRunnerUsername = $laneId !== null
-            ? $baseUsername . self::laneUserSuffix($laneId)
-            : $baseUsername;
+        $testRunnerUsername = self::getTestUsername($workbench);
 
 
         // Everything that touches exface.Core.USER / USER_ROLE_USERS runs under a cross-process
@@ -298,7 +303,7 @@ class UI5Browser
      */
     private static function laneUserSuffix(string $laneId): string
     {
-        $pos = strrpos($laneId, '_lane');
+        $pos = strrpos($laneId, self::LANE_USERNAME_TOKEN);
         if ($pos === false) {
             throw new RuntimeException('Cannot derive lane user suffix: lane_id "' . $laneId . '" has no "_laneN" token.');
         }
@@ -429,11 +434,20 @@ class UI5Browser
         return $this->eventDispatcher;
     }
 
+    /**
+     * Drops the role assignment of the test user THIS process was running as.
+     *
+     * WHY THE RESOLVED USERNAME AND NOT THE CONFIGURED ONE: in a parallel run each lane logs in as
+     * "<base>_laneN", so filtering on the bare base username wiped the roles of a user no lane was
+     * using while leaving every lane user fully privileged after the run.
+     *
+     * WHY ONLY THIS PROCESS' USER: sibling lanes may still be running. Clearing their roles from here
+     * would strip privileges from a live browser session and fail its scenario for no reason.
+     */
     public static function resetUser(WorkbenchInterface $workbench): void
     {
-        $config = $workbench->getApp('axenox.BDT')->getConfig();
         $dataSheet = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'exface.Core.USER_ROLE_USERS');
-        $dataSheet->getFilters()->addConditionFromString('USER__USERNAME', $config->getOption('TEST_USER.USERNAME'), ComparatorDataType::EQUALS);
+        $dataSheet->getFilters()->addConditionFromString('USER__USERNAME', self::getTestUsername($workbench), ComparatorDataType::EQUALS);
         $dataSheet->dataDelete();
     }
 
@@ -1943,10 +1957,43 @@ JS
         return $type;
     }
 
-    public function getTestingUsername(): string
+    /**
+     * Resolves the test username THIS process must use.
+     *
+     * WHY A SINGLE RESOLVER: the username is not simply TEST_USER.USERNAME any more - in a parallel
+     * run every lane gets its own user row by appending "_laneN". That derivation used to live inside
+     * setupUser() alone, so resetUser() kept using the bare base name and
+     * silently addressed the WRONG user in every parallel run: roles were reset on a user no lane was
+     * ever logged in as, and assertions compared against a username nobody had used. Routing every
+     * call site through one resolver makes that class of drift impossible.
+     */
+    public static function getTestUsername(WorkbenchInterface $workbench): string
     {
-        $config = $this->getWorkbench()->getApp('axenox.BDT')->getConfig();
-        return $config->getOption('TEST_USER.USERNAME');
+        $baseUsername = $workbench->getApp('axenox.BDT')->getConfig()->getOption('TEST_USER.USERNAME');
+        $laneId = DatabaseFormatter::getLaneId();
+        return $laneId !== null
+            ? $baseUsername . self::laneUserSuffix($laneId)
+            : $baseUsername;
+    }
+
+    /**
+     * Tells whether a username belongs to the BDT test user family (base user or any lane user).
+     *
+     * WHY IT IS STRICT INSTEAD OF A PREFIX CHECK: anything that acts on "the test users" - most of
+     * all the data cleanup - decides from this answer whether rows may be deleted. A prefix match
+     * would also claim a real person whose username happens to start with the same string, and the
+     * consequence of that mistake is somebody else's data.
+     */
+    public static function isTestUsername(WorkbenchInterface $workbench, string $username): bool
+    {
+        $baseUsername = (string) $workbench->getApp('axenox.BDT')->getConfig()->getOption('TEST_USER.USERNAME');
+        if ($baseUsername === '') {
+            return false;
+        }
+        if ($username === $baseUsername) {
+            return true;
+        }
+        return preg_match('/^' . preg_quote($baseUsername . self::LANE_USERNAME_TOKEN, '/') . '\d+$/', $username) === 1;
     }
 
     /**
