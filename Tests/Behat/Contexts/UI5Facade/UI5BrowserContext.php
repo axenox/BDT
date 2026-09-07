@@ -2571,8 +2571,21 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             return;
         }
 
-        UI5Browser::resetUser($this->workbench);
-        $this->workbench->stop();
+        // Role reset is housekeeping and runs against a database that may be exactly what is broken.
+        // An exception escaping a destructor is fatal during shutdown, and it would also skip the
+        // workbench stop below - leaking connections and losing the orderly close-out over a cleanup
+        // detail. Same reasoning as the Chrome reaper: reclaim first, never propagate.
+        try {
+            UI5Browser::resetUser($this->workbench);
+        } catch (\Throwable $e) {
+            $this->workbench->getLogger()->logException($e);
+        }
+
+        try {
+            $this->workbench->stop();
+        } catch (\Throwable $e) {
+            // Nothing left to save the run with - swallow so shutdown completes.
+        }
     }
 
     protected function getBrowser(): UI5Browser
