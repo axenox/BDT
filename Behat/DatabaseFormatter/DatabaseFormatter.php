@@ -62,6 +62,8 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private ?DataSheetInterface $scenarioDataSheet = null;
     private float               $scenarioStart;
     private static array        $scenarioPages = [];
+    
+    const CLEANUP_AREA_BDT = 'BDT';
 
     /**
      * App-config key holding the run retention window in days.
@@ -1567,6 +1569,9 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
      */
     public static function onCleanUp(OnCleanUpEvent $event) : void
     {
+        if (! $event->isAreaToBeCleaned(self::CLEANUP_AREA_BDT)) {
+            return;
+        }
         $workbench = $event->getWorkbench();
         $config = $workbench->getApp('axenox.BDT')->getConfig();
 
