@@ -67,7 +67,7 @@
         {
             "_EXPORT_SUMMARY": "BDT test run: Run test [RunTestDialog]",
             "CREATED_ON": "2025-09-30 13:51:47",
-            "MODIFIED_ON": "2026-07-07 09:08:50",
+            "MODIFIED_ON": "2026-09-04 19:40:38",
             "CREATED_BY_USER": "0x11eca7f5b092f284a7f5005056bea39f",
             "MODIFIED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
             "UID": "0x11f0ab0bd8373118ab0b00155de44ed2",
@@ -91,6 +91,7 @@
                                     "widgets": [
                                         {
                                             "widget_type": "Console",
+                                            "command_timeout": 3600,
                                             "object_alias": "exface.Core.ACTION",
                                             "id": "test_cli",
                                             "allowed_commands": [
