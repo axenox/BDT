@@ -1293,7 +1293,9 @@ JS
                     },
                     'Checking menu "' . $buttonWidget->getCaption() . '"',
                     static::CATEGORY_BUTTONS,
-                    $logbook
+                    $logbook,
+                    null,
+                    $this->buildSubstepCoverageIdentity($dataWidget, $buttonWidget)
                 );
                 if ($menuResult->isFailed()) {
                     $failed = true;
@@ -1340,7 +1342,7 @@ JS
             if (!$buttonNode->checkDisabled()) {
                 // Re-resolve the button on every attempt so the retry (below) never
                 // clicks an element that went stale when the toolbar re-rendered.
-                $runClick = function() use ($buttonWidget, $readyNode, $logbook, $urlBeforeClick) {
+                $runClick = function() use ($dataWidget, $buttonWidget, $readyNode, $logbook, $urlBeforeClick) {
                     $node = $this->resolveButtonNode($buttonWidget) ?? $readyNode;
                     return $this->runAsSubstep(
                         function() use ($node, $logbook) {
@@ -1358,7 +1360,8 @@ JS
                             if ($urlAfterError !== $urlBeforeClick) {
                                 $this->getBrowser()->navigateToPreviousPage();
                             }
-                        }
+                        },
+                        $this->buildSubstepCoverageIdentity($dataWidget, $buttonWidget, $buttonWidget->getAction())
                     );
                 };
 

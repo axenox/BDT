@@ -224,7 +224,12 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
                         if ($this->getSession()->getCurrentUrl() !== $urlBeforeClick) {
                             $this->getBrowser()->navigateToPreviousPage();
                         }
-                    }
+                    },
+                    $this->buildSubstepCoverageIdentity(
+                        $this->getWidget(),
+                        $entryWidget,
+                        $entryWidget->getAction()
+                    )
                 );
             };
 
