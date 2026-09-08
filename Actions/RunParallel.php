@@ -349,6 +349,8 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         if ($tags === null && $featureArg === null && $suiteArg === null) {
             throw new RuntimeException('Provide at least one of --tags, --feature or --suite; refusing to run the whole test base unscoped.');
         }
+        // Validate the caller-supplied selectors before they are used, persisted or rendered anywhere.
+        $this->assertScopeInputsSafe($tags, $featureArg, $suiteArg);
         $cwd = $this->getWorkbench()->getInstallationPath();
 
         // --- Step 0: prepare the environment exactly like a single Behat run does. Init runs FIRST so the
@@ -368,7 +370,11 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // (action + scope selectors), NOT the tag string: passing $tags mislabels the column, and a parallel
         // run has no single behat command anyway - it fans out to N lane commands. The reconstructed action
         // command is the one reproducible truth for the whole run.
-        $behatCommand = $this->describeInvocation($tags, $featureArg, $suiteArg);
+        $behatCommand = $this->describeInvocation(
+            $tags,
+            $featureArg === null || $featureArg === '' ? null : $this->featureRelativePath($scanRoots[0]),
+            $suiteArg
+        );
         $this->runDataSheet = $runRecordWriter->create($this->getWorkbench(), $behatCommand);
         $this->runStart = microtime(true);
         $runUid = $this->runDataSheet->getUidColumn()->getValue(0);
@@ -621,19 +627,22 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Formats one CLI option as "--name=value" for the reproducible command, quoting the value ONLY
-     * when it contains a space.
+     * Formats one CLI option as "--name=value" for the reproducible command, quoting the value only
+     * when the shell would otherwise act on it.
      *
      * Why quoting must be conditional: the resulting command is injected into the Test Runs console's
      * start_commands JSON array. A double quote is the JSON string delimiter and is escaped to \" when
-     * that array is serialised to the browser, reaching the shell literally. A space-free value (a plain
-     * tag expression or a suite name) therefore emits unquoted and stays JSON-clean, exactly like the
-     * console's static init start command. A value that genuinely contains spaces still needs shell
-     * quoting; that case belongs at the console-template layer, not embedded in this string.
+     * that array is serialised to the browser, reaching the shell literally. A plain value therefore
+     * emits unquoted and stays JSON-clean, exactly like the console's own static start command.
+     *
+     * WHY THE CONDITION IS NO LONGER "CONTAINS A SPACE": a Behat tag expression uses && for AND, and a
+     * path may contain &. Unquoted, cmd reads & as a command separator, so the recorded command was
+     * reproducible only by accident - re-running it truncated the arguments and ran a second command.
+     * Anything cmd gives meaning to now forces the quotes; everything else stays bare.
      */
     private function cliOption(string $name, string $value): string
     {
-        return strpos($value, ' ') === false
+        return preg_match('/[\s&|<>^()]/', $value) === 0
             ? ' --' . $name . '=' . $value
             : ' --' . $name . '="' . $value . '"';
     }
@@ -874,16 +883,21 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * --tags rather than pass --tags="". An empty tag expression is not "no filter" to Behat, and it
      * would diverge from ExpectedTestCountCalculator (which counts ALL scenarios when the tag expression
      * is empty), breaking expected==actual.
+     *
+     * WHY THE TWO PATHS ARE MARKED SELF-GENERATED: both are produced by this action (writeLaneConfig()
+     * and resolveFeatureScanRoot()), not typed by the caller, so they are checked only against the
+     * characters the surrounding quotes cannot neutralise - see assertShellSafe(). The tag expression
+     * keeps the stricter check because it is caller input.
      */
     private function buildWorkerCommand(string $laneConfigPath, ?string $tags, string $feature): string
     {
         // Every interpolated value is validated before it reaches the shell string - see
         // assertShellSafe() for why this is a hard failure rather than an escaping attempt.
-        $cmd = sprintf('vendor\\bin\\behat --config "%s"', $this->assertShellSafe($laneConfigPath, 'behat config path'));
+        $cmd = sprintf('vendor\\bin\\behat --config "%s"', $this->assertShellSafe($laneConfigPath, 'behat config path', true));
         if ($tags !== null && trim($tags) !== '') {
             $cmd .= sprintf(' --tags="%s"', $this->assertShellSafe(trim($tags), 'tag expression'));
         }
-        $cmd .= ' "' . $this->assertShellSafe($feature, 'feature path') . '"';
+        $cmd .= ' "' . $this->assertShellSafe($feature, 'feature path', true) . '"';
         return $cmd;
     }
 
@@ -891,31 +905,92 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * Rejects any value that would break out of the double-quoted argument it is interpolated into.
      *
      * WHY THIS EXISTS: the worker command is assembled as a shell string, so an operator-supplied value
-     * containing a quote or a cmd metacharacter could terminate the argument and append commands of its
-     * own, which would then run with the coordinator's privileges. The tag expression in particular
-     * comes straight from the caller, and this action is intended to be reachable from a web UI by
-     * users far less privileged than the account the fleet runs under.
+     * containing a quote could terminate the argument and append commands of its own, which would then
+     * run with the coordinator's privileges. The tag expression in particular comes straight from the
+     * caller, and this action is intended to be reachable from a web UI by users far less privileged
+     * than the account the fleet runs under.
      *
      * WHY IT REFUSES INSTEAD OF ESCAPING: quoting rules on Windows cmd are genuinely ambiguous - the
      * same string is parsed differently by cmd, by the .bat stub and by the PHP process it finally
-     * reaches - so any escaping scheme silently mangles some legitimate inputs while still leaving
-     * gaps. None of these characters has a legitimate place in a tag expression or a feature path, so
-     * refusing loudly is both safe and lossless.
+     * reaches - so any escaping scheme silently mangles some legitimate inputs while still leaving gaps.
      *
-     * @param string $value The value about to be interpolated into the command string.
-     * @param string $what  Human-readable name of the value, used in the error message.
+     * WHY THE CHECK IS TIERED AND NO LONGER ONE BLACKLIST: the single list refused characters that are
+     * INERT inside cmd's double quotes, and every interpolation site quotes. That cost real, legitimate
+     * inputs: Behat's own tag syntax "@A&&@B" was refused outright, and an installation living under a
+     * folder such as "R&D" could not run at all. Only characters that survive the quotes are refused
+     * now:
+     *  - " CR LF NUL end the argument or the command line - no quoting neutralises them, refused always;
+     *  - % is expanded by cmd even inside double quotes, so it can inject variable content or silently
+     *    produce a different path - refused always, with a message that says which is at fault;
+     *  - ` and $ are inert for cmd but active inside a POSIX double-quoted string, so they are refused
+     *    for operator-supplied values only, as cheap insurance if this ever runs off Windows;
+     *  - & | < > ^ ! are inert inside cmd's double quotes (Symfony launches cmd with /V:OFF, so ! is not
+     *    a delayed-expansion trigger either) and are therefore accepted.
+     *
+     * @param string $value         The value about to be interpolated into the command string.
+     * @param string $what          Human-readable name of the value, used in the error message.
+     * @param bool   $selfGenerated TRUE for values this action produced itself (resolved paths), FALSE
+     *                              for anything that came from the caller.
      * @return string The value unchanged, so this can be used inline at the interpolation site.
-     * @throws RuntimeException if the value contains a shell metacharacter.
+     * @throws RuntimeException if the value contains a character the quotes cannot neutralise.
      */
-    private function assertShellSafe(string $value, string $what): string
+    private function assertShellSafe(string $value, string $what, bool $selfGenerated = false): string
     {
-        if (preg_match('/["`^&|<>%!\r\n]/', $value) === 1) {
+        if (preg_match('/["\r\n\x00]/', $value) === 1) {
             throw new RuntimeException(
-                'Refusing to build a worker command: the ' . $what . ' contains a shell metacharacter. Got: '
+                'Refusing to build a worker command: the ' . $what . ' contains a quote or a line break, '
+                . 'which would end the quoted argument. Got: ' . var_export($value, true)
+            );
+        }
+        if (strpos($value, '%') !== false) {
+            throw new RuntimeException(
+                'Refusing to build a worker command: the ' . $what . ' contains "%", which cmd expands '
+                . 'even inside double quotes'
+                . ($selfGenerated
+                    ? ' - the run cannot be launched from a path containing "%". Got: '
+                    : '. Got: ')
                 . var_export($value, true)
             );
         }
+        if ($selfGenerated === false && preg_match('/[`$]/', $value) === 1) {
+            throw new RuntimeException(
+                'Refusing to build a worker command: the ' . $what . ' contains a shell metacharacter '
+                . '(` or $). Got: ' . var_export($value, true)
+            );
+        }
         return $value;
+    }
+
+    /**
+     * Validates the operator-supplied scope selectors ONCE, before anything is done with them.
+     *
+     * WHY HERE AND NOT ONLY IN buildWorkerCommand(): these values do not reach only the worker command.
+     * describeInvocation() writes them into the run row's behat_command column, and the Test Runs
+     * console renders that column into its start_commands JSON array - a value the operator can click
+     * to re-run. On a run that ends before the fleet launches (parse error, empty scope) the worker
+     * command is never built, so the only check that existed never ran and an unvalidated string was
+     * persisted and shipped to the browser regardless.
+     *
+     * WHY BEFORE runInit(): init can take minutes. Refusing a malformed selector afterwards would make
+     * the operator wait for a failure that was decidable from the first line of input.
+     *
+     * WHY THE FEATURE VALUE IS TREATED AS A PATH: a path legitimately contains characters that are
+     * inert inside quotes (see assertShellSafe), and it is checked again after resolution when the
+     * worker command is built.
+     *
+     * @throws RuntimeException if any selector carries a character the quoting cannot neutralise
+     */
+    private function assertScopeInputsSafe(?string $tags, ?string $feature, ?string $suite): void
+    {
+        if ($tags !== null && $tags !== '') {
+            $this->assertShellSafe($tags, 'tag expression');
+        }
+        if ($suite !== null && $suite !== '') {
+            $this->assertShellSafe($suite, 'suite name');
+        }
+        if ($feature !== null && $feature !== '') {
+            $this->assertShellSafe($feature, 'feature path', true);
+        }
     }
 
     /**
@@ -1945,15 +2020,48 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * fail loudly - defaulting is not guessing, since this is the exact file the rest of the run (init,
      * lane imports, port-band override lookup) already uses.
      *
-     * @throws RuntimeException if the resolved file does not exist
+     * WHY AN EXPLICIT VALUE IS RESOLVED RATHER THAN USED AS TYPED: a relative value used to be checked
+     * against the CWD of this process, which differs between a shell launch and a Test Runs console
+     * launch - the same defect --feature had.
+     *
+     * WHY THE LOCATION IS ENFORCED: writeLaneConfig() writes every lane config into the installation
+     * root and imports the base by FILE NAME only ("imports: - behat.yml"), because that relative
+     * import is what keeps %paths.base% identical to a normal run. A base config living anywhere else
+     * would therefore be silently replaced by the root behat.yml - the lanes would run with a different
+     * base_url and a different port band than the operator asked for, and nothing would report it.
+     * Refusing is the only outcome that cannot be mistaken for success.
+     *
+     * @param string|null $explicit --behat_config value, if given
+     * @param string      $cwd      Installation root
+     * @return string Absolute path of an existing behat.yml in the installation root
+     * @throws RuntimeException if the file does not exist, is not a file, or lives outside the root
      */
     private function resolveBehatConfig(?string $explicit, string $cwd): string
     {
-        $path = ($explicit !== null && $explicit !== '')
-            ? $explicit
-            : $cwd . DIRECTORY_SEPARATOR . self::DEFAULT_BEHAT_CONFIG;
+        $rootDir = realpath($cwd);
+        $rootDir = $rootDir === false ? rtrim($cwd, '\\/') : rtrim($rootDir, '\\/');
+
+        if ($explicit === null || $explicit === '') {
+            $path = $rootDir . DIRECTORY_SEPARATOR . self::DEFAULT_BEHAT_CONFIG;
+            if (! is_file($path)) {
+                throw new RuntimeException('behat_config is not a file: ' . $path);
+            }
+            return $path;
+        }
+
+        $path = $this->resolveExistingPath($explicit, [$rootDir], 'behat_config');
         if (! is_file($path)) {
             throw new RuntimeException('behat_config is not a file: ' . $path);
+        }
+
+        $configDir = FilePathDataType::normalize(rtrim(dirname($path), '\\/'), '/');
+        if (strcasecmp($configDir, FilePathDataType::normalize($rootDir, '/')) !== 0) {
+            throw new RuntimeException(
+                'behat_config must live in the installation root (' . $rootDir . '), got: ' . $path
+                . '. Lane configs are written to the installation root and import the base config by file '
+                . 'name only, so a config outside that folder would be silently replaced by the root '
+                . self::DEFAULT_BEHAT_CONFIG . '.'
+            );
         }
         return $path;
     }
@@ -1987,23 +2095,26 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Decides WHICH feature files define this run's scope: an explicit --feature path, a named --suite,
-     * or (default) every suite declared in the base behat.yml.
+     * Resolves the scan roots the expected-count calculator and the workers operate on.
      *
-     * Why derive from behat.yml instead of a mandatory --feature: the suites in behat.yml already declare
-     * where features live, so a separate required path was both ceremony AND a footgun - an operator path
-     * that disagreed with the suites would make the expected counts cover a different set than the workers
-     * actually run, breaking expected==actual for a non-test reason. Deriving from the same behat.yml the
-     * workers import ties the expected-count scan and the run to one source of truth.
+     * WHY --feature IS NOT USED AS GIVEN: the value is typically copied out of the run log or out of
+     * run_feature.filename, both of which store the VENDOR-RELATIVE form produced by
+     * featureRelativePath() (e.g. "onelink/bmdb/Tests/Behat/Features/X.feature"). Checking that string
+     * with a bare file_exists() resolves it against the PHP process CWD instead - which is the web root
+     * when the action is launched from the Test Runs console - so a perfectly valid path was rejected
+     * with "feature does not exist". Resolution now happens in resolveFeatureScanRoot(), which accepts
+     * exactly the forms this system itself prints.
      *
-     * --feature and --suite are mutually exclusive: same question, two ways, so accepting both would force
-     * a silent precedence rule. We fail loudly. An unknown suite or an explicit --feature that does not
-     * exist also fails loudly rather than resolving to an empty set (which would look green having run
-     * nothing).
+     * WHY THE RESULT IS ABSOLUTE: the returned roots are consumed by the calculator and end up as the
+     * positional feature argument of every worker command. A relative root would make both depend on
+     * the CWD of whichever process happens to expand it, so an identical run would match different
+     * files depending on how it was started.
      *
-     * @return string[] Scan roots handed to ExpectedTestCountCalculator
-     * @throws RuntimeException on the --feature/--suite combination, a missing --feature, an unknown suite,
-     *                          or no resolvable paths
+     * @param string      $behatConfig Base behat.yml used for suite resolution
+     * @param string|null $feature     --feature value, if given
+     * @param string|null $suite       --suite value, if given
+     * @return string[] Absolute scan roots
+     * @throws RuntimeException if both selectors are given, or nothing can be resolved
      */
     private function resolveScanRoots(string $behatConfig, ?string $feature, ?string $suite): array
     {
@@ -2014,10 +2125,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             throw new RuntimeException('Pass either --feature or --suite, not both.');
         }
         if ($hasFeature) {
-            if (! file_exists($feature)) {
-                throw new RuntimeException('feature does not exist: ' . $feature);
-            }
-            return [$feature];
+            return [$this->resolveFeatureScanRoot($feature)];
         }
 
         $resolver = new \axenox\BDT\Behat\Common\BehatSuiteResolver();
@@ -2034,6 +2142,83 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
+     * Turns a --feature value into an absolute file or directory path on disk.
+     *
+     * WHY VENDOR IS THE FIRST BASE: this framework prints feature paths in the vendor-relative form
+     * (featureRelativePath(), run_feature.filename, the run log), so that is the form an operator
+     * copies back into --feature - and it was exactly the form that used to be rejected.
+     *
+     * @param string $feature Raw --feature value
+     * @return string Absolute, existing path
+     * @throws RuntimeException if the feature cannot be found under any known base
+     */
+    private function resolveFeatureScanRoot(string $feature): string
+    {
+        return $this->resolveExistingPath(
+            $feature,
+            [
+                $this->getWorkbench()->filemanager()->getPathToVendorFolder(),
+                $this->getWorkbench()->getInstallationPath()
+            ],
+            'feature'
+        );
+    }
+
+    /**
+     * Resolves a possibly relative path against a fixed list of candidate bases and returns the first
+     * one that exists, as an absolute path.
+     *
+     * WHY A SHARED HELPER: --feature and --behat_config had the same defect independently - each
+     * checked the raw operator value with file_exists()/is_file(), which resolves a relative path
+     * against the CWD of the PHP process. That CWD is the installation root for a shell launch but the
+     * web root for a launch through the Test Runs console, so the identical command worked in one
+     * place and failed in the other. Resolving both through one helper means the accepted spellings
+     * can never drift apart again.
+     *
+     * WHY THE BARE VALUE IS TRIED LAST: it is the only candidate whose meaning depends on how the
+     * process was started, so it stays a fallback for backwards compatibility rather than the rule.
+     *
+     * WHY THE CANDIDATES ARE REPORTED: "does not exist" says nothing about where we looked, which is
+     * the entire difficulty with a relative path.
+     *
+     * @param string   $path  Raw operator value (absolute or relative, file or directory)
+     * @param string[] $bases Candidate base directories, in priority order
+     * @param string   $what  Name of the input, used in the error message
+     * @return string Absolute, existing path
+     * @throws RuntimeException if none of the candidates exists
+     */
+    private function resolveExistingPath(string $path, array $bases, string $what): string
+    {
+        $candidates = [];
+        if (FilePathDataType::isAbsolute($path)) {
+            $candidates[] = $path;
+        } else {
+            $relative = ltrim(FilePathDataType::normalize($path, DIRECTORY_SEPARATOR), DIRECTORY_SEPARATOR);
+            foreach ($bases as $base) {
+                $base = rtrim($base, '\\/');
+                if ($base !== '') {
+                    $candidates[] = $base . DIRECTORY_SEPARATOR . $relative;
+                }
+            }
+            // Last resort: the value as typed, i.e. relative to the CWD of THIS process.
+            $candidates[] = $relative;
+        }
+
+        foreach ($candidates as $candidate) {
+            if (file_exists($candidate)) {
+                // realpath() collapses "..", "." and symlinks, so the same file always yields the same
+                // string - the run log, the DB filename and the worker argument must not drift apart.
+                $real = realpath($candidate);
+                return $real === false ? $candidate : $real;
+            }
+        }
+
+        throw new RuntimeException(
+            $what . ' does not exist: ' . $path . '. Looked in: ' . implode(', ', $candidates)
+        );
+    }
+
+    /**
      * Reconstructs a reproducible description of what this coordinator ran, for the run row's
      * behat_command column.
      *
@@ -2046,6 +2231,12 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * "vendor\bin\action" ships to the browser as "vendor\\bin\\action" and runs literally with doubled
      * separators. Forward slashes resolve identically on Windows and carry no JSON meaning, matching the
      * console's own static "vendor/bin/action ... Behat init" start command.
+     *
+     * WHY THE FEATURE VALUE IS NORMALISED HERE TOO: the rule above applied only to the literal command
+     * prefix, while the operator's own path was embedded verbatim. A backslashed path therefore hit the
+     * same JSON escaping and came back out of the console with doubled separators, so the recorded
+     * command could not be re-run. Normalising makes the whole line JSON-safe, and the resolver accepts
+     * the forward-slashed form on the way back in.
      */
     private function describeInvocation(?string $tags, ?string $feature, ?string $suite): string
     {
@@ -2054,7 +2245,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             $cmd .= $this->cliOption('tags', $tags);
         }
         if ($feature !== null && $feature !== '') {
-            $cmd .= $this->cliOption('feature', $feature);
+            $cmd .= $this->cliOption('feature', FilePathDataType::normalize($feature, '/'));
         }
         if ($suite !== null && $suite !== '') {
             $cmd .= $this->cliOption('suite', $suite);
