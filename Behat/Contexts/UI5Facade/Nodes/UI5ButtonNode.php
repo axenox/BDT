@@ -19,11 +19,16 @@ use Throwable;
 
 class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
 {
-    private static array $testedActions = [];
-
     /**
-     * @param LogBookInterface $logbook
-     * @return int
+     * Validates this button by following its action.
+     *
+     * WHY THE ACTION CACHE IS GONE: this method used to keep a process-local map of action alias plus
+     * exported UXON and replay the stored result on a second encounter. It was never reset and never
+     * role-aware, so two scenarios of one feature running under different roles shared its entries
+     * and the second replayed the first one's verdict - a silent pass for a role that never opened
+     * the dialog. Its discriminating power now lives in the coverage registry, where the action
+     * configuration is part of the identity and the role set is too, and where lanes share what they
+     * have covered instead of each keeping a private copy.
      */
     public function checkWorksAsExpected(LogBookInterface $logbook): TestResultInterface
     {
@@ -33,17 +38,6 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
         $this->checkCaptionMatchesWidget();
 
         $action = $widget->getAction();
-
-        // Check if the very same action was already tested
-        if ($action !== null) {
-            // TODO also check if the input data is based on the same object
-            $actionKey = $action->exportUxonObject()->toJson();
-            $testedVariants = static::$testedActions[$action->getAliasWithNamespace()] ?? null;
-            if (is_array($testedVariants) && null !== ($result = $testedVariants[$actionKey] ?? null)) {
-                $logbook->addLine('Skipping ' . $this->getWidgetType() . ' `' . $this->getCaption() . '` because action `' . $action->getAliasOfPrototype() . '` with the same input data was already tested.');
-                return SubstepResult::createFromPrevious($result);
-            }
-        }
 
         switch (true) {
             case $action instanceof GoToPage:
@@ -57,22 +51,14 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
                 break;
             default:
                 $reason = 'Action ' . $action->getAliasOfPrototype() . ' not yet supported';
-                // Make the skip visible in the report, not just in the logbook. WHY: a button whose
-                // action we do not follow is not a passed button - without a row of its own the
-                // report silently suggests full coverage of the toolbar.
-                $this->logSubstep(
-                    'Clicking ' . $this->getWidgetType() . ' "' . $this->getCaption() . '"',
-                    StepStatusDataType::SKIPPED,
-                    $reason,
-                    self::CATEGORY_BUTTONS
-                );
+                // No substep is logged here. WHY: every caller of this method already wraps it in a
+                // substep of its own, and the skipped result returned below carries the reason up to
+                // that row. Logging one here as well produced two rows for one button - the caller's
+                // "Clicking X" and this one's "Clicking DataButton X" - with identical status and
+                // reason. The duplication was masked for years by the action cache, which returned
+                // before reaching this branch on every repeat encounter.
                 $result = SubstepResult::createSkipped($reason, $logbook);
                 $logbook->addLine('Skipping button ' . $this->getCaption() . ' because action ' . $action->getAliasOfPrototype() . ' not supported yet');
-            // TODO more action validation here??
-        }
-
-        if ($action !== null) {
-            static::$testedActions[$action->getAliasWithNamespace()][$actionKey] = $result;
         }
 
         return $result;
@@ -84,6 +70,15 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
         return trim($this->getNodeElement()->getText() ?? '');
     }
 
+    /**
+     * Validates that this tile navigates to its declared target page, then checks that page.
+     *
+     * WHY NO COVERAGE IDENTITY HERE: this substep is the click, not the page. UI5PageNode records
+     * the target screen itself, keyed on the page root, so the same page reached from several tiles
+     * still produces one record. Passing the target's identity here as well made both substeps
+     * resolve to the same registry row: the inner insert won, the outer one hit the uniqueness
+     * constraint and was discarded, and the navigation assertion's own outcome was lost with it.
+     */
     protected function checkActionGoToPage(GoToPage $action, iTriggerAction $widget, LogBookInterface $logbook): SubstepResult
     {
         $expectedAlias = $action->getPage()->getAliasWithNamespace();
@@ -93,7 +88,7 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
         // the click is passed, and we go on checking the page
         $result = self::runNested(function () use ($logbook, $widget, $expectedAlias, $urlBeforeClick) {
             return $this->runAsSubstep(
-                function (SubstepResult $result) use ($expectedAlias, $widget, $logbook, &$navigated) {
+                function (SubstepResult $result) use ($expectedAlias, $widget, $logbook) {
                     $logbook->addLine('Clicking ' . $this->getWidgetType() . ' [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
                     $logbook->addIndent(+1);
 
@@ -124,7 +119,7 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
                     return $result;
                 },
                 $this->buildMessageClicking(false),
-                'Pages',
+                static::CATEGORY_BUTTONS,
                 $logbook,
                 function () use ($urlBeforeClick) {
                     // If the click caused a full page navigation, we must go back.
@@ -177,6 +172,17 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
         return 'Clicking ' . $this->getWidgetType() . ' "' . $this->getCaption() . '"';
     }
 
+    /**
+     * Opens and validates a dialog as one screen-level operation.
+     *
+     * WHY THE DIALOG OWNS COVERAGE: its slug is derived from the opening action and stays the same
+     * across host pages, so the same dialog is recorded once instead of once per trigger location.
+     *
+     * WHY THE SCREEN CATEGORY: this substep validates the dialog as a whole and carries a
+     * whole-screen identity, which is a different piece of work from pressing the buttons inside it.
+     * Recording it under the button category would put two unrelated kinds of work in one bucket and
+     * make the registry unable to tell them apart.
+     */
     protected function checkActionShowDialog(iShowDialog $action, iTriggerAction $widget, LogBookInterface $logbook): SubstepResult
     {
         // Do not follow this action any deeper. WHY before the click: opening the dialog and only then
@@ -187,7 +193,9 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
             return SubstepResult::createSkipped('Nesting limit of ' . self::MAX_NESTING_DEPTH . ' reached', $logbook);
         }
 
-        $expectedId = $this->getBrowser()->getElementIdFromWidget($action->getDialogWidget());
+        $dialogWidget = $action->getDialogWidget();
+        $expectedId = $this->getBrowser()->getElementIdFromWidget($dialogWidget);
+        $coverageIdentity = $this->buildWholeScreenSubstepCoverageIdentity($dialogWidget);
 
         // Substep should fail if the page cannot be loaded (shows an error) - otherwise the substep for
         // the click is passed, and we go on checking the page
@@ -209,15 +217,17 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
         $logbook->addIndent(+1);
 
         try {
-            $result = self::runNested(function () use ($logbook, $widget, $dialogNodeElement) {
+            $result = self::runNested(function () use ($logbook, $widget, $dialogNodeElement, $coverageIdentity) {
                 return $this->runAsSubstep(
                     function (SubstepResult $result) use ($logbook, $widget, $dialogNodeElement) {
                         $dialogNode = UI5FacadeNodeFactory::createFromNodeElement($dialogNodeElement, $this->getSession(), $this->getBrowser());
                         return $dialogNode->checkWorksAsExpected($logbook);
                     },
                     'Seeing ' . $this->getBrowser()->getNodeWidgetType($dialogNodeElement),
-                    'Dialogs',
-                    $logbook
+                    static::CATEGORY_SCREENS,
+                    $logbook,
+                    null,
+                    $coverageIdentity
                 );
             });
         } catch (Throwable $e) {

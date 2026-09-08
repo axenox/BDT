@@ -202,7 +202,9 @@ class UI5DataNode extends UI5AbstractNode
                 },
                 'Filtering `' . $filter->getCaption() . '`',
                 static::CATEGORY_FILTERING,
-                $logbook
+                $logbook,
+                null,
+                $this->buildSubstepCoverageIdentity($dataWidget, $filter)
             );
             $filterNode->reset();
             $this->getBrowser()->clearWidgetHighlights();
@@ -423,8 +425,10 @@ class UI5DataNode extends UI5AbstractNode
                         return $buttonNode->checkWorksAsExpected($logbook);
                     },
                     'Clicking ' . $buttonWidget->getCaption(),
-                    'Dialogs',
-                    $logbook
+                    static::CATEGORY_BUTTONS,
+                    $logbook,
+                    null,
+                    $this->buildSubstepCoverageIdentity($dataWidget, $buttonWidget, $buttonWidget->getAction())
                 );
 
                 // Say the buttons test is failed if at least one button fails
