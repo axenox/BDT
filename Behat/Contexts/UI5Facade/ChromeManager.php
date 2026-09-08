@@ -680,33 +680,17 @@ class ChromeManager
     /**
      * Decides whether a command line belongs to one of OUR leftover Chrome instances.
      *
-     * WHY MATCH ON THE chrome_profiles ROOT (not just this exact lane dir): profile dirs are now
-     * run-scoped ("<run_uid>_laneN"), so a zombie Chrome left behind by a PREVIOUS run has a
-     * DIFFERENT user_data_dir than the current run's lane. Matching only the current exact dir would
-     * classify that previous-run zombie as foreign and make start() fail loudly instead of reclaiming
-     * the port it still holds. Because every BDT Chrome - across all runs and lanes - is launched with
-     * its profile under this installation's data\axenox\BDT\chrome_profiles tree, treating any process
-     * whose user_data_dir sits under that root as ours lets us reclaim our own zombies on a reused port
-     * while never touching a genuinely foreign browser (a human's Chrome or another project's fleet
-     * live under entirely different profile paths).
+     * WHY A MARKER AND NOT THE ABSOLUTE PROFILES ROOT: the absolute root embeds the deployment release
+     * folder, while "data" is a junction into the shared data tree - so the same physical profile has a
+     * different absolute path after every deployment. With the old prefix test, a zombie of the previous
+     * release that still held our port was classified FOREIGN, and start() failed the whole lane instead
+     * of reclaiming the port it was squatting. profilesRootMarker() recognizes any BDT profile path
+     * regardless of the release it was launched from.
      *
-     * SAFETY - no prefix trap and no foreign kill: (1) the switch VALUE is parsed out and tested against
-     * the profiles root followed by a directory separator, so "...\chrome_profiles\" never bleeds into a
-     * sibling like "...\chrome_profiles_backup\". (2) This check only runs against the single process
-     * occupying THIS lane's unique port, so a concurrently LIVE sibling lane (on its own distinct port)
-     * is never a candidate for killing. Anything whose user_data_dir is NOT under our profiles root stays
-     * foreign - the safe default of "fail loudly, never kill".
-     *
-     * WHY THE PARSED VALUE AND NOT A SUBSTRING OF THE COMMAND LINE: our launch command writes
-     * --user-data-dir="<dir>" WITH quotes, but Chrome re-serializes the same switch for its own
-     * renderer/gpu/utility children WITHOUT quotes whenever the path contains no spaces. A quoted-only
-     * substring needle therefore recognized only the browser process. When the process holding the port
-     * was an orphaned CHILD of a previous run - the common case once its parent had been killed - it was
-     * misclassified as FOREIGN and start() failed the whole lane loudly instead of reclaiming the port.
-     * extractUserDataDir() handles both serializations, so ownership is decided on the actual path.
-     *
-     * The comparison is Windows-tolerant: case-insensitive with normalized backslashes, because CIM
-     * output and our config may disagree on casing or slash direction.
+     * SAFETY: a process whose user-data-dir carries no BDT profiles marker at all stays foreign and is
+     * never killed - a human's Chrome or another product's browser lives under an entirely different
+     * path. This check also only ever runs against the single process occupying THIS lane's unique port,
+     * so a concurrently live sibling lane is never a candidate.
      *
      * @param string $commandLine         Full command line of the occupying process
      * @param string $userDataDirAbsolute Our resolved absolute user_data_dir (a child of the profiles root)
@@ -719,10 +703,11 @@ class ChromeManager
             // Not a Chrome, or a Chrome launched without an explicit profile: never ours, never killed.
             return false;
         }
-        // Derive the shared chrome_profiles root from this lane's dir (its parent) and require the
-        // trailing separator so the match cannot bleed into a same-prefixed sibling directory.
-        $profilesRoot = $this->normalizeWindowsPath(dirname($userDataDirAbsolute)) . '\\';
-        return str_starts_with($foreignDir, $profilesRoot);
+        $marker = $this->profilesRootMarker(dirname($userDataDirAbsolute));
+        if ($marker === null) {
+            return false;
+        }
+        return str_contains($this->normalizeWindowsPath($foreignDir), $marker);
     }
 
     /**
