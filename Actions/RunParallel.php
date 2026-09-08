@@ -1924,7 +1924,17 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             $logger = $this->getWorkbench()->getLogger();
 
             // One process snapshot for the whole cleanup, so chrome.exe is scanned exactly once.
+            // NULL means the snapshot could not be taken at all - typically because the machine is out
+            // of memory, which is precisely when orphans exist. Removing the lane dirs on that path
+            // would strip live browsers of their profile and leave processes nothing can attribute
+            // later, so the whole cleanup is abandoned loudly and left to the next run's startup sweep.
             $chromeProcesses = $this->listChromeProcessCommandLines();
+            if ($chromeProcesses === null) {
+                $logger->warning('BDT parallel cleanup: could not enumerate chrome.exe processes - the end-of-run '
+                    . 'Chrome cleanup was SKIPPED (not completed) for run ' . $runUid . '. ' . count($laneDirs)
+                    . ' lane profile dir(s) were left in place; the next run reclaims them at startup.');
+                return;
+            }
 
             $killedAny = false;
             foreach ($laneDirs as $laneDir) {
@@ -1990,7 +2000,20 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             $absLaneDir = $this->laneProfileDir($cwd, $runUid, $lane);
 
             $logger = $this->getWorkbench()->getLogger();
-            $killed = $this->reapChromeProfileDir($absLaneDir, $this->listChromeProcessCommandLines());
+
+            // NULL means we could not look at the process list at all. Deleting the lane profile then
+            // would race a browser that may still be alive and produce an orphan no later sweep can
+            // attribute, so nothing is done and the loss of this inline reap is stated explicitly - the
+            // end-of-run cleanup and the next run's startup sweep are the remaining safety nets.
+            $chromeProcesses = $this->listChromeProcessCommandLines();
+            if ($chromeProcesses === null) {
+                $logger->warning('BDT parallel cleanup: lane ' . $lane . ' - could not enumerate chrome.exe '
+                    . 'processes, the inline Chrome reap was SKIPPED (not completed). Profile dir ' . $absLaneDir
+                    . ' was left in place.');
+                return;
+            }
+
+            $killed = $this->reapChromeProfileDir($absLaneDir, $chromeProcesses);
             foreach ($killed as $pid) {
                 $logger->info('BDT parallel cleanup: lane ' . $lane . ' killed orphan Chrome PID ' . $pid);
             }

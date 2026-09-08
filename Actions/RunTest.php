@@ -625,7 +625,19 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
             $absProfileDir = $workingDir . DIRECTORY_SEPARATOR . $this->interactiveProfileDirRelative($port);
 
             $logger = $this->getWorkbench()->getLogger();
-            $killed = $this->reapChromeProfileDir($absProfileDir, $this->listChromeProcessCommandLines());
+
+            // NULL means the process list could not be read at all, so we cannot know whether a browser
+            // is still attached to this profile. Removing the dir anyway would leave a live Chrome with
+            // a deleted profile - an orphan no sweep can attribute later. Skip loudly instead; the next
+            // run's age-based startup sweep reclaims the dir.
+            $chromeProcesses = $this->listChromeProcessCommandLines();
+            if ($chromeProcesses === null) {
+                $logger->warning('BDT interactive cleanup: could not enumerate chrome.exe processes - cleanup was '
+                    . 'SKIPPED (not completed). Profile dir ' . $absProfileDir . ' was left in place.');
+                return;
+            }
+
+            $killed = $this->reapChromeProfileDir($absProfileDir, $chromeProcesses);
             foreach ($killed as $pid) {
                 $logger->info('BDT interactive cleanup: killed orphan Chrome PID ' . $pid . ' bound to ' . $absProfileDir);
             }

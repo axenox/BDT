@@ -44,3 +44,38 @@ Kill them (only touches Chromes bound to a BDT profile; a human's browser is nev
     Get-CimInstance Win32_Process |
       Where-Object { $_.Name -eq 'chrome.exe' -and $_.CommandLine -like '*\axenox\BDT\chrome_profiles\*' } |
       ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+
+
+## Chrome cleanup reported success but did nothing
+
+### Symptom
+- Run logs show no cleanup warnings at all, yet `chrome.exe` processes and/or profile dirs are left
+  behind after the run.
+- Happens far more often on runs that were executed while the server was low on memory.
+
+### Cause
+BDT finds the Chromes it may kill by listing every `chrome.exe` with its command line via PowerShell.
+That listing used to return an EMPTY LIST when the PowerShell call itself failed — which every caller
+read as "no Chrome left to clean up, done". Spawning `powershell.exe` is one of the first things that
+fails when the machine is out of memory, i.e. exactly when orphaned browsers exist. So the cleanup
+silently skipped its work and reported success, and — worse — still deleted the profile dirs, leaving
+live browsers with no profile on disk.
+
+### Fix
+The listing now returns NULL when it could not be obtained (a completion marker is written as the last
+line of the PowerShell script, so a truncated result that still exits 0 is detected too, and the call
+is retried up to three times before giving up). Every caller distinguishes the two cases:
+
+- Empty list  -> nothing to clean up, proceed as before.
+- NULL        -> the sweep is SKIPPED and a WARNING is logged naming what was left behind.
+  Profile dirs are NOT deleted in this case: removing a profile while its browser may still be alive
+  is what produces an orphan process that later sweeps cannot attribute.
+
+Affected paths: `ChromeManager::stop()`, `RunParallel::cleanupLaneChromes()`,
+`RunParallel::reapLaneProfile()`, `RunTest::cleanupInteractiveChrome()`, and both sweeps in
+`ChromeProfileReaperTrait`.
+
+### What to do when you see the warning
+Nothing is lost — the next run's startup sweep reclaims what was skipped. Repeated warnings mean the
+server is under real resource pressure; check free memory and the number of running `chrome.exe`
+processes before the next nightly run.
