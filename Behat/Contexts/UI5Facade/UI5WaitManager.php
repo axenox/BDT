@@ -124,7 +124,7 @@ class UI5WaitManager
             if (!$this->waitForPageLoad(min($timeouts['page'], $allowed))) {
                 throw new BrowserTimeoutException(
                     "The page was not loaded within the expected time of {$timeouts['page']} seconds.",
-                    ["URL" => $this->getSession()->getCurrentUrl()]
+                    ["URL" => $this->describeCurrentUrl()]
                 );
             }
         }
@@ -135,7 +135,7 @@ class UI5WaitManager
             if (!$this->waitForBusyIndicator(min($timeouts['busy'], $allowed))) {
                 throw new BrowserTimeoutException(
                     "The busy indicator did not disappear within the expected time of {$timeouts['busy']} seconds.",
-                    ["URL" => $this->getSession()->getCurrentUrl()]
+                    ["URL" => $this->describeCurrentUrl()]
                 );
             }
         }
@@ -146,7 +146,7 @@ class UI5WaitManager
             if (!$this->waitForAjaxRequests(min($timeouts['ajax'], $allowed))) {
                 throw new BrowserTimeoutException(
                     "The AJAX requests was not completed within the expected time of {$timeouts['ajax']} seconds.",
-                    ["URL" => $this->getSession()->getCurrentUrl()]
+                    ["URL" => $this->describeCurrentUrl()]
                 );
             }
         }
@@ -180,10 +180,30 @@ class UI5WaitManager
             throw new BrowserTimeoutException(
                 "waitForPendingOperations exceeded the session budget of "
                 . self::SESSION_BUDGET_SECONDS . " s (elapsed: " . round($elapsed) . " s).",
-                ["URL" => $this->getSession()->getCurrentUrl()]
+                ["URL" => $this->describeCurrentUrl()]
             );
         }
         return $remaining;
+    }
+
+    /**
+     * Returns the current URL for error context, or a placeholder if it cannot be read.
+     *
+     * WHY THIS EXISTS: the URL is collected while BUILDING a timeout exception, and at that moment
+     * the connection is by definition suspect. An unguarded getCurrentUrl() there throws its own
+     * low-level socket error, which then replaces the attributable "the busy indicator did not
+     * disappear" message with an opaque driver failure - the diagnosis is lost precisely in the
+     * case it was written for. Context is a nice-to-have; the timeout message is not.
+     *
+     * @return string The current URL, or a short explanation of why it is unavailable.
+     */
+    private function describeCurrentUrl(): string
+    {
+        try {
+            return $this->getSession()->getCurrentUrl();
+        } catch (\Throwable $e) {
+            return 'unavailable - the browser connection did not answer: ' . $e->getMessage();
+        }
     }
 
     /**
@@ -239,7 +259,7 @@ class UI5WaitManager
             if (!$this->waitForPageLoad($this->defaultTimeouts['page'])) {
                 throw new FacadeBrowserException(
                     "The page was not loaded within the expected time of {$this->defaultTimeouts['page']} seconds.",
-                    ["URL" => $this->getSession()->getCurrentUrl()]
+                    ["URL" => $this->describeCurrentUrl()]
                 );
             }
 
