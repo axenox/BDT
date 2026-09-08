@@ -409,12 +409,24 @@ class ChromeManager
         // profile dir may survive this call. Never throws (see the docblock).
         if ($this->userDataDir !== null) {
             try {
-                $survivors = $this->reapChromeProfileDir($this->userDataDir, $this->listChromeProcessCommandLines());
-                if ($survivors !== []) {
+                // A NULL list means the enumeration itself failed, which is NOT the same as "no Chrome
+                // is left". Saying so is the point: this method's contract is that nothing bound to our
+                // profile survives it, and a skipped sweep cannot honour that contract silently.
+                $chromeProcesses = $this->listChromeProcessCommandLines();
+                if ($chromeProcesses === null) {
                     $this->getLogbook()->addLine(
-                        'Profile sweep killed ' . count($survivors) . ' Chrome process(es) the PID kill missed: '
-                        . implode(', ', $survivors)
+                        '**WARNING** Could not enumerate chrome.exe processes - the profile verification sweep was '
+                        . 'SKIPPED, not completed. A leftover browser may still be bound to ' . $this->userDataDir
+                        . '. The next run\'s startup sweep will reclaim it.'
                     );
+                } else {
+                    $survivors = $this->reapChromeProfileDir($this->userDataDir, $chromeProcesses);
+                    if ($survivors !== []) {
+                        $this->getLogbook()->addLine(
+                            'Profile sweep killed ' . count($survivors) . ' Chrome process(es) the PID kill missed: '
+                            . implode(', ', $survivors)
+                        );
+                    }
                 }
             } catch (\Throwable $e) {
                 $this->getLogbook()->addLine(

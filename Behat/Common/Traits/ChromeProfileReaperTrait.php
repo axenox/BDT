@@ -23,38 +23,77 @@ namespace axenox\BDT\Behat\Common\Traits;
 trait ChromeProfileReaperTrait
 {
     /**
-     * Returns the command line of every running chrome.exe, keyed by PID.
+     * Returns the command line of every running chrome.exe keyed by PID, or NULL if the process list
+     * could not be obtained at all.
      *
      * WHY THE COMMAND LINE (not just the PID): the profile dir - the only marker tying a Chrome to a
      * specific lane/port - lives in the --user-data-dir launch argument, not in any CIM property. A
      * single snapshot is taken so a caller matching several dirs scans chrome.exe only once.
      *
+     * WHY NULL AND NOT AN EMPTY ARRAY ON FAILURE: an empty array means "no Chrome is running", which
+     * every caller treats as "nothing left to clean up - done". Returning it for a FAILED enumeration
+     * made a sweep that never looked indistinguishable from a sweep that found nothing, so leftover
+     * browsers were silently reported as cleaned. That is the false-green shape this framework exists
+     * to prevent, and it fires exactly when it hurts most: spawning powershell.exe is one of the first
+     * things that fails when the machine is out of memory - the very situation that produces orphans.
+     *
+     * WHY A COMPLETION MARKER AND NOT ONLY THE EXIT CODE: a shell that is killed or truncated mid-write
+     * can still exit 0 with a partial list, and a partial list silently under-reports processes we were
+     * about to reap. The marker is written LAST, so its presence proves the enumeration ran to the end.
+     *
+     * WHY IT RETRIES: the failure is usually a transient resource shortage, and a retry costs
+     * milliseconds on the happy path (it only runs after a failure) while sparing the caller a skipped
+     * cleanup for a hiccup that was over a second later.
+     *
      * WHY Get-CimInstance: wmic is removed on current Windows; Get-CimInstance reads the same
      * Win32_Process data. Output is "<pid>|<commandline>" per line; the PID is numeric and the
-     * command line is only str_contains-matched later, so the pipe delimiter is safe. No caller input
-     * reaches this command, so there is no injection surface.
+     * command line is only matched later, so the pipe delimiter is safe. No caller input reaches this
+     * command, so there is no injection surface.
      *
-     * @return array<int,string> PID => full command line (processes with no readable command line are omitted)
+     * @return array<int,string>|null PID => full command line, or NULL if the list could not be read
      */
-    protected function listChromeProcessCommandLines(): array
+    protected function listChromeProcessCommandLines(): ?array
     {
+        // Written as the last statement of the script, so receiving it proves the enumeration finished
+        // rather than having been cut short. Deliberately a value no command line can contain.
+        $marker = 'BDT_CHROME_ENUM_OK';
         $cmd = 'powershell -NoProfile -Command "Get-CimInstance Win32_Process '
             . '| Where-Object { $_.Name -eq \'chrome.exe\' } '
-            . '| ForEach-Object { $_.ProcessId.ToString() + \'|\' + $_.CommandLine }"';
-        $output = [];
-        $exitCode = 1;
-        exec($cmd, $output, $exitCode);
-        if ($exitCode !== 0) {
-            return [];
-        }
-        $result = [];
-        foreach ($output as $line) {
-            $parts = explode('|', $line, 2);
-            if (count($parts) === 2 && is_numeric(trim($parts[0]))) {
-                $result[(int) trim($parts[0])] = $parts[1];
+            . '| ForEach-Object { $_.ProcessId.ToString() + \'|\' + $_.CommandLine }; '
+            . 'Write-Output \'' . $marker . '\'"';
+
+        // Local rather than a trait constant: trait constants require PHP 8.2+, and this trait must
+        // stay usable on every PHP 8.x runtime in the fleet (same reasoning as PortProbingTrait).
+        $maxAttempts = 3;
+
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            $output = [];
+            $exitCode = 1;
+            exec($cmd, $output, $exitCode);
+
+            $completed = false;
+            $result = [];
+            if ($exitCode === 0) {
+                foreach ($output as $line) {
+                    if (trim($line) === $marker) {
+                        $completed = true;
+                        continue;
+                    }
+                    $parts = explode('|', $line, 2);
+                    if (count($parts) === 2 && is_numeric(trim($parts[0]))) {
+                        $result[(int) trim($parts[0])] = $parts[1];
+                    }
+                }
+            }
+            if ($completed) {
+                return $result;
+            }
+            if ($attempt < $maxAttempts) {
+                // Short settle: the usual cause is a momentary resource shortage, not a broken box.
+                usleep(300_000);
             }
         }
-        return $result;
+        return null;
     }
 
     /**
@@ -286,15 +325,23 @@ trait ChromeProfileReaperTrait
                 }
             }
 
+            // WHY THE WHOLE SWEEP IS ABANDONED WHEN THE PROCESS LIST IS UNAVAILABLE: without it we
+            // cannot know which Chromes are still bound to these dirs. Deleting a profile dir out from
+            // under a LIVE browser is what creates a process nothing can attribute afterwards, so
+            // proceeding blind would manufacture the exact orphan this sweep exists to remove. Reporting
+            // and doing nothing is the only honest option.
+            $chromeProcesses = $this->listChromeProcessCommandLines();
+            if ($chromeProcesses === null) {
+                $lines[] = 'WARNING: could not enumerate chrome.exe processes - the stale profile sweep was '
+                    . 'SKIPPED (not completed). ' . count($stale) . ' stale profile dir(s) were left in place '
+                    . 'because removing them without killing their browsers first would orphan those processes.';
+                return $lines;
+            }
+
             // Kill every Chrome whose profile is one of ours and is either stale or already gone from
             // disk. Chromes of a live concurrent run are untouched: their dir exists and is fresh.
-            //
-            // WHY THE GUARD IS NOW "identity === null" AND NOT A PREFIX TEST ON THE ABSOLUTE ROOT: the
-            // prefix test compared against the CURRENT release path, so every Chrome from a previous
-            // release fell out of the loop before the "dir no longer exists" branch could ever fire -
-            // which is precisely how processes with deleted profile dirs became immortal.
             $killedAny = false;
-            foreach ($this->listChromeProcessCommandLines() as $pid => $commandLine) {
+            foreach ($chromeProcesses as $pid => $commandLine) {
                 $dir = $this->extractUserDataDir($commandLine);
                 if ($dir === null) {
                     continue;
@@ -390,8 +437,18 @@ trait ChromeProfileReaperTrait
                 return $lines;
             }
 
+            // Same reasoning as in reapStaleChromeProfiles(): with no process list we cannot tell which
+            // of these dirs still has a live browser attached, and deleting one that does would create
+            // an unattributable orphan. Report and leave everything untouched.
+            $chromeProcesses = $this->listChromeProcessCommandLines();
+            if ($chromeProcesses === null) {
+                $lines[] = 'WARNING: could not enumerate chrome.exe processes - the inactive-run profile sweep was '
+                    . 'SKIPPED (not completed). ' . count($orphanDirs) . ' orphan lane profile dir(s) were left in place.';
+                return $lines;
+            }
+
             $killedAny = false;
-            foreach ($this->listChromeProcessCommandLines() as $pid => $commandLine) {
+            foreach ($chromeProcesses as $pid => $commandLine) {
                 $dir = $this->extractUserDataDir($commandLine);
                 $identity = $dir === null ? null : $this->profileIdentity($dir, $profilesRoot);
                 if ($identity !== null && isset($orphanDirs[$identity])) {
