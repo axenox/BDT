@@ -117,12 +117,76 @@ trait ChromeProfileReaperTrait
     }
 
     /**
+     * Returns the "\<profiles-root-folder>\" marker used to recognize any BDT Chrome profile path,
+     * regardless of which installation path it was launched from.
+     *
+     * WHY THIS EXISTS: the absolute profiles root contains the deployment release folder
+     * (…\releases\<version>\data\…), and "data" is a junction into the SHARED data tree. So the same
+     * physical profile is reachable under a different absolute path after every deployment. Matching
+     * on the absolute root therefore made every Chrome started by a PREVIOUS release invisible to all
+     * sweeps forever, while the shared profile dir itself was still deleted by the next run - the exact
+     * fingerprint of "many un-killable chrome.exe, but no profile dirs on disk". The marker is derived
+     * from the caller's own root (never hardcoded), so it stays correct if the folder is ever renamed.
+     *
+     * @param string $profilesRoot Absolute path of the chrome_profiles root
+     * @return string|null Normalized marker like "\chrome_profiles\", or NULL if the root has no usable name
+     */
+    protected function profilesRootMarker(string $profilesRoot): ?string
+    {
+        $root = $this->normalizeWindowsPath($profilesRoot);
+        // Deliberately not basename(): it is separator-aware and would misbehave for a backslash path
+        // on a non-Windows runtime, which is exactly where a silent NULL would be hardest to notice.
+        $sepPos = strrpos($root, '\\');
+        $rootName = $sepPos === false ? $root : substr($root, $sepPos + 1);
+        if ($rootName === '') {
+            return null;
+        }
+        return '\\' . $rootName . '\\';
+    }
+
+    /**
+     * Returns the release-independent identity of a Chrome profile path: everything from the
+     * profiles-root folder name onwards, e.g. "chrome_profiles\a1b2c3_lane4".
+     *
+     * WHY AN IDENTITY INSTEAD OF THE ABSOLUTE PATH: see profilesRootMarker(). Comparing identities
+     * lets a sweep started from release N recognize and reap a Chrome launched by release N-1, which
+     * absolute-path equality could never do.
+     *
+     * WHY IT IS STILL SAFE: the identity always carries the profile dir NAME, which is either
+     * "<run_uid>_laneN" (globally unique per run) or "interactive<port>" (unique per bound port), so a
+     * genuinely foreign browser cannot collide with it. A path that does not contain the marker at all
+     * returns NULL and is treated as foreign - the safe default of "never kill what we cannot claim".
+     *
+     * @param string $path         Any profile dir path, ours or from a foreign command line
+     * @param string $profilesRoot Absolute path of the chrome_profiles root the caller works with
+     * @return string|null Normalized identity, or NULL if the path is not under a BDT profiles root
+     */
+    protected function profileIdentity(string $path, string $profilesRoot): ?string
+    {
+        $marker = $this->profilesRootMarker($profilesRoot);
+        if ($marker === null) {
+            return null;
+        }
+        $normalized = $this->normalizeWindowsPath($path);
+        $pos = strrpos($normalized, $marker);
+        if ($pos === false) {
+            return null;
+        }
+        // +1 drops the leading separator so the identity starts at the root folder name itself.
+        return substr($normalized, $pos + 1);
+    }
+
+    /**
      * Kills every Chrome process tree bound to the given profile dir; returns the killed PIDs.
      *
-     * WHY EQUALITY ON THE PARSED VALUE (not a substring of the command line): see extractUserDataDir().
-     * This now matches Chrome's own children as well as the browser process, so an orphaned renderer
-     * whose parent already died is still reaped. taskkill /T additionally tears down any tree that is
-     * still intact, so a live browser and its children are killed in one call.
+     * WHY IDENTITY AND NOT ABSOLUTE-PATH EQUALITY: the absolute path embeds the deployment release
+     * folder, so a Chrome launched before the last deployment carries a different string for the very
+     * same physical profile and was never matched. profileIdentity() compares the release-independent
+     * tail instead, so leftovers survive neither a deployment nor a coordinator restart.
+     *
+     * This matches Chrome's own children as well as the browser process, so an orphaned renderer whose
+     * parent already died is still reaped. taskkill /T additionally tears down any tree that is still
+     * intact, so a live browser and its children are killed in one call.
      *
      * @param string             $absProfileDir   Absolute profile dir whose Chrome tree(s) to kill
      * @param array<int,string>  $chromeProcesses Snapshot from listChromeProcessCommandLines()
@@ -130,10 +194,22 @@ trait ChromeProfileReaperTrait
      */
     protected function reapChromeProfileDir(string $absProfileDir, array $chromeProcesses): array
     {
-        $target = $this->normalizeWindowsPath($absProfileDir);
+        // The profiles root is the parent of every lane/interactive profile dir, so it can be derived
+        // here instead of being threaded through every call site.
+        $profilesRoot = dirname($absProfileDir);
+        $targetIdentity = $this->profileIdentity($absProfileDir, $profilesRoot);
+        if ($targetIdentity === null) {
+            // Not a path under a profiles root - claiming anything for it would be a guess.
+            return [];
+        }
+
         $killed = [];
         foreach ($chromeProcesses as $pid => $commandLine) {
-            if ($this->extractUserDataDir($commandLine) === $target) {
+            $dir = $this->extractUserDataDir($commandLine);
+            if ($dir === null) {
+                continue;
+            }
+            if ($this->profileIdentity($dir, $profilesRoot) === $targetIdentity) {
                 exec('taskkill /F /T /PID ' . (int) $pid . ' 2>nul');
                 $killed[] = (int) $pid;
             }
@@ -190,31 +266,44 @@ trait ChromeProfileReaperTrait
     {
         $lines = [];
         try {
-            $root = $this->normalizeWindowsPath($profilesRoot);
             if (! is_dir($profilesRoot)) {
                 return $lines;
             }
             $now = time();
 
             // Decide per directory whether it is abandoned. mtime (not creation time) is used so a
-            // long-running but still-active profile is never reaped.
+            // long-running but still-active profile is never reaped. Keyed by identity, so a process
+            // launched from another release path still resolves to the same entry.
             $stale = [];
             foreach (glob($profilesRoot . DIRECTORY_SEPARATOR . '*', GLOB_ONLYDIR) ?: [] as $dir) {
                 $mtime = @filemtime($dir);
-                if ($mtime !== false && ($now - $mtime) > $maxAgeSeconds) {
-                    $stale[$this->normalizeWindowsPath($dir)] = $dir;
+                if ($mtime === false || ($now - $mtime) <= $maxAgeSeconds) {
+                    continue;
+                }
+                $identity = $this->profileIdentity($dir, $profilesRoot);
+                if ($identity !== null) {
+                    $stale[$identity] = $dir;
                 }
             }
 
-            // Kill every Chrome whose profile lives under our root and is either stale or already gone
-            // from disk. Chromes of a live concurrent run are untouched: their dir exists and is fresh.
+            // Kill every Chrome whose profile is one of ours and is either stale or already gone from
+            // disk. Chromes of a live concurrent run are untouched: their dir exists and is fresh.
+            //
+            // WHY THE GUARD IS NOW "identity === null" AND NOT A PREFIX TEST ON THE ABSOLUTE ROOT: the
+            // prefix test compared against the CURRENT release path, so every Chrome from a previous
+            // release fell out of the loop before the "dir no longer exists" branch could ever fire -
+            // which is precisely how processes with deleted profile dirs became immortal.
             $killedAny = false;
             foreach ($this->listChromeProcessCommandLines() as $pid => $commandLine) {
                 $dir = $this->extractUserDataDir($commandLine);
-                if ($dir === null || ! str_starts_with($dir, $root . '\\')) {
+                if ($dir === null) {
                     continue;
                 }
-                if (isset($stale[$dir]) || ! is_dir($dir)) {
+                $identity = $this->profileIdentity($dir, $profilesRoot);
+                if ($identity === null) {
+                    continue;
+                }
+                if (isset($stale[$identity]) || ! is_dir($dir)) {
                     exec('taskkill /F /T /PID ' . (int) $pid . ' 2>nul');
                     $lines[] = 'Reaped abandoned Chrome PID ' . (int) $pid . ' bound to ' . $dir;
                     $killedAny = true;
@@ -289,7 +378,12 @@ trait ChromeProfileReaperTrait
                 }
                 $ownerUid = strtolower(substr($name, 0, $pos));
                 if (! isset($active[$ownerUid])) {
-                    $orphanDirs[$this->normalizeWindowsPath($dir)] = $dir;
+                    // Keyed by release-independent identity, so a Chrome launched by a previous
+                    // deployment still matches the very same physical lane profile.
+                    $identity = $this->profileIdentity($dir, $profilesRoot);
+                    if ($identity !== null) {
+                        $orphanDirs[$identity] = $dir;
+                    }
                 }
             }
             if ($orphanDirs === []) {
@@ -299,7 +393,8 @@ trait ChromeProfileReaperTrait
             $killedAny = false;
             foreach ($this->listChromeProcessCommandLines() as $pid => $commandLine) {
                 $dir = $this->extractUserDataDir($commandLine);
-                if ($dir !== null && isset($orphanDirs[$dir])) {
+                $identity = $dir === null ? null : $this->profileIdentity($dir, $profilesRoot);
+                if ($identity !== null && isset($orphanDirs[$identity])) {
                     exec('taskkill /F /T /PID ' . (int) $pid . ' 2>nul');
                     $lines[] = 'Reaped orphan Chrome PID ' . (int) $pid . ' of inactive run, profile ' . $dir;
                     $killedAny = true;
