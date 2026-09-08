@@ -368,7 +368,11 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // (action + scope selectors), NOT the tag string: passing $tags mislabels the column, and a parallel
         // run has no single behat command anyway - it fans out to N lane commands. The reconstructed action
         // command is the one reproducible truth for the whole run.
-        $behatCommand = $this->describeInvocation($tags, $featureArg, $suiteArg);
+        $behatCommand = $this->describeInvocation(
+            $tags,
+            $featureArg === null || $featureArg === '' ? null : $this->featureRelativePath($scanRoots[0]),
+            $suiteArg
+        );
         $this->runDataSheet = $runRecordWriter->create($this->getWorkbench(), $behatCommand);
         $this->runStart = microtime(true);
         $runUid = $this->runDataSheet->getUidColumn()->getValue(0);
@@ -1987,23 +1991,26 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
-     * Decides WHICH feature files define this run's scope: an explicit --feature path, a named --suite,
-     * or (default) every suite declared in the base behat.yml.
+     * Resolves the scan roots the expected-count calculator and the workers operate on.
      *
-     * Why derive from behat.yml instead of a mandatory --feature: the suites in behat.yml already declare
-     * where features live, so a separate required path was both ceremony AND a footgun - an operator path
-     * that disagreed with the suites would make the expected counts cover a different set than the workers
-     * actually run, breaking expected==actual for a non-test reason. Deriving from the same behat.yml the
-     * workers import ties the expected-count scan and the run to one source of truth.
+     * WHY --feature IS NOT USED AS GIVEN: the value is typically copied out of the run log or out of
+     * run_feature.filename, both of which store the VENDOR-RELATIVE form produced by
+     * featureRelativePath() (e.g. "onelink/bmdb/Tests/Behat/Features/X.feature"). Checking that string
+     * with a bare file_exists() resolves it against the PHP process CWD instead - which is the web root
+     * when the action is launched from the Test Runs console - so a perfectly valid path was rejected
+     * with "feature does not exist". Resolution now happens in resolveFeatureScanRoot(), which accepts
+     * exactly the forms this system itself prints.
      *
-     * --feature and --suite are mutually exclusive: same question, two ways, so accepting both would force
-     * a silent precedence rule. We fail loudly. An unknown suite or an explicit --feature that does not
-     * exist also fails loudly rather than resolving to an empty set (which would look green having run
-     * nothing).
+     * WHY THE RESULT IS ABSOLUTE: the returned roots are consumed by the calculator and end up as the
+     * positional feature argument of every worker command. A relative root would make both depend on
+     * the CWD of whichever process happens to expand it, so an identical run would match different
+     * files depending on how it was started.
      *
-     * @return string[] Scan roots handed to ExpectedTestCountCalculator
-     * @throws RuntimeException on the --feature/--suite combination, a missing --feature, an unknown suite,
-     *                          or no resolvable paths
+     * @param string      $behatConfig Base behat.yml used for suite resolution
+     * @param string|null $feature     --feature value, if given
+     * @param string|null $suite       --suite value, if given
+     * @return string[] Absolute scan roots
+     * @throws RuntimeException if both selectors are given, or nothing can be resolved
      */
     private function resolveScanRoots(string $behatConfig, ?string $feature, ?string $suite): array
     {
@@ -2014,10 +2021,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             throw new RuntimeException('Pass either --feature or --suite, not both.');
         }
         if ($hasFeature) {
-            if (! file_exists($feature)) {
-                throw new RuntimeException('feature does not exist: ' . $feature);
-            }
-            return [$feature];
+            return [$this->resolveFeatureScanRoot($feature)];
         }
 
         $resolver = new \axenox\BDT\Behat\Common\BehatSuiteResolver();
@@ -2031,6 +2035,57 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             );
         }
         return $paths;
+    }
+
+    /**
+     * Turns a --feature value into an absolute file or directory path on disk.
+     *
+     * WHY SEVERAL BASES ARE TRIED: this framework prints feature paths in the vendor-relative form
+     * (featureRelativePath(), run_feature.filename, the run log), so that is the form an operator
+     * copies back into --feature. It also prints absolute paths in worker commands, and an operator
+     * working in a shell naturally types a path relative to the installation root. All three are
+     * legitimate spellings of the same file, and none of them can be told apart by looking at the
+     * string alone - so we probe the bases in a fixed order instead of guessing a single one.
+     *
+     * WHY VENDOR COMES FIRST: it is the form the system itself emits, therefore the most likely input.
+     * The bare value (process CWD) is tried LAST and only as a fallback, because the CWD differs
+     * between a shell launch and a launch through the Test Runs console - relying on it is what made
+     * the same command work in one place and fail in the other.
+     *
+     * WHY IT LISTS THE CANDIDATES ON FAILURE: a plain "does not exist" told the operator nothing about
+     * where we actually looked, which is the whole difficulty with a relative path.
+     *
+     * @param string $feature Raw --feature value (file or directory, absolute or relative)
+     * @return string Absolute, existing path
+     * @throws RuntimeException if none of the candidate paths exists
+     */
+    private function resolveFeatureScanRoot(string $feature): string
+    {
+        $candidates = [];
+        if (FilePathDataType::isAbsolute($feature)) {
+            $candidates[] = $feature;
+        } else {
+            $relative = ltrim(FilePathDataType::normalize($feature, DIRECTORY_SEPARATOR), DIRECTORY_SEPARATOR);
+            $vendorPath  = rtrim($this->getWorkbench()->filemanager()->getPathToVendorFolder(), '\\/');
+            $installPath = rtrim($this->getWorkbench()->getInstallationPath(), '\\/');
+            $candidates[] = $vendorPath . DIRECTORY_SEPARATOR . $relative;
+            $candidates[] = $installPath . DIRECTORY_SEPARATOR . $relative;
+            // Last resort: the value as typed, resolved against the CWD of THIS process.
+            $candidates[] = $relative;
+        }
+
+        foreach ($candidates as $candidate) {
+            if (file_exists($candidate)) {
+                // realpath() collapses ".." and symlinks so the same file always yields the same
+                // string - the run log, the DB filename and the worker argument must not drift apart.
+                $real = realpath($candidate);
+                return $real === false ? $candidate : $real;
+            }
+        }
+
+        throw new RuntimeException(
+            'feature does not exist: ' . $feature . '. Looked in: ' . implode(', ', $candidates)
+        );
     }
 
     /**
