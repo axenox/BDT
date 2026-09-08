@@ -675,6 +675,30 @@ class ChromeManager
     }
 
     /**
+     * Closes a single Chrome tab via the /json/close debug endpoint.
+     *
+     * WHY THIS EXISTS: a Mink session that lost its WebSocket leaves its tab behind. The driver
+     * cannot close it any more - talking to that tab is exactly what stopped working - so the only
+     * remaining handle on it is Chrome's HTTP debug API, which is served by the browser process and
+     * stays reachable while the socket is dead. Without this, every session reattach adds one
+     * abandoned tab to a Chrome that is already the memory bottleneck of a parallel run.
+     *
+     * WHY BEST-EFFORT AND VOID: this is cleanup, never a precondition. runGuzzleApi() already
+     * swallows and logs transport errors, and /json/close answers with plain text rather than JSON,
+     * so there is no meaningful success signal to hand back. A tab that refuses to close is a leak,
+     * not a test failure, and must never throw into the retry loop that called it.
+     *
+     * @param string   $targetId Target ID of the tab, as reported by getTabList()
+     * @param int|null $port     Port to address; falls back to the currently managed port
+     */
+    public function closeTab(string $targetId, ?int $port = null): void
+    {
+        $this->runGuzzleApi(
+            'http://127.0.0.1:' . ($port ?? $this->getPort()) . '/json/close/' . rawurlencode($targetId)
+        );
+    }
+
+    /**
      * Finds the PID of the process listening on the given TCP port using netstat.
      *
      * Used to retrieve the Chrome PID after launching it with "start /B",
