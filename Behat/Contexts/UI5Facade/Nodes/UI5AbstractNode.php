@@ -6,9 +6,11 @@ use axenox\BDT\Behat\Common\ErrorManager;
 use axenox\BDT\Behat\Common\Traits\CdpConnectionDetectorTrait;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
+use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
 use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
+use axenox\BDT\Behat\Events\SubstepCoverageIdentity;
 use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Exceptions\AjaxException;
 use axenox\BDT\Exceptions\ChromeHangException;
@@ -22,10 +24,12 @@ use Behat\Mink\Exception\DriverException;
 use Behat\Mink\Session;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Factories\UiPageFactory;
+use exface\Core\Interfaces\Actions\ActionInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\UiPageInterface;
 use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Interfaces\WorkbenchDependantInterface;
+use exface\Core\Widgets\AbstractWidget;
 use PHPUnit\Framework\Assert;
 use Throwable;
 
@@ -33,8 +37,25 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
 {
     use CdpConnectionDetectorTrait;
 
+    /**
+     * The closed set of work kinds a works-as-expected sweep can report.
+     *
+     * WHY IT IS CLOSED AND WHY IT LIVES HERE: the category is part of the coverage registry's
+     * identity, so a lookup and a record must never be able to name the same work differently. Bare
+     * strings at the call sites made that possible and it happened twice - pressing a button was
+     * once reported under a different name than skipping one, from inside the same loop. Naming
+     * every kind once, in the base every node extends, removes the room for a second spelling.
+     *
+     * WHY SCREENS IS A KIND BUT DIALOGS IS NOT: validating an entire page or dialog is a different
+     * piece of work from exercising the filters or the buttons inside it, and it is recorded against
+     * the screen itself rather than against any widget in it. A dialog, by contrast, is not a kind of
+     * work at all - it is one of the things a button press can lead to, alongside navigation, an
+     * inline action or a menu. What a press led to belongs in the substep title, not in the category.
+     */
     const CATEGORY_FILTERING = 'Filtering';
     const CATEGORY_BUTTONS = 'Buttons';
+    const CATEGORY_SCREENS = 'Screens';
+    
     /**
      * Suffix UI5 appends to an OverflowToolbar's id to build its overflow ("...") button.
      *
@@ -841,6 +862,7 @@ JS
      *                                     and dialog dismiss. Exceptions thrown inside this
      *                                     callback are silently swallowed to preserve the
      *                                     original error.
+    * @param SubstepCoverageIdentity|null $coverageIdentity Eager registry identity for coverage work.
      * @return SubstepResult
      */
     public function runAsSubstep(
@@ -848,17 +870,41 @@ JS
         string $title,
         ?string $category = null,
         ?LogBookInterface $logbook = null,
-        callable $onFailure = null
+        ?callable $onFailure = null,
+        ?SubstepCoverageIdentity $coverageIdentity = null
     ) : SubstepResult
     {
         $dispatcher = $this->getBrowser()->getEventDispatcher();
-        $dispatcher->dispatch(new BeforeSubstep($title, $category));
+        $dispatcher->dispatch(new BeforeSubstep($title, $category, $coverageIdentity));
+
+        // Ask the registry before doing the work, not the individual call sites. WHY HERE: every
+        // sweep already funnels through this method with its identity in hand, so one check covers
+        // all of them and a new call site inherits it. Deciding per call site meant the same
+        // question written out in several places, free to drift apart.
+        if ($coverageIdentity !== null) {
+            $recorded = DatabaseFormatter::findCoveredSubstep($coverageIdentity, $category);
+            if ($recorded !== null) {
+                $logbook?->addLine('Already validated in this run - reusing the recorded result.');
+                $substepResult = $recorded;
+                $substepResult->setTitle($title);
+                $dispatcher->dispatch(new AfterSubstep($substepResult, $title, $category, $coverageIdentity, true));
+                return $substepResult;
+            }
+        }
+
         try {
             $substepResult = SubstepResult::createPassed($logbook);
             $substepResult->setTitle($title);
             $returnValue = $callable($substepResult);
             if ($returnValue instanceof SubstepResult) {
-                $substepResult = $returnValue;
+                // This frame executed its work, so it must not inherit a "seen before" verdict from a
+                // nested frame that did not. Adopting the code verbatim wrote those substeps into the
+                // registry with a status that is not conclusive, which meant they were never treated
+                // as covered and were re-swept on every encounter - the record could never improve,
+                // because a row is only ever inserted, never corrected.
+                $substepResult = $returnValue->isReplayed()
+                    ? SubstepResult::createAsPerformed($returnValue)
+                    : $returnValue;
             }
         } catch (Throwable $e) {
             $logbook?->addLine('**ERROR:** ' . $e->getMessage());
@@ -932,7 +978,19 @@ JS
                 }
             }
         }
-        $resultEvent = new AfterSubstep($substepResult, $substepResult->getTitle() ?? $title, $category);
+        // The name belongs to this frame, not to the result object that bubbled up from inside it.
+        // WHY THE RESULT'S TITLE IS NO LONGER TRUSTED: runAsSubstep() adopts whatever its callback
+        // returns, so any nested result carrying a title renamed its own parent's row in the report -
+        // a button substep silently became a second copy of the dialog substep below it. Titles that
+        // a check refines while it runs are appended to $substepResult by the frame that owns them
+        // and are read back below, so refinement still works; only inheritance is cut off.
+        $ownTitle = $substepResult === $returnValue ? null : $substepResult->getTitle();
+        $resultEvent = new AfterSubstep(
+            $substepResult,
+            $ownTitle ?? $title,
+            $category,
+            $coverageIdentity
+        );
         $dispatcher->dispatch($resultEvent);
         return $substepResult;
     }
@@ -946,10 +1004,22 @@ JS
         return $this;
     }
 
-    public function logSubstep(string $title, int $resultCode, ?string $reason, ?string $category = null): AfterSubstep
+    /**
+     * Emits a completed substep for work whose result is already known.
+     *
+     * WHY IDENTITY IS OPTIONAL: aggregate diagnostics and unsupported checks are useful report rows
+     * but do not identify one filter or button and therefore must not enter the coverage registry.
+     */
+    public function logSubstep(
+        string $title,
+        int $resultCode,
+        ?string $reason,
+        ?string $category = null,
+        ?SubstepCoverageIdentity $coverageIdentity = null
+    ): AfterSubstep
     {
         $dispatcher = $this->getBrowser()->getEventDispatcher();
-        $dispatcher->dispatch(new BeforeSubstep($title, $category));
+        $dispatcher->dispatch(new BeforeSubstep($title, $category, $coverageIdentity));
         $result = new SubstepResult($resultCode);
         // Capture the screen for failures reported directly, not through runAsSubstep().
         // WHY: those are exactly the "widget not found" cases, where the picture is the only way to
@@ -960,7 +1030,7 @@ JS
         if ($reason !== null) {
             $result->setReason($reason);
         }
-        $resultEvent = new AfterSubstep($result, $title, $category);
+        $resultEvent = new AfterSubstep($result, $title, $category, $coverageIdentity);
         $dispatcher->dispatch($resultEvent);
         return $resultEvent;
     }
@@ -1079,13 +1149,77 @@ JS
         return $this->getNodeElement()->getAttribute('id');
     }
 
-    protected function logSubstepResult(SubstepResult $result, ?string $category = null): AfterSubstep
+    /**
+     * Emits an existing result without re-running its operation.
+     *
+     * WHY IDENTITY IS OPTIONAL: reused diagnostic results predate registry coverage and remain valid
+     * event output even when they have no stable model identity.
+     */
+    protected function logSubstepResult(
+        SubstepResult $result,
+        ?string $category = null,
+        ?SubstepCoverageIdentity $coverageIdentity = null
+    ): AfterSubstep
     {
         $dispatcher = $this->getBrowser()->getEventDispatcher();
-        $dispatcher->dispatch(new BeforeSubstep($result->getTitle(), $category));
-        $resultEvent = new AfterSubstep($result, $result->getTitle(), $category);
+        $dispatcher->dispatch(new BeforeSubstep($result->getTitle(), $category, $coverageIdentity));
+        $resultEvent = new AfterSubstep($result, $result->getTitle(), $category, $coverageIdentity);
         $dispatcher->dispatch($resultEvent);
         return $resultEvent;
+    }
+
+    /**
+     * Snapshots one filter/button identity from model objects for the event listener.
+     *
+     * WHY FAILURES RETURN NULL: registry recording is observational and must never change the test
+     * result. Logging the model-resolution error and omitting coverage causes future sweeps to repeat
+     * the work, which is safer than filing it under guessed identity values.
+     */
+    protected function buildSubstepCoverageIdentity(
+        WidgetInterface $coveredWidget,
+        WidgetInterface $element,
+        ?ActionInterface $action = null
+    ): ?SubstepCoverageIdentity
+    {
+        try {
+            if (! $element instanceof AbstractWidget) {
+                return null;
+            }
+            return new SubstepCoverageIdentity(
+                $coveredWidget,
+                $element->getIdWithinUiContainer(),
+                $action?->exportUxonObject()->toJson(),
+                $this->getBrowser()->getCurrentRoles()
+            );
+        } catch (Throwable $e) {
+            ErrorManager::getInstance()->logException($e, $this->getBrowser()->getWorkbench());
+            return null;
+        }
+    }
+
+    /**
+     * Snapshots coverage for a complete screen without tying it to the widget that opened it.
+     *
+     * WHY PUBLIC: UI5PageNode represents a screen rather than a rendered widget and therefore does
+     * not extend this class. It delegates its root check to a concrete node, which must build the
+     * same identity used by button-triggered pages instead of duplicating the identity rules.
+     *
+     * WHY FAILURES RETURN NULL: coverage recording is observational and must not turn a successful
+     * screen check into a failed test. Omitting the identity causes a later sweep to repeat the work.
+     */
+    public function buildWholeScreenSubstepCoverageIdentity(
+        WidgetInterface $screenWidget
+    ): ?SubstepCoverageIdentity
+    {
+        try {
+            return SubstepCoverageIdentity::forWholeScreen(
+                $screenWidget,
+                $this->getBrowser()->getCurrentRoles()
+            );
+        } catch (Throwable $e) {
+            ErrorManager::getInstance()->logException($e, $this->getBrowser()->getWorkbench());
+            return null;
+        }
     }
 
     /**

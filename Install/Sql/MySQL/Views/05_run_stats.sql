@@ -25,7 +25,10 @@ SELECT
          WHEN MAX(r.finished_on) IS NULL AND TIMESTAMPDIFF(MINUTE, MAX(ss.started_on), NOW()) > 10 THEN 102
          -- Still running within timeout window
          WHEN MAX(r.finished_on) IS NULL THEN 10
-         -- Any failed or timed-out step means the run failed
+        -- Any failed or timed-out step means the run failed. Undefined steps (30) are intentionally
+        -- absent from every branch here: undefined is reported at scenario and feature level only and
+        -- must not turn a whole run red. At run level it shows up solely in the totals, where
+        -- features_total and scenarios_total exceed the sum of their passed/failed/skipped buckets.
          WHEN SUM(ss.status IN (91, 101, 102)) > 0 THEN 101
          -- No passed steps at all (only skipped) means the run is skipped
          WHEN SUM(ss.status IN (90, 100)) = 0 THEN 98
@@ -57,27 +60,22 @@ FROM
         GROUP BY f.run_oid
     ) scen ON scen.run_oid = r.oid
         LEFT JOIN (
+        -- The feature status used to be re-derived inline here from the step statuses, in a
+        -- nested derived table - a second copy of the CASE that bdt_run_feature_stats already owns, and
+        -- a copy with different rules: it knew nothing about running or timed-out features, and it
+        -- never learned about undefined steps, so a feature holding one still landed in features_passed
+        -- no matter what the feature view said. Two copies of one verdict drift apart on the first
+        -- change, which is exactly what happened. Reading the existing view keeps a single definition of
+        -- "what a feature status is" and mirrors how the scenario counts above are already assembled.
         SELECT
-            run_oid,
+            f.run_oid,
             COUNT(*) AS features_total,
-            SUM(status IN (90, 100)) AS features_passed,
-            SUM(status IN (91, 101, 102)) AS features_failed,
-            SUM(status = 98) AS features_skipped
-        FROM (
-                 SELECT
-                     f.run_oid,
-                     f.oid AS run_feature_oid,
-                     CASE
-                         WHEN SUM(ss.status IN (91, 101, 102)) > 0 THEN 101
-                         WHEN SUM(ss.status IN (90, 100)) > 0 THEN 100
-                         WHEN SUM(ss.status = 98) > 0 THEN 98
-                         ELSE 0
-                         END AS status
-                 FROM bdt_run_feature f
-                          LEFT JOIN bdt_run_step_stats ss ON ss.run_feature_oid = f.oid
-                 GROUP BY f.run_oid, f.oid
-             ) feat_stats
-        GROUP BY run_oid
+            SUM(fs.status IN (90, 100)) AS features_passed,
+            SUM(fs.status IN (91, 101, 102)) AS features_failed,
+            SUM(fs.status = 98) AS features_skipped
+        FROM bdt_run_feature f
+                 JOIN bdt_run_feature_stats fs ON fs.run_feature_oid = f.oid
+        GROUP BY f.run_oid
     ) feat ON feat.run_oid = r.oid
 
 GROUP BY r.oid
