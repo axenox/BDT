@@ -11,7 +11,15 @@ SELECT
          WHEN MAX(s.finished_on) IS NULL AND DATEDIFF(MINUTE, MAX(ss.started_on), GETDATE()) > 10 THEN 102
          -- Still running within timeout window
          WHEN MAX(s.finished_on) IS NULL THEN 10
-         -- Any failed or timed-out step means the scenario failed
+        -- NEW BRANCH. An undefined step (30) means the scenario references a step definition that does
+        -- not exist, so Behat never executed anything after it. Without this branch such a scenario
+        -- fell through to the ELSE and was reported as passed, which is the one outcome nobody goes
+        -- back to check. Placed before the failure branch on purpose: a broken definition invalidates
+        -- every verdict below it, so it is the finding that has to be fixed first. Undefined is
+        -- deliberately terminal here - it is NOT propagated to feature or run status, where an
+        -- undefined scenario only shows up in the total count.
+         WHEN SUM(CASE WHEN ss.[status] = 30 THEN 1 ELSE 0 END) > 0 THEN 30
+        -- Any failed or timed-out step means the scenario failed
          WHEN SUM(CASE WHEN ss.[status] IN (91, 101, 102) THEN 1 ELSE 0 END) > 0 THEN 101
          -- No passed steps at all (only skipped) means the scenario is skipped
          WHEN SUM(CASE WHEN ss.[status] IN (90, 100) THEN 1 ELSE 0 END) = 0 THEN 98
