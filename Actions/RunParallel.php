@@ -290,6 +290,22 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      */
     private $diagLog = null;
 
+    /**
+     * Cross-process Chrome port reservations held for the whole fleet run, keyed by lane number.
+     *
+     * WHY ON THE INSTANCE AND NOT LOCAL TO runFleet(): a reservation must stay held from the moment the
+     * lane picks its port until every lane Chrome is gone, and it must be released on EVERY exit path of
+     * the fleet - the early abort when no lane could be set up, the normal end of the drain, and a throw
+     * from anywhere inside it. Only perform()'s finally sees all three, and it already owns the Chrome
+     * cleanup that must happen first. Keeping the handles here is what lets that one place release them.
+     *
+     * Each entry is the array returned by PortProbingTrait::reserveFreePort(); its 'handle' must stay
+     * OPEN, because closing it is exactly what drops the flock.
+     *
+     * @var array<int,array{port:int,handle:resource,lockPath:string}>
+     */
+    private array $portReservations = [];
+
     // --- Run-log digest bounds. The run log is an ORCHESTRATION log, not a test report: per-scenario
     // and per-step outcomes are already persisted authoritatively as child rows by the attach-mode
     // DatabaseFormatter, so repeating them here only pushed the coordinator-level diagnostics (worker
@@ -490,6 +506,17 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             // writes to a database that may be exactly what is broken. Housekeeping never propagates.
             try {
                 $this->cleanupLaneChromes($cwd, $runUid);
+            } catch (\Throwable $e) {
+                $this->getWorkbench()->getLogger()->logException($e);
+            }
+            // Release the lane port reservations LAST - deliberately AFTER the lane Chromes are reaped.
+            // Releasing them first would let another run claim a port whose Chrome we are still killing;
+            // that run would then meet our dying browser on its port, refuse to kill a foreign process
+            // and fail - trading our clean shutdown for someone else's lost lane. This is the ONLY place
+            // reservations are released for a completed fleet, which is why it sits in the finally: an
+            // early abort inside runFleet() and a coordinator throw both pass through here.
+            try {
+                $this->releaseLanePortReservations();
             } catch (\Throwable $e) {
                 $this->getWorkbench()->getLogger()->logException($e);
             }
@@ -1316,7 +1343,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         $failures = [];
 
         // --- Phase A - slot setup. A port and a lane config are allocated ONCE per lane and then reused
-        // by every feature that lane runs. Doing this per feature instead would re-probe the port band
+        // by every feature that lane runs. Doing this per feature instead would re-scan the port band
         // hundreds of times and, worse, let a lane's Chrome port drift mid-run. A lane that cannot be set
         // up (exhausted band, unwritable config) is simply not opened; the run continues on the lanes
         // that could be, and the queue redistributes itself over them automatically. ---
@@ -1324,14 +1351,34 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         $lanePorts   = [];
         for ($lane = 1; $lane <= $workerCount; $lane++) {
             try {
-                $port = $this->allocateFreePort($portStart, $portEnd, $heldPorts);
+                // RESERVE the port across processes instead of merely probing it. A bare probe only
+                // deconflicts lanes inside THIS coordinator (the in-memory $heldPorts list): between
+                // picking a port here and the worker's Chrome actually binding it there are seconds
+                // (lane config write, worker spawn, Behat init, ChromeManager launch). In that window any
+                // independent run sharing the band - a second coordinator, or an interactive RunTest if
+                // the bands were ever aligned - probes the same port, sees it free and takes it too. Both
+                // then launch Chrome on it: the loser is not silent, but it costs a lane, because
+                // ChromeManager refuses to kill the foreign browser and fails the run instead. The flock
+                // taken here keeps the port ours from selection until the close-out releases it, which is
+                // well past the moment Chrome binds it.
+                $reservation = $this->reserveFreePort($portStart, $portEnd, $heldPorts);
+                $port = $reservation['port'];
+                // Recorded on the instance BEFORE anything else can throw, so no reservation can ever be
+                // won and then leaked without a release. See $portReservations for why not a local.
+                $this->portReservations[$lane] = $reservation;
                 $heldPorts[] = $port;
                 $laneConfigs[$lane] = $this->writeLaneConfig($cwd, $lane, $runUid, $port, $chromePath, $importConfigName);
                 $lanePorts[$lane]   = $port;
-                $this->writeRunLog($diagLog, sprintf('DIAG setup: lane %d ready on port %d', $lane, $port));
+                $this->writeRunLog($diagLog, sprintf('DIAG setup: lane %d ready on port %d (reserved)', $lane, $port));
             } catch (\Throwable $e) {
                 // Not fatal on its own: fewer lanes means a slower run, not a wrong one, because the
                 // queue is not pre-assigned to lanes. Only the total loss of ALL lanes is fatal (below).
+                // Release this lane's reservation right here if it had already been won (i.e. the failure
+                // came from writeLaneConfig, not from the band): a lane that will never run must not keep
+                // a port locked away from other runs for the rest of the fleet's lifetime. The port stays
+                // in $heldPorts so THIS coordinator does not immediately reuse a port whose lane setup
+                // just proved problematic.
+                $this->releaseLanePortReservations($lane);
                 $this->writeRunLog($diagLog, 'DIAG setup: lane ' . $lane . ' unavailable: ' . $e->getMessage());
                 $this->getWorkbench()->getLogger()->warning('BDT parallel: lane ' . $lane . ' could not be set up: ' . $e->getMessage());
             }
@@ -1788,6 +1835,32 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             @fclose($this->diagLog);
         }
         $this->diagLog = null;
+    }
+
+    /**
+     * Releases the cross-process port reservations taken in runFleet()'s lane setup.
+     *
+     * WHY IT NEVER THROWS: it runs in perform()'s finally, so a failure here must never mask the real run
+     * error. releaseReservedPort() is itself tolerant of an already-released or malformed reservation, so
+     * the two call sites (per-lane on a setup failure, then the sweep at close-out) cannot conflict - the
+     * second call simply finds nothing left to release.
+     *
+     * WHY UNSET AND NOT JUST RELEASE: leaving a released reservation in the array would let a later sweep
+     * hand an already-closed handle to releaseReservedPort() and make double-release look like a bug in
+     * the logs. Removing the entry keeps "present" and "held" the same thing.
+     *
+     * @param int|null $lane Release only this lane's reservation, or ALL of them when NULL
+     */
+    private function releaseLanePortReservations(?int $lane = null): void
+    {
+        $lanes = $lane === null ? array_keys($this->portReservations) : [$lane];
+        foreach ($lanes as $laneNo) {
+            if (! isset($this->portReservations[$laneNo])) {
+                continue;
+            }
+            $this->releaseReservedPort($this->portReservations[$laneNo]);
+            unset($this->portReservations[$laneNo]);
+        }
     }
 
     /**

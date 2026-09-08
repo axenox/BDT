@@ -112,3 +112,47 @@ This line is the earliest visible warning that the server is running short on me
 same condition was invisible, because the browser was simply killed and replaced. If it appears
 repeatedly across lanes, reduce `PARALLEL.MAX_WORKERS` or free memory on the server before the next
 nightly run.
+
+### Parallel run fails with "port is used by a foreign process, refusing to kill it"
+
+**Symptom.** One or more lanes of a scheduled parallel run die at Chrome launch. The lane log
+contains a message from ChromeManager saying the remote-debugging port is held by a process it
+does not recognise as its own, and that it refuses to kill it. The rest of the run continues on
+the remaining lanes, so the run ends with failures but no crash.
+
+**Cause.** The coordinator used to only *probe* a port before handing it to a lane: it opened a
+socket to it and, if nothing answered, considered the port free. But the port is not bound at
+that moment - Chrome binds it seconds later, after the lane config is written, the worker process
+is spawned, Behat initialises and ChromeManager launches the browser. Any other run that probes
+the same port inside that window also sees it as free and takes it as well. Whichever browser
+binds first wins the port; the other lane finds a browser it does not own sitting on its port and
+stops, by design, rather than killing someone else's Chrome.
+
+This could happen when two parallel runs overlapped (for example a scheduled run still finishing
+while the next one started), or when two projects on the same server ended up on the same port
+band because neither had a `bdt_parallel.yml` override and both fell back to the same app-config
+default.
+
+**Fix.** The coordinator no longer just probes: it now *reserves* each lane's port with a
+cross-process lock file (one small file per port, under the installation's port-lock folder), the
+same mechanism the interactive run already used. A port is handed out to at most one run at a
+time, and it stays reserved from the moment the lane picks it until the end of the run - long
+after Chrome has bound it. The reservation is released in the run's close-out, after the lane
+Chrome processes have been cleaned up, so the next run never inherits a port that is still being
+torn down. If a run crashes or is killed, the operating system drops its locks automatically, so
+no port is ever stranded.
+
+**What you may notice.**
+- A lane setup line in the coordinator diagnostic log now reads `lane N ready on port P (reserved)`.
+- Small `port_<number>.lock` files accumulate in the port-lock folder, one per port in the band.
+  They are left behind on purpose and are reused; an existing file does NOT mean the port is busy.
+  Do not delete them while runs are in progress.
+- If every port in the band is taken, a lane reports the band as exhausted and is skipped. That is
+  the same behaviour as before; only the reason can now also be "reserved by another run" rather
+  than only "already in use".
+
+**If it still happens.** Check that the projects sharing the server do not share a port band:
+give each one a `port_band` entry in its `bdt_parallel.yml` next to `behat.yml`. Also make sure
+the accounts that run tests can all write to the port-lock folder - the scheduled fleet and an
+interactive run typically run under different Windows accounts, and a lock file one account
+cannot open is skipped, which shrinks the usable band.

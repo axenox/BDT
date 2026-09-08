@@ -92,33 +92,6 @@ trait PortProbingTrait
     }
 
     /**
-     * Allocates the first currently-free port in the band via a probe, skipping ports already
-     * handed to other lanes in THIS run.
-     *
-     * WHY PROBE INSTEAD OF RESERVE: the worker - not the coordinator - owns its Chrome
-     * lifecycle, so there is no post-launch port the coordinator could "verify and reallocate"
-     * without either killing/relaunching the worker or fighting it for that Chrome. The probe
-     * plus band separation makes collisions rare; the residual race is caught loudly by
-     * ChromeManager's foreign-process guard instead of silently killing someone else's Chrome.
-     *
-     * @param int   $start First port of the band (inclusive)
-     * @param int   $end   Last port of the band (inclusive)
-     * @param int[] $held  Ports already assigned to other lanes in this run
-     */
-    private function allocateFreePort(int $start, int $end, array $held = []): int
-    {
-        for ($port = $start; $port <= $end; $port++) {
-            if (in_array($port, $held, true)) {
-                continue;
-            }
-            if (! $this->isPortBound($port)) {
-                return $port;
-            }
-        }
-        throw new RuntimeException('Port band ' . $start . '-' . $end . ' exhausted - no free port for the next worker');
-    }
-
-    /**
      * Returns TRUE if something is listening on the port (successful socket connect = busy).
      *
      * WHY A SHORT TIMEOUT: 0.2 s per probe keeps a full band scan fast while still being far
