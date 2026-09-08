@@ -1,11 +1,12 @@
 <?php
 namespace axenox\BDT\Behaviors;
 
-use axenox\BDT\Behat\Common\FeatureFileValidator;
 use exface\Core\CommonLogic\Model\Behaviors\AbstractBehavior;
+use exface\Core\DataTypes\GherkinDataType;
 use exface\Core\Events\Action\OnBeforeActionPerformedEvent;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Facades\ConsoleFacade\CliCommandRunner;
+use exface\Core\Interfaces\DataSheets\DataSheetInterface;
 use exface\Core\Interfaces\Model\BehaviorInterface;
 
 /**
@@ -31,11 +32,15 @@ use exface\Core\Interfaces\Model\BehaviorInterface;
  * Configuration in the model:
  *
  *   {
- *     "content_attribute_alias": "content"
+ *     "content_attribute_alias": "contents",
+ *     "strict": true,
+ *     "dry_run": true
  *   }
  *
- * `content_attribute_alias` — alias of the attribute that holds the raw
- * Gherkin text.  Defaults to "content".
+ * `content_attribute_alias` — alias of the attribute that holds the raw Gherkin text.
+ * Defaults to "CONTENTS".
+ * `strict` — set to FALSE to ignore non-fatal convention issues. Default TRUE.
+ * `dry_run` — set to FALSE to skip the Behat dry-run. Default TRUE.
  */
 class FeatureFileValidatingBehavior extends AbstractBehavior
 {
@@ -44,6 +49,12 @@ class FeatureFileValidatingBehavior extends AbstractBehavior
 
     /** @var string Attribute alias read from behavior configuration */
     private string $contentAttributeAlias = self::DEFAULT_CONTENT_ALIAS;
+
+    /** @var bool Whether convention checks of GherkinDataType are applied too */
+    private bool $strict = true;
+
+    /** @var bool Whether the (slow) Behat dry-run is performed after the static checks */
+    private bool $dryRun = true;
 
     /**
      * Registers the pre-save validation listener.
@@ -83,15 +94,14 @@ class FeatureFileValidatingBehavior extends AbstractBehavior
     /**
      * Validates feature file content before a SaveData or UpdateData action is executed.
      *
-     * Reads the input data from the task (not the result, which does not exist
-     * yet at this point), extracts the content column, and runs the static
-     * validator against each row.  If any row contains fatal structural errors,
-     * a RuntimeException is thrown immediately, aborting the action before any
-     * data is written to the database.
+     * Reads the input data from the task (not the result, which does not exist yet at this
+     * point), extracts the content column and validates every row. If any row contains fatal
+     * structural errors, a RuntimeException aborts the action before anything is written to the
+     * database - so no timestamp conflict can occur when the user corrects the error and saves
+     * again.
      *
-     * Rows that do not include the content column are skipped silently —
-     * this handles partial updates (e.g. changing only the status field)
-     * where the content was not transmitted to the server.
+     * Rows without the content column are skipped silently - this handles partial updates (e.g.
+     * changing only the status field) where the content was not transmitted to the server.
      *
      * @param OnBeforeActionPerformedEvent $event
      * @throws RuntimeException when the feature file content contains fatal Gherkin errors.
@@ -100,7 +110,7 @@ class FeatureFileValidatingBehavior extends AbstractBehavior
     {
         $action = $event->getAction();
 
-        // Only act on explicit save/update actions — read-only actions are ignored.
+        // Only act on explicit save/update actions - read-only actions are ignored.
         if (! $action->is('exface.Core.SaveData') && ! $action->is('exface.Core.UpdateData')) {
             return;
         }
@@ -127,97 +137,102 @@ class FeatureFileValidatingBehavior extends AbstractBehavior
             $content = $contentCol->getCellValue($rowNr);
 
             // Skip rows where content is null or empty (not transmitted).
-            if ($content === null || $content === '') {
+            if ($content === null || trim($content) === '') {
                 continue;
             }
 
-            // Step 1: run our own structural checks first — they are fast and produce
-            // precise line-level error messages.  Only proceed to the dry-run if these
-            // pass, because a dry-run on a structurally broken file would produce
-            // confusing parser noise on top of errors we already report clearly.
-            $validationResult = FeatureFileValidator::validate($content);
-            if (! $validationResult->isValid()) {
-                $rowLabel = $this->buildRowLabel($data, $rowNr);
+            // Step 1: the structural checks of the Gherkin data type. They are fast, produce
+            // precise line-level messages and are shared with any other app that needs them.
+            // Only continue to the dry-run if they pass - a dry-run on a structurally broken
+            // file just adds parser noise on top of errors we already report clearly.
+            $errors = GherkinDataType::findErrors($content, $this->isStrict());
+            if ($errors !== []) {
                 throw new RuntimeException(
-                    'Feature file ' . $rowLabel . ' contains errors that would break '
+                    'Feature file ' . $this->buildRowLabel($data, $rowNr) . ' contains errors that would break '
                     . 'the test suite and cannot be saved:' . "\n\n"
-                    . $validationResult->toText()
+                    . GherkinDataType::formatErrors($errors)
                 );
             }
 
-            // Step 2: run a Behat dry-run as a safety net for parser-level errors our
-            // own checks cannot detect (e.g. malformed scenario outlines, illegal
-            // Unicode in keywords, Gherkin dialect mismatches).
-            $dryRunError = $this->runDryRun($content);
-            if ($dryRunError !== null) {
-                $rowLabel = $this->buildRowLabel($data, $rowNr);
-                throw new RuntimeException(
-                    'Feature file ' . $rowLabel . ' failed the Behat dry-run and cannot be saved:' . "\n\n"
-                    . $dryRunError
-                );
+            // Step 2: the Behat dry-run as a safety net for parser-level errors the static
+            // checks cannot detect (malformed outlines, illegal Unicode in keywords, Gherkin
+            // dialect mismatches). Optional, because it starts an external process on every save.
+            if ($this->isDryRunEnabled()) {
+                $dryRunError = $this->runDryRun($content);
+                if ($dryRunError !== null) {
+                    throw new RuntimeException(
+                        'Feature file ' . $this->buildRowLabel($data, $rowNr) . ' failed the Behat dry-run '
+                        . 'and cannot be saved:' . "\n\n" . $dryRunError
+                    );
+                }
             }
         }
     }
 
     /**
-     * Writes the given Gherkin content to a temporary file, runs a Behat dry-run
-     * against it, and returns any parse/syntax error output.
+     * Writes the given Gherkin content to a temporary file, runs a Behat dry-run against it and
+     * returns any parse/syntax error output.
      *
-     * Returns null when the dry-run finds no fatal errors (undefined steps are
-     * intentionally ignored — they produce a non-zero exit code but are not
-     * considered blocking).  Returns a string with the error output when a fatal
-     * parser error is detected.
+     * Returns NULL when the dry-run finds no fatal errors - undefined steps are ignored on
+     * purpose: they produce a non-zero exit code, but they do not stop the suite. Returns the
+     * error text when a real parser error is detected.
      *
-     * The temporary file is always deleted after the run, even when an error occurs.
+     * Everything is written into a private temporary directory created with 0700, because the
+     * content is user data and a predictable name in the shared temp folder is open to symlink
+     * attacks on multi-user servers. The directory is always removed afterwards.
      *
      * @param string $content Raw Gherkin content to validate.
-     * @return string|null Error output from Behat, or null if the file is valid.
+     * @throws RuntimeException if the dry-run itself cannot be executed.
+     * @return string|null Error output from Behat, or NULL if the file is valid.
      */
     private function runDryRun(string $content): ?string
     {
-        // Write content to a temporary feature file and a minimal behat.yml next to it.
-        // The custom config has no suite path restrictions so Behat parses the file
-        // regardless of the project-level behat.yml suite configuration.
-        $tmpDir  = sys_get_temp_dir();
-        $tmpId   = uniqid('bdt_dryrun_', true);
-        $tmpFile = $tmpDir . DIRECTORY_SEPARATOR . $tmpId . '.feature';
-        $tmpConf = $tmpDir . DIRECTORY_SEPARATOR . $tmpId . '.yml';
+        $tmpDir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'bdt_dryrun_' . bin2hex(random_bytes(8));
+        if (! @mkdir($tmpDir, 0700, true) && ! is_dir($tmpDir)) {
+            throw new RuntimeException('Cannot create temporary folder for the feature file dry-run!');
+        }
 
-        file_put_contents($tmpFile, $content);
-        // Minimal Behat config: one default suite pointing directly at the temp file.
-        // No contexts are loaded — dry-run only checks Gherkin syntax, not step definitions.
-        file_put_contents($tmpConf, implode("\n", [
-            'default:',
-            '  suites:',
-            '    default:',
-            '      paths:',
-            '        - ' . str_replace('\\', '/', $tmpFile),
-            '      contexts: []',
-        ]));
+        // A .feature extension is required - the Gherkin loader ignores other files.
+        $tmpFile = $tmpDir . DIRECTORY_SEPARATOR . 'dryrun.feature';
+        $tmpConf = $tmpDir . DIRECTORY_SEPARATOR . 'behat.yml';
 
         try {
+            file_put_contents($tmpFile, $content);
+            // Minimal Behat config: one suite pointing directly at the temp file, so the
+            // project-level behat.yml and its suite filters cannot exclude it. No contexts are
+            // loaded - a dry-run only checks Gherkin syntax, not step definitions.
+            file_put_contents($tmpConf, implode("\n", [
+                'default:',
+                '  suites:',
+                '    default:',
+                '      paths:',
+                '        - ' . str_replace('\\', '/', $tmpFile),
+                '      contexts: []',
+            ]));
+            @chmod($tmpFile, 0600);
+            @chmod($tmpConf, 0600);
+
             $cwd = $this->getWorkbench()->getInstallationPath();
-            // On Windows with IIS, CliCommandRunner falls back to exec() which does not
-            // inherit cwd — so we must use an absolute path to the Behat binary.
-            // The .bat wrapper is called via "cmd /c" because escapeshellarg() wraps the
-            // path in quotes and quoted .bat files are not executable without cmd /c.
+            // On Windows with IIS, CliCommandRunner falls back to exec(), which does not inherit
+            // the cwd - so the Behat binary needs an absolute path. The .bat wrapper is called
+            // via "cmd /c" because a quoted .bat is not executable on its own. The path must be
+            // escaped: installation folders like "C:\Program Files\..." contain spaces.
             if (DIRECTORY_SEPARATOR === '\\') {
-                $behatBin = $cwd . '\\vendor\\bin\\behat.bat';
-                $cmd = 'cmd /c ' . $behatBin . ' --config ' . escapeshellarg($tmpConf) . ' --dry-run --no-colors --format=pretty';
+                $behatBin = escapeshellarg($cwd . '\\vendor\\bin\\behat.bat');
+                $cmd = 'cmd /c ' . $behatBin;
             } else {
-                $cmd = $cwd . '/vendor/bin/behat --config ' . escapeshellarg($tmpConf) . ' --dry-run --no-colors --format=pretty';
+                $cmd = escapeshellarg($cwd . '/vendor/bin/behat');
             }
+            $cmd .= ' --config ' . escapeshellarg($tmpConf) . ' --dry-run --no-colors --format=pretty';
 
             $output = '';
-            // Exit code 0 = all steps defined and dry-run passed.
-            // Exit code 1 = some steps undefined — not a fatal error, ignore.
-            // Any other exit code = real parser/bootstrap failure.
+            // Exit code 0 = dry-run passed. 1 = undefined steps, not fatal. Anything else is a
+            // real parser or bootstrap failure.
             foreach (CliCommandRunner::runCliCommand($cmd, [], 30, $cwd, true, [0, 1]) as $chunk) {
                 $output .= $chunk;
             }
 
-            // Even with exit codes 0/1, Behat may print a parse error in the output.
-            // Detect the canonical Gherkin parse error marker.
+            // Even with exit code 0/1 Behat may print a parse error into the output.
             if (stripos($output, 'ParseException') !== false
                 || stripos($output, 'Lexer Exception') !== false
                 || stripos($output, 'SyntaxException') !== false
@@ -226,22 +241,27 @@ class FeatureFileValidatingBehavior extends AbstractBehavior
             }
 
             return null;
+        } catch (RuntimeException $e) {
+            // Our own errors are already meaningful - do not wrap them again.
+            throw $e;
         } catch (\Throwable $e) {
-            // If the dry-run process itself fails (e.g. Behat binary not found or
-            // timeout), re-throw so the save is blocked — we cannot confirm the file
-            // is valid if the dry-run could not run at all.
+            // If the process itself fails (binary missing, timeout), block the save: we cannot
+            // confirm the file is valid if the dry-run never ran.
             throw new RuntimeException(
                 'Feature file dry-run could not be executed: ' . $e->getMessage(),
                 null,
                 $e
             );
         } finally {
-            // Always clean up the temp file, regardless of success or failure.
+            // Always clean up, regardless of success or failure.
             if (file_exists($tmpFile)) {
                 @unlink($tmpFile);
             }
             if (file_exists($tmpConf)) {
                 @unlink($tmpConf);
+            }
+            if (is_dir($tmpDir)) {
+                @rmdir($tmpDir);
             }
         }
     }
@@ -283,17 +303,17 @@ class FeatureFileValidatingBehavior extends AbstractBehavior
     /**
      * Builds a human-readable label for a data row to include in error messages.
      *
-     * Tries common name/title columns first so the message refers to the feature
-     * file by name rather than a raw UID.  Falls back to the row index when no
-     * recognisable label column is present.
+     * Tries common name/title columns first, so the message refers to the feature file by name
+     * instead of a raw UID. Both upper and lower case aliases are tried because attribute
+     * aliases are case sensitive and most models use upper case.
      *
-     * @param \exface\Core\Interfaces\DataSheets\DataSheetInterface $data
+     * @param DataSheetInterface $data
      * @param int $rowNr Zero-based row index.
      * @return string A short label such as '"My Feature"' or 'row 3'.
      */
-    private function buildRowLabel(\exface\Core\Interfaces\DataSheets\DataSheetInterface $data, int $rowNr): string
+    private function buildRowLabel(DataSheetInterface $data, int $rowNr): string
     {
-        foreach (['name', 'title', 'filename', 'alias'] as $candidate) {
+        foreach (['NAME', 'TITLE', 'FILENAME', 'ALIAS', 'name', 'title', 'filename', 'alias'] as $candidate) {
             $col = $data->getColumns()->get($candidate);
             if ($col !== false && $col !== null) {
                 $value = $col->getCellValue($rowNr);
@@ -319,6 +339,65 @@ class FeatureFileValidatingBehavior extends AbstractBehavior
     public function getContentAttributeAlias(): string
     {
         return $this->contentAttributeAlias;
+    }
+
+    /**
+     * Returns TRUE if the convention checks of the Gherkin data type are applied too.
+     *
+     * @return bool
+     */
+    public function isStrict(): bool
+    {
+        return $this->strict;
+    }
+
+    /**
+     * Set to FALSE to only block saves on errors that break the Gherkin parser.
+     *
+     * Needed for objects that hold imported feature files the user does not control - ragged
+     * tables or duplicate tags in foreign files should not make them unsavable.
+     *
+     * @uxon-property strict
+     * @uxon-type boolean
+     * @uxon-default true
+     *
+     * @param bool $value
+     * @return FeatureFileValidatingBehavior
+     */
+    public function setStrict(bool $value): FeatureFileValidatingBehavior
+    {
+        $this->strict = $value;
+        return $this;
+    }
+
+    /**
+     * Returns TRUE if the Behat dry-run is executed after the static checks.
+     *
+     * @return bool
+     */
+    public function isDryRunEnabled(): bool
+    {
+        return $this->dryRun;
+    }
+
+    /**
+     * Set to FALSE to skip the Behat dry-run and rely on the static checks only.
+     *
+     * The dry-run starts an external process with a 30 second timeout on every single save. On
+     * installations with many concurrent editors this is the dominant cost of saving a feature
+     * file, while the static checks already catch nearly everything.
+     *
+     * @uxon-property dry_run
+     * @uxon-type boolean
+     * @uxon-default true
+     *
+     * @param bool $value
+     * @return FeatureFileValidatingBehavior
+     */
+    public function setDryRun(bool $value): FeatureFileValidatingBehavior
+    {
+        $this->dryRun = $value;
+        return $this;
     }
 
     /**

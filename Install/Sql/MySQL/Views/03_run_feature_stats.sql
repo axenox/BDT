@@ -19,6 +19,12 @@ SELECT
          WHEN MAX(f.finished_on) IS NULL AND TIMESTAMPDIFF(MINUTE, MAX(ss.started_on), NOW()) > 10 THEN 102
          -- Still running within timeout window
          WHEN MAX(f.finished_on) IS NULL THEN 10
+        -- An undefined step means the scenario definition itself is broken: Behat does not
+        -- execute anything after an undefined step, so the remaining verdicts in this scenario carry no
+        -- information. Reported before the failure branch on purpose - a broken definition has to be
+        -- fixed before any failure below it can be judged. Swap this WHEN with the next one if a real
+        -- failure should outrank a broken definition instead.
+         WHEN SUM(CASE WHEN ss.status = 30 THEN 1 ELSE 0 END) > 0 THEN 30
          -- Any failed or timed-out step means the feature failed
          WHEN SUM(ss.status IN (91, 101, 102)) > 0 THEN 101
          -- No passed steps at all (only skipped) means the feature is skipped
