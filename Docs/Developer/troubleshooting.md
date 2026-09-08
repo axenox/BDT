@@ -156,3 +156,32 @@ give each one a `port_band` entry in its `bdt_parallel.yml` next to `behat.yml`.
 the accounts that run tests can all write to the port-lock folder - the scheduled fleet and an
 interactive run typically run under different Windows accounts, and a lock file one account
 cannot open is skipped, which shrinks the usable band.
+
+## "Cannot open path ... in browser after 3 attempts" while the browser is alive and logged in
+
+**Symptom**
+A step fails with `Cannot open path "<page>" in browser after 3 attempts`, but the screenshot
+attached to the failed step shows the application open and the user still logged in.
+
+**Cause**
+Chrome itself was healthy; only the WebSocket (CDP) connection of that lane's Mink session had
+dropped. All three retries were sent over the same dead socket, so they could not succeed. Two
+different situations produced the identical message: a broken navigation, and a broken wait that
+runs immediately before the navigation.
+
+**Fix**
+- When Chrome still answers its debug port, the session is now reattached to the running process
+  instead of retrying over the dead socket. Chrome keeps its cookies, so no re-login happens.
+- The tab left behind by the disconnected session is now closed over Chrome's HTTP debug endpoint.
+  Previously each reattach leaked one tab, adding to the memory pressure that makes lanes fail.
+- The error message now names the failing phase (`pre-navigation wait` or `navigation`) and lists
+  what recovery was attempted on each round, including whether a reattach failed.
+
+**What to check when it still happens**
+Read the `Failing phase` and `Recovery` parts of the message:
+- `Recovery: ... session reattach FAILED` — Chrome answers its debug port but refuses new tabs.
+  Usually memory pressure: check the Chrome process count and free memory on the server.
+- `Failing phase: pre-navigation wait` — the previous page never settled. The navigation itself was
+  never attempted, so look at the step BEFORE this one.
+- `Recovery: ... Chrome not reachable, restart requested` — the process died; see the Chrome
+  process management sections above.
