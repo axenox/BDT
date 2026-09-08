@@ -25,7 +25,9 @@ SELECT
          WHEN MAX(r.finished_on) IS NULL AND DATEDIFF(MINUTE, MAX(ss.started_on), GETDATE()) > 10 THEN 102
          -- Still running within timeout window
          WHEN MAX(r.finished_on) IS NULL THEN 10
-         -- Any failed or timed-out step means the run failed
+        -- Any failed or timed-out step means the run failed. Undefined steps (30) are intentionally
+        -- absent from every branch here: an undefined step is reported at scenario level only and
+        -- must not turn a whole run red - it only shows up in the scenario totals.
          WHEN SUM(CASE WHEN ss.[status] IN (91, 101, 102) THEN 1 ELSE 0 END) > 0 THEN 101
          -- No passed steps at all (only skipped) means the run is skipped
          WHEN SUM(CASE WHEN ss.[status] IN (90, 100) THEN 1 ELSE 0 END) = 0 THEN 98
@@ -57,28 +59,22 @@ FROM
                  JOIN bdt_run_scenario_stats scen ON scen.run_feature_oid = f.oid
         GROUP BY f.run_oid
     ) scen ON scen.run_oid = r.oid
-        LEFT JOIN (
-        SELECT
-            run_oid,
-            COUNT(*) AS features_total,
-            SUM(CASE WHEN [status] IN (90, 100) THEN 1 ELSE 0 END) AS features_passed,
-            SUM(CASE WHEN [status] IN (91, 101, 102) THEN 1 ELSE 0 END) AS features_failed,
-            SUM(CASE WHEN [status] = 98 THEN 1 ELSE 0 END) AS features_skipped
-        FROM (
-                 SELECT
-                     f.run_oid,
-                     f.oid AS run_feature_oid,
-                     CASE
-                         WHEN SUM(CASE WHEN ss.[status] IN (91, 101, 102) THEN 1 ELSE 0 END) > 0 THEN 101
-                         WHEN SUM(CASE WHEN ss.[status] IN (90, 100) THEN 1 ELSE 0 END) > 0 THEN 100
-                         WHEN SUM(CASE WHEN ss.[status] = 98 THEN 1 ELSE 0 END) > 0 THEN 98
-                         ELSE 0
-                         END AS [status]
-                 FROM bdt_run_feature f
-                          LEFT JOIN bdt_run_step_stats ss ON ss.run_feature_oid = f.oid
-                 GROUP BY f.run_oid, f.oid
-             ) feat_stats
-        GROUP BY run_oid
+    LEFT JOIN (
+    -- The feature status used to be re-derived inline here from the step statuses, which
+    -- was a second copy of the CASE that bdt_run_feature_stats already owns - and a copy with
+    -- different rules, since it knew nothing about running or timed-out features and returned 0 for
+    -- a feature without steps. Two copies of the same verdict logic drift apart on the first change.
+    -- Reading the existing view keeps one definition of "what a feature status is" and mirrors how
+    -- the scenario counts above are already assembled.
+    SELECT
+    f.run_oid,
+    COUNT(*) AS features_total,
+    SUM(CASE WHEN fs.[status] IN (90, 100) THEN 1 ELSE 0 END) AS features_passed,
+    SUM(CASE WHEN fs.[status] IN (91, 101, 102) THEN 1 ELSE 0 END) AS features_failed,
+    SUM(CASE WHEN fs.[status] = 98 THEN 1 ELSE 0 END) AS features_skipped
+    FROM bdt_run_feature f
+    JOIN bdt_run_feature_stats fs ON fs.run_feature_oid = f.oid
+    GROUP BY f.run_oid
     ) feat ON feat.run_oid = r.oid
 
 GROUP BY
