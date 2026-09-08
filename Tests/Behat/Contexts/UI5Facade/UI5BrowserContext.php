@@ -2867,17 +2867,42 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $path The relative path to visit
      * @throws \Throwable  The last exception if all attempts fail
      */
+    /**
+     * Overrides Mink's visitPath to add retry logic for transient Chrome WebSocket
+     * disconnections that can occur when the server is slow or Chrome's render
+     * process is under heavy load during page navigation.
+     *
+     * Any caller within the framework automatically benefits from this retry
+     * without needing to implement it themselves — visitPath is the single
+     * point of navigation for all page transitions.
+     *
+     * The failure message reports WHICH phase broke and WHAT recovery was attempted per round.
+     * Without that, a lost pre-navigation wait and a lost navigation are indistinguishable in the
+     * report, and a silently failed session reattach looks exactly like no reattach at all - the
+     * two states that have to be told apart when this error shows up on a browser that is still
+     * visibly alive and logged in.
+     *
+     * @param string $path The relative path to visit
+     * @throws \Throwable  The last exception if all attempts fail
+     */
     public function visitPath($path, $sessionName = null, int $maxAttempts = self::VISIT_RETRY_MAX_ATTEMPTS): void
     {
         $attempt = 0;
+        // Which of the two things inside the try was running when it threw. The distinction is the
+        // whole point: "the browser never settled" and "the navigation itself failed" have
+        // different causes and different fixes, but produce the same exception type here.
+        $phase = 'navigation';
+        $recoveryLog = [];
         while (true) {
             try {
                 // Wait for any pending operations before navigating to ensure the
                 // browser is in a clean state. Skipped on the first visit because
                 // the browser is not yet initialised at that point.
                 if ($this->browser !== null) {
+                    $phase = 'pre-navigation wait';
                     $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
                 }
+                $phase = 'navigation';
                 parent::visitPath($path);
                 return;
             } catch (\Throwable $e) {
@@ -2894,9 +2919,18 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                     // $this->browser instead of getBrowser(): the browser is not initialised yet on
                     // the very first visit, and getBrowser() throws "BDT Browser not initialized!"
                     // there - replacing the real CDP cause with a misleading error.
-                    throw new BrowserDriverException($this->getSession(), 'Cannot open path "' . $path . '" in browser after ' . $attempt . ' attempts. Last driver error: ' . $e->getMessage(), null, $e, $this->browser);
+                    throw new BrowserDriverException(
+                        $this->getSession(),
+                        'Cannot open path "' . $path . '" in browser after ' . $attempt . ' attempts.'
+                        . ' Failing phase: ' . $phase . '.'
+                        . ' Recovery: ' . ($recoveryLog === [] ? 'none attempted' : implode('; ', $recoveryLog)) . '.'
+                        . ' Last driver error: ' . $e->getMessage(),
+                        null,
+                        $e,
+                        $this->browser
+                    );
                 }
-                $this->logDebug('visitPath("' . $path . '") hit a CDP connection error on attempt ' . $attempt . ': ' . $e->getMessage());
+                $this->logDebug('visitPath("' . $path . '") hit a CDP connection error during ' . $phase . ' on attempt ' . $attempt . ': ' . $e->getMessage());
                 // WHY: a CDP error here has two distinct causes needing different handling and the
                 // browser process is the only reliable way to tell them apart.
                 //
@@ -2911,11 +2945,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 // browser. Reattaching the session gives the retry a working connection. Chrome keeps
                 // running, so its cookies - and therefore the login - survive, and no re-login is
                 // needed. A failed reattach is not fatal here: the retry still runs and either
-                // succeeds or ends in the regular error above.
+                // succeeds or ends in the regular error above - but it IS recorded, because a
+                // reattach that never worked is the single most useful fact when triaging this error.
                 if (ChromeManager::getInstance()->isAlive()) {
-                    $this->reconnectSession();
+                    $recoveryLog[] = 'attempt ' . $attempt . ': Chrome alive, session reattach '
+                        . ($this->reconnectSession() ? 'succeeded' : 'FAILED');
                 } else {
                     $this->ensureChromeAlive();
+                    $recoveryLog[] = 'attempt ' . $attempt . ': Chrome not reachable, restart requested';
                 }
                 // CDP transient — give a still-alive-but-slow browser time to settle, then retry.
                 $this->sleepBeforeVisitRetry($attempt);
@@ -2943,6 +2980,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     private function reconnectSession(): bool
     {
+        $manager = ChromeManager::getInstance();
+        // Snapshot taken BEFORE the reconnect: whatever tabs are open right now belong to the
+        // session that is about to be discarded. It is read over HTTP on purpose - that endpoint
+        // is served by the browser process and keeps answering while this session's socket is dead.
+        $tabsBefore = $this->listPageTargetIds($manager);
+
         try {
             // Talking to the broken socket is expected to fail - the point is not a clean
             // shutdown but forcing the driver out of its "started" state so start() reconnects.
@@ -2950,11 +2993,70 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 $this->getSession()->stop();
             } catch (\Throwable $ignored) {}
             $this->getSession()->start();
-            $this->logDebug('Mink session reattached to the running Chrome after a lost CDP connection.');
-            return true;
         } catch (\Throwable $e) {
             $this->logDebug('Could not reattach the Mink session: ' . $e->getMessage());
             return false;
+        }
+
+        // Only after a successful reconnect: a failed one leaves the old tab as the only thing
+        // the run might still be able to fall back on, so it must not be closed.
+        $this->closeTabsLeftBehind($manager, $tabsBefore);
+        $this->logDebug('Mink session reattached to the running Chrome after a lost CDP connection.');
+        return true;
+    }
+
+    /**
+     * Returns the target IDs of Chrome's open page tabs.
+     *
+     * WHY IT FILTERS ON TYPE: /json/list also reports service workers, iframes and extension
+     * targets. Closing one of those would break the browser in ways that look nothing like a tab
+     * leak, so only real pages are ever considered.
+     *
+     * WHY AN EMPTY RESULT IS NOT AN ERROR: getTabList() returns an empty array both when Chrome
+     * has no tabs and when the endpoint could not be reached at all. Callers here treat "no known
+     * tabs" as "nothing to clean up", which is the safe reading of either case.
+     *
+     * @param ChromeManager $manager The manager owning the Chrome process to query.
+     * @return string[] Target IDs of all open page tabs.
+     */
+    private function listPageTargetIds(ChromeManager $manager): array
+    {
+        $ids = [];
+        foreach ($manager->getTabList() as $tab) {
+            if (($tab['type'] ?? null) === 'page' && ($tab['id'] ?? '') !== '') {
+                $ids[] = $tab['id'];
+            }
+        }
+        return $ids;
+    }
+
+    /**
+     * Closes the tabs that the previous, disconnected session left open.
+     *
+     * WHY THE "NEW TAB APPEARED" GUARD: the driver is expected to open a fresh tab on start(), and
+     * only then are the tabs from the snapshot certainly orphaned. If no new tab shows up, the
+     * driver attached to an EXISTING one - closing anything from the snapshot would then close the
+     * tab the session is using at that very moment. Verifying the assumption against Chrome's own
+     * tab list instead of trusting driver behaviour keeps this cleanup from becoming a new failure
+     * mode when the pinned driver version changes.
+     *
+     * WHY IT MATTERS: reconnects happen repeatedly over a long lane, and Chrome memory pressure is
+     * the known root cause of unrecoverable lanes. One leaked tab per reconnect is exactly the kind
+     * of slow leak that only shows up hours into a parallel run.
+     *
+     * @param ChromeManager $manager   The manager owning the Chrome process.
+     * @param string[]      $idsBefore Page target IDs captured before the reconnect.
+     */
+    private function closeTabsLeftBehind(ChromeManager $manager, array $idsBefore): void
+    {
+        $idsAfter = $this->listPageTargetIds($manager);
+        if (array_diff($idsAfter, $idsBefore) === []) {
+            $this->logDebug('Session reattach opened no new tab - leaving the existing tabs untouched.');
+            return;
+        }
+        foreach (array_intersect($idsBefore, $idsAfter) as $staleId) {
+            $manager->closeTab($staleId);
+            $this->logDebug('Closed the tab left behind by the disconnected session: ' . $staleId);
         }
     }
 
