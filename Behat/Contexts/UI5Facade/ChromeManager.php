@@ -100,16 +100,53 @@ class ChromeManager
     private const CFG_CHROME_HEADLESS = 'PARALLEL.CHROME_HEADLESS';
 
     /**
-     * Wall-clock ceiling for a single health probe, in seconds.
+     * Wall-clock ceiling for a single health probe on the hot path, in seconds.
      *
      * WHY SO SHORT: isAlive() runs before EVERY step, so its cost is paid on the hot path.
      * A live Chrome answers /json/version on loopback in single-digit milliseconds; anything
-     * that needs more than this is, for our purposes, not usable as a browser anyway. The
-     * ceiling also bounds the WEDGED case, where Chrome still accepts the TCP connection but
-     * never writes a response - without an explicit timeout such a probe would block forever
-     * and turn the health check itself into the hang it is meant to detect.
+     * slower is worth a closer look. The ceiling also bounds the WEDGED case, where Chrome still
+     * accepts the TCP connection but never writes a response - without an explicit timeout such a
+     * probe would block forever and turn the health check itself into the hang it is meant to detect.
+     *
+     * WHY IT IS NO LONGER THE DEATH VERDICT ON ITS OWN: exceeding this ceiling now only means "not
+     * answering FAST", which is not the same as "dead" - see isAlive() and the confirmation constants
+     * below.
      */
     private const HEALTH_PROBE_TIMEOUT_SECONDS = 2.0;
+
+    /**
+     * Wall-clock ceiling for a CONFIRMATION probe, in seconds.
+     *
+     * WHY LONGER THAN THE HOT-PATH CEILING: a confirmation probe only ever runs after a negative, and
+     * the most common reason for a negative under load is that the machine is swapping - the one
+     * situation in which a healthy browser legitimately needs seconds to answer a loopback request.
+     * Confirming with the same short ceiling would just repeat the original misreading, so the
+     * confirmation deliberately buys the browser more time than the hot path can afford.
+     */
+    private const HEALTH_CONFIRM_TIMEOUT_SECONDS = 4.0;
+
+    /**
+     * Number of confirmation probes attempted after a negative hot-path probe before Chrome is
+     * declared dead.
+     *
+     * WHY CONFIRMATION EXISTS AT ALL: every caller turns a FALSE from isAlive() into a destructive
+     * action - stop() and relaunch, or a full recoverChrome() with re-login. A single slow answer was
+     * therefore enough to kill a perfectly usable browser, and because that happens precisely when the
+     * server is short on memory, it turned one slow lane into a restart storm that made the shortage
+     * worse. A verdict that costs a browser its life has to be evidence, not a single sample.
+     *
+     * WHY IT IS CHEAP WHEN CHROME IS REALLY GONE: a closed port refuses the connection immediately, so
+     * a genuinely dead Chrome is confirmed in milliseconds plus the pauses. Only the ambiguous case -
+     * the port is open but the answer is late - pays the full ceilings, which is exactly where the
+     * extra patience belongs.
+     */
+    private const HEALTH_CONFIRM_ATTEMPTS = 2;
+
+    /**
+     * Pause between confirmation probes, in microseconds. Short enough not to matter next to a Chrome
+     * restart, long enough to let a momentary CPU/IO spike pass instead of resampling it immediately.
+     */
+    private const HEALTH_CONFIRM_PAUSE_MICROSECONDS = 500_000;
 
     /**
      * Private constructor enforces singleton usage via getInstance().
@@ -521,30 +558,34 @@ class ChromeManager
      * Returns TRUE if the Chrome process managed by this instance is reachable and able to
      * serve CDP requests right now.
      *
-     * WHY THIS EXISTS: today a dead Chrome is only discovered INDIRECTLY - some step calls the
-     * Mink session, the driver fails to open its WebSocket, and a low-level socket exception is
-     * thrown from wherever that call happened to be. When that call sits inside a step, the
-     * AfterStep hook can still translate it into a restart; when it sits inside Mink's own
-     * session lifecycle (reset/stop between scenarios), the exception escapes every guard we
-     * own and kills the whole Behat process with exit code 255, taking the entire lane and its
-     * DB recording down with it. A cheap, explicit liveness probe lets callers ASK whether the
-     * browser is usable, instead of finding out by crashing into it.
+     * WHY THIS EXISTS: a dead Chrome would otherwise only be discovered INDIRECTLY - some step calls
+     * the Mink session, the driver fails to open its WebSocket, and a low-level socket exception is
+     * thrown from wherever that call happened to be. When that call sits inside Mink's own session
+     * lifecycle (reset/stop between scenarios), the exception escapes every guard we own and kills the
+     * whole Behat process with exit code 255, taking the entire lane and its DB recording down with it.
+     * A cheap, explicit liveness probe lets callers ASK whether the browser is usable, instead of
+     * finding out by crashing into it.
      *
-     * WHY /json/version AND NOT /json/list: version is the smallest endpoint Chrome serves and
-     * needs no tab enumeration, so it stays cheap enough to run before every step. It answers
-     * the only question asked here - "is a CDP-speaking Chrome listening on our port" - while
-     * tab-level readiness (a navigable page with a WebSocket URL) remains the job of
-     * waitUntilReady() at startup.
+     * WHY A NEGATIVE IS CONFIRMED BUT A POSITIVE IS NOT: the two answers carry very different costs.
+     * A positive is used to KEEP USING a browser that just answered - already proof enough, and it is
+     * the answer on the hot path, so it must stay a single fast probe. A negative is used to KILL a
+     * browser and restart it (often with a full re-login), so a single slow answer must not be enough:
+     * under memory pressure a healthy Chrome routinely needs more than the hot-path ceiling, and
+     * killing it there made the pressure worse and cost the lane its session for nothing.
      *
-     * WHY NOT getPid(): the PID is recorded at launch and is never invalidated when Chrome dies
-     * or is reaped, so a non-null PID proves nothing about the CURRENT state. Only the port
-     * answers.
+     * WHY /json/version AND NOT /json/list: version is the smallest endpoint Chrome serves and needs no
+     * tab enumeration, so it stays cheap enough to run before every step. It answers the only question
+     * asked here - "is a CDP-speaking Chrome listening on our port" - while tab-level readiness (a
+     * navigable page with a WebSocket URL) remains the job of waitUntilReady() at startup.
      *
-     * Never throws: a failed probe IS the answer (FALSE). Callers use it to decide on a restart,
-     * so it must be safe to call from hooks that are forbidden to throw.
+     * WHY NOT getPid(): the PID is recorded at launch and is never invalidated when Chrome dies or is
+     * reaped, so a non-null PID proves nothing about the CURRENT state. Only the port answers.
+     *
+     * Never throws: a failed probe IS the answer (FALSE). Callers use it to decide on a restart, so it
+     * must be safe to call from hooks that are forbidden to throw.
      *
      * @param int|null $port Port to probe; falls back to the currently managed port when omitted
-     * @return bool TRUE if Chrome answered a CDP request within HEALTH_PROBE_TIMEOUT_SECONDS
+     * @return bool TRUE if Chrome answered a CDP request on the fast probe or on any confirmation probe
      */
     public function isAlive(?int $port = null): bool
     {
@@ -554,49 +595,59 @@ class ChromeManager
             return false;
         }
 
-        try {
-            // 127.0.0.1 rather than "localhost" on purpose: on Windows "localhost" may resolve to
-            // ::1 first, and when Chrome only binds IPv4 the probe pays a connect timeout before
-            // falling back - turning a healthy browser into a "dead" verdict.
-            $client   = new Client([
-                // connect_timeout bounds an unreachable port, timeout bounds a wedged Chrome that
-                // accepts the connection but never answers. Both are required: either one alone
-                // leaves a way for the probe to block.
-                'connect_timeout' => self::HEALTH_PROBE_TIMEOUT_SECONDS,
-                'timeout'         => self::HEALTH_PROBE_TIMEOUT_SECONDS,
-                // A non-200 answer is a health verdict, not an exceptional situation - handle it
-                // as data instead of paying for exception unwinding on the hot path.
-                'http_errors'     => false
-            ]);
-            $response = $client->request('GET', 'http://127.0.0.1:' . $port . '/json/version');
-
-            if ($response->getStatusCode() !== 200) {
-                $this->getLogbook()->addLine(
-                    "isAlive({$port}): Chrome answered with HTTP " . $response->getStatusCode() . ' - treating as dead'
-                );
-                return false;
-            }
-
-            $body = json_decode($response->getBody()->__toString(), true);
-            // A CDP-capable Chrome always advertises a browser-level WebSocket endpoint here.
-            // Requiring it rules out the case where some FOREIGN service occupies our port and
-            // happens to answer 200 - attaching to that would fail in a far more confusing way.
-            if (! is_array($body) || ($body['webSocketDebuggerUrl'] ?? '') === '') {
-                $this->getLogbook()->addLine(
-                    "isAlive({$port}): the listener on this port is not a CDP endpoint - treating as dead"
-                );
-                return false;
-            }
-
+        // Hot path: one fast probe, and an answer ends it here at the original cost.
+        if ($this->probeCdpEndpoint($port, self::HEALTH_PROBE_TIMEOUT_SECONDS)) {
             return true;
-        } catch (\Throwable $e) {
-            // Connection refused, DNS, timeout, malformed response - all mean the same thing to
-            // the caller. Logged (not swallowed silently) so a flapping browser is traceable.
-            $this->getLogbook()->addLine(
-                "isAlive({$port}): probe failed - " . get_class($e) . ' - ' . $e->getMessage()
-            );
-            return false;
         }
+
+        for ($attempt = 1; $attempt <= self::HEALTH_CONFIRM_ATTEMPTS; $attempt++) {
+            usleep(self::HEALTH_CONFIRM_PAUSE_MICROSECONDS);
+            if ($this->probeCdpEndpoint($port, self::HEALTH_CONFIRM_TIMEOUT_SECONDS)) {
+                // Reported deliberately: a browser that only answers on confirmation is the earliest
+                // visible symptom of a server running out of memory. It used to be invisible because
+                // the browser was simply killed and replaced, which hid the cause behind its effect.
+                $this->getLogbook()->addLine(
+                    "isAlive({$port}): no answer within " . self::HEALTH_PROBE_TIMEOUT_SECONDS
+                    . ' s but answered on confirmation attempt ' . $attempt
+                    . ' - Chrome is SLOW, not dead. Not restarting it. Check server memory/CPU load.'
+                );
+                return true;
+            }
+        }
+
+        $this->getLogbook()->addLine(
+            "isAlive({$port}): declared dead after 1 fast probe and " . self::HEALTH_CONFIRM_ATTEMPTS
+            . ' confirmation probe(s)'
+        );
+        return false;
+    }
+
+    /**
+     * Performs ONE CDP liveness probe against a port and reports whether a CDP-speaking Chrome answered.
+     *
+     * WHY IT IS SEPARATE FROM isAlive(): isAlive() now issues several probes with different ceilings,
+     * so the single-probe question and the verdict built from it are two different concerns. Keeping
+     * the probe here means every attempt asks the port the exact same question, and only the timeout
+     * differs between them.
+     *
+     * WHY IT GOES THROUGH runGuzzleApi(): that method already owns the one correct way to call a CDP
+     * HTTP endpoint - explicit connect and read timeouts, 127.0.0.1 rather than "localhost", and errors
+     * turned into an empty result instead of an exception. Building a second Guzzle client here would
+     * be a duplicate of it that could silently drift (an unbounded default timeout in one of the two
+     * would make the probe hang forever, defeating the whole health check).
+     *
+     * WHY THE webSocketDebuggerUrl CHECK: a CDP-capable Chrome always advertises a browser-level
+     * WebSocket endpoint. Requiring it rules out the case where some FOREIGN service occupies our port
+     * and happens to answer 200 - attaching to that would fail in a far more confusing way.
+     *
+     * @param int   $port           Port to probe
+     * @param float $timeoutSeconds Wall-clock ceiling for this single probe
+     * @return bool TRUE if a CDP-speaking Chrome answered within the ceiling
+     */
+    private function probeCdpEndpoint(int $port, float $timeoutSeconds): bool
+    {
+        $body = $this->runGuzzleApi('http://127.0.0.1:' . $port . '/json/version', $timeoutSeconds);
+        return ($body['webSocketDebuggerUrl'] ?? '') !== '';
     }
 
     /**
@@ -785,7 +836,7 @@ class ChromeManager
      * Sends a GET request to a Chrome DevTools Protocol HTTP endpoint and returns the decoded JSON body.
      *
      * A new Guzzle client is created per call because Chrome's CDP endpoints are only
-     * queried occasionally (startup polling, tab diagnostics) and do not warrant a
+     * queried occasionally (startup polling, health probes, tab diagnostics) and do not warrant a
      * persistent HTTP client. Guzzle exceptions are caught, logged, and swallowed so
      * that callers such as waitUntilReady() can simply retry on the next iteration.
      *
@@ -795,18 +846,25 @@ class ChromeManager
      * to re-evaluate its wall-clock condition. The whole "give up after N seconds" contract of
      * every caller therefore depends on the two timeouts below being set here.
      *
-     * @param string $url Full URL of the CDP endpoint (e.g. http://127.0.0.1:9222/json/list)
+     * WHY THE CEILING IS A PARAMETER: isAlive() deliberately probes with two different ceilings - a
+     * short one on the hot path and a longer one when confirming a negative before a browser is killed.
+     * Passing the ceiling in keeps both of them on this single, correctly-bounded HTTP path instead of
+     * forcing a second client to exist for the slower probe.
+     *
+     * @param string     $url            Full URL of the CDP endpoint (e.g. http://127.0.0.1:9222/json/list)
+     * @param float|null $timeoutSeconds Wall-clock ceiling; defaults to the hot-path probe ceiling
      * @return array Decoded JSON response body, or an empty array on any error
      */
-    private function runGuzzleApi(string $url): array
+    private function runGuzzleApi(string $url, ?float $timeoutSeconds = null): array
     {
+        $timeout = $timeoutSeconds ?? self::HEALTH_PROBE_TIMEOUT_SECONDS;
         try {
             $client   = new Client([
                 // connect_timeout bounds a closed port, timeout bounds a Chrome that accepts the
                 // connection but never writes a response. Both are needed - either alone still
                 // leaves a path for the call to hang indefinitely.
-                'connect_timeout' => self::HEALTH_PROBE_TIMEOUT_SECONDS,
-                'timeout'         => self::HEALTH_PROBE_TIMEOUT_SECONDS
+                'connect_timeout' => $timeout,
+                'timeout'         => $timeout
             ]);
             $response = $client->request('GET', $url);
 

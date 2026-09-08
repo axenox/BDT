@@ -79,3 +79,36 @@ Affected paths: `ChromeManager::stop()`, `RunParallel::cleanupLaneChromes()`,
 Nothing is lost — the next run's startup sweep reclaims what was skipped. Repeated warnings mean the
 server is under real resource pressure; check free memory and the number of running `chrome.exe`
 processes before the next nightly run.
+
+## Chrome was restarted (or the login replayed) although the browser was fine
+
+### Symptom
+- Lane logs show repeated Chrome restarts / `recoverChrome()` runs on a run that otherwise looks
+  healthy, often several lanes at once.
+- Steps fail with `Connection timeout: Empty read; connection dead?` while screenshots of the same
+  step are still being captured — i.e. the browser was demonstrably alive.
+- Gets dramatically worse the closer the server is to running out of memory.
+
+### Cause
+`ChromeManager::isAlive()` asked Chrome's `/json/version` endpoint exactly once with a 2-second
+ceiling, and every caller turned a negative into a destructive action: kill the browser, start a new
+one, and replay the login. Two seconds is generous for an idle server and far too little for one that
+is swapping, so healthy-but-slow browsers were killed. Each restart added load, which made the next
+probe more likely to time out — a restart storm that amplified the original resource shortage.
+
+### Fix
+The verdict is now asymmetric. A positive answer on the first fast probe is accepted immediately, so
+the per-step cost is unchanged. A negative is confirmed by two further probes with a longer ceiling
+before Chrome is declared dead. A closed port still refuses instantly, so a genuinely dead Chrome is
+confirmed in about a second; only the ambiguous "port open, answer late" case pays the longer waits.
+
+### What to look for in the logs
+A browser that fails the fast probe but answers a confirmation probe now logs:
+
+    isAlive(<port>): no answer within 2 s but answered on confirmation attempt N - Chrome is SLOW,
+    not dead. Not restarting it. Check server memory/CPU load.
+
+This line is the earliest visible warning that the server is running short on memory. Previously the
+same condition was invisible, because the browser was simply killed and replaced. If it appears
+repeatedly across lanes, reduce `PARALLEL.MAX_WORKERS` or free memory on the server before the next
+nightly run.
