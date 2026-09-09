@@ -2,7 +2,7 @@
 namespace axenox\BDT\Behaviors;
 
 use exface\Core\CommonLogic\Model\Behaviors\AbstractBehavior;
-use exface\Core\DataTypes\GherkinDataType;
+use axenox\BDT\DataTypes\GherkinDataType;
 use exface\Core\Events\Action\OnBeforeActionPerformedEvent;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Facades\ConsoleFacade\CliCommandRunner;
@@ -15,7 +15,7 @@ use exface\Core\Interfaces\Model\BehaviorInterface;
  * Attach this behavior to the meta object that stores feature file records
  * (e.g. axenox.BDT.feature_file).  Whenever a SaveData or UpdateData action
  * is performed on that object, this behavior reads the content column from
- * the input data, runs FeatureFileValidator::validate() against it, and throws
+ * the input data, runs GherkinDataType::findErrors() against it, and throws
  * a RuntimeException if any fatal structural errors are found — which causes
  * PowerUI to abort the save before it reaches the database.
  *
