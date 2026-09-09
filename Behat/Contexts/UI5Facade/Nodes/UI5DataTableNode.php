@@ -1309,7 +1309,11 @@ JS
                     $logbook->addLine('Skipping button ' . $buttonWidget->getCaption() . ' because it has no action');
                     continue 2;
                 case $action->getInputRowsMin() > 0:
-                    $this->ensureRowSelectedForAction($action);
+                    if (! $this->ensureRowSelectedForAction($action)) {
+                        $skippedButtons['Action requires selected rows, but the table has none'][] = $buttonWidget->getCaption();
+                        $logbook->addLine('Skipping button `' . $buttonWidget->getCaption() . '` - its action requires selected rows, but the table has no rows to select');
+                        continue 2;
+                    }
                     break;
                 default:
                     continue 2;
