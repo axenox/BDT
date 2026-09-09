@@ -2,6 +2,7 @@
 namespace axenox\BDT\DataTypes;
 
 use exface\Core\DataTypes\CodeDataType;
+use exface\Core\DataTypes\StringDataType;
 
 /**
  * Data type for Gherkin source code (Cucumber / Behat `.feature` files) with structural validation.
