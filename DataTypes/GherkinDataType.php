@@ -1,6 +1,8 @@
 <?php
 namespace axenox\BDT\DataTypes;
 
+use exface\Core\DataTypes\CodeDataType;
+
 /**
  * Data type for Gherkin source code (Cucumber / Behat `.feature` files) with structural validation.
  *
