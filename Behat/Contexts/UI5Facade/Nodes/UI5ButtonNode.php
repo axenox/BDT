@@ -200,18 +200,39 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
         // Substep should fail if the page cannot be loaded (shows an error) - otherwise the substep for
         // the click is passed, and we go on checking the page
 
+        // A click can produce an error message instead of the expected dialog. That popup is modal, so
+        // every following click of this run would land on its overlay - including the retries below,
+        // which would waste two more attempts on a screen that cannot react. Dismissing it here is
+        // what unblocks the rest of the scenario.
+        // WHY THE BROWSER HELPER: it targets `.sapMDialogError` only, so it can never close the
+        // dialog that hosts the triggering button. An earlier version closed the first `.sapMDialog`
+        // in document order instead, which in a nested dialog is the outer one - checking a widget
+        // inside a dialog tore down the dialog it lived in.
         $attempt = 0;
+        $errorDialogDismissed = false;
         $logbook->addLine('Clicking Button [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
         do {
             $this->click();
             $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
             $dialogNodeElement = $this->getSession()->getPage()->findById($expectedId);
+            if ($dialogNodeElement === null && $this->getBrowser()->dismissErrorDialogIfPresent()) {
+                // Retrying is pointless once the button has answered with an error: the same click
+                // produces the same error. Stop here so the assertion below reports the real cause.
+                $errorDialogDismissed = true;
+                break;
+            }
             $attempt++;
         } while ($attempt < 3 && $dialogNodeElement === null);
 
+        if ($errorDialogDismissed) {
+            $logbook->addLine('Button `' . $this->getCaption() . '` showed an error message instead of dialog `' . $expectedId . '` - error dialog dismissed to continue the scenario');
+        }
+
         Assert::assertNotNull(
             $dialogNodeElement,
-            'Cannot find dialog with id `' . $expectedId . '` after clicking button `' . $widget->getCaption() . '`.'
+            $errorDialogDismissed
+                ? 'Button `' . $widget->getCaption() . '` showed an error message instead of opening dialog `' . $expectedId . '`.'
+                : 'Cannot find dialog with id `' . $expectedId . '` after clicking button `' . $widget->getCaption() . '`.'
         );
 
         $logbook->addIndent(+1);
@@ -234,22 +255,63 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
             $result = SubstepResult::createFailed($e, $logbook);
             $logbook->addLine('**Failed** to check if dialog `' . $expectedId . '` works as expected - skipping to next widget. ' . CliOutputPrinter::printExceptionMessage($e));
         } finally {
-            $this->closeErrorDialog();
+            // Runs on both paths: the check normally closes the dialog through its own close button,
+            // but a failed or incomplete check leaves it open and modal for everything that follows.
+            $this->closeDialogIfOpen($expectedId);
         }
         return $result;
     }
 
-    public function closeErrorDialog(): void
+    /**
+     * Closes the checked dialog if it is still open after the check finished.
+     *
+     * WHY THIS IS NEEDED: a dialog normally closes itself through its own close button while being
+     * checked, but a dialog whose check failed halfway - or one without a close button - stays on
+     * screen. It is modal, so every following widget of the surrounding container would be searched
+     * underneath its overlay and fail for a reason that has nothing to do with that widget.
+     *
+     * WHY THE ID INSTEAD OF "THE TOPMOST DIALOG": nested dialogs make document order and CSS state
+     * unsafe identities. An earlier version closed the first `.sapMDialog` in document order, which
+     * in a nested situation is the OUTER one - checking a widget inside a dialog tore down the
+     * dialog hosting it. The opening path already knows exactly which dialog it opened.
+     *
+     * WHY THE CONTROL ID IS DERIVED FROM THE DOM: the widget element id is not guaranteed to be the
+     * sap.m.Dialog control id - it can belong to an element rendered inside the dialog. Walking up
+     * to the closest `.sapMDialog` yields the element whose id the UI5 core registry knows.
+     *
+     * WHY THIS IS NOT THE ERROR-MESSAGE CLEANUP: an error popup shown instead of the expected dialog
+     * is dismissed right after the click by UI5Browser::dismissErrorDialogIfPresent(), which targets
+     * `.sapMDialogError`. This method only collects a checked dialog that outlived its check.
+     *
+     * @param string $dialogId
+     * @return void
+     */
+    protected function closeDialogIfOpen(string $dialogId): void
     {
-        $this->getSession()->executeScript("
-            var dialogEl = document.querySelector('.sapMDialog');
-            if (dialogEl) {
-                var dialog = sap.ui.getCore().byId(dialogEl.id);
-                if (dialog) {
-                    dialog.close();
-                }
-            }
-        ");
+        $dialogIdJs = json_encode($dialogId, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $this->getSession()->executeScript(<<<JS
+(function(dialogId) {
+    var element = document.getElementById(dialogId);
+    if (!element || typeof element.closest !== 'function' || typeof sap === 'undefined') {
+        return;
+    }
+    var dialogEl = element.closest('.sapMDialog');
+    if (!dialogEl) {
+        return;
+    }
+    var dialog = sap.ui.getCore().byId(dialogEl.id);
+    if (!dialog || typeof dialog.close !== 'function') {
+        return;
+    }
+    // isOpen() is the authoritative state: a dialog that closed itself can still be in the DOM
+    // during its closing animation, and calling close() again would fight that animation.
+    if (typeof dialog.isOpen === 'function' && dialog.isOpen() === false) {
+        return;
+    }
+    dialog.close();
+}({$dialogIdJs}));
+JS
+        );
     }
 
     public function checkDisabled(): bool
