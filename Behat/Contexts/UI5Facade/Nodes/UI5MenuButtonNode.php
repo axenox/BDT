@@ -4,6 +4,7 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
+use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use axenox\BDT\Interfaces\TestResultInterface;
 use Behat\Mink\Element\NodeElement;
@@ -11,7 +12,7 @@ use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Interfaces\Widgets\iHaveButtons;
-use exface\Core\Widgets\DataTable;
+use exface\Core\Interfaces\Widgets\iShowData;
 
 /**
  * Facade node for UI5 MenuButton widgets (e.g. the "Aktionen" toolbar button).
@@ -152,9 +153,19 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
             // have to absorb every such entry, and each first attempt would be recorded as a
             // real failure in the test report.
             $entryAction = $entryWidget->getAction();
-            if ($table !== null && $entryAction !== null && !$table->ensureRowSelectedForAction($entryAction)) {
-                $logbook->addLine('Skipping menu item `' . $entryWidget->getCaption() . '` - its action requires a selected row, but the table has no rows to select');
-                continue;
+            if ($table !== null && $entryAction !== null) {
+                $selectionSkipReason = $table->getRowSelectionSkipReason($entryAction);
+                if ($selectionSkipReason !== null) {
+                    $logbook->addLine('Skipping menu item `' . $entryWidget->getCaption() . '` - ' . $selectionSkipReason);
+                    $this->logSubstep(
+                        'Skipped menu item: ' . $entryWidget->getCaption(),
+                        StepStatusDataType::SKIPPED,
+                        $selectionSkipReason,
+                        static::CATEGORY_BUTTONS
+                    );
+                    continue;
+                }
+                $table->ensureRowSelectedForAction($entryAction);
             }
             // Open the menu and read the entry's enabled state from aria-disabled
             // (the <li> carries no `disabled` attribute, so UI5ButtonNode::checkDisabled
@@ -167,6 +178,18 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
             // Some actions enable only for specific rows. If the entry is disabled,
             // walk the first-page rows until one enables it. The popover is modal, so
             // the menu must be closed to select a row and reopened to re-check.
+            if ($isDisabled && $table !== null && !$table->supportsRowSelection()) {
+                $reason = $table->getWidgetType() . ' does not support row selection needed to find a row that enables this menu item';
+                $logbook->addLine('Skipping menu item `' . $entryWidget->getCaption() . '` - ' . $reason);
+                $this->logSubstep(
+                    'Skipped menu item: ' . $entryWidget->getCaption(),
+                    StepStatusDataType::SKIPPED,
+                    $reason,
+                    static::CATEGORY_BUTTONS
+                );
+                $this->closeMenuIfOpen();
+                continue;
+            }
             if ($isDisabled && $table !== null) {
                 $this->closeMenuIfOpen();
                 $ready = $table->selectEachRowUntil(function () use ($entryId, &$entryEl) {
@@ -385,14 +408,14 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
     }
 
     /**
-     * Returns the DataTable node that owns this MenuButton, or null if the button is
-     * not inside a DataTable.
+        * Returns the table-compatible data node that owns this MenuButton, or null if the button is
+        * not inside a supported data widget.
      *
      * Why this exists:
      * Menu entries whose action requires selected rows can only be triggered after a
-     * row is selected in the owning table. The MenuButton sits in the DataTable
-     * toolbar, so the table node is resolved by walking up the widget model to the
-     * closest DataTable ancestor and locating its rendered node.
+    * row is selected in the owning data widget. The MenuButton sits in its toolbar, so the node
+    * is resolved by walking up the widget model to the closest iShowData ancestor and locating
+    * its rendered node. This includes DataSpreadSheet, whose node provides renderer-backed selection.
      *
      * WHY THE WIDGET MODEL IS WALKED INSTEAD OF THE DOM: once the MenuButton overflows into the
      * DataTable toolbar's "..." popover, its DOM subtree is rendered inside that popover and is no
@@ -408,7 +431,7 @@ class UI5MenuButtonNode extends UI5AbstractNode implements FacadeNodeInterface
     protected function getOwningDataTableNode(): ?UI5DataTableNode
     {
         $tableWidget = $this->getWidget()->getParent();
-        while ($tableWidget !== null && !($tableWidget instanceof DataTable)) {
+        while ($tableWidget !== null && !($tableWidget instanceof iShowData)) {
             $tableWidget = $tableWidget->getParent();
         }
         if ($tableWidget === null) {
