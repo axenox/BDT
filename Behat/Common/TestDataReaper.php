@@ -65,7 +65,7 @@ final class TestDataReaper
      * rows the feature creates - a scenario in my.SalesApp routinely writes into a shared master-data
      * app. Those apps have no features of their own, so nothing would ever put them in scope.
      */
-    private const CFG_INCLUDE_APPS = 'TEST_DATA_CLEANUP.INCLUDE_APPS';
+    public const CFG_INCLUDE_APPS = 'TEST_DATA_CLEANUP.INCLUDE_APPS';
     private const CFG_EXCLUDE_OBJECTS = 'TEST_DATA_CLEANUP.EXCLUDE_OBJECTS';
     private const CFG_OBJECT_FILTERS  = 'TEST_DATA_CLEANUP.OBJECT_FILTERS';
     private const CFG_MAX_PASSES      = 'TEST_DATA_CLEANUP.MAX_PASSES';
