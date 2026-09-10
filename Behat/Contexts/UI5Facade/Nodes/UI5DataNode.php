@@ -111,7 +111,12 @@ class UI5DataNode extends UI5AbstractNode
 
     public function getCaption(): string
     {
-        return strstr($this->getNodeElement()->getAttribute('aria-label'), "\n", true);
+        $label = $this->getNodeElement()->getAttribute('aria-label');
+        if ($label === null || $label === '') {
+            return '';
+        }
+        $firstLine = strstr($label, "\n", true);
+        return trim($firstLine === false ? $label : $firstLine);
     }
 
     public function getWidgetType(): ?string

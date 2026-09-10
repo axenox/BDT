@@ -104,20 +104,12 @@ class UI5FacadeNodeFactory
      */
     public static function createFromWidgetType(string $widgetType, NodeElement $nodeElement, Session $session, UI5Browser $browser, ?WidgetInterface $widget = null): FacadeNodeInterface
     {
-        try {
-            // Resolve the appropriate node class for the widget type
-            $class = self::getNodeClassForWidgetType($widgetType);
-            // FIXME Find the outer node with the .exfw class (ideally matching the $widgetType). For DataTable: <div class="exfw exfw-DataTable".
-            // $nodeElement = $class::findWidgetNode($nodeElement);
-            // Create and return a new node instance
-            return new $class($nodeElement, $session, $browser, $widget);
-        } catch (Exception $e) {
-            // Detailed Error Info
-            echo "Error in createFromWidgetType: " . $e->getMessage() . "\n";
-            echo "Widget Type: " . $widgetType . "\n";
-            echo "Class Exists: " . (class_exists(UI5ButtonNode::class) ? 'Yes' : 'No') . "\n";
-            throw $e;
-        }
+        // Resolve the appropriate node class for the widget type
+        $class = self::getNodeClassForWidgetType($widgetType);
+        // FIXME Find the outer node with the .exfw class (ideally matching the $widgetType). For DataTable: <div class="exfw exfw-DataTable".
+        // $nodeElement = $class::findWidgetNode($nodeElement);
+        // Create and return a new node instance
+        return new $class($nodeElement, $session, $browser, $widget);
     }
 
     /**
