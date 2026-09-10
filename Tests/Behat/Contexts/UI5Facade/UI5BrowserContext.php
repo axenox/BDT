@@ -1608,25 +1608,24 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-    * Checks that one or more columns of an editable spreadsheet are read-only (not editable).
-     *
+     * Checks that one or more columns of an editable spreadsheet are read-only (not editable).
      * A DataSpreadSheet is the Excel-like editing grid used in some pages. Use this step to
-    * confirm that the comma-separated columns cannot be edited by the user - every cell in each
-    * column must be marked read-only, otherwise the step fails and tells you which row was editable.
-     *
+     * confirm that the comma-separated columns cannot be edited by the user - every cell in each
+     * column must be marked read-only, otherwise the step fails and tells you which row was editable.
+     * Focusing a spreadsheet first (e.g. "I look at 'SpreadSheet' no. 1") is required.
+     * 
      * Usage example:
-     *
-     *   Then the column "ID" in data spreadsheet should be disabled
-    *   Then the column "Created by, Modified by" in data spreadsheet should be disabled
-     *
+     * When I look at "SpreadSheet" no. 1
+     * Then the column "ID" in data spreadsheet should be disabled
+     * Then the column "Created by, Modified by" in data spreadsheet should be disabled
+     * 
      * @Then the column :columnName in data spreadsheet should be disabled
-     *
-    * @param string $columnName Comma-separated captions of spreadsheet columns to check
-     * @throws \Exception
-     */
+     * 
+     * @param string $columnName Comma-separated captions of spreadsheet columns to check
+    */
     public function theColumnInDataSpreadsheetShouldBeDisabled(string $columnName): void
     {
-        $nodes = $this->getBrowser()->findWidgetNodes('DataSpreadSheet', 15);
+        $nodes = $this->getBrowser()->getFocusedNode();
         $node = $nodes[0] ?? null;
         Assert::assertInstanceOf(UI5DataSpreadSheetNode::class, $node, 'No DataSpreadSheet widget found.');
 
@@ -1655,24 +1654,28 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-      * Fills one or more consecutive rows of an editable spreadsheet.
+     * Fills one or more consecutive rows of an editable spreadsheet - but it does need a 
+     * spreadsheet to be focused first.
      *
-      * WHY BOTH TABLE SHAPES ARE ACCEPTED: feature files commonly express spreadsheet rows as
-      * captions followed by values, while older scenarios use "Column" and "Value" pairs. Behat's
-      * getHash() represents these shapes differently, so normalising them here keeps feature-table
-      * interpretation in the step and guarantees the node receives typed captions and values.
+     * WHY BOTH TABLE SHAPES ARE ACCEPTED: feature files commonly express spreadsheet rows as
+     * captions followed by values, while older scenarios use "Column" and "Value" pairs. Behat's
+     * getHash() represents these shapes differently, so normalising them here keeps feature-table
+     * interpretation in the step and guarantees the node receives typed captions and values.
      *
      * Usage examples:
      *
+     *   When I look at "SpreatSheet" no. 1
      *   When I fill the row 2 of data spreadsheet with:
      *     | Column   | Value      |
      *     | Name     | Widget A   |
      *     | Quantity | 10         |
      *
+     *   When I look at "SpreatSheet" no. 3
      *   When I fill the last row of data spreadsheet with:
      *     | Column   | Value      |
      *     | Name     | Widget B   |
      *
+     *   When I look at "SpreatSheet" no. 2
      *   When I fill the row 4 of data spreadsheet with:
      *     | Farbe | Von (Tage) |
      *     | lila  | 8          |
@@ -1687,7 +1690,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iFillTheNthRowOfDataSpreadsheetWith(TableNode $table, int|string|null $rowIndex = null): void
     {
-        $nodes = $this->getBrowser()->findWidgetNodes('DataSpreadSheet', 15);
+        $nodes = $this->getBrowser()->getFocusedNode();
         $node = $nodes[0] ?? null;
         Assert::assertInstanceOf(UI5DataSpreadSheetNode::class, $node, 'No DataSpreadSheet widget found.');
         $rowNumber = $rowIndex === null || strtolower((string) $rowIndex) === 'last'
