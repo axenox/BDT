@@ -2,8 +2,10 @@
 namespace axenox\BDT\Behat\DatabaseFormatter;
 
 use axenox\BDT\Behat\Common\ExpectedTestCountCalculator;
+use axenox\BDT\Behat\Common\LeafFirstDeleter;
 use axenox\BDT\Behat\Common\RunRecordWriter;
 use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
+use axenox\BDT\Behat\Common\TestDataReaper;
 use axenox\BDT\Behat\Common\Traits\DeadlockRetryTrait;
 use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
 use axenox\BDT\Behat\Events\AfterPageVisited;
@@ -97,10 +99,23 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private const CLEANUP_DELETE_BATCH = 'CLEANUP.DELETE_BATCH';
 
     /**
+     * App-config key holding the retention window (in days) for the DATA the test users created.
+     *
+     * Separate from CLEANUP.DAYS_TO_KEEP on purpose - see cleanUpTestData().
+     */
+    private const CLEANUP_TEST_DATA_DAYS_TO_KEEP = 'CLEANUP.TEST_DATA_DAYS_TO_KEEP';
+
+    /**
      * Fallback batch size when CLEANUP.DELETE_BATCH is not configured, so cleanup stays bounded even
      * on an installation that set the retention age but not an explicit batch.
      */
     private const DELETE_BATCH_DEFAULT = 100;
+    
+    /**
+     * Title of the log entry that carries the full test data cleanup report. The popup message
+     * points to it, so both must use the same text.
+     */
+    private const TEST_DATA_LOG_TITLE = 'BDT test data cleanup';
 
     /**
      * Reason why the current scenario is NOT being recorded, or null while a scenario is open.
@@ -1726,35 +1741,120 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     }
 
     /**
-     * Deletes expired BDT test runs and lets the model cascade take care of everything below them.
+     * Runs both retention jobs of this app: expired test runs and expired test-user data.
      *
-     * WHY parent-only: the delete logic must stay in ONE place. run_feature, run_scenario, run_step
-     * and run_step_screenshot are all reachable from run through delete-with-related-object
-     * relations, so removing the run row is the single instruction that expresses "this run and
-     * everything it produced is gone". Enumerating the children here would duplicate knowledge that
-     * already lives in the meta model and would silently rot whenever the model changes.
+     * WHY BOTH IN ONE LISTENER: the workbench fires OnCleanUpEvent once, and an operator running
+     * CleanUp expects "the BDT housekeeping" to have happened - not one half of it.
      *
-     * WHY one transaction: a half-deleted run (run_feature gone, run_step left behind) is worse than
-     * no cleanup at all, because the orphans are unreachable through the model and can only be found
-     * by hand in SQL. Either the whole tree goes or nothing does.
+     * WHY THE DATA JOB IS IN A finally: cleanUpTestRuns() deliberately re-throws so a broken result
+     * delete stays visible. Without the finally that throw would also silently skip the data job, and
+     * the garbage this feature exists to remove would keep growing for as long as the run cleanup is
+     * broken. The data job never throws itself, so the original error still propagates unchanged.
      *
-     * WHY the pass is capped and oldest-first: deleting a large backlog in one go can exhaust memory
-     * on the results database - the very failure this cleanup fights. The pass therefore takes at
-     * most CLEANUP.DELETE_BATCH runs, sorted oldest first, so each scheduled run drains a bounded
-     * slice of the backlog and the next one continues where this one stopped. Sorting matters: an
-     * unsorted limited read would pick an arbitrary slice and could leave the oldest runs - the ones
-     * the retention window is actually about - alive indefinitely.
-     *
-     * WHY addResultMessage instead of a return value: OnCleanUpEvent ignores whatever the listener
-     * returns, so the only way to report back to the operator running the CleanUp is the event itself.
-     *
-     * KNOWN LIMITATION - screenshots live in a file data source. File deletes are NOT part of the
-     * transaction, so a rollback after the files are gone cannot bring them back.
+     * WHY RESULTS FIRST: removing expired runs frees the rows the data job is most likely to contend
+     * with on the results database, and it is the older, proven job - if the host is under pressure,
+     * the job that already works should be the one that completes.
      *
      * @param OnCleanUpEvent $event
      * @return void
      */
     public static function onCleanUp(OnCleanUpEvent $event) : void
+    {
+        try {
+            self::cleanUpTestRuns($event);
+        } finally {
+            self::cleanUpTestData($event);
+        }
+    }
+
+    /**
+     * Deletes all run_step rows belonging to the given runs in leaf-to-root order.
+     *
+     * WHY this exists: bdt_run_step.parent_step_oid references bdt_run_step.oid with ON DELETE
+     * RESTRICT. MS SQL Server forbids ON DELETE CASCADE on a self-referencing table, so the database
+     * cannot be taught this order and the constraint cannot simply be relaxed - the order has to come
+     * from the application. Doing it here rather than per call site keeps the cleanup a single unit.
+     *
+     * WHY depth is computed in PHP: expressing "has no remaining children" as a data sheet filter
+     * would mean one query per hierarchy level. One flat read plus an in-memory depth calculation
+     * costs a single round trip regardless of how deep the tree gets.
+     *
+     * @param WorkbenchInterface $workbench
+     * @param string[] $runUids UIDs of the runs whose steps are to be removed
+     * @param DataTransactionInterface $transaction Transaction the deletes must join
+     * @return int Number of deleted step rows
+     */
+    private static function deleteRunStepsLeafFirst(
+        WorkbenchInterface $workbench,
+        array $runUids,
+        DataTransactionInterface $transaction
+    ) : int
+    {
+        if (empty($runUids)) {
+            return 0;
+        }
+
+        $steps = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'axenox.BDT.run_step');
+        $steps->getColumns()->addFromUidAttribute();
+        $steps->getColumns()->addFromExpression('parent_step');
+        $steps->getFilters()->addConditionFromValueArray('run_scenario__run_feature__run__UID', $runUids);
+        $steps->dataRead();
+        if ($steps->isEmpty()) {
+            return 0;
+        }
+
+        // A step can itself have substeps, so the parent chain is walked generically. Only the read
+        // above is BDT-specific; the ordering is not.
+        return LeafFirstDeleter::delete($steps, 'parent_step', $transaction);
+    }
+
+    /**
+     * Passes the current run UID to the screenshot provider once the run is known.
+     *
+     * Why this exists: captureScreenshot() groups files under Screenshots/<run_uid>/, so the provider
+     * must carry the run UID before any step screenshot is taken. The UID is stable for the whole run,
+     * so it is set once here - from both the normal startRun flow and attach-mode - instead of being
+     * repeated on every step.
+     *
+     * @return void
+     */
+    private function bindRunUidToProvider() : void
+    {
+        $runUid = $this->getCurrentRunUid();
+        if ($runUid !== null && $runUid !== '') {
+            $this->provider->setRunUid($runUid);
+        }
+    }
+
+    /**
+     * Deletes expired BDT test runs and lets the model cascade take care of everything below them.
+     *
+     * WHY parent-only: the delete logic must stay in ONE place. run_feature, run_scenario, 
+     * run_step and run_step_screenshot are all reachable from run through delete-with-related-object 
+     * relations, so removing the run row is the single instruction that expresses "this run and 
+     * everything it produced is gone". Enumerating the children here would duplicate knowledge that 
+     * already lives in the meta model and would silently rot whenever the model changes.
+     * WHY one transaction: a half-deleted run (run_feature gone, run_step left behind) is worse than
+     * no cleanup at all, because the orphans are unreachable through the model and can only be found
+     * by hand in SQL. Either the whole tree goes or nothing does.
+     * 
+     * WHY the pass is capped and oldest-first: deleting a large backlog in one go can exhaust memory
+     * on the results database - the very failure this cleanup fights. The pass therefore takes at 
+     * most CLEANUP.DELETE_BATCH runs, sorted oldest first, so each scheduled run drains a bounded 
+     * slice of the backlog and the next one continues where this one stopped. Sorting matters: an 
+     * unsorted limited read would pick an arbitrary slice and could leave the oldest runs - the ones
+     * the retention window is actually about - alive indefinitely.
+     * 
+     * WHY addResultMessage instead of a return value: OnCleanUpEvent ignores whatever the listener
+     * returns, so the only way to report back to the operator running the CleanUp is the event itself.
+     * KNOWN LIMITATION - screenshots live in a file data source. File deletes are NOT part of the
+     * transaction, so a rollback after the files are gone cannot bring them back.
+     *
+     * WHY IT IS NO LONGER THE EVENT HANDLER ITSELF: the cleanup now has two independent jobs - test
+     * RESULTS and the business DATA the test users produced. They have different retention keys and
+     * different failure modes, so they are separate methods and the handler below runs both.
+     */
+    private static function cleanUpTestRuns(OnCleanUpEvent $event)
     {
         $workbench = $event->getWorkbench();
         $config = $workbench->getApp('axenox.BDT')->getConfig();
@@ -1827,96 +1927,160 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     }
 
     /**
-     * Deletes all run_step rows belonging to the given runs in leaf-to-root order.
+     * Removes the business data the BDT test users created, once it is older than the retention window.
      *
-     * WHY this exists: bdt_run_step.parent_step_oid references bdt_run_step.oid with ON DELETE
-     * RESTRICT. MS SQL Server forbids ON DELETE CASCADE on a self-referencing table, so the database
-     * cannot be taught this order and the constraint cannot simply be relaxed - the order has to come
-     * from the application. Doing it here rather than per call site keeps the cleanup a single unit.
+     * WHY IT IS PART OF CleanUp AND NOT OF A TEST RUN: scenarios create real rows (orders, articles,
+     * tickets, ...) through the UI and nothing ever removed them, so the tested apps slowly filled up
+     * with months of leftovers - which also began to break list assertions on polluted tables.
+     * Deleting at the end of a run would destroy the evidence of a failed scenario at exactly the
+     * moment somebody needs it; a retention window inside the scheduled cleanup only ever touches
+     * rows nobody is investigating any more, and it also reclaims the garbage of crashed runs.
      *
-     * WHY depth is computed in PHP: expressing "has no remaining children" as a data sheet filter
-     * would mean one query per hierarchy level. One flat read plus an in-memory depth calculation
-     * costs a single round trip regardless of how deep the tree gets.
+     * WHY ITS OWN RETENTION KEY INSTEAD OF CLEANUP.DAYS_TO_KEEP: that key governs test RESULTS, which
+     * are cheap to keep and valuable to compare across weeks. Business data is the opposite. Sharing
+     * one key would force one number onto two unrelated trade-offs, and would silently turn on a
+     * destructive new job on every installation that had merely configured result retention.
      *
-     * @param WorkbenchInterface $workbench
-     * @param string[] $runUids UIDs of the runs whose steps are to be removed
-     * @param DataTransactionInterface $transaction Transaction the deletes must join
-     * @return int Number of deleted step rows
+     * WHY THE POPUP GETS A SUMMARY AND THE LOG GETS THE DETAILS: the result message is shown in a
+     * popup that neither wraps nor scrolls well. With dozens of objects in scope, the complete alias
+     * lists made it wider than the screen and hid its close button. The popup now carries counts and
+     * a few sample names per line; the complete report - every object, count and reason - goes to a
+     * single log entry, where length does not hurt.
+     *
+     * WHY IT NEVER THROWS: it runs from the finally above, so a throw here would replace the run
+     * cleanup's own error with this one. Every failure is reported through the event instead.
+     *
+     * @param OnCleanUpEvent $event
+     * @return void
      */
-    private static function deleteRunStepsLeafFirst(
-        WorkbenchInterface $workbench,
-        array $runUids,
-        DataTransactionInterface $transaction
-    ) : int
+    private static function cleanUpTestData(OnCleanUpEvent $event) : void
     {
-        if (empty($runUids)) {
-            return 0;
+        $workbench = $event->getWorkbench();
+        $config = $workbench->getApp('axenox.BDT')->getConfig();
+
+        // Opt-in, exactly like the run retention above: without an explicit positive age nothing is
+        // deleted. A destructive job must never start because an option was forgotten.
+        if (! $config->hasOption(self::CLEANUP_TEST_DATA_DAYS_TO_KEEP)) {
+            $event->addResultMessage('BDT: no test data cleanup - option "' . self::CLEANUP_TEST_DATA_DAYS_TO_KEEP . '" is not set.');
+            return;
+        }
+        $maxAgeDays = (int) $config->getOption(self::CLEANUP_TEST_DATA_DAYS_TO_KEEP);
+        if ($maxAgeDays <= 0) {
+            $event->addResultMessage('BDT: no test data cleanup - option "' . self::CLEANUP_TEST_DATA_DAYS_TO_KEEP . '" must be a positive number of days.');
+            return;
         }
 
-        $steps = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'axenox.BDT.run_step');
-        $steps->getColumns()->addFromUidAttribute();
-        $steps->getColumns()->addFromExpression('parent_step');
-        $steps->getFilters()->addConditionFromValueArray('run_scenario__run_feature__run__UID', $runUids);
-        $steps->dataRead();
-        if ($steps->isEmpty()) {
-            return 0;
+        // Same reasoning and the same fallback as the run cleanup: an unset or non-positive batch size
+        // must not be read as "unlimited".
+        $batchSize = $config->hasOption(self::CLEANUP_DELETE_BATCH)
+            ? (int) $config->getOption(self::CLEANUP_DELETE_BATCH)
+            : self::DELETE_BATCH_DEFAULT;
+        if ($batchSize <= 0) {
+            $batchSize = self::DELETE_BATCH_DEFAULT;
         }
 
-        $uidAlias = $steps->getMetaObject()->getUidAttributeAlias();
-        $parentOf = [];
-        foreach ($steps->getRows() as $row) {
-            $parentOf[$row[$uidAlias]] = $row['parent_step'] ?: null;
+        $report = (new TestDataReaper($workbench))->reap($maxAgeDays, $batchSize);
+
+        // the full report is logged before any early return, so every outcome - including
+        // "nothing in scope" - can be traced back with its skip reasons.
+        self::logTestDataReport($workbench, $report, $maxAgeDays);
+
+        if ($report['users'] === 0) {
+            $event->addResultMessage('BDT: no test data cleanup - no test user found for the configured TEST_USER.USERNAME.');
+            return;
+        }
+        // Naming the scope matters more than the row count: it is the only way an operator can tell
+        // "nothing to clean" apart from "the app I care about was never in scope".
+        if (empty($report['apps'])) {
+            // the option name was missing from the text
+            $event->addResultMessage('BDT: no test data cleanup - no app with BDT features found. Add apps via "'
+                . TestDataReaper::CFG_INCLUDE_APPS . '" if their data must be cleaned anyway.');
+            return;
         }
 
-        // Walk each step up to its root to get its depth. The visited set is not an optimisation but
-        // a safety net: corrupt data with a parent cycle would otherwise loop forever inside a
-        // transaction and hang the scheduled cleanup.
-        $byDepth = [];
-        foreach (array_keys($parentOf) as $uid) {
-            $depth = 0;
-            $cursor = $uid;
-            $visited = [];
-            while (($parent = $parentOf[$cursor] ?? null) !== null) {
-                if (isset($visited[$parent])) {
-                    throw new RuntimeException('Cannot clean up BDT test runs: the run_step hierarchy contains a cycle at step "' . $parent . '".');
-                }
-                $visited[$parent] = true;
-                $cursor = $parent;
-                $depth++;
-            }
-            $byDepth[$depth][] = $uid;
+        // was one single line containing the complete alias lists
+        $lines = [
+            'BDT: removed ' . array_sum($report['deleted']) . ' row(s) of test data older than ' . $maxAgeDays
+            . ' days from ' . count($report['deleted']) . ' object(s).',
+            'Apps in scope: ' . self::summarizeList($report['apps']),
+        ];
+        // A capped object still has expired rows left, so the operator knows the backlog is being
+        // drained gradually instead of assuming this pass finished the job.
+        if (! empty($report['capped'])) {
+            $lines[] = 'Batch limit of ' . $batchSize . ' reached for ' . count($report['capped'])
+                . ' object(s) - more rows follow in the next cleanup: ' . self::summarizeList($report['capped']);
         }
-        krsort($byDepth);
-
-        $deleted = 0;
-        foreach ($byDepth as $uids) {
-            $batch = DataSheetFactory::createFromObjectIdOrAlias($workbench, 'axenox.BDT.run_step');
-            $batch->getColumns()->addFromUidAttribute();
-            $batch->getFilters()->addConditionFromValueArray($uidAlias, $uids);
-            $batch->dataRead();
-            if (! $batch->isEmpty()) {
-                // Deleting a step also cascades to its screenshots, so the files follow the rows.
-                $deleted += $batch->dataDelete($transaction);
-            }
+        // Named, not only counted: a blocked object is usually one referenced by production data,
+        // and the operator can only act on it if they know which one it is.
+        if (! empty($report['failed'])) {
+            $lines[] = 'Could not clean ' . count($report['failed']) . ' object(s): '
+                . self::summarizeList(array_keys($report['failed']));
         }
-        return $deleted;
+        // Only a report with failed objects is logged at a level that is actually persisted (see
+        // logTestDataReport()), so only then may the popup point to the log.
+        if (! empty($report['failed'])) {
+            $lines[] = 'Full details: log entry "' . self::TEST_DATA_LOG_TITLE . '".';
+        }
+        $event->addResultMessage(implode("\n", $lines));
     }
 
     /**
-     * Passes the current run UID to the screenshot provider once the run is known.
+     * Writes the complete test data cleanup report as one log entry.
      *
-     * Why this exists: captureScreenshot() groups files under Screenshots/<run_uid>/, so the provider
-     * must carry the run UID before any step screenshot is taken. The UID is stable for the whole run,
-     * so it is set once here - from both the normal startRun flow and attach-mode - instead of being
-     * repeated on every step.
+     * WHY ONE ENTRY WITH ONE LINE PER OBJECT: the popup only shows samples, so the log is where an
+     * operator looks up which object was blocked by what, and why an object was never in scope. A
+     * single entry keeps one cleanup together instead of scattering it between other log lines.
      *
-     * @return void
+     * WHY WARNING WHEN SOMETHING FAILED: blocked objects need a human decision (scope or data), so
+     * they should surface in a log filtered by severity. A clean run is routine and stays INFO.
+     *
+     * @param array $report Result of TestDataReaper::reap()
      */
-    private function bindRunUidToProvider() : void
+    private static function logTestDataReport(WorkbenchInterface $workbench, array $report, int $maxAgeDays) : void
     {
-        $runUid = $this->getCurrentRunUid();
-        if ($runUid !== null && $runUid !== '') {
-            $this->provider->setRunUid($runUid);
+        $lines = [
+            '===== ' . self::TEST_DATA_LOG_TITLE . ' =====',
+            'Cutoff:  ' . ($report['cutoff'] ?? '-') . ' (' . $maxAgeDays . ' days)',
+            'Users:   ' . $report['users'],
+            'Apps:    ' . (empty($report['apps']) ? '-' : implode(', ', $report['apps'])),
+            'Passes:  ' . $report['passes'],
+        ];
+        foreach ($report['deleted'] as $alias => $count) {
+            $lines[] = 'Deleted: ' . $alias . ' = ' . $count;
         }
+        foreach ($report['capped'] as $alias) {
+            $lines[] = 'Capped:  ' . $alias;
+        }
+        foreach ($report['failed'] as $alias => $reason) {
+            $lines[] = 'Failed:  ' . $alias . ' - ' . $reason;
+        }
+        foreach ($report['skipped'] as $alias => $reason) {
+            $lines[] = 'Skipped: ' . $alias . ' - ' . $reason;
+        }
+        $lines[] = '=================================';
+
+        $text = implode("\n", $lines);
+        if (empty($report['failed'])) {
+            $workbench->getLogger()->info($text);
+        } else {
+            $workbench->getLogger()->error($text);
+        }
+    }
+
+    /**
+     * Shortens a list to its first few entries plus a count of the rest.
+     *
+     * WHY: result messages end up in a popup, and an unbounded list makes that popup wider than the
+     * screen. The complete list is always in the log entry, so the popup only needs enough names for
+     * the operator to recognise the case.
+     *
+     * @param string[] $items
+     */
+    private static function summarizeList(array $items, int $max = 3) : string
+    {
+        $items = array_values($items);
+        $shown = implode(', ', array_slice($items, 0, $max));
+        $rest = count($items) - $max;
+        return $rest > 0 ? $shown . ' (+' . $rest . ' more)' : $shown;
     }
 }
