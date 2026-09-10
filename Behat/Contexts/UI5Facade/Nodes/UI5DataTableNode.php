@@ -26,17 +26,13 @@ use exface\Core\Interfaces\Widgets\iHaveColumns;
 use exface\Core\Interfaces\Widgets\iShowData;
 use exface\Core\Widgets\DataColumn;
 use PHPUnit\Framework\Assert;
+use PHPUnit\Framework\AssertionFailedError;
 
 /**
  * @method \exface\Core\Widgets\DataTable getWidget()
  */
 class UI5DataTableNode extends UI5DataNode
 {
-    public function getCaption(): string
-    {
-        return strstr($this->getNodeElement()->getAttribute('aria-label'), "\n", true);
-    }
-
     public function capturesFocus(): bool
     {
         return true;
@@ -97,7 +93,7 @@ class UI5DataTableNode extends UI5DataNode
      *
      * @return array<int, array{caption: string, index: int, colId: string|null, visible: bool}>
      */
-    private function getRenderedColumns(): array
+    protected function getRenderedColumns(): array
     {
         $columns = [];
 
@@ -177,7 +173,7 @@ class UI5DataTableNode extends UI5DataNode
      * @param string $columnName
      * @return array{0: int|null, 1: string|null} [columnIndex, colId]
      */
-    private function resolveRenderedColumn(string $columnName): array
+    protected function resolveRenderedColumn(string $columnName): array
     {
         $columnName = trim($columnName);
         foreach ($this->getRenderedColumns() as $col) {
@@ -236,16 +232,17 @@ class UI5DataTableNode extends UI5DataNode
      * previous button left behind.
      *
      * @param ActionInterface $action
+     * @param int|null $loadedRowCount Count already read by the caller, avoiding a second DOM/API read
      * @return bool True if the precondition is satisfied (or not required); false if a
      *              row is required but the table has no rows to select.
      */
-    public function ensureRowSelectedForAction(ActionInterface $action): bool
+    public function ensureRowSelectedForAction(ActionInterface $action, ?int $loadedRowCount = null): bool
     {
         if ($action->getInputRowsMin() < 1) {
             return true;
         }
-        $loadedRowCount = $this->getLoadedRowCount();
-        if ($loadedRowCount < 1) {
+        $loadedRowCount = $loadedRowCount ?? $this->getLoadedRowCount();
+        if ($this->getRowSelectionSkipReason($action, $loadedRowCount) !== null) {
             return false;
         }
         // Some actions require more than one row. Never ask for more rows than the first
@@ -256,9 +253,54 @@ class UI5DataTableNode extends UI5DataNode
         return true;
     }
 
-    protected function getLoadedRowCount(): ?int
+    /**
+     * Explains why this node cannot satisfy an action's row-selection precondition.
+     *
+     * WHY THIS IS SEPARATE FROM THE BOOLEAN GUARD: button checks must record an explicit SKIPPED
+     * reason, and specialised data widgets may lack selection altogether rather than merely lack
+     * rows. Keeping the decision here lets the inherited button loop report the real capability.
+     *
+     * @param ActionInterface $action
+     * @param int|null $loadedRowCount Count already read by the caller; resolved lazily when omitted
+     * @return string|null Null when the precondition can be satisfied.
+     */
+    public function getRowSelectionSkipReason(ActionInterface $action, ?int $loadedRowCount = null): ?string
+    {
+        if ($action->getInputRowsMin() > 0 && ($loadedRowCount ?? $this->getLoadedRowCount()) < 1) {
+            return 'Action requires selected rows, but the table has none';
+        }
+        return null;
+    }
+
+    /**
+     * Tells shared button and menu orchestration whether this DOM supports record selection.
+     *
+     * WHY A CAPABILITY METHOD: some data widgets render rows but intentionally expose no selected
+     * records to actions. A row count alone cannot distinguish that case from a selectable table.
+     *
+     * @return bool
+     */
+    public function supportsRowSelection(): bool
+    {
+        return true;
+    }
+
+    public function getLoadedRowCount(): int
     {
         return count($this->getTableRows());
+    }
+
+    /**
+     * Provides renderer-specific row-count diagnostics when a specialised node has them.
+     *
+     * WHY NULL BY DEFAULT: native UI5 tables count their rendered rows directly and have no
+     * alternate renderer API endpoint to diagnose.
+     *
+     * @return string|null
+     */
+    protected function getLoadedRowCountDiagnostic(): ?string
+    {
+        return null;
     }
 
     /**
@@ -542,7 +584,7 @@ class UI5DataTableNode extends UI5DataNode
         if (! $this->isRowSelectionError($result, $logbook)) {
             return $result;
         }
-        if ($this->getLoadedRowCount() < 1) {
+        if (! $this->supportsRowSelection() || $this->getLoadedRowCount() < 1) {
             return $result;
         }
         $logbook->addLine('Action reported a row-selection error (e.g. "Bitte genau 1 Datensatz auswählen!") - re-selecting a single row and retrying the click once.');
@@ -739,6 +781,9 @@ class UI5DataTableNode extends UI5DataNode
             $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
             $loadedRowCount = $this->getLoadedRowCount();
             $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');
+            if (($diagnostic = $this->getLoadedRowCountDiagnostic()) !== null) {
+                $logbook->continueLine(' (' . $diagnostic . ')');
+            }
 
             $result->setTitle($result->getTitle() . ' with range "' . $range['from'] . '" – "' . $range['to'] . '"');
             $this->verifyTableContent([
@@ -782,6 +827,9 @@ class UI5DataTableNode extends UI5DataNode
         $loadedRowCount = $this->getLoadedRowCount();
 
         $logbook->continueLine(' - found `' . $loadedRowCount . '` rows');
+        if (($diagnostic = $this->getLoadedRowCountDiagnostic()) !== null) {
+            $logbook->continueLine(' (' . $diagnostic . ')');
+        }
 
         $this->verifyTableContent([
             ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
@@ -1072,7 +1120,8 @@ JS
 
         if ($item === null) {
             throw new RuntimeException(
-                'No entry `' . $caption . '` in the overflow menu of table `' . $this->getCaption() . '`'
+                'No entry `' . $caption . '` in the overflow menu of table `' . $this->getCaption()
+                . '`. Visible menu text: `' . trim($menu->getText()) . '`'
             );
         }
 
@@ -1303,16 +1352,35 @@ JS
                 continue;
             }
 
-            switch (true) {
-                case $action === null:
-                    $skippedButtons['Button has no action'][] = $buttonWidget->getCaption();
-                    $logbook->addLine('Skipping button ' . $buttonWidget->getCaption() . ' because it has no action');
-                    continue 2;
-                case $action->getInputRowsMin() > 0:
-                    $this->ensureRowSelectedForAction($action);
-                    break;
-                default:
-                    continue 2;
+            // A button without an action cannot be validated by clicking it: UI5ButtonNode returns
+            // a passed result for that case without performing any check, which would report an
+            // unverified button as green. Keep it out of the click flow and record why.
+            if ($action === null) {
+                $skippedButtons['Button has no action'][] = $buttonWidget->getCaption();
+                $logbook->addLine('Skipping button `' . $buttonWidget->getCaption() . '` because it has no action');
+                continue;
+            }
+
+            $requiresSelectedRows = $action->getInputRowsMin() > 0;
+            if ($requiresSelectedRows) {
+                $loadedRowCount = $this->getLoadedRowCount();
+                $selectionSkipReason = $this->getRowSelectionSkipReason($action, $loadedRowCount);
+                if ($selectionSkipReason !== null) {
+                    $skippedButtons[$selectionSkipReason][] = $buttonWidget->getCaption();
+                    $logbook->addLine('Skipping button `' . $buttonWidget->getCaption() . '` - ' . $selectionSkipReason);
+                    continue;
+                }
+                $this->ensureRowSelectedForAction($action, $loadedRowCount);
+            }
+
+            // Buttons that need no selected rows never enter the readiness walk below, so nothing
+            // else checks their enabled state. Clicking a disabled one does nothing, and the action
+            // check that follows then fails waiting for a dialog that was never going to open -
+            // reporting a button that behaves correctly as broken.
+            if (! $requiresSelectedRows && $buttonNode->checkDisabled()) {
+                $skippedButtons['Button disabled'][] = $buttonWidget->getCaption();
+                $logbook->addLine('Skipping button `' . $buttonWidget->getCaption() . '` because it is disabled');
+                continue;
             }
 
             // The button may be shown only for rows whose data is valid for its action
@@ -1323,15 +1391,27 @@ JS
             // for the current row. The matching node is captured so the click below uses
             // the fresh, visible element instead of one that went stale when the toolbar
             // re-rendered on row selection.
-            $readyNode = null;
-            $ready = $this->selectEachRowUntil(function() use ($buttonWidget, &$readyNode) {
-                $candidate = $this->resolveButtonNode($buttonWidget);
-                if ($candidate === null || $candidate->checkDisabled()) {
-                    return false;
+            $readyNode = $buttonNode;
+            $ready = true;
+            if ($requiresSelectedRows) {
+                $readyNode = null;
+                $enablingRowNumber = null;
+                $ready = $this->selectEachRowUntil(function($rowNumber) use ($buttonWidget, &$readyNode, &$enablingRowNumber) {
+                    $candidate = $this->resolveButtonNode($buttonWidget);
+                    if ($candidate === null || $candidate->checkDisabled()) {
+                        return false;
+                    }
+                    $readyNode = $candidate;
+                    $enablingRowNumber = $rowNumber;
+                    return true;
+                });
+                if ($ready) {
+                    $logbook->addLine(
+                        'Button `' . $buttonWidget->getCaption() . '` enabled after selecting row '
+                        . $enablingRowNumber . ' of ' . $loadedRowCount . ' loaded rows'
+                    );
                 }
-                $readyNode = $candidate;
-                return true;
-            });
+            }
             if (! $ready || $readyNode === null) {
                 $skippedButtons['Button not visible'][] = $buttonWidget->getCaption();
                 $logbook->addLine('Skipping button `' . $buttonWidget->getCaption() . '` because no loaded row shows it as a visible, enabled button (e.g. hidden_if_input_invalid)');
@@ -1384,7 +1464,7 @@ JS
         // with a variable that was always 1, so it either toggled the only selected row OFF
         // or added row 1 on top of a row the readiness loop had left selected - the double
         // selection that makes the next row-bound action fail with "select exactly 1 record".
-        if ($this->getLoadedRowCount() > 0) {
+        if ($this->supportsRowSelection() && $this->getLoadedRowCount() > 0) {
             $this->ensureExactlySelectedRows([1]);
         }
         // Leave no popover behind for the next check of this scenario: the button loop above may have
@@ -1557,6 +1637,7 @@ JS
 
                 // Check table cells - get rows from all available tables (both fixed and scroll)
                 $rows = $this->getAllTableRows();
+                Assert::assertNotEmpty($rows, 'No loaded rows available for table content verification');
                 $considered = 0;
                 $matches = 0;
                 $firstFailures = []; // collect first few failures for better error messages
@@ -1582,6 +1663,9 @@ JS
                     "Not all rows of the table fits the column '{$columnName}'. {$matches}/{$considered} matched. First mismatches: " . implode(' | ', $firstFailures)
                 );
             }
+        } catch (AssertionFailedError $e) {
+            // Assertions describe test data or expectations, not a broken browser infrastructure.
+            throw $e;
         } catch (\Throwable $e) {
             throw new RuntimeException(
                 "Failed to verify table content. " . $e->getMessage(),
@@ -1597,7 +1681,7 @@ JS
      *
      * @return NodeElement[]
      */
-    private function getAllTableRows(): array
+    protected function getAllTableRows(): array
     {
         $allRows = [];
         $seenRowIndices = [];

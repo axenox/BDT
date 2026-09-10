@@ -910,9 +910,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * Usage example:
      *
      *   When I look at table 1
-     *   Then it has filters: Name, Created on, Status
+     *   Then it has filters "Name, Created on, Status"
      *
-     * @Then it has filters: :filterList
+     * @Then it has filters ":filterList"
      *
      * @param string $filterList Comma-separated list of expected filter names
      */
