@@ -1823,7 +1823,26 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     /**
      * Deletes expired BDT test runs and lets the model cascade take care of everything below them.
      *
-     * ... (mevcut docblock aynen korunuyor) ...
+     * WHY parent-only: the delete logic must stay in ONE place. run_feature, run_scenario, 
+     * run_step and run_step_screenshot are all reachable from run through delete-with-related-object 
+     * relations, so removing the run row is the single instruction that expresses "this run and 
+     * everything it produced is gone". Enumerating the children here would duplicate knowledge that 
+     * already lives in the meta model and would silently rot whenever the model changes.
+     * WHY one transaction: a half-deleted run (run_feature gone, run_step left behind) is worse than
+     * no cleanup at all, because the orphans are unreachable through the model and can only be found
+     * by hand in SQL. Either the whole tree goes or nothing does.
+     * 
+     * WHY the pass is capped and oldest-first: deleting a large backlog in one go can exhaust memory
+     * on the results database - the very failure this cleanup fights. The pass therefore takes at 
+     * most CLEANUP.DELETE_BATCH runs, sorted oldest first, so each scheduled run drains a bounded 
+     * slice of the backlog and the next one continues where this one stopped. Sorting matters: an 
+     * unsorted limited read would pick an arbitrary slice and could leave the oldest runs - the ones
+     * the retention window is actually about - alive indefinitely.
+     * 
+     * WHY addResultMessage instead of a return value: OnCleanUpEvent ignores whatever the listener
+     * returns, so the only way to report back to the operator running the CleanUp is the event itself.
+     * KNOWN LIMITATION - screenshots live in a file data source. File deletes are NOT part of the
+     * transaction, so a rollback after the files are gone cannot bring them back.
      *
      * WHY IT IS NO LONGER THE EVENT HANDLER ITSELF: the cleanup now has two independent jobs - test
      * RESULTS and the business DATA the test users produced. They have different retention keys and
