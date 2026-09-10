@@ -676,6 +676,11 @@ JS
      * Adds a colored outline and label to the widget to make it visible
      * during test execution and debugging
      *
+     * WHY ID WITH XPATH FALLBACK: jExcel headers are valid highlight targets but carry no HTML id.
+     * Resolving the Mink XPath for those nodes prevents a silent no-op while preserving the direct
+     * id lookup used by UI5 controls. Failure is explicit because an absent marker makes diagnostic
+     * screenshots misleading.
+     *
      * @param NodeElement $node Widget element to highlight
      * @param string $widgetType Type of the widget (used in label)
      * @param int $index Index number of the widget
@@ -694,52 +699,53 @@ JS
 
         // Select color based on widget type, fallback to default
         $color = $colors[$widgetType] ?? $colors['default'];
+        $elementIdJs = json_encode($node->getAttribute('id'));
+        $xpathJs = json_encode($node->getXpath());
+        $colorJs = json_encode($color);
+        $labelJs = json_encode($widgetType . ' #' . ($index + 1));
 
         try {
-            $highlightScript = sprintf(<<<JS
-        (function() {
-            const el = document.getElementById('%s');
-            if (el) {
-                el.style.outline = 'none';
-                el.style.outline = '5px solid %s';
-                el.style.outlineOffset = '4px';
-                const existingLabel = el.querySelector('.debug-highlight-label');
-                if (existingLabel) existingLabel.remove();
-                const label = document.createElement('div');
-                label.className = 'debug-highlight-label';
-                label.style.cssText = `
-                    position: absolute;
-                    top: 0;
-                    left: 0;
-                    background: %s;
-                    color: white;
-                    padding: 2px;
-                    font-size: 10px;
-                    z-index: 9999;
-                `;
-                label.textContent = '%s #%d';
-                el.appendChild(label);
-                if (window.highlightElement && typeof window.highlightElement === 'function') {
-                    window.highlightElement(el, '%s', '%s #%d');
-                }
-            }
-        })();
-        JS,
-                $node->getAttribute('id'),
-                $color,
-                $color,
-                $widgetType,
-                $index + 1,
-                $color,
-                $widgetType,
-                $index + 1
+            $highlighted = $this->session->evaluateScript(<<<JS
+(function(elementId, xpath, color, labelText) {
+    var element = elementId ? document.getElementById(elementId) : null;
+    if (!element && xpath) {
+        element = document.evaluate(
+            xpath,
+            document,
+            null,
+            XPathResult.FIRST_ORDERED_NODE_TYPE,
+            null
+        ).singleNodeValue;
+    }
+    if (!element) {
+        return false;
+    }
+
+    element.style.outline = '5px solid ' + color;
+    element.style.outlineOffset = '4px';
+    var existingLabel = element.querySelector('.debug-highlight-label');
+    if (existingLabel) {
+        existingLabel.remove();
+    }
+    var label = document.createElement('div');
+    label.className = 'debug-highlight-label';
+    label.style.cssText = 'position:absolute;top:0;left:0;background:' + color
+        + ';color:white;padding:2px;font-size:10px;z-index:9999;';
+    label.textContent = labelText;
+    element.appendChild(label);
+    if (window.highlightElement && typeof window.highlightElement === 'function') {
+        window.highlightElement(element, color, labelText);
+    }
+    return true;
+})({$elementIdJs}, {$xpathJs}, {$colorJs}, {$labelJs});
+JS
             );
-
-            // Execute the highlighting script
-            $this->session->executeScript($highlightScript);
-
+            if ($highlighted !== true) {
+                throw new RuntimeException(
+                    'Cannot resolve highlight target at XPath `' . $node->getXpath() . '`.'
+                );
+            }
         } catch (Throwable $e) {
-            // Throw a more specific RuntimeException with context
             throw new RuntimeException(
                 sprintf(
                     "Failed to highlight widget (Type: %s, Index: %d): %s",

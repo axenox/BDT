@@ -6,8 +6,8 @@ use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5AbstractNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ContainerNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataSpreadSheetNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5MenuButtonNode;
-use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5PageNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use axenox\BDT\Behat\Events\AfterPageVisited;
@@ -1608,65 +1608,59 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Checks that a column of an editable spreadsheet is read-only (not editable).
+    * Checks that one or more columns of an editable spreadsheet are read-only (not editable).
      *
      * A DataSpreadSheet is the Excel-like editing grid used in some pages. Use this step to
-     * confirm that a given column cannot be edited by the user - every cell in that column must
-     * be marked read-only, otherwise the step fails and tells you which row was editable.
+    * confirm that the comma-separated columns cannot be edited by the user - every cell in each
+    * column must be marked read-only, otherwise the step fails and tells you which row was editable.
      *
      * Usage example:
      *
      *   Then the column "ID" in data spreadsheet should be disabled
+    *   Then the column "Created by, Modified by" in data spreadsheet should be disabled
      *
      * @Then the column :columnName in data spreadsheet should be disabled
      *
-     * @param string $columnName Caption of the spreadsheet column to check
+    * @param string $columnName Comma-separated captions of spreadsheet columns to check
      * @throws \Exception
      */
     public function theColumnInDataSpreadsheetShouldBeDisabled(string $columnName): void
     {
-        // Find the column by its header text
-        $dataSpreadSheetNode = $this->getBrowser()->findWidgetNodes("DataSpreadSheet", 15);
+        $nodes = $this->getBrowser()->findWidgetNodes('DataSpreadSheet', 15);
+        $node = $nodes[0] ?? null;
+        Assert::assertInstanceOf(UI5DataSpreadSheetNode::class, $node, 'No DataSpreadSheet widget found.');
 
-        // Find header cells (column names)
-        $headers = $dataSpreadSheetNode[0]->getNodeElement()->findAll('css', "table.jexcel thead tr td");
-        $columnIndex = null;
-
-        foreach ($headers as $index => $header) {
-            //& !strpos(trim($header->getText()), "hidden" )
-            if (trim($header->getText()) === $columnName ) {
-                print($header->getText() . "\n");
-                $columnIndex = $index;
-                break;
-            }
-        }
-        if ($columnIndex === null) {
-            throw new \Exception("Column '$columnName' not found in Data Spreadsheet.");
+        // Resolve before highlighting: the debug label becomes part of the jExcel header text.
+        $columnResults = [];
+        foreach ($this->explodeList($columnName) as $columnCaption) {
+            $columnResults[] = [
+                'caption' => $columnCaption,
+                'node' => $node->getColumnByCaption($columnCaption),
+                'editableRows' => $node->getEditableRowNumbers($columnCaption),
+            ];
         }
 
-        // Find all cells in that column
-        $rows = $dataSpreadSheetNode[0]->getNodeElement()->findAll('css', "table.jexcel tbody tr");
+        foreach ($columnResults as $columnIndex => $columnResult) {
+            $this->getBrowser()->highlightWidget($columnResult['node']->getNodeElement(), 'Column', $columnIndex);
+        }
 
-        foreach ($rows as $rowIndex => $row) {
-            $tds = $row->findAll('css', "td");
-            $cell = $tds[$columnIndex];
-
-            $class = $cell->getAttribute('class');
-
-            // If the class is not readonly class throw Exception
-            if (!str_contains($class, 'readonly')) {
-                throw new \Exception("Column '$columnName' is NOT disabled in row " . ($rowIndex + 1));
-            }
+        foreach ($columnResults as $columnResult) {
+            Assert::assertSame(
+                [],
+                $columnResult['editableRows'],
+                "Column '{$columnResult['caption']}' is not disabled in row(s) "
+                . implode(', ', $columnResult['editableRows']) . '.'
+            );
         }
     }
 
     /**
-     * Fills in cells of one row of an editable spreadsheet.
+      * Fills one or more consecutive rows of an editable spreadsheet.
      *
-     * Works on a DataSpreadSheet (the Excel-like editing grid). Choose the row by number, or
-     * use "the last row" to target the last one (handy after adding a new empty row). Provide
-     * a Gherkin table with two columns, "Column" and "Value", listing which cell to fill in
-     * that row and with what. Drop-down cells are handled by selecting the matching entry.
+      * WHY BOTH TABLE SHAPES ARE ACCEPTED: feature files commonly express spreadsheet rows as
+      * captions followed by values, while older scenarios use "Column" and "Value" pairs. Behat's
+      * getHash() represents these shapes differently, so normalising them here keeps feature-table
+      * interpretation in the step and guarantees the node receives typed captions and values.
      *
      * Usage examples:
      *
@@ -1679,93 +1673,49 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *     | Column   | Value      |
      *     | Name     | Widget B   |
      *
+     *   When I fill the row 4 of data spreadsheet with:
+     *     | Farbe | Von (Tage) |
+     *     | lila  | 8          |
+     *     | blau  | 12         |
+     *
      * @When I fill the row :rowIndex of data spreadsheet with:
      * @When I fill the last row of data spreadsheet with:
      *
-     * @param TableNode $table Rows with "Column" and "Value" pairs to fill in
+     * @param TableNode $table Caption/value rows or rows with "Column" and "Value" pairs
      * @param int|string|null $rowIndex 1-based row number, or null for the last row
      * @throws \Exception
      */
     public function iFillTheNthRowOfDataSpreadsheetWith(TableNode $table, int|string|null $rowIndex = null): void
     {
-        if ($rowIndex === null) {
-            $rowIndex = 'last';
-        }
+        $nodes = $this->getBrowser()->findWidgetNodes('DataSpreadSheet', 15);
+        $node = $nodes[0] ?? null;
+        Assert::assertInstanceOf(UI5DataSpreadSheetNode::class, $node, 'No DataSpreadSheet widget found.');
+        $rowNumber = $rowIndex === null || strtolower((string) $rowIndex) === 'last'
+            ? null
+            : (int) $rowIndex;
 
-        $dataSpreadSheetNode = $this->getBrowser()->findWidgetNodes("DataSpreadSheet", 15);
+        $tableRows = $table->getHash();
+        Assert::assertNotEmpty($tableRows, 'No spreadsheet values were provided.');
 
-        $headers = $dataSpreadSheetNode[0]->getNodeElement()->findAll('css', "table.jexcel thead tr td");
-
-        $headerMap = [];
-        foreach ($headers as $index => $header) {
-            $headerMap[trim($header->getText())] = $index;
-        }
-
-        // last row
-        $rows = $dataSpreadSheetNode[0]->getNodeElement()->findAll('css', "table.jexcel tbody tr");
-        if (empty($rows)) {
-            throw new \Exception("No rows found in Data Spreadsheet.");
-        }
-
-        if (strtolower($rowIndex) === 'last') {
-            $rowNumber = count($rows) - 1;
-        } else {
-            $rowNumber = intval($rowIndex) - 1; // adjust to 0-based
-        }
-
-        if (!isset($rows[$rowNumber])) {
-            throw new \Exception("Row '$rowIndex' not found.");
-        }
-        $targetRow = $rows[$rowNumber];
-        $tds = $targetRow->findAll('css', "td");
-
-
-        // loop over table rows given in feature file
-        foreach ($table->getHash() as $row) {
-            $columnName = $row['Column'];
-            $value = $row['Value'];
-
-            if (!isset($headerMap[$columnName])) {
-                throw new \Exception("Column '$columnName' not found.");
+        if (array_key_exists('Column', $tableRows[0]) || array_key_exists('Value', $tableRows[0])) {
+            foreach ($tableRows as $row) {
+                Assert::assertArrayHasKey('Column', $row, 'Spreadsheet input requires a `Column` field.');
+                Assert::assertArrayHasKey('Value', $row, 'Spreadsheet input requires a `Value` field.');
+                $node->setCellValue($rowNumber, (string) $row['Column'], (string) $row['Value']);
             }
-            $columnIndex = $headerMap[$columnName];
-            $cell = $tds[$columnIndex];
-
-            // double click to activate editor
-            $cell->doubleClick();
-
-            // try to find editor element inside cell
-            $editor = $cell->find('css', 'input, textarea, [contenteditable]');
-
-            if ($editor !== null) {
-                // execute events
-                $editor->setValue($value);
-                $this->getSession()->executeScript("
-                    var el = document.activeElement;
-                    if (el) {
-                        el.dispatchEvent(new Event('input',{bubbles:true}));
-                        el.dispatchEvent(new Event('change',{bubbles:true}));
-                    }
-                ");
-
-                // check if dropdowns?
-                $dropdownItem = $this->getSession()->getPage()->find('xpath', "//div[contains(@class,'jdropdown') or contains(@class,'jexcel_dropdown')]//div[text()=".json_encode($value)."]");
-                if ($dropdownItem !== null) {
-                    $dropdownItem->click();
-                }
-
-            } else {
-                // if there is no editor
-                $this->getSession()->executeScript(sprintf(
-                    "var row = document.querySelectorAll('table.jexcel tbody tr')[%d];
-                     var cell = row.querySelectorAll('td')[%d];
-                     if(cell){ cell.textContent = %s; }",
-                    $rowNumber, $columnIndex, json_encode($value)
-                ));
-            }
-
+            return;
         }
 
+        Assert::assertTrue(
+            $rowNumber !== null || count($tableRows) === 1,
+            'Multiple horizontal spreadsheet rows require an explicit starting row number.'
+        );
+        foreach ($tableRows as $rowOffset => $row) {
+            $targetRowNumber = $rowNumber === null ? null : $rowNumber + $rowOffset;
+            foreach ($row as $columnCaption => $value) {
+                $node->setCellValue($targetRowNumber, (string) $columnCaption, (string) $value);
+            }
+        }
     }
 
     /**
