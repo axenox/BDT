@@ -110,6 +110,12 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
      * on an installation that set the retention age but not an explicit batch.
      */
     private const DELETE_BATCH_DEFAULT = 100;
+    
+    /**
+     * Title of the log entry that carries the full test data cleanup report. The popup message
+     * points to it, so both must use the same text.
+     */
+    private const TEST_DATA_LOG_TITLE = 'BDT test data cleanup';
 
     /**
      * Reason why the current scenario is NOT being recorded, or null while a scenario is open.
@@ -1935,6 +1941,12 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
      * one key would force one number onto two unrelated trade-offs, and would silently turn on a
      * destructive new job on every installation that had merely configured result retention.
      *
+     * WHY THE POPUP GETS A SUMMARY AND THE LOG GETS THE DETAILS: the result message is shown in a
+     * popup that neither wraps nor scrolls well. With dozens of objects in scope, the complete alias
+     * lists made it wider than the screen and hid its close button. The popup now carries counts and
+     * a few sample names per line; the complete report - every object, count and reason - goes to a
+     * single log entry, where length does not hurt.
+     *
      * WHY IT NEVER THROWS: it runs from the finally above, so a throw here would replace the run
      * cleanup's own error with this one. Every failure is reported through the event instead.
      *
@@ -1969,6 +1981,10 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
 
         $report = (new TestDataReaper($workbench))->reap($maxAgeDays, $batchSize);
 
+        // the full report is logged before any early return, so every outcome - including
+        // "nothing in scope" - can be traced back with its skip reasons.
+        self::logTestDataReport($workbench, $report, $maxAgeDays);
+
         if ($report['users'] === 0) {
             $event->addResultMessage('BDT: no test data cleanup - no test user found for the configured TEST_USER.USERNAME.');
             return;
@@ -1976,24 +1992,95 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         // Naming the scope matters more than the row count: it is the only way an operator can tell
         // "nothing to clean" apart from "the app I care about was never in scope".
         if (empty($report['apps'])) {
-            $event->addResultMessage('BDT: no test data cleanup - no app with BDT features found. Add apps via if their data must be cleaned anyway.');
+            // the option name was missing from the text
+            $event->addResultMessage('BDT: no test data cleanup - no app with BDT features found. Add apps via "'
+                . TestDataReaper::CFG_INCLUDE_APPS . '" if their data must be cleaned anyway.');
             return;
         }
 
-        $total = array_sum($report['deleted']);
-        $message = 'BDT: removed ' . $total . ' row(s) of test data older than ' . $maxAgeDays . ' days'
-            . ' from ' . count($report['deleted']) . ' object(s) in app(s): ' . implode(', ', $report['apps']) . '.';
+        // was one single line containing the complete alias lists
+        $lines = [
+            'BDT: removed ' . array_sum($report['deleted']) . ' row(s) of test data older than ' . $maxAgeDays
+            . ' days from ' . count($report['deleted']) . ' object(s).',
+            'Apps in scope: ' . self::summarizeList($report['apps']),
+        ];
         // A capped object still has expired rows left, so the operator knows the backlog is being
         // drained gradually instead of assuming this pass finished the job.
         if (! empty($report['capped'])) {
-            $message .= ' Batch limit of ' . $batchSize . ' reached for: ' . implode(', ', $report['capped'])
-                . ' - more rows remain and will be removed by the next cleanup.';
+            $lines[] = 'Batch limit of ' . $batchSize . ' reached for ' . count($report['capped'])
+                . ' object(s) - more rows follow in the next cleanup: ' . self::summarizeList($report['capped']);
         }
+        // Named, not only counted: a blocked object is usually one referenced by production data,
+        // and the operator can only act on it if they know which one it is.
         if (! empty($report['failed'])) {
-            // Named, not counted: a blocked object is usually one referenced by production data, and
-            // the operator can only act on it if they know which one it is.
-            $message .= ' Could not clean: ' . implode(', ', array_keys($report['failed'])) . '.';
+            $lines[] = 'Could not clean ' . count($report['failed']) . ' object(s): '
+                . self::summarizeList(array_keys($report['failed']));
         }
-        $event->addResultMessage($message);
+        // Only a report with failed objects is logged at a level that is actually persisted (see
+        // logTestDataReport()), so only then may the popup point to the log.
+        if (! empty($report['failed'])) {
+            $lines[] = 'Full details: log entry "' . self::TEST_DATA_LOG_TITLE . '".';
+        }
+        $event->addResultMessage(implode("\n", $lines));
+    }
+
+    /**
+     * Writes the complete test data cleanup report as one log entry.
+     *
+     * WHY ONE ENTRY WITH ONE LINE PER OBJECT: the popup only shows samples, so the log is where an
+     * operator looks up which object was blocked by what, and why an object was never in scope. A
+     * single entry keeps one cleanup together instead of scattering it between other log lines.
+     *
+     * WHY WARNING WHEN SOMETHING FAILED: blocked objects need a human decision (scope or data), so
+     * they should surface in a log filtered by severity. A clean run is routine and stays INFO.
+     *
+     * @param array $report Result of TestDataReaper::reap()
+     */
+    private static function logTestDataReport(WorkbenchInterface $workbench, array $report, int $maxAgeDays) : void
+    {
+        $lines = [
+            '===== ' . self::TEST_DATA_LOG_TITLE . ' =====',
+            'Cutoff:  ' . ($report['cutoff'] ?? '-') . ' (' . $maxAgeDays . ' days)',
+            'Users:   ' . $report['users'],
+            'Apps:    ' . (empty($report['apps']) ? '-' : implode(', ', $report['apps'])),
+            'Passes:  ' . $report['passes'],
+        ];
+        foreach ($report['deleted'] as $alias => $count) {
+            $lines[] = 'Deleted: ' . $alias . ' = ' . $count;
+        }
+        foreach ($report['capped'] as $alias) {
+            $lines[] = 'Capped:  ' . $alias;
+        }
+        foreach ($report['failed'] as $alias => $reason) {
+            $lines[] = 'Failed:  ' . $alias . ' - ' . $reason;
+        }
+        foreach ($report['skipped'] as $alias => $reason) {
+            $lines[] = 'Skipped: ' . $alias . ' - ' . $reason;
+        }
+        $lines[] = '=================================';
+
+        $text = implode("\n", $lines);
+        if (empty($report['failed'])) {
+            $workbench->getLogger()->info($text);
+        } else {
+            $workbench->getLogger()->error($text);
+        }
+    }
+
+    /**
+     * Shortens a list to its first few entries plus a count of the rest.
+     *
+     * WHY: result messages end up in a popup, and an unbounded list makes that popup wider than the
+     * screen. The complete list is always in the log entry, so the popup only needs enough names for
+     * the operator to recognise the case.
+     *
+     * @param string[] $items
+     */
+    private static function summarizeList(array $items, int $max = 3) : string
+    {
+        $items = array_values($items);
+        $shown = implode(', ', array_slice($items, 0, $max));
+        $rest = count($items) - $max;
+        return $rest > 0 ? $shown . ' (+' . $rest . ' more)' : $shown;
     }
 }
