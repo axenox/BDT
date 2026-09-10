@@ -3,6 +3,7 @@
 namespace axenox\BDT\Behat\Common;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
+use exface\Core\Behaviors\TimeStampingBehavior;
 use exface\Core\CommonLogic\UxonObject;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\DateTimeDataType;
@@ -11,6 +12,7 @@ use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Factories\ConditionGroupFactory;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\MetaObjectFactory;
+use exface\Core\Interfaces\DataSheets\DataSheetInterface;
 use exface\Core\Interfaces\DataSources\SqlDataConnectorInterface;
 use exface\Core\Interfaces\Model\MetaObjectInterface;
 use exface\Core\Interfaces\WorkbenchInterface;
@@ -35,9 +37,10 @@ use exface\Core\Interfaces\WorkbenchInterface;
  * follows the same pattern the DBML concepts use - read ALIAS_WITH_NS from exface.Core.OBJECT,
  * instantiate each object, then decide per object whether it is in scope.
  *
- * WHY IT MUST NOT RUN INSIDE A WORKER: lanes run concurrently. Even with a retention window, a
- * reaper competing with N other lanes over the same tables only adds lock contention to a run.
- * Only the coordinator, after every lane has exited, may call it.
+ * WHY IT RUNS FROM THE SCHEDULED CLEANUP AND NOT FROM A TEST RUN: a reaper inside a run would
+ * compete with the lanes over the same tables and only add lock contention. The retention window
+ * makes the timing irrelevant anyway, so it runs where the other housekeeping runs - from
+ * DatabaseFormatter::onCleanUp().
  */
 final class TestDataReaper
 {
@@ -53,10 +56,8 @@ final class TestDataReaper
      */
     private const PROTECTED_APPS = ['exface.Core', 'axenox.BDT'];
 
-    private const CFG_ENABLED         = 'TEST_DATA_CLEANUP.ENABLED';
-    private const CFG_RETENTION_DAYS  = 'TEST_DATA_CLEANUP.RETENTION_DAYS';
     private const CFG_EXCLUDE_APPS    = 'TEST_DATA_CLEANUP.EXCLUDE_APPS';
-    
+
     /**
      * App-config key listing apps to clean IN ADDITION to those that have BDT features.
      *
@@ -70,17 +71,11 @@ final class TestDataReaper
     private const CFG_MAX_PASSES      = 'TEST_DATA_CLEANUP.MAX_PASSES';
 
     /**
-     * Days of test data kept before it becomes garbage. Two weeks plus a day, so that data produced
-     * on any day of a sprint is still there for the whole of the following sprint week.
-     */
-    private const DEFAULT_RETENTION_DAYS = 15;
-
-    /**
      * Upper bound for the foreign-key retry passes.
      *
      * WHY A LIMIT AT ALL: a mutual foreign-key dependency (A blocks B and B blocks A) can never be
-     * resolved by retrying, so without a ceiling the reaper would spin until the close-out budget is
-     * gone and the run row is finalized by a hard kill instead of by us.
+     * resolved by retrying, so without a ceiling the reaper would keep the scheduled cleanup busy
+     * repeating the same failing deletes.
      */
     private const DEFAULT_MAX_PASSES = 5;
 
@@ -91,6 +86,20 @@ final class TestDataReaper
      *      of the DBML concepts, so the metamodel is read once per reaper instance).
      */
     private ?array $objectCache = null;
+
+    /**
+     * Resolved creation stamps per object alias - see getCreationStamp().
+     *
+     * @var array<string,array{created_on:string,created_by:string,user_value:?string}>
+     */
+    private array $stampCache = [];
+
+    /**
+     * Test-user values per USER attribute alias - see getTestUserValues().
+     *
+     * @var array<string,string[]>
+     */
+    private array $userValueCache = [];
 
     public function __construct(WorkbenchInterface $workbench)
     {
@@ -113,15 +122,19 @@ final class TestDataReaper
      * replace the run cleanup's own error. Per-object failures are expected (foreign keys) and belong
      * in the report, not in an exception.
      *
+     * WHY THE BATCH IS A BUDGET PER OBJECT ACROSS ALL PASSES: an object that is retried because some
+     * of its rows were blocked must not delete another full batch in the retry - the cap exists to
+     * keep one cleanup bounded, and a retry is still the same cleanup.
+     *
      * @param int $maxAgeDays Rows created strictly before now minus this many days are eligible.
-     * @param int $batchSize  Maximum rows deleted per object in this pass.
-     * @return array{apps:string[],cutoff:?string,deleted:array<string,int>,capped:string[],failed:array<string,string>,skipped:array<string,string>,passes:int,users:int}
+     * @param int $batchSize  Maximum rows deleted per object in this cleanup.
+     * @return array{cutoff:?string,apps:string[],deleted:array<string,int>,capped:string[],failed:array<string,string>,skipped:array<string,string>,passes:int,users:int}
      */
     public function reap(int $maxAgeDays, int $batchSize): array
     {
         $report = [
-            'apps' => [],
             'cutoff'  => null,
+            'apps'    => [],
             'deleted' => [],
             'capped'  => [],
             'failed'  => [],
@@ -136,9 +149,7 @@ final class TestDataReaper
             }
 
             // Cutoff = now - maxAgeDays, computed ONCE. The retry passes below may span minutes, so
-            // recomputing it per object would move the boundary while the reaper works and let two
-            // objects of the same pass be cleaned to different cut-offs - impossible to reason about
-            // when a foreign key later complains about a row that "should" have been deleted.
+            // recomputing it per object would move the boundary while the reaper works.
             $cutoff = (new \DateTimeImmutable('now'))->sub(new \DateInterval('P' . $maxAgeDays . 'D'));
             $cutoffStr = DateTimeDataType::formatDateNormalized($cutoff);
             $report['cutoff'] = $cutoffStr;
@@ -168,28 +179,42 @@ final class TestDataReaper
 
                 foreach ($pending as $alias => $object) {
                     try {
-                        $count = $this->deleteRowsOf($object, $userUids, $cutoffStr, $batchSize);
-                        if ($count > 0) {
-                            $report['deleted'][$alias] = ($report['deleted'][$alias] ?? 0) + $count;
+                        // CHANGED: the batch is a per-object budget for the whole cleanup, and the
+                        // result distinguishes deleted from blocked rows instead of all-or-nothing.
+                        $budget = $batchSize - ($report['deleted'][$alias] ?? 0);
+                        $result = $this->deleteRowsOf($object, $userUids, $cutoffStr, $budget);
+                        if ($result['deleted'] > 0) {
+                            $report['deleted'][$alias] = ($report['deleted'][$alias] ?? 0) + $result['deleted'];
                             $progress = true;
                         }
-                        // A full batch means expired rows are left over for the next scheduled pass.
-                        // Re-queuing the object inside THIS pass would defeat the cap it just hit.
-                        if ($count >= $batchSize && ! in_array($alias, $report['capped'], true)) {
+                        // A spent budget means expired rows are left over for the next scheduled
+                        // cleanup. Retrying the object in a later pass would defeat the cap.
+                        $capped = ($report['deleted'][$alias] ?? 0) >= $batchSize;
+                        if ($capped && ! in_array($alias, $report['capped'], true)) {
                             $report['capped'][] = $alias;
                         }
-                        unset($report['failed'][$alias]);
+                        // CHANGED: blocked rows no longer fail the whole object. They are reported
+                        // with one sample reason, and the object is retried unless its budget is
+                        // spent - a blocker may be a child object that a later pass reaps first.
+                        if (empty($result['blocked'])) {
+                            unset($report['failed'][$alias]);
+                        } else {
+                            $report['failed'][$alias] = count($result['blocked']) . ' row(s) blocked, e.g.: ' . reset($result['blocked']);
+                            if (! $capped) {
+                                $blocked[$alias] = $object;
+                            }
+                        }
                     } catch (\Throwable $e) {
-                        // Most likely a foreign key still held by a child object that has not been
-                        // reaped yet - keep it for the next pass instead of giving up on it.
+                        // The object as a whole is unusable in this pass (e.g. the creator values could
+                        // not be resolved) - keep it for the next pass instead of giving up on it.
                         $blocked[$alias] = $object;
                         $report['failed'][$alias] = $e->getMessage();
                     }
                 }
 
                 // Nothing was deleted in a whole pass, so the remaining blockers are structural
-                // (mutual FKs, permissions, rows referenced by production data) and another pass would
-                // only repeat the same errors.
+                // (mutual FKs, permissions, rows referenced by data outside the cleanup scope) and
+                // another pass would only repeat the same errors.
                 if (! $progress) {
                     break;
                 }
@@ -204,40 +229,105 @@ final class TestDataReaper
     }
 
     /**
-     * Tells whether data cleanup is switched on for this installation.
+     * Reads one slice of expired rows of an object, oldest first.
      *
-     * WHY OPT-OUT RATHER THAN OPT-IN: on a test system the garbage is the problem cleanup exists to
-     * solve, so the useful default is ON. A system whose database is shared with something that must
-     * not be touched can turn it off in one place.
+     * WHY IT IS SEPARATE FROM deleteRowsOf(): the delete loop reads repeatedly with a shrinking limit
+     * and a growing exclusion list. Keeping the read in one place guarantees that every slice carries
+     * both mandatory filters - a second hand-built read in the loop is where one would get lost.
+     *
+     * WHY THE EXCLUSION USES THE ATTRIBUTE'S LIST DELIMITER: a NOT IN condition is given as one
+     * delimited string, and the delimiter is defined per attribute in the metamodel.
+     *
+     * @param array{created_on:string,created_by:string,user_value:?string} $stamp
+     * @param string[] $excludeUids Rows already known to be blocked in this cleanup
      */
-    private function isEnabled(): bool
+    private function readExpiredRows(MetaObjectInterface $object, array $stamp, array $creatorValues, string $cutoff, int $limit, array $excludeUids, ?string $parentAlias): DataSheetInterface
     {
-        $cfg = $this->workbench->getApp('axenox.BDT')->getConfig();
-        return $cfg->hasOption(self::CFG_ENABLED) ? (bool) $cfg->getOption(self::CFG_ENABLED) : true;
+        $ds = DataSheetFactory::createFromObject($object);
+        $ds->getColumns()->addFromUidAttribute();
+        if ($parentAlias !== null) {
+            $ds->getColumns()->addFromExpression($parentAlias);
+        }
+        $ds->getFilters()->addConditionFromValueArray($stamp['created_by'], $creatorValues);
+        $ds->getFilters()->addConditionFromString($stamp['created_on'], $cutoff, ComparatorDataType::LESS_THAN);
+        if (! empty($excludeUids)) {
+            $uidAttr = $object->getUidAttribute();
+            $ds->getFilters()->addConditionFromString(
+                $uidAttr->getAliasWithRelationPath(),
+                implode($uidAttr->getValueListDelimiter(), $excludeUids),
+                ComparatorDataType::NOT_IN
+            );
+        }
+        $ds->getSorters()->addFromString($stamp['created_on'], SortingDirectionsDataType::ASC);
+        $ds->setRowsLimit($limit);
+        // No total count is needed - a full slice is what signals a remaining backlog - and skipping
+        // it saves a COUNT over tables this cleanup exists because they are large.
+        $ds->setAutoCount(false);
+        $ds->dataRead();
+        return $ds;
     }
 
     /**
-     * Computes the timestamp before which test data is considered garbage.
+     * Deletes the rows of an already read sheet one at a time and collects the ones that cannot go.
      *
-     * WHY IT IS COMPUTED ONCE PER RUN AND PASSED DOWN: the retry passes may span minutes. Recomputing
-     * "now minus N days" per object would move the boundary while the reaper works, so two objects in
-     * the same run could be cleaned to different cut-offs - which is impossible to reason about when
-     * a foreign key later complains about a row that "should" have been deleted.
+     * WHY ONE TRANSACTION PER ROW: it is the only way to keep a row whose cascade hits a foreign key
+     * from rolling back its neighbours. The cost - one read and one delete per row - is only paid on
+     * the failure path, after a whole batch was refused.
      *
-     * WHY A ZERO OR NEGATIVE RETENTION IS REFUSED: it would mean "delete everything the test users
-     * ever created, including what the run that is finishing right now just produced". That is a data
-     * loss policy, not a retention policy, and must not be reachable through a mistyped config value.
+     * WHY IT RE-READS EACH ROW: the refused batch may have been partially applied (leaf-first deletes
+     * commit per level), so a row may already be gone. deleteByUids() re-reads and skips such rows
+     * instead of issuing a delete against nothing.
+     *
+     * On a self-referencing object a parent may come before its child here and be refused; the child
+     * still goes, and the parent is picked up by the next pass.
+     *
+     * @return array{deleted:int,blocked:array<string,string>} blocked: row UID => reason
      */
-    private function getCutoff(): string
+    private function deleteRowByRow(DataSheetInterface $sheet): array
     {
-        $cfg = $this->workbench->getApp('axenox.BDT')->getConfig();
-        $days = $cfg->hasOption(self::CFG_RETENTION_DAYS)
-            ? (int) $cfg->getOption(self::CFG_RETENTION_DAYS)
-            : self::DEFAULT_RETENTION_DAYS;
-        if ($days < 1) {
-            throw new RuntimeException('Invalid test data retention: ' . self::CFG_RETENTION_DAYS . ' must be at least 1 day, "' . $days . '" given.');
+        $object = $sheet->getMetaObject();
+        $deleted = 0;
+        $blocked = [];
+        foreach ($sheet->getUidColumn()->getValues(false) as $uid) {
+            try {
+                $deleted += self::deleteByUids($object, [$uid]);
+            } catch (\Throwable $e) {
+                $blocked[$uid] = $e->getMessage();
+            }
         }
-        return (new \DateTimeImmutable())->modify('-' . $days . ' days')->format('Y-m-d H:i:s');
+        return ['deleted' => $deleted, 'blocked' => $blocked];
+    }
+
+    /**
+     * Deletes the rows of an object with the given UIDs, re-reading them first.
+     *
+     * WHY IT RE-READS: rows may already be gone - removed by the cascade of an earlier delete, or by
+     * the level-by-level commits of a refused leaf-first delete - and a delete must only ever target
+     * rows that provably still exist. The read also hands dataDelete() concrete UIDs to build its
+     * cascading sub-deletes from.
+     *
+     * WHY AN EMPTY LIST RETURNS WITHOUT A QUERY: an IN filter over an empty list is dropped as an
+     * empty value, and a filterless delete targets the whole table.
+     *
+     * WHY NO TRANSACTION PARAMETER: the only caller is the row-by-row fallback, whose whole point is
+     * that every row runs in its own transaction.
+     *
+     * @param string[] $uids
+     * @return int Number of deleted rows
+     */
+    private static function deleteByUids(MetaObjectInterface $object, array $uids) : int
+    {
+        if (empty($uids)) {
+            return 0;
+        }
+        $sheet = DataSheetFactory::createFromObject($object);
+        $sheet->getColumns()->addFromUidAttribute();
+        $sheet->getFilters()->addConditionFromValueArray($object->getUidAttributeAlias(), $uids);
+        $sheet->dataRead();
+        if ($sheet->isEmpty()) {
+            return 0;
+        }
+        return $sheet->dataDelete();
     }
 
     /**
@@ -363,11 +453,6 @@ final class TestDataReaper
      * WHY OBJECTS THAT FAIL TO INSTANTIATE ARE REPORTED AND NOT ONLY SWALLOWED: a broken model entry
      * is not the reaper's problem to solve, but if the object it hides is the one filling the
      * database, silence turns a model bug into an unexplained storage problem months later.
-     * 
-     * WHY THE CONNECTION CHECK COMES LAST: the four checks before it are answered from the metamodel
-     * alone, while this one resolves the object's data connection - which for a remote source means
-     * touching another server. Ordering the cheap checks first keeps a scan over dozens of objects
-     * from opening connections it will not use.
      *
      * @param array<string,string> $skipped Filled with alias => reason for everything left out
      * @return array<string,MetaObjectInterface> alias with namespace => object
@@ -411,17 +496,20 @@ final class TestDataReaper
      * Returns why an object is out of scope, or NULL if it may be cleaned.
      *
      * The physical-table checks mirror the ones the SQL DBML concept uses to recognise a real table,
-     * plus the three the reaper additionally needs: something to delete by, a creator to filter on
-     * and a timestamp to apply the retention window to.
+     * plus the two the reaper additionally needs: a UID to delete by and a creation stamp - creator
+     * and creation time - to filter on.
      *
-     * WHY A MISSING CREATED_ON DISQUALIFIES THE OBJECT: without a timestamp the retention window
-     * cannot be applied, so the delete would also take rows created minutes ago - including those of
-     * the run that just finished. Deleting less than intended is a nuisance; deleting fresh data is
-     * data loss, so the ambiguous case must always resolve to "skip".
+     * WHY THE CREATION STAMP IS MANDATORY: without a trustworthy creator the reaper cannot tell test
+     * data from production data, and without a trustworthy timestamp the retention window cannot be
+     * applied - the delete would also take rows created minutes ago. Deleting less than intended is a
+     * nuisance; deleting fresh or foreign data is data loss, so any doubt resolves to "skip". Where the
+     * stamp comes from is explained in getCreationStamp().
      *
      * WHY SQL CONNECTIONS ONLY: a delete against a non-SQL builder (the file source in particular)
      * behaves differently on empty or partial filter sets and can widen far beyond the intended rows.
-     * Restricting the reaper to real SQL tables removes that class of accident entirely.
+     *
+     * WHY THE CONNECTION CHECK COMES LAST: every check before it reads the metamodel only and is free;
+     * resolving the connection may reach a remote server, so most out-of-scope objects never pay it.
      */
     private function getExclusionReason(MetaObjectInterface $object): ?string
     {
@@ -431,11 +519,13 @@ final class TestDataReaper
         if (! $object->hasUidAttribute()) {
             return 'no UID attribute';
         }
-        if (! $object->hasAttribute('UserNeu')) {
-            return 'no UserNeu attribute';
-        }
-        if (! $object->hasAttribute('ZeitNeu')) {
-            return 'no ZeitNeu attribute - retention window not applicable';
+        // CHANGED: was two hasAttribute() checks on the fixed aliases CREATED_BY_USER / CREATED_ON
+        try {
+            $this->getCreationStamp($object);
+        } catch (\Throwable $e) {
+            // The resolver states its reason in the message, so the skip list tells whether the
+            // behavior is missing, incomplete or ambiguous.
+            return $e->getMessage();
         }
         if (! ($object->getDataConnection() instanceof SqlDataConnectorInterface)) {
             return 'not an SQL data source';
@@ -449,54 +539,194 @@ final class TestDataReaper
     }
 
     /**
-     * Deletes up to $batchSize expired rows of one object.
+     * Resolves which attributes the platform stamps with the creation time and the creator of a row.
      *
-     * WHY IT READS BEFORE IT DELETES: the row count is what the cleanup reports, the read is what the
-     * batch cap is applied to, and an empty result skips the delete entirely - so a clean system costs
-     * one SELECT per object and no writes. An empty sheet must never reach dataDelete(): with no rows
-     * and no narrowing filter the delete scope widens to the whole object, which is how a cleanup
-     * wipes a table.
+     * WHY THE BEHAVIOR IS ASKED INSTEAD OF HARD-CODING CREATED_ON / CREATED_BY_USER: those aliases are
+     * only a naming convention. The TimeStampingBehavior is what actually writes the stamp, so its
+     * configuration is the single source of truth for (a) the attribute holding the creation time,
+     * (b) the attribute holding the creator and (c) WHICH user value is stored there - the UID by
+     * default, but e.g. the USERNAME if created_by_value_user_attribute_alias is set. A fixed alias
+     * misses objects whose attributes are named differently, and on an object storing usernames it
+     * filters by UIDs and silently matches nothing. An attribute that merely exists under the right
+     * name but is not filled by the behavior is no evidence of who created a row at all.
+     *
+     * WHY A DISABLED BEHAVIOR STILL COUNTS: disabling only stops new stamps; the attribute mapping is
+     * still correct for rows already written. Unstamped rows hold NULL, which matches neither the
+     * creator nor the age filter, so they are never deleted.
+     *
+     * WHY DIFFERING BEHAVIORS DISQUALIFY THE OBJECT: if two behaviors stamp different attributes there
+     * is no way to tell which one reflects the real creator. Guessing could put production rows in
+     * scope, so the ambiguous case resolves to "skip".
+     *
+     * Memoized per object: getObjects() resolves it for the scope check and deleteRowsOf() needs it
+     * again in every retry pass.
+     *
+     * @throws RuntimeException if the object has no usable or an ambiguous creation stamp - the
+     *         message is the skip reason reported to the operator.
+     * @return array{created_on:string,created_by:string,user_value:?string}
+     */
+    private function getCreationStamp(MetaObjectInterface $object): array
+    {
+        $key = $object->getAliasWithNamespace();
+        if (isset($this->stampCache[$key])) {
+            return $this->stampCache[$key];
+        }
+
+        $stamps = [];
+        foreach ($object->getBehaviors()->getByPrototypeClass(TimeStampingBehavior::class)->getAll() as $behavior) {
+            /** @var TimeStampingBehavior $behavior */
+            if (! $behavior->hasCreatedOnAttribute() || ! $behavior->hasCreatedByAttribute()) {
+                continue;
+            }
+            $stamp = [
+                'created_on' => $behavior->getCreatedOnAttribute()->getAliasWithRelationPath(),
+                'created_by' => $behavior->getCreatedByAttribute()->getAliasWithRelationPath(),
+                'user_value' => $this->getCreatedByUserValueAlias($behavior),
+            ];
+            // Keyed by content, so the same mapping configured or inherited twice is not ambiguity.
+            $stamps[implode('|', array_map('strval', $stamp))] = $stamp;
+        }
+
+        if (empty($stamps)) {
+            throw new RuntimeException('no TimeStampingBehavior stamping both creation time and creator');
+        }
+        if (count($stamps) > 1) {
+            throw new RuntimeException('ambiguous creation stamp - ' . count($stamps) . ' TimeStampingBehaviors stamp different attributes');
+        }
+        return $this->stampCache[$key] = reset($stamps);
+    }
+
+    /**
+     * Returns which USER attribute the behavior stores as creator, or NULL when it stores the UID.
+     *
+     * WHY IT READS THE BEHAVIOR'S UXON: TimeStampingBehavior keeps this setting behind a protected
+     * getter. The exported UXON is the public view of exactly the same configuration, and reading it
+     * avoids reflection or subclassing a core class.
+     *
+     * WHY THE LOOKUP IS CASE-INSENSITIVE: UXON keys are mapped to setters case-insensitively (PHP
+     * method names are), so an upper-case key configures the behavior just as well. The reader must
+     * not be stricter than the writer, or it would fall back to UIDs and match nothing.
+     */
+    private function getCreatedByUserValueAlias(TimeStampingBehavior $behavior): ?string
+    {
+        $uxon = $behavior->exportUxonObject();
+        if ($uxon === null) {
+            return null;
+        }
+        $key = $uxon->findPropertyKey('created_by_value_user_attribute_alias');
+        if ($key === false) {
+            return null;
+        }
+        $value = trim((string) $uxon->getProperty($key));
+        return ($value === '' || strcasecmp($value, 'UID') === 0) ? null : $value;
+    }
+
+    /**
+     * Returns the values the test users carry in the given USER attribute, e.g. their usernames.
+     *
+     * WHY IT EXISTS: an object whose behavior stores the username (or any other user attribute) as
+     * creator must be filtered by those values, not by UIDs - a UID filter matches nothing there and
+     * the object would never be cleaned. The values are derived from the already resolved test-user
+     * UIDs, so identifying the test users stays in findTestUserUids() only.
+     *
+     * WHY AN EMPTY UID LIST RETURNS EMPTY WITHOUT READING: an empty IN filter widens to all users,
+     * which would turn every user's value into a delete criterion.
+     *
+     * Memoized per attribute: many objects share the same setting, and the set of test users does
+     * not change during one cleanup (the reaper is instantiated per cleanup).
+     *
+     * @param string[] $userUids
+     * @return string[]
+     */
+    private function getTestUserValues(array $userUids, string $userAttributeAlias): array
+    {
+        if (empty($userUids)) {
+            return [];
+        }
+        if (array_key_exists($userAttributeAlias, $this->userValueCache)) {
+            return $this->userValueCache[$userAttributeAlias];
+        }
+
+        $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'exface.Core.USER');
+        $col = $ds->getColumns()->addFromExpression($userAttributeAlias);
+        $ds->getFilters()->addConditionFromValueArray($ds->getMetaObject()->getUidAttributeAlias(), $userUids);
+        $ds->dataRead();
+
+        $values = [];
+        foreach ($col->getValues(false) as $value) {
+            if ($value !== null && $value !== '' && ! in_array($value, $values, true)) {
+                $values[] = $value;
+            }
+        }
+        return $this->userValueCache[$userAttributeAlias] = $values;
+    }
+
+    /**
+     * Deletes up to $batchSize expired rows of one object, oldest first, isolating rows that cannot go.
      *
      * WHY BOTH FILTERS ARE ALWAYS PRESENT: creator alone would delete data a running test just
-     * produced, age alone would delete production data. Neither condition is ever optional.
+     * produced, age alone would delete production data. Neither condition is ever optional - which is
+     * also why an empty creator list aborts instead of being passed to the IN filter.
      *
-     * WHY OLDEST FIRST: an unsorted limited read would take an arbitrary slice and could leave the
-     * oldest rows - the ones the retention window is actually about - alive indefinitely.
+     * WHY A FAILED BATCH FALLS BACK TO ROW-BY-ROW: dataDelete() runs the whole sheet, cascades
+     * included, in one transaction and rolls all of it back on the first foreign key error. A single
+     * row still referenced by data outside the scope (a delivery note pointing at an old requirement
+     * list) would otherwise veto every deletable row in the batch.
      *
-     * WHY SELF-REFERENCING OBJECTS TAKE THE LEAF-FIRST PATH: a tree object (category, folder,
-     * position hierarchy) deletes a mid-level row before its own children and trips the RESTRICT
-     * foreign key. That order has to come from the application, exactly as it does for run_step.
+     * WHY BLOCKED ROWS ARE EXCLUDED FROM THE NEXT READ: reads are sorted oldest first, so a permanently
+     * blocked row sits at the head of every batch. Without the exclusion it would be retried forever
+     * and starve the object - the rows behind it would never be cleaned.
      *
-     * @return int Number of rows deleted.
+     * WHY THE LOOP STOPS AT $batchSize BLOCKED ROWS: past that point the object is held by data outside
+     * the cleanup scope, which configuration has to fix, not retries. It also keeps the NOT IN list
+     * bounded.
+     *
+     * WHY THE LOOP ALSO STOPS WITHOUT PROGRESS: a delete that reports 0 affected rows (e.g. prevented
+     * by a behavior) would otherwise re-read the same rows forever.
+     *
+     * KNOWN LIMITATION - on a self-referencing object the leaf-first delete commits level by level, so
+     * a failure in an upper level leaves the deeper levels deleted but uncounted. The row-by-row
+     * fallback only counts what it removes itself.
+     *
+     * @return array{deleted:int,blocked:array<string,string>} blocked: row UID => reason
      */
-    private function deleteRowsOf(MetaObjectInterface $object, array $userUids, string $cutoff, int $batchSize): int
+    private function deleteRowsOf(MetaObjectInterface $object, array $userUids, string $cutoff, int $batchSize): array
     {
-        $ds = DataSheetFactory::createFromObject($object);
-        $ds->getColumns()->addFromUidAttribute();
-        $ds->getFilters()->addConditionFromValueArray('UserNeu', $userUids);
-        // The attribute alias is ZeitNeu in uppercase - the metamodel resolves aliases
-        // case-sensitively and a lowercase spelling would silently fail to resolve.
-        $ds->getFilters()->addConditionFromString('ZeitNeu', $cutoff, ComparatorDataType::LESS_THAN);
-        $ds->getSorters()->addFromString('ZeitNeu', SortingDirectionsDataType::ASC);
-        $ds->setRowsLimit($batchSize);
-        // No total count is needed - a full batch is what signals a remaining backlog - and skipping
-        // it saves a COUNT over tables this cleanup exists because they are large.
-        $ds->setAutoCount(false);
+        $stamp = $this->getCreationStamp($object);
+        $creatorValues = $stamp['user_value'] === null
+            ? $userUids
+            : $this->getTestUserValues($userUids, $stamp['user_value']);
+        if (empty($creatorValues)) {
+            throw new RuntimeException('no creator value resolved for the test users (creator attribute "' . $stamp['created_by'] . '")');
+        }
 
         $parentAlias = $this->findSelfReferenceAlias($object);
-        if ($parentAlias !== null) {
-            $ds->getColumns()->addFromExpression($parentAlias);
+        $deleted = 0;
+        $blocked = [];
+
+        while ($deleted < $batchSize && count($blocked) < $batchSize) {
+            $limit = $batchSize - $deleted;
+            $ds = $this->readExpiredRows($object, $stamp, $creatorValues, $cutoff, $limit, array_keys($blocked), $parentAlias);
+            if ($ds->isEmpty()) {
+                break;
+            }
+
+            $before = $deleted + count($blocked);
+            try {
+                $deleted += $parentAlias !== null ? LeafFirstDeleter::delete($ds, $parentAlias) : $ds->dataDelete();
+            } catch (\Throwable $e) {
+                $isolated = $this->deleteRowByRow($ds);
+                $deleted += $isolated['deleted'];
+                $blocked += $isolated['blocked'];
+            }
+
+            // A short read means no expired rows are left behind this slice.
+            if ($ds->countRows() < $limit || $deleted + count($blocked) === $before) {
+                break;
+            }
         }
 
-        $ds->dataRead();
-        if ($ds->isEmpty()) {
-            return 0;
-        }
-
-        if ($parentAlias !== null) {
-            return LeafFirstDeleter::delete($ds, $parentAlias);
-        }
-        return $ds->dataDelete();
+        return ['deleted' => $deleted, 'blocked' => $blocked];
     }
 
     /**
