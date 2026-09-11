@@ -913,6 +913,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *   Then it has filters "Name, Created on, Status"
      *
      * @Then it has filters ":filterList"
+     * @Then it has a filter ":filterList"
      *
      * @param string $filterList Comma-separated list of expected filter names
      */
