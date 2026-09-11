@@ -266,10 +266,62 @@ class UI5DataTableNode extends UI5DataNode
      */
     public function getRowSelectionSkipReason(ActionInterface $action, ?int $loadedRowCount = null): ?string
     {
-        if ($action->getInputRowsMin() > 0 && ($loadedRowCount ?? $this->getLoadedRowCount()) < 1) {
+        if ($action->getInputRowsMin() < 1) {
+            return null;
+        }
+        if (($loadedRowCount ?? $this->getLoadedRowCount()) < 1) {
             return 'Action requires selected rows, but the table has none';
         }
+        // A table that renders no way to select a row is a valid configuration, not a broken
+        // button - reporting its row-bound buttons as failures would bury real regressions among
+        // expected ones. Detecting it here routes it through the same SKIPPED collection as an
+        // empty table, so the button loop never reaches the loud refusal toggleRowSelection() would
+        // raise. The explicit "I select table row" step does not consult this and keeps failing.
+        if (! $this->hasUsableRowSelectionAffordance()) {
+            return 'Action requires selected rows, but the table renders no way to select them (every visible cell holds an input, link or button)';
+        }
         return null;
+    }
+
+    /**
+     * Tells whether the currently loaded rows expose any usable way to select a row.
+     *
+     * WHY THE FIRST ROW IS REPRESENTATIVE: every row of a table is rendered by the same template,
+     * so the selection affordance a row exposes is a property of the table, not of the individual
+     * row. Probing the first loaded row answers the table-wide question without walking all rows.
+     * Sharing analyzeRowSelection() with toggleRowSelection() keeps the skip decision and the click
+     * decision from ever drifting apart.
+     *
+     * @return bool
+     */
+    protected function hasUsableRowSelectionAffordance(): bool
+    {
+        $rows = $this->getTableRows();
+        if (empty($rows)) {
+            return false;
+        }
+        return $this->analyzeRowSelection($rows[0])['target'] !== null;
+    }
+
+    /**
+     * The single precondition every self-initiated selection agrees on: can this table select now?
+     *
+     * WHY ONE METHOD: three places trigger a selection on their own - the end-of-sweep housekeeping
+     * that restores exactly one selected row, and the lost-selection retry that re-selects before
+     * clicking again (the readiness walk and the explicit step are driven by a caller instead).
+     * Each carried its own copy of "supports selection AND has rows AND exposes an affordance", and
+     * the retry copy was left missing the affordance term, so an unselectable table reached
+     * toggleRowSelection()'s refusal through that one path and failed the whole check. Reading one
+     * predicate keeps them from disagreeing again. Subclasses that select through a non-DOM path
+     * (e.g. the spreadsheet renderer API) answer the affordance question for themselves.
+     *
+     * @return bool
+     */
+    protected function canSelectRows(): bool
+    {
+        return $this->supportsRowSelection()
+            && $this->getLoadedRowCount() > 0
+            && $this->hasUsableRowSelectionAffordance();
     }
 
     /**
@@ -333,7 +385,7 @@ class UI5DataTableNode extends UI5DataNode
     }
 
     /**
-     * Clicks the row selector of the given (1-based) row, flipping its selection state.
+     * Clicks a real selection affordance of the given (1-based) row and proves the state changed.
      *
      * Why this is separated from selectRow():
      * Clicking is the only way to change the selection like a user would, but a click means
@@ -349,8 +401,22 @@ class UI5DataTableNode extends UI5DataNode
      * helper asked. Sharing one row list keeps row numbers, selection state and click
      * targets in a single consistent index space.
      *
+     * WHY THE OUTCOME IS READ BACK: the previous version clicked and assumed success. A click
+     * selects nothing in several ordinary configurations - a data cell where the widget reacts only
+     * to the row selector, an editable cell that enters edit mode, a cell holding a link or button
+     * that fires that instead. The failure was silent and surfaced far away as "no loaded row shows
+     * this button", so working buttons were reported as skipped. Reading the state back through
+     * getSelectedRowNumbers() - the single source of truth - turns that into an immediate failure.
+     *
+     * WHY DESELECTION CAN BE A NO-OP: deselection only exists where an explicit selector is
+     * rendered. On a single-select table whose only path is the row body, clicking a selected row
+     * leaves it selected - the widget offers no deselection. A deselect request there must neither
+     * click nor fail; correctness is guaranteed instead by ensureExactlySelectedRows() comparing the
+     * final selection to what was asked. Read-back for the *select* direction stays untouched.
+     *
      * @param int $rowNumber 1-based row number
-     * @throws RuntimeException if the row does not exist
+     * @throws RuntimeException if the row does not exist, exposes no usable selection affordance,
+     *                          or if a selecting click does not change the selection state
      * @return void
      */
     protected function toggleRowSelection(int $rowNumber): void
@@ -364,14 +430,111 @@ class UI5DataTableNode extends UI5DataNode
         }
 
         $row = $rows[$rowIndex];
-        $rowSelector = $row->find('css', '.sapUiTableRowSelectionCell');
-        if ($rowSelector) {
-            $rowSelector->click();
-        } else {
-            $firstCell = $row->find('css', 'td.sapUiTableCell, .sapMListTblCell');
-            Assert::assertNotNull($firstCell, "Could not find a clickable cell in row {$rowNumber}");
-            $firstCell->click();
+        $wasSelected = $this->isRowSelected($rowNumber);
+        $plan = $this->analyzeRowSelection($row);
+
+        if ($plan['target'] === null) {
+            $reason = empty($plan['hidden'])
+                ? 'no selector cell or checkbox is rendered and every visible data cell holds an '
+                    . 'interactive control (input, link or button), so the row cannot be selected by clicking'
+                : 'the only selection affordances found are hidden: ' . implode(', ', $plan['hidden']);
+            throw new RuntimeException(
+                "Cannot select row {$rowNumber}: the table renders no usable way to select it - " . $reason . '.'
+            );
         }
+
+        // Deselecting a row that can only be reached through the row body is not a thing the widget
+        // offers (single-select), so a deselect request there does nothing and reports no error.
+        if ($wasSelected && $plan['explicit'] === false) {
+            return;
+        }
+
+        $plan['target']->click();
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+        $isSelected = $this->isRowSelected($rowNumber);
+        if ($isSelected === $wasSelected) {
+            $intendedState = $wasSelected ? 'deselected' : 'selected';
+            throw new RuntimeException(
+                "Failed to make row {$rowNumber} {$intendedState}: clicked the " . $plan['description']
+                . ', but the row selection state did not change.'
+            );
+        }
+    }
+
+    /**
+     * Resolves how a given row can be (de)selected, or reports that it cannot.
+     *
+     * WHY ONE SHARED ANALYSER: reading the selection state already checks three independent signals
+     * because no single one is trustworthy across themes and versions; writing it must be just as
+     * deliberate. Concentrating the affordance decision here - explicit selector cell or checkbox
+     * first, the row body through a non-interactive cell only as the single-select fallback - keeps
+     * the click path (toggleRowSelection), the skip decision (getRowSelectionSkipReason) and the
+     * refusal message reading from one definition instead of drifting apart.
+     *
+     * The `explicit` flag distinguishes a rendered selector (which supports both select and
+     * deselect) from a row-body click (which only ever selects), so the caller knows when a
+     * deselect request has nothing to do.
+     *
+     * @param NodeElement $row
+     * @return array{target: NodeElement|null, description: string|null, explicit: bool, hidden: string[]}
+     */
+    protected function analyzeRowSelection(NodeElement $row): array
+    {
+        $explicitAffordances = [
+            '.sapUiTableRowSelectionCell' => 'sap.ui.table row selector cell',
+            '.sapMListTblSelCol .sapMCb'  => 'sap.m.Table multi-select checkbox',
+            '.sapMListTblSelCol'          => 'sap.m.Table selection cell',
+        ];
+        $hidden = [];
+        foreach ($explicitAffordances as $selector => $description) {
+            $affordance = $row->find('css', $selector);
+            if ($affordance === null) {
+                continue;
+            }
+            if (! $affordance->isVisible()) {
+                $hidden[] = $description;
+                continue;
+            }
+            return ['target' => $affordance, 'description' => $description, 'explicit' => true, 'hidden' => $hidden];
+        }
+        $safeCell = $this->findRowSelectionCell($row);
+        if ($safeCell !== null) {
+            return ['target' => $safeCell, 'description' => 'row body (single-select row click)', 'explicit' => false, 'hidden' => $hidden];
+        }
+        return ['target' => null, 'description' => null, 'explicit' => false, 'hidden' => $hidden];
+    }
+
+    /**
+     * Returns a visible cell of the row that carries no interactive control, or null.
+     *
+     * WHY A SAFE CELL AND NOT THE FIRST ONE: single-select tables can only be selected by clicking
+     * the row body, but the previous first-cell click could land on an input (entering edit mode),
+     * a link (navigating away) or a button (triggering it) - selecting nothing while mutating state.
+     * A cell whose subtree contains none of those selects the row cleanly. When every visible cell
+     * holds such a control the row cannot be selected by clicking at all, and the caller refuses
+     * instead of guessing - which is also what keeps an editable table from being left in edit mode.
+     *
+     * WHY THE `td.` QUALIFIER: the lookup must match the row's own cell elements only. Dropping the
+     * element qualifier also matched nested elements that reuse the same class, so the "cell" could
+     * resolve to something inside a cell rather than the cell itself.
+     *
+     * @param NodeElement $row
+     * @return NodeElement|null
+     */
+    protected function findRowSelectionCell(NodeElement $row): ?NodeElement
+    {
+        $interactive = 'a[href], button, input, textarea, select, [contenteditable="true"], '
+            . '[role="button"], .sapMBtn, .sapMLnk, .sapMInputBaseInner';
+        foreach ($row->findAll('css', 'td.sapUiTableCell, td.sapMListTblCell') as $cell) {
+            if (! $cell->isVisible()) {
+                continue;
+            }
+            if ($cell->find('css', $interactive) !== null) {
+                continue;
+            }
+            return $cell;
+        }
+        return null;
     }
 
     /**
@@ -474,7 +637,9 @@ class UI5DataTableNode extends UI5DataNode
             return;
         }
         // Toggle off everything that must not stay selected first: a leftover selection can
-        // never survive into the action this way, no matter which step produced it.
+        // never survive into the action this way, no matter which step produced it. On a single-
+        // select table this loop is a deliberate no-op (toggleRowSelection() refuses to deselect a
+        // row-body-only row) and the selection below displaces the previous row by itself.
         foreach ($this->getSelectedRowNumbers() as $selectedRowNumber) {
             if (! in_array($selectedRowNumber, $rowNumbers, true)) {
                 $this->toggleRowSelection($selectedRowNumber);
@@ -482,6 +647,22 @@ class UI5DataTableNode extends UI5DataNode
         }
         foreach ($rowNumbers as $rowNumber) {
             $this->selectRow($rowNumber);
+        }
+
+        // Confirm the whole selection instead of trusting each click. This is where correctness is
+        // enforced for single-select tables: the clearing loop above did nothing there, so the only
+        // proof that "exactly these rows" are selected is the final read-back. A multi-select table
+        // that failed to add or drop a row shows up here as a mismatch and fails loudly, while a
+        // single-select table that displaced its selection matches and passes.
+        $wanted = array_values(array_unique($rowNumbers));
+        sort($wanted);
+        $actual = $this->getSelectedRowNumbers();
+        sort($actual);
+        if ($actual !== $wanted) {
+            throw new RuntimeException(
+                'Expected exactly row(s) ' . implode(', ', $wanted) . ' to be selected, but '
+                . (empty($actual) ? 'none are' : 'row(s) ' . implode(', ', $actual) . ' are') . ' selected.'
+            );
         }
     }
 
@@ -584,7 +765,12 @@ class UI5DataTableNode extends UI5DataNode
         if (! $this->isRowSelectionError($result, $logbook)) {
             return $result;
         }
-        if (! $this->supportsRowSelection() || $this->getLoadedRowCount() < 1) {
+        // A table that cannot select rows must never reach ensureExactlySelectedRows() here: this
+        // path is entered for a menu entry whose action needs no input row (so no skip reason was
+        // raised) that then reports a row-selection error at click time. Without the affordance term
+        // the re-selection would hit toggleRowSelection()'s refusal and escape, turning the whole
+        // menu check red - the outcome the skip handling exists to prevent.
+        if (! $this->canSelectRows()) {
             return $result;
         }
         $logbook->addLine('Action reported a row-selection error (e.g. "Bitte genau 1 Datensatz auswählen!") - re-selecting a single row and retrying the click once.');
@@ -1464,7 +1650,9 @@ JS
         // with a variable that was always 1, so it either toggled the only selected row OFF
         // or added row 1 on top of a row the readiness loop had left selected - the double
         // selection that makes the next row-bound action fail with "select exactly 1 record".
-        if ($this->supportsRowSelection() && $this->getLoadedRowCount() > 0) {
+        // canSelectRows() keeps an unselectable table (whose buttons were all skipped above) from
+        // turning this housekeeping click into the refusal ensureExactlySelectedRows() raises.
+        if ($this->canSelectRows()) {
             $this->ensureExactlySelectedRows([1]);
         }
         // Leave no popover behind for the next check of this scenario: the button loop above may have
