@@ -231,6 +231,24 @@ class UI5DataSpreadSheetNode extends UI5DataTableNode
     }
 
     /**
+     * Answers the row-selection capability from the node's mechanism, not from shared DOM markup.
+     *
+     * WHY THIS OVERRIDE: the base probes the first row for a selector cell, a checkbox or a non-
+     * interactive data cell, because those are how a clickable table selects. This widget selects
+     * through the jSpreadsheet renderer API (see selectRow / applyRowSelection), so its rows carry
+     * none of that markup and the DOM probe would answer "cannot select" - reviving the false skip
+     * that hid every row-bound spreadsheet button before renderer-API selection existed. Capability
+     * is a property of the node here, so it is asserted directly. Do not push a DOM-shaped default
+     * into the base without letting this node keep answering for itself.
+     *
+     * @return bool
+     */
+    protected function hasUsableRowSelectionAffordance(): bool
+    {
+        return true;
+    }
+
+    /**
      * Replaces the current spreadsheet selection with the requested contiguous rows.
      *
      * WHY CONTIGUOUS ONLY: this jSpreadsheet version represents selection as one rectangle.
