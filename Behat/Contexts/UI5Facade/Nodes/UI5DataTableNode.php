@@ -7,6 +7,7 @@ use axenox\BDT\Exceptions\FacadeNodeException;
 use axenox\BDT\Interfaces\TestResultInterface;
 use Behat\Gherkin\Node\TableNode;
 use Behat\Mink\Element\NodeElement;
+use exface\Core\CommonLogic\DataSheets\DataColumn as DataSheetColumn;
 use exface\Core\CommonLogic\Model\Expression;
 use exface\Core\DataTypes\AutoloadStrategyDataType;
 use exface\Core\DataTypes\BooleanDataType;
@@ -595,13 +596,155 @@ class UI5DataTableNode extends UI5DataNode
         return in_array($this->convertOrdinalToIndex($rowNumber) + 1, $this->getSelectedRowNumbers(), true);
     }
 
-    public function selectEachRowUntil(callable $predicate): bool
+    /**
+     * Reads the raw model value of the linked column from the single selected row of this table.
+     *
+     * WHY THE MODEL AND NOT THE DOM: sap.ui.table.Table recycles row DOM elements, so a selected row
+     * outside the rendered window has no `<tr>` and the DOM-based getSelectedRowNumbers() would miss
+     * it. This replicates the facade's own live-reference getter (UI5DataTable::buildJsGetRowsSelected()),
+     * reading getContextByIndex()/getSelectedContexts().getObject() straight from the model.
+     *
+     * WHY getSelectedIndices()/getSelectedContexts() AND NOT A SINGLE/MULTI BRANCH: both return every
+     * selected row in either selection mode, so asserting exactly one selection covers both cases
+     * without replicating the facade's mode split.
+     *
+     * WHY THE RAW KEY FALLBACK IS THE MAIN PATH, NOT AN EDGE CASE: a link such as "TabelleAnfragen!Id"
+     * targets the object's UID, which is normally NOT among the visible columns. getColumns() does not
+     * auto-add it (see iHaveColumnsAndColumnGroupsTrait::getColumns()), so getColumnByDataColumnName()
+     * and getColumnByAttributeAlias() both miss and the sanitized target column id itself is the model
+     * row key - exactly the branch buildJsValueGetter() allows for the UID attribute alias.
+     *
+     * @param string $targetColumnId The widget link's getTargetColumnId().
+        * @param int[]|null $selectedIndices Receives zero-based model indices from the same selection read.
+        * @param int|null $firstVisibleIndex Receives the first visible model index for rendered-row mapping.
+        * @param bool $requireExactlyOne Whether zero or multiple selected rows must throw.
+     * @return string|null The raw value, or null when the row carries the key but its value is null.
+     * @throws RuntimeException if the control is missing, exposes no known selection API, the
+    *         required selection is not exactly one row, or the linked column is absent from it.
+     */
+    public function getSelectedRowRawValue(
+        string $targetColumnId,
+        ?array &$selectedIndices = null,
+        ?int &$firstVisibleIndex = null,
+        bool $requireExactlyOne = true
+    ): ?string
+    {
+        $widget = $this->getWidget();
+        // Resolve the model-row key with the same precedence the facade uses (sanitize, then column
+        // lookup); the sanitized id itself is kept when no column matches (UID/system link columns).
+        $key = StringDataType::startsWith($targetColumnId, '~')
+            ? $targetColumnId
+            : DataSheetColumn::sanitizeColumnName($targetColumnId);
+        if ($col = $widget->getColumnByDataColumnName($key)) {
+            $key = $col->getDataColumnName();
+        } elseif ($col = $widget->getColumnByAttributeAlias($key)) {
+            $key = $col->getDataColumnName();
+        }
+
+        $idJs = json_encode($this->getElementId(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $keyJs = json_encode($key, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $json = $this->getFromJavascript(<<<JS
+(function(sId, sKey){
+    var oTable = sap.ui.getCore().byId(sId);
+    if (! oTable) { return JSON.stringify({status: 'no_control'}); }
+    var aObjects = [];
+    var aSelectedIndices = [];
+    var iFirstVisibleIndex = 0;
+    if (typeof oTable.getSelectedIndices === 'function' && typeof oTable.getContextByIndex === 'function') {
+        // sap.ui.table.Table - getSelectedIndices() covers single- and multi-select.
+        aSelectedIndices = oTable.getSelectedIndices().map(Number);
+        iFirstVisibleIndex = typeof oTable.getFirstVisibleRow === 'function' ? oTable.getFirstVisibleRow() : 0;
+        aSelectedIndices.forEach(function(i){
+            var oCtxt = oTable.getContextByIndex(i);
+            if (oCtxt && oCtxt.getObject()) { aObjects.push(oCtxt.getObject()); }
+        });
+    } else if (typeof oTable.getSelectedContexts === 'function') {
+        // sap.m.Table / sap.m.List - getSelectedContexts() covers single- and multi-select.
+        var aItems = typeof oTable.getItems === 'function' ? oTable.getItems() : [];
+        oTable.getSelectedContexts().forEach(function(oCtxt){
+            if (! oCtxt || ! oCtxt.getObject()) { return; }
+            aObjects.push(oCtxt.getObject());
+            var sPath = typeof oCtxt.getPath === 'function' ? oCtxt.getPath() : null;
+            var iIndex = aItems.findIndex(function(oItem){
+                var oItemCtxt = oItem.getBindingContext();
+                return oItemCtxt && typeof oItemCtxt.getPath === 'function' && oItemCtxt.getPath() === sPath;
+            });
+            if (iIndex >= 0) { aSelectedIndices.push(iIndex); }
+        });
+    } else {
+        return JSON.stringify({status: 'no_api'});
+    }
+    var oSelection = {selectedIndices: aSelectedIndices, firstVisibleIndex: iFirstVisibleIndex};
+    if (aObjects.length !== 1) { return JSON.stringify(Object.assign({status: 'not_one', count: aObjects.length}, oSelection)); }
+    var oRow = aObjects[0];
+    if (! (sKey in oRow)) { return JSON.stringify(Object.assign({status: 'no_key'}, oSelection)); }
+    var mVal = oRow[sKey];
+    return JSON.stringify(Object.assign({status: 'ok', value: (mVal === undefined ? null : mVal)}, oSelection));
+})($idJs, $keyJs)
+JS);
+        $result = json_decode((string) $json, true);
+        if (! is_array($result) || ! isset($result['status'])) {
+            throw new RuntimeException('Could not read the selected master row value for column "' . $key . '": unexpected script result.');
+        }
+        $selectedIndices = array_map('intval', is_array($result['selectedIndices'] ?? null) ? $result['selectedIndices'] : []);
+        $firstVisibleIndex = (int) ($result['firstVisibleIndex'] ?? 0);
+        switch ($result['status']) {
+            case 'ok':
+                return $result['value'] === null ? null : (string) $result['value'];
+            case 'not_one':
+                if (! $requireExactlyOne) {
+                    return null;
+                }
+                $count = (int) ($result['count'] ?? 0);
+                $detail = $count === 0 ? 'no row is selected' : $count . ' rows are selected';
+                throw new RuntimeException('Expected exactly one selected row in the master table to read "' . $key . '", but ' . $detail . '.');
+            case 'no_key':
+                throw new RuntimeException('The selected master row does not carry the linked column "' . $key . '" (resolved from target column id "' . $targetColumnId . '") - either it was not loaded into the model or the key resolution is wrong.');
+            case 'no_control':
+                throw new RuntimeException('Master table control "' . $this->getElementId() . '" not found in the UI5 core registry.');
+            case 'no_api':
+                throw new RuntimeException('Master table control "' . $this->getElementId() . '" exposes no known selection API (getSelectedIndices/getSelectedContexts).');
+            default:
+                throw new RuntimeException('Could not read the selected master row value for column "' . $key . '": ' . json_encode($result));
+        }
+    }
+
+    /**
+     * Walks rendered rows in a caller-preferred order without exceeding the existing attempt cap.
+     *
+     * WHY AN OPTIONAL ORDER: master-detail preparation must start on a row other than the current
+     * model selection so the first selection emits a change event. Other callers retain ascending
+     * order, and omitted or invalid preferred rows cannot reduce coverage of the bounded window.
+     *
+     * @param callable $predicate
+     * @param int|null $maxAttempts
+     * @param int[]|null $preferredRowOrder One-based row numbers within the rendered window.
+     * @return bool
+     */
+    public function selectEachRowUntil(callable $predicate, ?int $maxAttempts = null, ?array $preferredRowOrder = null): bool
     {
         $count = $this->getLoadedRowCount();
         if ($count < 1) {
             return false;
         }
-        for ($rowNumber = 1; $rowNumber <= $count; $rowNumber++) {
+        // WHY THE CAP STAYS INSIDE THE RENDERED WINDOW: getLoadedRowCount() counts getTableRows(),
+        // which for sap.ui.table.Table are only the recycled, on-screen rows. ensureExactlySelectedRows()
+        // verifies its click against those same DOM rows, so capping at min(count, max) never addresses a
+        // row outside the render window - avoiding a false FAILED from the recycling limitation. Rows
+        // scrolled out are not attempted in v1.
+        $limit = $maxAttempts === null ? $count : min($count, $maxAttempts);
+        $rowOrder = [];
+        foreach ($preferredRowOrder ?? [] as $rowNumber) {
+            if (is_int($rowNumber) && $rowNumber >= 1 && $rowNumber <= $limit && ! in_array($rowNumber, $rowOrder, true)) {
+                $rowOrder[] = $rowNumber;
+            }
+        }
+        for ($rowNumber = 1; $rowNumber <= $limit; $rowNumber++) {
+            if (! in_array($rowNumber, $rowOrder, true)) {
+                $rowOrder[] = $rowNumber;
+            }
+        }
+        foreach ($rowOrder as $rowNumber) {
             // Exclusive selection instead of remembering the previous row: the previously
             // tried row is not necessarily the only other selected one - a selection left
             // over from an earlier button survives into this loop and would add up to two
