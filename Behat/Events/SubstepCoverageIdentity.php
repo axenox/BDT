@@ -62,8 +62,8 @@ final class SubstepCoverageIdentity
         if (! $widget instanceof AbstractWidget) {
             throw new LogicException('Coverage identity requires a model-backed widget.');
         }
-        // findUiContainer() starts at the parent, so a dialog or popup must identify itself here.
-        $screen = $widget instanceof UiScreenInterface ? $widget : $widget->findUiContainer();
+        // getUiScreen() starts at the parent, so a dialog or popup must identify itself here.
+        $screen = $widget instanceof UiScreenInterface ? $widget : $widget->getUiScreen();
         if ($screen instanceof UiPageInterface) {
             $screenKind = 'page';
         } elseif ($screen instanceof Dialog) {
@@ -74,9 +74,9 @@ final class SubstepCoverageIdentity
             throw new LogicException('Unsupported UI screen type "' . get_class($screen) . '" for coverage identity.');
         }
 
-        $this->screenSlug = $screen->getSlug();
+        $this->screenSlug = $screen->getUrlSlug();
         $this->screenKind = $screenKind;
-        $this->widgetId = $wholeScreen ? self::WHOLE_SCREEN_TOKEN : $widget->getIdWithinUiContainer();
+        $this->widgetId = $wholeScreen ? self::WHOLE_SCREEN_TOKEN : $widget->getIdInScreen();
         $this->objectUid = $widget->getMetaObject()->getId();
         $this->roles = $roles;
         $this->element = $element;

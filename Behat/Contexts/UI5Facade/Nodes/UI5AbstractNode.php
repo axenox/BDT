@@ -1187,7 +1187,7 @@ JS
             }
             return new SubstepCoverageIdentity(
                 $coveredWidget,
-                $element->getIdWithinUiContainer(),
+                $element->getIdInScreen(),
                 $action?->exportUxonObject()->toJson(),
                 $this->getBrowser()->getCurrentRoles()
             );
