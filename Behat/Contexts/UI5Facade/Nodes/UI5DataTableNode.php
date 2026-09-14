@@ -37,18 +37,40 @@ use PHPUnit\Framework\AssertionFailedError;
  */
 class UI5DataTableNode extends UI5DataNode
 {
+    /**
+     * How often a selection is reconciled before it is reported as unreachable.
+     *
+     * WHY A RETRY AT ALL: UI5 applies a selection change asynchronously and re-renders the
+     * table toolbar while doing so. A re-render can restore a row that was just deselected,
+     * so a single read-back after the clicks can observe a state that the widget itself is
+     * about to correct. Reconciling again turns that transient mismatch into a pass, while a
+     * genuinely unreachable selection still fails after the last attempt.
+     */
+    private const SELECTION_RECONCILE_ATTEMPTS = 3;
+    
     public function capturesFocus(): bool
     {
         return true;
     }
 
+    /**
+     * Returns one node per loaded data row.
+     *
+     * WHY THIS DELEGATES: row identity must come from one place. Scanning the DOM again here meant
+     * fixed-column tables were counted twice and the sap.m.Table header, footer, group-header and
+     * "no data" rows were all treated as records - the very rows getTableRows() now filters out. A
+     * node returned here could therefore refer to a different physical row than the same number in
+     * getTableRows(). UI5DataSpreadSheetNode already builds its row nodes this way.
+     *
+     * @return DataColumnNode[]
+     */
     public function getRowNodes(): array
     {
-        $columns = [];
-        foreach ($this->getNodeElement()->findAll('css', '.sapUiTableTr, .sapMListTblRow') as $column) {
-            $columns[] = new DataColumnNode($column, $this->getSession(), $this->getBrowser());
+        $rowNodes = [];
+        foreach ($this->getTableRows() as $row) {
+            $rowNodes[] = new DataColumnNode($row, $this->getSession(), $this->getBrowser());
         }
-        return $columns;
+        return $rowNodes;
     }
 
     /**
@@ -484,10 +506,16 @@ class UI5DataTableNode extends UI5DataNode
      */
     protected function analyzeRowSelection(NodeElement $row): array
     {
+        // WHY THE `td.` QUALIFIER: the select-all checkbox of a sap.m.Table lives in a
+        // `th.sapMListTblSelCol` of the header row, a per-row selector in a `td.sapMListTblSelCol`.
+        // Without the element qualifier a row whose own selection cell cannot be resolved lets the
+        // lookup reach the header instead, so "select row 1" clicked select-all - which changes
+        // nothing on an empty table and changes *everything* on a populated one. This mirrors the
+        // same qualifier already applied in findRowSelectionCell().
         $explicitAffordances = [
-            '.sapUiTableRowSelectionCell' => 'sap.ui.table row selector cell',
-            '.sapMListTblSelCol .sapMCb'  => 'sap.m.Table multi-select checkbox',
-            '.sapMListTblSelCol'          => 'sap.m.Table selection cell',
+            '.sapUiTableRowSelectionCell'  => 'sap.ui.table row selector cell',
+            'td.sapMListTblSelCol .sapMCb' => 'sap.m.Table multi-select checkbox',
+            'td.sapMListTblSelCol'         => 'sap.m.Table selection cell',
         ];
         $hidden = [];
         foreach ($explicitAffordances as $selector => $description) {
@@ -774,6 +802,15 @@ JS);
      * also silently skipped selected rows whose number fell outside the counted range - the
      * exact case that left two rows selected in tables with fixed columns.
      *
+     * WHY THE MISMATCH IS RECONCILED INSTEAD OF REPORTED: the read-back used to run once and fail
+     * the step as soon as it saw an extra row. But "one row too many is selected" is a state this
+     * method already knows how to repair - it is exactly the work the deselect loop does. UI5
+     * applies a selection change asynchronously and re-renders the table toolbar while doing so, so
+     * a row deselected a moment earlier can reappear between the last click and the read-back.
+     * Repairing and re-reading turns that into a pass, while a selection the widget genuinely
+     * refuses to produce (e.g. a single-select table asked for two rows) still fails after the last
+     * attempt, with the observed state in the message.
+     *
      * @param int[] $rowNumbers 1-based row numbers that must end up selected
      * @return void
      */
@@ -782,34 +819,51 @@ JS);
         if ($this->getLoadedRowCount() < 1) {
             return;
         }
-        // Toggle off everything that must not stay selected first: a leftover selection can
-        // never survive into the action this way, no matter which step produced it. On a single-
-        // select table this loop is a deliberate no-op (toggleRowSelection() refuses to deselect a
-        // row-body-only row) and the selection below displaces the previous row by itself.
-        foreach ($this->getSelectedRowNumbers() as $selectedRowNumber) {
-            if (! in_array($selectedRowNumber, $rowNumbers, true)) {
-                $this->toggleRowSelection($selectedRowNumber);
-            }
-        }
-        foreach ($rowNumbers as $rowNumber) {
-            $this->selectRow($rowNumber);
-        }
 
-        // Confirm the whole selection instead of trusting each click. This is where correctness is
-        // enforced for single-select tables: the clearing loop above did nothing there, so the only
-        // proof that "exactly these rows" are selected is the final read-back. A multi-select table
-        // that failed to add or drop a row shows up here as a mismatch and fails loudly, while a
-        // single-select table that displaced its selection matches and passes.
         $wanted = array_values(array_unique($rowNumbers));
         sort($wanted);
-        $actual = $this->getSelectedRowNumbers();
-        sort($actual);
-        if ($actual !== $wanted) {
-            throw new RuntimeException(
-                'Expected exactly row(s) ' . implode(', ', $wanted) . ' to be selected, but '
-                . (empty($actual) ? 'none are' : 'row(s) ' . implode(', ', $actual) . ' are') . ' selected.'
-            );
+
+        $actual = [];
+        for ($attempt = 1; $attempt <= self::SELECTION_RECONCILE_ATTEMPTS; $attempt++) {
+            try {
+                // Toggle off everything that must not stay selected first: a leftover selection can
+                // never survive into the action this way, no matter which step produced it. On a
+                // single-select table this loop is a deliberate no-op (toggleRowSelection() refuses
+                // to deselect a row-body-only row) and the selection below displaces the previous
+                // row by itself.
+                foreach ($this->getSelectedRowNumbers() as $selectedRowNumber) {
+                    if (! in_array($selectedRowNumber, $wanted, true)) {
+                        $this->toggleRowSelection($selectedRowNumber);
+                    }
+                }
+                foreach ($wanted as $rowNumber) {
+                    $this->selectRow($rowNumber);
+                }
+            } catch (RuntimeException $e) {
+                // A click that did not register is the same kind of transient miss as a restored
+                // selection, so it is retried rather than reported - but never hidden: the last
+                // attempt re-throws the original diagnosis untouched.
+                if ($attempt === self::SELECTION_RECONCILE_ATTEMPTS) {
+                    throw $e;
+                }
+                continue;
+            }
+
+            // Confirm the whole selection instead of trusting each click. This is where correctness
+            // is enforced for single-select tables: the clearing loop above did nothing there, so
+            // the only proof that "exactly these rows" are selected is this read-back.
+            $actual = $this->getSelectedRowNumbers();
+            sort($actual);
+            if ($actual === $wanted) {
+                return;
+            }
         }
+
+        throw new RuntimeException(
+            'Expected exactly row(s) ' . implode(', ', $wanted) . ' to be selected, but '
+            . (empty($actual) ? 'none are' : 'row(s) ' . implode(', ', $actual) . ' are')
+            . ' selected after ' . self::SELECTION_RECONCILE_ATTEMPTS . ' attempts to reconcile the selection.'
+        );
     }
 
     /**
@@ -1297,7 +1351,7 @@ JS);
     var aResult = [];
     var oSeenRows = {};
     var iAnonymous = 0;
-    var aRows = oRoot.querySelectorAll('tr.sapUiTableTr.sapUiTableContentRow, tr.sapMListTblRow');
+    var aRows = oRoot.querySelectorAll('tr.sapUiTableTr.sapUiTableContentRow, tr.sapMListTblRow :not(.sapMListTblHeader):not(.sapMListTblFooter):not(.sapMGHLI)');
 
     Array.prototype.forEach.call(aRows, function(oRow){
         if (oRow.getAttribute('aria-hidden') === 'true') { return; }
@@ -1965,6 +2019,8 @@ JS
     public function getTableRows(): array
     {
         // Prefer scroll-table rows to avoid double-counting when fixed columns are present.
+        // A sap.ui.table that holds no records renders only hidden filler rows, which the
+        // :not(.sapUiTableRowHidden) term already removes, so this branch needs no no-data check.
         $scrollRows = $this->getNodeElement()->findAll(
             'css',
             'table.sapUiTableCtrlScroll .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden):not(.sapUiTableRowFirstFixedBottom)'
@@ -1974,11 +2030,53 @@ JS
         }
 
         // Fallback for tables without a fixed/scroll split (e.g. sap.m.Table or single-table grids).
-        return $this->getNodeElement()->findAll(
+        // WHY THE EXTRA :not() TERMS: sap.m.Table renders its header row, its footer row and its
+        // group headers as <tr> elements carrying the very same `sapMListTblRow` class as a data
+        // row. Counting them shifts every row number and lets a row lookup resolve to the header,
+        // whose selection cell is the select-all checkbox.
+        $rows = $this->getNodeElement()->findAll(
             'css',
             '.sapUiTableCtrl .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden):not(.sapUiTableRowFirstFixedBottom), ' .
-            '.sapMListTblRow'
+            '.sapMListTblRow:not(.sapMListTblHeader):not(.sapMListTblFooter):not(.sapMGHLI)'
         );
+        if (empty($rows)) {
+            return $rows;
+        }
+
+        // The "no data" placeholder is a <tr> with the data-row class as well, but unlike the
+        // header it cannot be told apart by a stable row class across UI5 versions. Asking the
+        // widget whether it currently shows the placeholder is the reliable question.
+        return $this->rendersNoData() ? [] : $rows;
+    }
+
+    /**
+     * Tells whether the widget currently displays UI5's "no data" placeholder.
+     *
+     * WHY THIS IS ASKED SEPARATELY: a row scan alone cannot distinguish an empty sap.m.Table from
+     * a table holding one record, because the placeholder is rendered as a <tr> carrying the same
+     * `sapMListTblRow` class as a data row. That made an empty table report one loaded row, so the
+     * button check never took the "table has no rows" skip path: it tried to select row 1, the
+     * affordance lookup escaped the placeholder row up to the select-all checkbox in the header,
+     * and the click failed with "the row selection state did not change" on a table that simply
+     * had nothing to select.
+     *
+     * WHY VISIBILITY IS CHECKED: some UI5 versions keep the placeholder in the DOM and only hide
+     * it while records are present. Treating a hidden placeholder as proof of emptiness would
+     * report zero rows for a populated table and silently skip all its row-bound buttons - a
+     * wrong skip, which is worse than repeated work.
+     *
+     * The selector matches the one used by the filtered-result check in UI5BrowserContext, so both
+     * places agree on what "this table shows no data" looks like.
+     *
+     * @return bool
+     */
+    protected function rendersNoData(): bool
+    {
+        $indicator = $this->getNodeElement()->find(
+            'css',
+            '.sapMListNoData, .sapMListTblCellNoData, .sapUiTableCtrlEmpty'
+        );
+        return $indicator !== null && $indicator->isVisible();
     }
 
     /**
