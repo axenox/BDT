@@ -10,46 +10,63 @@
     "replaces_page_selector": null,
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2024-12-03 17:01:22",
-    "modified_by_user_selector": "0x11f08ce4baed19b88ce4005056be9857",
-    "modified_on": "2026-08-18 12:33:36",
+    "modified_by_user_selector": "0x11efa72c1fb56dfea72c025041000001",
+    "modified_on": "2026-09-15 10:37:07",
     "contents": {
         "object_alias": "axenox.BDT.GHERKIN_CONTEXT",
         "widget_type": "SplitHorizontal",
         "panels": [
             {
-                "caption": "Available contexts",
                 "width": "25%",
-                "widgets": [
+                "widget_type": "SplitVertical",
+                "panels": [
                     {
-                        "object_alias": "axenox.BDT.GHERKIN_CONTEXT",
-                        "widget_type": "DataTable",
-                        "id": "contexts_table",
-                        "filters": [
+                        "height": "30%",
+                        "caption": "Available contexts",
+                        "widgets": [
                             {
-                                "attribute_alias": "NAME"
-                            },
-                            {
-                                "attribute_alias": "PATHNAME_RELATIVE"
+                                "object_alias": "axenox.BDT.GHERKIN_CONTEXT",
+                                "widget_type": "DataTable",
+                                "id": "contexts_table",
+                                "filters": [
+                                    {
+                                        "attribute_alias": "NAME"
+                                    },
+                                    {
+                                        "attribute_alias": "PATHNAME_RELATIVE"
+                                    }
+                                ],
+                                "columns": [
+                                    {
+                                        "attribute_alias": "NAME"
+                                    },
+                                    {
+                                        "attribute_alias": "APP__ALIAS"
+                                    },
+                                    {
+                                        "attribute_alias": "PATHNAME_RELATIVE"
+                                    }
+                                ],
+                                "buttons": [
+                                    {
+                                        "bind_to_double_click": true,
+                                        "action": {
+                                            "alias": "exface.Core.ShowObjectInfoDialog",
+                                            "disable_buttons": false
+                                        }
+                                    }
+                                ]
                             }
-                        ],
-                        "columns": [
+                        ]
+                    },
+                    {
+                        "caption": "Global documentation",
+                        "widgets": [
                             {
-                                "attribute_alias": "NAME"
-                            },
-                            {
-                                "attribute_alias": "APP__ALIAS"
-                            },
-                            {
-                                "attribute_alias": "PATHNAME_RELATIVE"
-                            }
-                        ],
-                        "buttons": [
-                            {
-                                "bind_to_double_click": true,
-                                "action": {
-                                    "alias": "exface.Core.ShowObjectInfoDialog",
-                                    "disable_buttons": false
-                                }
+                                "widget_type": "Browser",
+                                "object_alias": "exface.Core.Docs",
+                                "base_url": "[#api#]/docs/",
+                                "url": "axenox/bdt/Docs/index.md"
                             }
                         ]
                     }
@@ -59,8 +76,8 @@
                 "caption": "Steps available in selected context",
                 "widgets": [
                     {
-                        "object_alias": "axenox.BDT.GHERKIN_ANNOTATION",
                         "widget_type": "DataTable",
+                        "object_alias": "axenox.BDT.GHERKIN_ANNOTATION",
                         "empty_text": "Please select a context first!",
                         "filters": [
                             {
@@ -81,8 +98,6 @@
                             {
                                 "attribute_alias": "FULL_DESCRIPTION",
                                 "caption": "Definition",
-                                "width": "60%",
-                                "nowrap": false,
                                 "cell_widget": {
                                     "widget_type": "Markdown"
                                 }
@@ -100,18 +115,6 @@
                                 "direction": "desc"
                             }
                         ]
-                    }
-                ]
-            },
-            {
-                "caption": "Global documentation",
-                "width": "35%",
-                "widgets": [
-                    {
-                        "widget_type": "Browser",
-                        "object_alias": "exface.Core.Docs",
-                        "base_url": "[#api#]/docs/",
-                        "url": "axenox/bdt/Docs/index.md"
                     }
                 ]
             }
