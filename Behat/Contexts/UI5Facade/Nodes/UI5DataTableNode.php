@@ -8,6 +8,7 @@ use axenox\BDT\Interfaces\TestResultInterface;
 use Behat\Gherkin\Node\TableNode;
 use Behat\Mink\Element\NodeElement;
 use exface\Core\CommonLogic\Model\Expression;
+use exface\Core\DataTypes\AutoloadStrategyDataType;
 use exface\Core\DataTypes\BooleanDataType;
 use exface\Core\DataTypes\ColorDataType;
 use exface\Core\DataTypes\DateDataType;
@@ -23,7 +24,9 @@ use exface\Core\Interfaces\Model\MetaAttributeInterface;
 use exface\Core\Interfaces\Widgets\iFilterData;
 use exface\Core\Interfaces\Widgets\iHaveButtons;
 use exface\Core\Interfaces\Widgets\iHaveColumns;
+use exface\Core\Interfaces\Widgets\iHaveFilters;
 use exface\Core\Interfaces\Widgets\iShowData;
+use exface\Core\Widgets\Data;
 use exface\Core\Widgets\DataColumn;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\AssertionFailedError;
@@ -894,6 +897,42 @@ class UI5DataTableNode extends UI5DataNode
         $logbook->addIndent(-1);
         */
         return $parentResult->isFailed() ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
+    }
+
+    /**
+     * Skips the header filter checks when the table shows no rows before any filter is set.
+     *
+     * WHY: header filters can only narrow the initial result. If that result is already empty,
+     * every filter search returns an empty table as well, and verifyTableContent() fails with
+     * "No loaded rows available for table content verification" - a gap in the test data, not a
+     * broken filter. Reporting the filter phase as SKIPPED keeps it visible without a false red.
+     *
+     * WHY ONLY THE "always" AUTOLOAD STRATEGY IS JUDGED: only a table that loads on first render
+     * shows its real initial result at this point. With "never" the table is empty by design until
+     * the first search, and with "if_visible" it may not have loaded yet - hasAutoloadData() returns
+     * true for that lazy strategy too, so it cannot make this decision. For those tables an empty
+     * state says nothing about the data, so no precondition is judged and every filter search loads
+     * the data itself, exactly as before. Skipping them would stop testing filters that work.
+     *
+     * WHY THE WAIT: counting while the initial load is still in flight would see an empty table
+     * and wrongly skip every filter of the widget.
+     *
+     * getLoadedRowCount() is overridden by specialised nodes (e.g. the DataSpreadSheet renderer
+     * API), so they inherit a correct count here without their own implementation.
+     *
+     * @param iHaveFilters $dataWidget
+     * @return string|null
+     */
+    protected function getFilterSkipReasonForInitialState(iHaveFilters $dataWidget): ?string
+    {
+        if ($dataWidget instanceof Data && $dataWidget->getAutoloadDataStrategy() !== AutoloadStrategyDataType::ALWAYS) {
+            return null;
+        }
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
+        if ($this->getLoadedRowCount() > 0) {
+            return null;
+        }
+        return 'Table shows no rows before filtering, so no filter result can be verified';
     }
 
     protected function checkFilterWorksAsExpected(iFilterData $filter, iShowData $dataWidget, UI5FilterNode $filterNode, SubstepResult $result) : SubstepResult
