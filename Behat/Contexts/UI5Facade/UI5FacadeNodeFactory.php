@@ -3,6 +3,7 @@
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5AbstractNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ButtonNode;
 use axenox\BDT\Exceptions\WidgetNodeNotFoundException;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
@@ -15,6 +16,7 @@ use exface\Core\Factories\WidgetFactory;
 use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Widgets\AbstractWidget;
 use ReflectionClass;
+use ReflectionMethod;
 
 /**
  * UI5FacadeNodeFactory
@@ -165,6 +167,29 @@ class UI5FacadeNodeFactory
             static::$classesByWidgetType[$widgetType] = $nodeClass;
         }
         return $nodeClass;
+    }
+
+    /**
+     * Tells whether the resolved node performs an automated verification for this widget type.
+     *
+     * WHY THIS IS RESOLVED FROM THE IMPLEMENTATION: the factory deliberately maps unknown widget
+     * types and several passive controls to nodes that inherit UI5AbstractNode's no-op check. Those
+     * nodes are useful for explicit Gherkin interactions, but including them in an automatic
+     * container sweep creates report rows that verify nothing. Checking the declaring class keeps
+     * inherited real checks (for example data and container nodes) while excluding only the no-op.
+     *
+     * @param string $widgetType
+     * @return bool
+     */
+    public static function hasAutomatedCheck(string $widgetType): bool
+    {
+        $widgetClass = ltrim(WidgetFactory::getWidgetClassFromType($widgetType), '\\');
+        if (class_exists($widgetClass) === false) {
+            return false;
+        }
+        $nodeClass = self::getNodeClassForWidgetType($widgetType);
+        $checkMethod = new ReflectionMethod($nodeClass, 'checkWorksAsExpected');
+        return $checkMethod->getDeclaringClass()->getName() !== UI5AbstractNode::class;
     }
 
     /**
