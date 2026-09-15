@@ -154,6 +154,12 @@ class UI5DataNode extends UI5AbstractNode
         $failed = false;
         $skippedFilters = [];
         $hasHeader = $this->hasHeader();
+        if ($hasHeader && null !== $initialStateSkipReason = $this->getFilterSkipReasonForInitialState($dataWidget)) {
+            $logbook->addLine('Filtering skipped - ' . $initialStateSkipReason);
+            $this->logSubstep('Filtering skipped', StepStatusDataType::SKIPPED, $initialStateSkipReason, static::CATEGORY_FILTERING);
+            return SubstepResult::createSkipped($initialStateSkipReason, $logbook);
+        }
+        
         foreach ($dataWidget->getFilters() as $filter) {
             if ($filter->isHidden()) {
                 // will be used as a filter to get a valid value
@@ -225,6 +231,30 @@ class UI5DataNode extends UI5AbstractNode
         $this->reset();
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
         return $failed ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
+    }
+
+    /**
+     * Returns a reason to skip every header filter of this widget, judged ONCE on the widget's
+     * initial state before any filter is touched - or null if the filters can be tested.
+     *
+     * WHY A HOOK ON THE GENERIC DATA NODE: the filter loop lives here and is shared by every data
+     * widget, but "does the widget show any data at all" can only be answered by nodes that know
+     * how to count their rows (tables, spreadsheets). The generic node knows no such precondition
+     * and therefore never skips.
+     *
+     * WHY ONLY ONCE, BEFORE THE LOOP: between two filter checks the widget is not reset via the
+     * Reset button (that would cost one extra reload per filter) - only the filter value is
+     * emptied, without a new search. The table therefore still displays the result of the
+     * PREVIOUS filter when the next one starts, so a row count taken inside the loop would
+     * describe that previous result. Every search, however, runs with only the current filter
+     * on top of the initial state, which makes the initial state the correct reference.
+     *
+     * @param iHaveFilters $dataWidget
+     * @return string|null
+     */
+    protected function getFilterSkipReasonForInitialState(iHaveFilters $dataWidget): ?string
+    {
+        return null;
     }
 
     protected function hasHeader(): bool
