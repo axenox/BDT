@@ -26,6 +26,21 @@ use exface\Core\CommonLogic\DataQueries\DataQueryResultData;
 class GherkinAnnotationsReader extends PhpAnnotationsReader
 {
     /**
+     * Preserves the authored layout because Gherkin descriptions are displayed as line-oriented documentation.
+     *
+     * WHY OVERRIDE THE CORE NORMALISATION: PhpAnnotationsReader joins prose lines with spaces, which is useful
+     * for ordinary PHP annotations but turns deliberately wrapped step documentation into an overflowing line.
+     * The Markdown renderer already converts every retained newline to a visual break and wraps long text.
+     *
+     * @param string|null $string Reflected doc-comment description
+     * @return string Description with the source line layout unchanged
+     */
+    protected function prepareCommentText($string)
+    {
+        return $string ?? '';
+    }
+
+    /**
      * 
      * {@inheritDoc}
      * @see \exface\Core\CommonLogic\QueryBuilder\AbstractQueryBuilder::read()

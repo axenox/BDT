@@ -11,62 +11,45 @@
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2024-12-03 17:01:22",
     "modified_by_user_selector": "0x11efa72c1fb56dfea72c025041000001",
-    "modified_on": "2026-09-15 10:37:07",
+    "modified_on": "2026-09-15 10:55:19",
     "contents": {
         "object_alias": "axenox.BDT.GHERKIN_CONTEXT",
         "widget_type": "SplitHorizontal",
         "panels": [
             {
-                "width": "25%",
-                "widget_type": "SplitVertical",
-                "panels": [
+                "width": "30%",
+                "caption": "Available contexts",
+                "widgets": [
                     {
-                        "height": "30%",
-                        "caption": "Available contexts",
-                        "widgets": [
+                        "object_alias": "axenox.BDT.GHERKIN_CONTEXT",
+                        "widget_type": "DataTable",
+                        "id": "contexts_table",
+                        "filters": [
                             {
-                                "object_alias": "axenox.BDT.GHERKIN_CONTEXT",
-                                "widget_type": "DataTable",
-                                "id": "contexts_table",
-                                "filters": [
-                                    {
-                                        "attribute_alias": "NAME"
-                                    },
-                                    {
-                                        "attribute_alias": "PATHNAME_RELATIVE"
-                                    }
-                                ],
-                                "columns": [
-                                    {
-                                        "attribute_alias": "NAME"
-                                    },
-                                    {
-                                        "attribute_alias": "APP__ALIAS"
-                                    },
-                                    {
-                                        "attribute_alias": "PATHNAME_RELATIVE"
-                                    }
-                                ],
-                                "buttons": [
-                                    {
-                                        "bind_to_double_click": true,
-                                        "action": {
-                                            "alias": "exface.Core.ShowObjectInfoDialog",
-                                            "disable_buttons": false
-                                        }
-                                    }
-                                ]
+                                "attribute_alias": "NAME"
+                            },
+                            {
+                                "attribute_alias": "PATHNAME_RELATIVE"
                             }
-                        ]
-                    },
-                    {
-                        "caption": "Global documentation",
-                        "widgets": [
+                        ],
+                        "columns": [
                             {
-                                "widget_type": "Browser",
-                                "object_alias": "exface.Core.Docs",
-                                "base_url": "[#api#]/docs/",
-                                "url": "axenox/bdt/Docs/index.md"
+                                "attribute_alias": "NAME"
+                            },
+                            {
+                                "attribute_alias": "APP__ALIAS"
+                            },
+                            {
+                                "attribute_alias": "PATHNAME_RELATIVE"
+                            }
+                        ],
+                        "buttons": [
+                            {
+                                "bind_to_double_click": true,
+                                "action": {
+                                    "alias": "exface.Core.ShowObjectInfoDialog",
+                                    "disable_buttons": false
+                                }
                             }
                         ]
                     }
@@ -98,6 +81,7 @@
                             {
                                 "attribute_alias": "FULL_DESCRIPTION",
                                 "caption": "Definition",
+                                "nowrap": false,
                                 "cell_widget": {
                                     "widget_type": "Markdown"
                                 }
@@ -115,6 +99,18 @@
                                 "direction": "desc"
                             }
                         ]
+                    }
+                ]
+            },
+            {
+                "width": "25%",
+                "caption": "Global documentation",
+                "widgets": [
+                    {
+                        "widget_type": "Browser",
+                        "object_alias": "exface.Core.Docs",
+                        "base_url": "[#api#]/docs/",
+                        "url": "axenox/bdt/Docs/index.md"
                     }
                 ]
             }
