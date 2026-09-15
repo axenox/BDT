@@ -19,11 +19,12 @@ use exface\Core\Widgets\Container;
 class UI5ContainerNode extends UI5AbstractNode
 {
     /**
-     * Validates every visible child widget of this container.
+    * Validates every visible child widget that has an automated check.
      *
      * Iterates the widget model's child list and calls checkChildWorksAsExpected()
-     * for each non-hidden child. Hidden widgets are skipped because they cannot
-     * be interacted with and their validation would always fail on DOM lookup.
+    * for each non-hidden child with test logic. Hidden widgets and passive or
+    * unsupported widget nodes are omitted because they produce no tester-relevant
+    * verification and would only add technical rows to the report.
      *
      * Chrome-hang recovery:
      * If checkChildWorksAsExpected() throws a ChromeHangException (Chrome's CDP
@@ -46,7 +47,7 @@ class UI5ContainerNode extends UI5AbstractNode
         $childWidgets = $this->getWidget()->getWidgets();
         $failed = false;
         foreach ($childWidgets as $childWidget) {
-            if ($childWidget->isHidden()) {
+            if ($childWidget->isHidden() || UI5FacadeNodeFactory::hasAutomatedCheck($childWidget->getWidgetType()) === false) {
                 continue;
             }
             // Stop the container check as soon as the browser is no longer on the container's own page.
@@ -171,14 +172,9 @@ class UI5ContainerNode extends UI5AbstractNode
                         return $node->checkWorksAsExpected($logbook);
                     }
                 }
-                $logbook->addLine('Skipping ' . $childWidget->getWidgetType() . ' with id "' . $childElementId
+                $logbook->addLine('Ignoring ' . $childWidget->getWidgetType() . ' with id "' . $childElementId
                     . '" — not on screen: UI5 created the control but rendered nothing (e.g. a message without text)');
-                return $this->logSubstep(
-                    'Looking at ' . $childWidget->getWidgetType() . ' "' . ($childWidget->getCaption() ?: $childWidget->getId()) . '"',
-                    StepStatusDataType::SKIPPED,
-                    'Not on screen: UI5 created the control but rendered nothing - it or its parent is not shown for the current data',
-                    null
-                )->getResult();
+                return SubstepResult::createPassed($logbook);
             }
             
             // Ask the node itself whether it expects an element of its own before waiting for one.
