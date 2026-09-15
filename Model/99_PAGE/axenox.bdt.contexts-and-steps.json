@@ -10,15 +10,15 @@
     "replaces_page_selector": null,
     "created_by_user_selector": "0x31000000000000000000000000000000",
     "created_on": "2024-12-03 17:01:22",
-    "modified_by_user_selector": "0x11f08ce4baed19b88ce4005056be9857",
-    "modified_on": "2026-08-18 12:33:36",
+    "modified_by_user_selector": "0x11efa72c1fb56dfea72c025041000001",
+    "modified_on": "2026-09-15 10:55:19",
     "contents": {
         "object_alias": "axenox.BDT.GHERKIN_CONTEXT",
         "widget_type": "SplitHorizontal",
         "panels": [
             {
+                "width": "30%",
                 "caption": "Available contexts",
-                "width": "25%",
                 "widgets": [
                     {
                         "object_alias": "axenox.BDT.GHERKIN_CONTEXT",
@@ -59,8 +59,8 @@
                 "caption": "Steps available in selected context",
                 "widgets": [
                     {
-                        "object_alias": "axenox.BDT.GHERKIN_ANNOTATION",
                         "widget_type": "DataTable",
+                        "object_alias": "axenox.BDT.GHERKIN_ANNOTATION",
                         "empty_text": "Please select a context first!",
                         "filters": [
                             {
@@ -81,7 +81,6 @@
                             {
                                 "attribute_alias": "FULL_DESCRIPTION",
                                 "caption": "Definition",
-                                "width": "60%",
                                 "nowrap": false,
                                 "cell_widget": {
                                     "widget_type": "Markdown"
@@ -104,8 +103,8 @@
                 ]
             },
             {
+                "width": "25%",
                 "caption": "Global documentation",
-                "width": "35%",
                 "widgets": [
                     {
                         "widget_type": "Browser",

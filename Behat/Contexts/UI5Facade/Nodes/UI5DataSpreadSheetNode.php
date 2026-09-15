@@ -270,16 +270,30 @@ class UI5DataSpreadSheetNode extends UI5DataTableNode
      * renders; one snapshot keeps the complete walk in one coordinate space.
      *
      * @param callable $predicate
+    * @param int|null $maxAttempts
+    * @param int[]|null $preferredRowOrder One-based row numbers within the rendered window.
      * @return bool
      */
-    public function selectEachRowUntil(callable $predicate): bool
+    public function selectEachRowUntil(callable $predicate, ?int $maxAttempts = null, ?array $preferredRowOrder = null): bool
     {
         $loadedRowCount = $this->getLoadedRowCount();
         if ($loadedRowCount < 1) {
             return false;
         }
         $lastColumnIndex = $this->getLastRenderedColumnIndex();
-        for ($rowNumber = 1; $rowNumber <= $loadedRowCount; $rowNumber++) {
+        $limit = $maxAttempts === null ? $loadedRowCount : min($loadedRowCount, $maxAttempts);
+        $rowOrder = [];
+        foreach ($preferredRowOrder ?? [] as $rowNumber) {
+            if (is_int($rowNumber) && $rowNumber >= 1 && $rowNumber <= $limit && ! in_array($rowNumber, $rowOrder, true)) {
+                $rowOrder[] = $rowNumber;
+            }
+        }
+        for ($rowNumber = 1; $rowNumber <= $limit; $rowNumber++) {
+            if (! in_array($rowNumber, $rowOrder, true)) {
+                $rowOrder[] = $rowNumber;
+            }
+        }
+        foreach ($rowOrder as $rowNumber) {
             $this->applyRowSelection([$rowNumber], $loadedRowCount, $lastColumnIndex);
             if ($predicate($rowNumber) === true) {
                 return true;

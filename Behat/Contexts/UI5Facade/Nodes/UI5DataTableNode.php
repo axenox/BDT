@@ -7,6 +7,7 @@ use axenox\BDT\Exceptions\FacadeNodeException;
 use axenox\BDT\Interfaces\TestResultInterface;
 use Behat\Gherkin\Node\TableNode;
 use Behat\Mink\Element\NodeElement;
+use exface\Core\CommonLogic\DataSheets\DataColumn as DataSheetColumn;
 use exface\Core\CommonLogic\Model\Expression;
 use exface\Core\DataTypes\AutoloadStrategyDataType;
 use exface\Core\DataTypes\BooleanDataType;
@@ -36,18 +37,83 @@ use PHPUnit\Framework\AssertionFailedError;
  */
 class UI5DataTableNode extends UI5DataNode
 {
+    /**
+     * How often a selection is reconciled before it is reported as unreachable.
+     *
+     * WHY A RETRY AT ALL: UI5 applies a selection change asynchronously and re-renders the
+     * table toolbar while doing so. A re-render can restore a row that was just deselected,
+     * so a single read-back after the clicks can observe a state that the widget itself is
+     * about to correct. Reconciling again turns that transient mismatch into a pass, while a
+     * genuinely unreachable selection still fails after the last attempt.
+     */
+    private const SELECTION_RECONCILE_ATTEMPTS = 3;
+
+    /**
+     * Row selector for the data rows of a sap.ui.table, without the containing table prefix.
+     *
+     * WHY A CONSTANT: this exact string was written out three times - twice in getTableRows() and
+     * twice more in getAllTableRows() - each time with a different table prefix. Every correction
+     * to it so far (the hidden-row and fixed-bottom exclusions, and later the sap.m terms) reached
+     * only the copies someone remembered, so the row list a caller got depended on which helper it
+     * happened to ask. Callers prepend their own scope (`table.sapUiTableCtrlScroll `, `.sapUiTableCtrl `).
+     */
+    private const GRID_DATA_ROW_SELECTOR = '.sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden):not(.sapUiTableRowFirstFixedBottom)';
+
+    /**
+     * Row selector for the data rows of a sap.m.Table.
+     *
+     * WHY THE :not() TERMS: sap.m.Table renders its header row, its footer row and its group
+     * headers as <tr> elements carrying the very same `sapMListTblRow` class as a data row.
+     * Counting them shifts every row number and lets a row lookup resolve to the header, whose
+     * selection cell is the select-all checkbox.
+     */
+    private const LIST_DATA_ROW_SELECTOR = '.sapMListTblRow:not(.sapMListTblHeader):not(.sapMListTblFooter):not(.sapMGHLI)';
+
+    /**
+     * Selector of UI5's "no data" placeholder, for both table variants.
+     *
+     * WHY IT IS SHARED WITH THE COLOUR SCAN: the placeholder has to be recognised in PHP (to report
+     * an empty table as having no rows) and inside the browser (so a colour assertion does not read
+     * the placeholder as if it were a cell). Two copies of the same answer would let an empty table
+     * be empty for one check and populated for the other.
+     */
+    private const NO_DATA_SELECTOR = '.sapMListNoData, .sapMListTblCellNoData, .sapUiTableCtrlEmpty';
+
+    /**
+     * Cached answer of allowsMultiSelection(), or null while it has not been asked yet.
+     *
+     * WHY IT IS CACHED: the selection mode is a widget configuration, not a runtime state - it
+     * cannot change while a step runs. analyzeRowSelection() is called once per row and per toggle,
+     * so asking the control again every time would add a JavaScript round-trip to every single
+     * selection click for an answer that never changes.
+     *
+     * @var bool|null
+     */
+    private $allowsMultiSelection = null;
+
     public function capturesFocus(): bool
     {
         return true;
     }
 
+    /**
+     * Returns one node per loaded data row.
+     *
+     * WHY THIS DELEGATES: row identity must come from one place. Scanning the DOM again here meant
+     * fixed-column tables were counted twice and the sap.m.Table header, footer, group-header and
+     * "no data" rows were all treated as records - the very rows getTableRows() now filters out. A
+     * node returned here could therefore refer to a different physical row than the same number in
+     * getTableRows(). UI5DataSpreadSheetNode already builds its row nodes this way.
+     *
+     * @return DataColumnNode[]
+     */
     public function getRowNodes(): array
     {
-        $columns = [];
-        foreach ($this->getNodeElement()->findAll('css', '.sapUiTableTr, .sapMListTblRow') as $column) {
-            $columns[] = new DataColumnNode($column, $this->getSession(), $this->getBrowser());
+        $rowNodes = [];
+        foreach ($this->getTableRows() as $row) {
+            $rowNodes[] = new DataColumnNode($row, $this->getSession(), $this->getBrowser());
         }
-        return $columns;
+        return $rowNodes;
     }
 
     /**
@@ -381,7 +447,7 @@ class UI5DataTableNode extends UI5DataNode
         // node goes (selectEachRowUntil, ensureExactlyOneRowSelected, the "I select table row" step),
         // so closing it here covers all of them at once.
         $this->closeOverflowMenuIfOpened();
-        
+
         if (! $this->isRowSelected($rowNumber)) {
             $this->toggleRowSelection($rowNumber);
         }
@@ -483,10 +549,16 @@ class UI5DataTableNode extends UI5DataNode
      */
     protected function analyzeRowSelection(NodeElement $row): array
     {
+        // WHY THE `td.` QUALIFIER: the select-all checkbox of a sap.m.Table lives in a
+        // `th.sapMListTblSelCol` of the header row, a per-row selector in a `td.sapMListTblSelCol`.
+        // Without the element qualifier a row whose own selection cell cannot be resolved lets the
+        // lookup reach the header instead, so "select row 1" clicked select-all - which changes
+        // nothing on an empty table and changes *everything* on a populated one. This mirrors the
+        // same qualifier already applied in findRowSelectionCell().
         $explicitAffordances = [
-            '.sapUiTableRowSelectionCell' => 'sap.ui.table row selector cell',
-            '.sapMListTblSelCol .sapMCb'  => 'sap.m.Table multi-select checkbox',
-            '.sapMListTblSelCol'          => 'sap.m.Table selection cell',
+            '.sapUiTableRowSelectionCell'  => 'sap.ui.table row selector cell',
+            'td.sapMListTblSelCol .sapMCb' => 'sap.m.Table multi-select checkbox',
+            'td.sapMListTblSelCol'         => 'sap.m.Table selection cell',
         ];
         $hidden = [];
         foreach ($explicitAffordances as $selector => $description) {
@@ -505,6 +577,40 @@ class UI5DataTableNode extends UI5DataNode
             return ['target' => $safeCell, 'description' => 'row body (single-select row click)', 'explicit' => false, 'hidden' => $hidden];
         }
         return ['target' => null, 'description' => null, 'explicit' => false, 'hidden' => $hidden];
+    }
+
+    /**
+     * Tells whether the control lets more than one row be selected at a time.
+     *
+     * WHY THE SELECTION MODE IS ASKED AT ALL: it is the only reliable way to know whether a
+     * deselect click will do anything. The DOM looks identical in both modes - a selector cell is
+     * rendered either way - but only a multi-select control clears a row when its selector is
+     * clicked again. analyzeRowSelection() needs that distinction to decide whether the selector
+     * may be reported as deselectable; guessing it wrong produces either a selection that can never
+     * be reduced or a failure on a table that was working fine.
+     *
+     * A control that is unreachable or exposes no selection mode is reported as single-select, so
+     * an unknown widget keeps the conservative behaviour instead of gaining a deselect path that
+     * was never verified.
+     *
+     * @return bool
+     */
+    protected function allowsMultiSelection(): bool
+    {
+        if ($this->allowsMultiSelection !== null) {
+            return $this->allowsMultiSelection;
+        }
+        $idJs = json_encode($this->getElementId(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $mode = (string) $this->getFromJavascript(<<<JS
+(function(sId){
+    var oTable = sap.ui.getCore().byId(sId);
+    if (! oTable || typeof oTable.getSelectionMode !== 'function') { return ''; }
+    return String(oTable.getSelectionMode() || '');
+})($idJs)
+JS);
+        // sap.ui.table reports MultiToggle, sap.m.Table MultiSelect - both carry "multi".
+        $this->allowsMultiSelection = stripos($mode, 'multi') !== false;
+        return $this->allowsMultiSelection;
     }
 
     /**
@@ -562,6 +668,16 @@ class UI5DataTableNode extends UI5DataNode
      */
     public function getSelectedRowNumbers(): array
     {
+        // WHY THE DOM OWNS THIS ANSWER: for the rows it renders, the DOM is authoritative and needs
+        // no index translation. Deriving the row number from the model index instead
+        // (index - firstVisibleRow + 1) assumed the rendered rows are a contiguous 1:1 slice of the
+        // model index space, which they are not: a sap.ui.table group header occupies a model index
+        // without being a data row, and sap.m header, footer and "no data" rows are dropped from
+        // getTableRows() on purpose. Each of those shifts the two spaces against each other, so a
+        // freshly selected row read back as "not selected" and the click failed with "the row
+        // selection state did not change" although the row was visibly selected. What the model is
+        // still needed for - a selection outside the render window - is answered by
+        // hasSelectionOutsideRenderedWindow(), which compares counts instead of mapping indices.
         $selected = [];
         $rowNumber = 0;
         foreach ($this->getTableRows() as $row) {
@@ -595,13 +711,260 @@ class UI5DataTableNode extends UI5DataNode
         return in_array($this->convertOrdinalToIndex($rowNumber) + 1, $this->getSelectedRowNumbers(), true);
     }
 
-    public function selectEachRowUntil(callable $predicate): bool
+    /**
+     * Reads the raw model value of the linked column from the single selected row of this table.
+     *
+     * WHY THE MODEL AND NOT THE DOM: sap.ui.table.Table recycles row DOM elements, so a selected row
+     * outside the rendered window has no `<tr>` and the DOM-based getSelectedRowNumbers() would miss
+     * it. This replicates the facade's own live-reference getter (UI5DataTable::buildJsGetRowsSelected()),
+     * reading getContextByIndex()/getSelectedContexts().getObject() straight from the model.
+     *
+     * WHY getSelectedIndices()/getSelectedContexts() AND NOT A SINGLE/MULTI BRANCH: both return every
+     * selected row in either selection mode, so asserting exactly one selection covers both cases
+     * without replicating the facade's mode split.
+     *
+     * WHY THE RAW KEY FALLBACK IS THE MAIN PATH, NOT AN EDGE CASE: a link such as "TabelleAnfragen!Id"
+     * targets the object's UID, which is normally NOT among the visible columns. getColumns() does not
+     * auto-add it (see iHaveColumnsAndColumnGroupsTrait::getColumns()), so getColumnByDataColumnName()
+     * and getColumnByAttributeAlias() both miss and the sanitized target column id itself is the model
+     * row key - exactly the branch buildJsValueGetter() allows for the UID attribute alias.
+     *
+     * @param string $targetColumnId The widget link's getTargetColumnId().
+     * @param int[]|null $selectedIndices Receives zero-based model indices from the same selection read.
+     * @param int|null $firstVisibleIndex Receives the first visible model index for rendered-row mapping.
+     * @param bool $requireExactlyOne Whether zero or multiple selected rows must throw.
+     * @return string|null The raw value, or null when the row carries the key but its value is null.
+     * @throws RuntimeException if the control is missing, exposes no known selection API, the
+     *         required selection is not exactly one row, or the linked column is absent from it.
+     */
+    public function getSelectedRowRawValue(
+        string $targetColumnId,
+        ?array &$selectedIndices = null,
+        ?int &$firstVisibleIndex = null,
+        bool $requireExactlyOne = true
+    ): ?string
+    {
+        $widget = $this->getWidget();
+        // Resolve the model-row key with the same precedence the facade uses (sanitize, then column
+        // lookup); the sanitized id itself is kept when no column matches (UID/system link columns).
+        $key = StringDataType::startsWith($targetColumnId, '~')
+            ? $targetColumnId
+            : DataSheetColumn::sanitizeColumnName($targetColumnId);
+        if ($col = $widget->getColumnByDataColumnName($key)) {
+            $key = $col->getDataColumnName();
+        } elseif ($col = $widget->getColumnByAttributeAlias($key)) {
+            $key = $col->getDataColumnName();
+        }
+
+        $idJs = json_encode($this->getElementId(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $keyJs = json_encode($key, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $selectionJs = $this->buildJsReadSelection();
+        $json = $this->getFromJavascript(<<<JS
+(function(sId, sKey){
+    var oTable = sap.ui.getCore().byId(sId);
+    if (! oTable) { return JSON.stringify({status: 'no_control'}); }
+    {$selectionJs}
+    var oSelection = {selectedIndices: aSelectedIndices, firstVisibleIndex: iFirstVisibleIndex};
+    if (aObjects.length !== 1) { return JSON.stringify(Object.assign({status: 'not_one', count: aObjects.length}, oSelection)); }
+    var oRow = aObjects[0];
+    if (! (sKey in oRow)) { return JSON.stringify(Object.assign({status: 'no_key'}, oSelection)); }
+    var mVal = oRow[sKey];
+    return JSON.stringify(Object.assign({status: 'ok', value: (mVal === undefined ? null : mVal)}, oSelection));
+})($idJs, $keyJs)
+JS);
+        $result = json_decode((string) $json, true);
+        if (! is_array($result) || ! isset($result['status'])) {
+            throw new RuntimeException('Could not read the selected master row value for column "' . $key . '": unexpected script result.');
+        }
+        $selectedIndices = array_map('intval', is_array($result['selectedIndices'] ?? null) ? $result['selectedIndices'] : []);
+        $firstVisibleIndex = (int) ($result['firstVisibleIndex'] ?? 0);
+        switch ($result['status']) {
+            case 'ok':
+                return $result['value'] === null ? null : (string) $result['value'];
+            case 'not_one':
+                if (! $requireExactlyOne) {
+                    return null;
+                }
+                $count = (int) ($result['count'] ?? 0);
+                $detail = $count === 0 ? 'no row is selected' : $count . ' rows are selected';
+                throw new RuntimeException('Expected exactly one selected row in the master table to read "' . $key . '", but ' . $detail . '.');
+            case 'no_key':
+                throw new RuntimeException('The selected master row does not carry the linked column "' . $key . '" (resolved from target column id "' . $targetColumnId . '") - either it was not loaded into the model or the key resolution is wrong.');
+            case 'no_control':
+                throw new RuntimeException('Master table control "' . $this->getElementId() . '" not found in the UI5 core registry.');
+            case 'no_api':
+                throw new RuntimeException('Master table control "' . $this->getElementId() . '" exposes no known selection API (getSelectedIndices/getSelectedContexts).');
+            default:
+                throw new RuntimeException('Could not read the selected master row value for column "' . $key . '": ' . json_encode($result));
+        }
+    }
+
+    /**
+     * Builds the JS fragment that fills `aObjects`, `aSelectedIndices` and `iFirstVisibleIndex`.
+     *
+     * WHY A SHARED FRAGMENT: the selection read is needed twice - once to resolve the linked value
+     * of the single selected row, once to answer "which rows are selected" without the DOM. Both
+     * must handle the sap.ui.table / sap.m.Table API split identically; a second copy would drift
+     * the moment one of the two branches is corrected.
+     *
+     * The fragment returns a 'no_api' result on its own when neither selection API is present, so
+     * the embedding script only has to add its own payload.
+     *
+     * @return string
+     */
+    private function buildJsReadSelection(): string
+    {
+        return <<<JS
+    var aObjects = [];
+    var aSelectedIndices = [];
+    var iFirstVisibleIndex = 0;
+    if (typeof oTable.getSelectedIndices === 'function' && typeof oTable.getContextByIndex === 'function') {
+        // sap.ui.table.Table - getSelectedIndices() covers single- and multi-select.
+        aSelectedIndices = oTable.getSelectedIndices().map(Number);
+        iFirstVisibleIndex = typeof oTable.getFirstVisibleRow === 'function' ? oTable.getFirstVisibleRow() : 0;
+        aSelectedIndices.forEach(function(i){
+            var oCtxt = oTable.getContextByIndex(i);
+            if (oCtxt && oCtxt.getObject()) { aObjects.push(oCtxt.getObject()); }
+        });
+    } else if (typeof oTable.getSelectedContexts === 'function') {
+        // sap.m.Table / sap.m.List - getSelectedContexts() covers single- and multi-select.
+        var aItems = typeof oTable.getItems === 'function' ? oTable.getItems() : [];
+        oTable.getSelectedContexts().forEach(function(oCtxt){
+            if (! oCtxt || ! oCtxt.getObject()) { return; }
+            aObjects.push(oCtxt.getObject());
+            var sPath = typeof oCtxt.getPath === 'function' ? oCtxt.getPath() : null;
+            var iIndex = aItems.findIndex(function(oItem){
+                var oItemCtxt = oItem.getBindingContext();
+                return oItemCtxt && typeof oItemCtxt.getPath === 'function' && oItemCtxt.getPath() === sPath;
+            });
+            if (iIndex >= 0) { aSelectedIndices.push(iIndex); }
+        });
+    } else {
+        return JSON.stringify({status: 'no_api'});
+    }
+JS;
+    }
+
+    /**
+     * Reads the selection straight from the control's model, as model row indices.
+     *
+     * WHY NOT THE DOM: sap.ui.table.Table recycles row elements, so only the rows inside the
+     * current render window have a `<tr>` at all. A row selected outside that window is invisible
+     * to the DOM-based read, which then reports a clean selection while the action that follows
+     * receives two records and fails with "please select exactly 1 record" - the read-back passes
+     * and the real state is never seen.
+     *
+     * @return array{indices: int[], firstVisibleIndex: int}|null Null when the control or a known
+     *         selection API is not reachable, so the caller can fall back to the DOM.
+     */
+    protected function getModelSelection(): ?array
+    {
+        $idJs = json_encode($this->getElementId(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $selectionJs = $this->buildJsReadSelection();
+        $json = $this->getFromJavascript(<<<JS
+(function(sId){
+    var oTable = sap.ui.getCore().byId(sId);
+    if (! oTable) { return JSON.stringify({status: 'no_control'}); }
+{$selectionJs}
+    return JSON.stringify({status: 'ok', selectedIndices: aSelectedIndices, firstVisibleIndex: iFirstVisibleIndex});
+})($idJs)
+JS);
+        $result = json_decode((string) $json, true);
+        if (! is_array($result) || ($result['status'] ?? null) !== 'ok') {
+            return null;
+        }
+        return [
+            'indices' => array_map('intval', is_array($result['selectedIndices'] ?? null) ? $result['selectedIndices'] : []),
+            'firstVisibleIndex' => (int) ($result['firstVisibleIndex'] ?? 0)
+        ];
+    }
+
+    /**
+     * Tells whether the control's model holds a selected row that is not rendered right now.
+     *
+     * WHY THIS IS ITS OWN QUESTION: such a row cannot be deselected by clicking - there is no
+     * element to click. Reporting it separately lets ensureExactlySelectedRows() reset the control
+     * instead of looping over a repair it can never perform.
+     *
+     * WHY A COUNT COMPARISON AND NOT AN INDEX MAPPING: translating model indices into rendered row
+     * numbers requires the rendered rows to be a contiguous 1:1 slice of the model index space.
+     * Group header rows and the header/footer/"no data" rows dropped by getTableRows() break that
+     * assumption, and the mapping then mislabels perfectly visible rows. Counting sidesteps the
+     * translation entirely: the DOM reports every selected row it renders, so any surplus the model
+     * reports on top of that can only come from rows outside the render window.
+     *
+     * @return bool
+     */
+    protected function hasSelectionOutsideRenderedWindow(): bool
+    {
+        $selection = $this->getModelSelection();
+        if ($selection === null) {
+            return false;
+        }
+        return count($selection['indices']) > count($this->getSelectedRowNumbers());
+    }
+
+    /**
+     * Drops the entire selection through the control API.
+     *
+     * WHY AN API CALL AND NOT A CLICK: clicking is the right way to *change* a selection like a
+     * user would, but a selection outside the render window has no clickable element. Refusing to
+     * reset it would leave the table in a state no step can recover from, so the API is used for
+     * this one case only - always as a full reset to a known state, never to select a row.
+     *
+     * @return void
+     */
+    protected function clearModelSelection(): void
+    {
+        $idJs = json_encode($this->getElementId(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $this->getFromJavascript(<<<JS
+(function(sId){
+    var oTable = sap.ui.getCore().byId(sId);
+    if (! oTable) { return null; }
+    if (typeof oTable.clearSelection === 'function') { oTable.clearSelection(); }
+    else if (typeof oTable.removeSelections === 'function') { oTable.removeSelections(true); }
+    return null;
+})($idJs)
+JS);
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+    }
+
+    /**
+     * Walks rendered rows in a caller-preferred order without exceeding the existing attempt cap.
+     *
+     * WHY AN OPTIONAL ORDER: master-detail preparation must start on a row other than the current
+     * model selection so the first selection emits a change event. Other callers retain ascending
+     * order, and omitted or invalid preferred rows cannot reduce coverage of the bounded window.
+     *
+     * @param callable $predicate
+     * @param int|null $maxAttempts
+     * @param int[]|null $preferredRowOrder One-based row numbers within the rendered window.
+     * @return bool
+     */
+    public function selectEachRowUntil(callable $predicate, ?int $maxAttempts = null, ?array $preferredRowOrder = null): bool
     {
         $count = $this->getLoadedRowCount();
         if ($count < 1) {
             return false;
         }
-        for ($rowNumber = 1; $rowNumber <= $count; $rowNumber++) {
+        // WHY THE CAP STAYS INSIDE THE RENDERED WINDOW: getLoadedRowCount() counts getTableRows(),
+        // which for sap.ui.table.Table are only the recycled, on-screen rows. ensureExactlySelectedRows()
+        // verifies its click against those same DOM rows, so capping at min(count, max) never addresses a
+        // row outside the render window - avoiding a false FAILED from the recycling limitation. Rows
+        // scrolled out are not attempted in v1.
+        $limit = $maxAttempts === null ? $count : min($count, $maxAttempts);
+        $rowOrder = [];
+        foreach ($preferredRowOrder ?? [] as $rowNumber) {
+            if (is_int($rowNumber) && $rowNumber >= 1 && $rowNumber <= $limit && ! in_array($rowNumber, $rowOrder, true)) {
+                $rowOrder[] = $rowNumber;
+            }
+        }
+        for ($rowNumber = 1; $rowNumber <= $limit; $rowNumber++) {
+            if (! in_array($rowNumber, $rowOrder, true)) {
+                $rowOrder[] = $rowNumber;
+            }
+        }
+        foreach ($rowOrder as $rowNumber) {
             // Exclusive selection instead of remembering the previous row: the previously
             // tried row is not necessarily the only other selected one - a selection left
             // over from an earlier button survives into this loop and would add up to two
@@ -631,6 +994,15 @@ class UI5DataTableNode extends UI5DataNode
      * also silently skipped selected rows whose number fell outside the counted range - the
      * exact case that left two rows selected in tables with fixed columns.
      *
+     * WHY THE MISMATCH IS RECONCILED INSTEAD OF REPORTED: the read-back used to run once and fail
+     * the step as soon as it saw an extra row. But "one row too many is selected" is a state this
+     * method already knows how to repair - it is exactly the work the deselect loop does. UI5
+     * applies a selection change asynchronously and re-renders the table toolbar while doing so, so
+     * a row deselected a moment earlier can reappear between the last click and the read-back.
+     * Repairing and re-reading turns that into a pass, while a selection the widget genuinely
+     * refuses to produce (e.g. a single-select table asked for two rows) still fails after the last
+     * attempt, with the observed state in the message.
+     *
      * @param int[] $rowNumbers 1-based row numbers that must end up selected
      * @return void
      */
@@ -639,33 +1011,93 @@ class UI5DataTableNode extends UI5DataNode
         if ($this->getLoadedRowCount() < 1) {
             return;
         }
-        // Toggle off everything that must not stay selected first: a leftover selection can
-        // never survive into the action this way, no matter which step produced it. On a single-
-        // select table this loop is a deliberate no-op (toggleRowSelection() refuses to deselect a
-        // row-body-only row) and the selection below displaces the previous row by itself.
-        foreach ($this->getSelectedRowNumbers() as $selectedRowNumber) {
-            if (! in_array($selectedRowNumber, $rowNumbers, true)) {
-                $this->toggleRowSelection($selectedRowNumber);
-            }
-        }
-        foreach ($rowNumbers as $rowNumber) {
-            $this->selectRow($rowNumber);
-        }
 
-        // Confirm the whole selection instead of trusting each click. This is where correctness is
-        // enforced for single-select tables: the clearing loop above did nothing there, so the only
-        // proof that "exactly these rows" are selected is the final read-back. A multi-select table
-        // that failed to add or drop a row shows up here as a mismatch and fails loudly, while a
-        // single-select table that displaced its selection matches and passes.
         $wanted = array_values(array_unique($rowNumbers));
         sort($wanted);
-        $actual = $this->getSelectedRowNumbers();
-        sort($actual);
-        if ($actual !== $wanted) {
-            throw new RuntimeException(
-                'Expected exactly row(s) ' . implode(', ', $wanted) . ' to be selected, but '
-                . (empty($actual) ? 'none are' : 'row(s) ' . implode(', ', $actual) . ' are') . ' selected.'
-            );
+
+        $actual = [];
+        for ($attempt = 1; $attempt <= self::SELECTION_RECONCILE_ATTEMPTS; $attempt++) {
+            try {
+                // Toggle off everything that must not stay selected first: a leftover selection can
+                // never survive into the action this way, no matter which step produced it. On a
+                // single-select table this loop is a deliberate no-op (toggleRowSelection() refuses
+                // to deselect a row-body-only row) and the selection below displaces the previous
+                // row by itself.
+                foreach ($this->getSelectedRowNumbers() as $selectedRowNumber) {
+                    if (! in_array($selectedRowNumber, $wanted, true)) {
+                        $this->toggleRowSelection($selectedRowNumber);
+                    }
+                }
+                foreach ($wanted as $rowNumber) {
+                    $this->selectRow($rowNumber);
+                }
+            } catch (RuntimeException $e) {
+                // A click that did not register is the same kind of transient miss as a restored
+                // selection, so it is retried rather than reported - but never hidden: the last
+                // attempt re-throws the original diagnosis untouched.
+                if ($attempt === self::SELECTION_RECONCILE_ATTEMPTS) {
+                    throw $e;
+                }
+                continue;
+            }
+
+            // Confirm the whole selection instead of trusting each click. This is where correctness
+            // is enforced for single-select tables: the clearing loop above did nothing there, so
+            // the only proof that "exactly these rows" are selected is this read-back.
+            $actual = $this->getSelectedRowNumbers();
+            sort($actual);
+            if ($actual === $wanted) {
+                return;
+            }
+
+            // The DOM-side repair could not produce the state that was asked for. Two causes look
+            // identical from here and have the same remedy: a selected row outside the render window
+            // (no element exists to click) and a selected row whose deselect click the widget
+            // ignores - which is what happens whenever the only affordance the row exposes is its
+            // body. Dropping the whole selection through the control and letting the next attempt
+            // rebuild it by clicking resolves both without depending on which selector class the
+            // running UI5 version renders. Selecting stays a real click; the API is used only to
+            // return to a known-empty state.
+            if (! empty(array_diff($actual, $wanted)) || $this->hasSelectionOutsideRenderedWindow()) {
+                $this->clearModelSelection();
+            }
+        }
+
+        throw new RuntimeException(
+            'Expected exactly row(s) ' . implode(', ', $wanted) . ' to be selected, but '
+            . (empty($actual) ? 'none are' : 'row(s) ' . implode(', ', $actual) . ' are')
+            . ' selected after ' . self::SELECTION_RECONCILE_ATTEMPTS . ' attempts to reconcile the selection'
+            . ' (' . $this->describeSelectionMechanics($wanted[0] ?? 1) . ').'
+        );
+    }
+
+    /**
+     * Describes how this table exposes row selection - for failure messages only.
+     *
+     * WHY IT EXISTS: a reconciliation failure currently reports what the selection looks like but
+     * not why the widget refused to change it. The two facts that decide that - the control's
+     * selection mode and the affordance the click path actually resolved for the row - are cheap to
+     * read and turn a run-and-guess cycle into one conclusive line in the error log. Everything is
+     * guarded because a diagnosis must never replace the real exception being raised.
+     *
+     * @param int $rowNumber 1-based row number to describe the click path for
+     * @return string
+     */
+    protected function describeSelectionMechanics(int $rowNumber): string
+    {
+        try {
+            $mode = $this->allowsMultiSelection() ? 'multi-select' : 'single-select';
+            $rows = $this->getTableRows();
+            $rowIndex = $this->convertOrdinalToIndex($rowNumber);
+            if (! isset($rows[$rowIndex])) {
+                return 'selection mode ' . $mode . ', row ' . $rowNumber . ' is not rendered';
+            }
+            $plan = $this->analyzeRowSelection($rows[$rowIndex]);
+            return 'selection mode ' . $mode . ', click path for row ' . $rowNumber . ': '
+                . ($plan['description'] ?? 'none')
+                . ($plan['explicit'] ? ' (deselectable)' : ' (select only)');
+        } catch (\Throwable $e) {
+            return 'selection mechanics could not be determined: ' . $e->getMessage();
         }
     }
 
@@ -949,7 +1381,7 @@ class UI5DataTableNode extends UI5DataNode
 
         // Get a valid value for filtering
         $filterAttr = $filter->getAttribute();
-        
+
 
         // Look for a value it the table
         // Verify the first DataTable contains the expected text in the specified column
@@ -1024,7 +1456,7 @@ class UI5DataTableNode extends UI5DataNode
         $filterVal = $this->trySetFilterValue($filterNode, $filter, $filterAttr, $dataWidget, $logbook, $column);
         if ($filterVal !== null) {
             $logbook->continueLine(' with value `' . $filterVal . '` found in data source');
-        }        
+        }
 
         // Skip filters whose extracted test value is an unevaluated formula (e.g. "=TabelleAnfragen!Id").
         // Such values come from calculated attributes that have no concrete row value, so the data source
@@ -1131,9 +1563,10 @@ class UI5DataTableNode extends UI5DataNode
         $rootIdJs = json_encode($this->getElementId(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         $colIdJs = json_encode($colId, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         $colIndexJs = json_encode($columnIndex);
+        $noDataJs = json_encode(self::NO_DATA_SELECTOR, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
         $json = $this->getFromJavascript(<<<JS
-(function(sRootId, sColId, iColIdx){
+(function(sRootId, sColId, iColIdx, sNoDataSelector){
     var oRoot = document.getElementById(sRootId);
     if (! oRoot) { return null; }
 
@@ -1154,12 +1587,26 @@ class UI5DataTableNode extends UI5DataNode
     var aResult = [];
     var oSeenRows = {};
     var iAnonymous = 0;
+
+    // A visible "no data" placeholder means the table holds no record at all. Its row carries the
+    // same data-row class, so without this guard an empty table reports one "cell" whose colour is
+    // the theme default - a colour assertion would then verify the placeholder instead of failing.
+    // The selector is handed in from NO_DATA_SELECTOR so PHP and the browser agree on what an
+    // empty table looks like.
+    var oNoData = oRoot.querySelector(sNoDataSelector);
+    if (oNoData !== null && oNoData.getClientRects().length !== 0) { return JSON.stringify(aResult); }
+
     var aRows = oRoot.querySelectorAll('tr.sapUiTableTr.sapUiTableContentRow, tr.sapMListTblRow');
 
     Array.prototype.forEach.call(aRows, function(oRow){
         if (oRow.getAttribute('aria-hidden') === 'true') { return; }
         if (oRow.classList.contains('sapUiTableRowHidden')) { return; }
         if (oRow.classList.contains('sapUiTableRowFirstFixedBottom')) { return; }
+        // sap.m.Table gives its header, footer and group-header rows the same `sapMListTblRow`
+        // class as a data row, so they are dropped here exactly as getTableRows() drops them.
+        if (oRow.classList.contains('sapMListTblHeader')) { return; }
+        if (oRow.classList.contains('sapMListTblFooter')) { return; }
+        if (oRow.classList.contains('sapMGHLI')) { return; }
 
         var oCell = sColId
             ? oRow.querySelector('td[data-sap-ui-colid="' + sColId + '"]')
@@ -1196,7 +1643,7 @@ class UI5DataTableNode extends UI5DataNode
     });
 
     return JSON.stringify(aResult);
-})($rootIdJs, $colIdJs, $colIndexJs)
+})($rootIdJs, $colIdJs, $colIndexJs, $noDataJs)
 JS
         );
 
@@ -1822,20 +2269,56 @@ JS
     public function getTableRows(): array
     {
         // Prefer scroll-table rows to avoid double-counting when fixed columns are present.
+        // A sap.ui.table that holds no records renders only hidden filler rows, which the
+        // :not(.sapUiTableRowHidden) term already removes, so this branch needs no no-data check.
         $scrollRows = $this->getNodeElement()->findAll(
             'css',
-            'table.sapUiTableCtrlScroll .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden):not(.sapUiTableRowFirstFixedBottom)'
+            'table.sapUiTableCtrlScroll ' . self::GRID_DATA_ROW_SELECTOR
         );
         if (!empty($scrollRows)) {
             return $scrollRows;
         }
 
         // Fallback for tables without a fixed/scroll split (e.g. sap.m.Table or single-table grids).
-        return $this->getNodeElement()->findAll(
+        $rows = $this->getNodeElement()->findAll(
             'css',
-            '.sapUiTableCtrl .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden):not(.sapUiTableRowFirstFixedBottom), ' .
-            '.sapMListTblRow'
+            '.sapUiTableCtrl ' . self::GRID_DATA_ROW_SELECTOR . ', ' . self::LIST_DATA_ROW_SELECTOR
         );
+        if (empty($rows)) {
+            return $rows;
+        }
+
+        // The "no data" placeholder is a <tr> with the data-row class as well, but unlike the
+        // header it cannot be told apart by a stable row class across UI5 versions. Asking the
+        // widget whether it currently shows the placeholder is the reliable question.
+        return $this->rendersNoData() ? [] : $rows;
+    }
+
+    /**
+     * Tells whether the widget currently displays UI5's "no data" placeholder.
+     *
+     * WHY THIS IS ASKED SEPARATELY: a row scan alone cannot distinguish an empty sap.m.Table from
+     * a table holding one record, because the placeholder is rendered as a <tr> carrying the same
+     * `sapMListTblRow` class as a data row. That made an empty table report one loaded row, so the
+     * button check never took the "table has no rows" skip path: it tried to select row 1, the
+     * affordance lookup escaped the placeholder row up to the select-all checkbox in the header,
+     * and the click failed with "the row selection state did not change" on a table that simply
+     * had nothing to select.
+     *
+     * WHY VISIBILITY IS CHECKED: some UI5 versions keep the placeholder in the DOM and only hide
+     * it while records are present. Treating a hidden placeholder as proof of emptiness would
+     * report zero rows for a populated table and silently skip all its row-bound buttons - a
+     * wrong skip, which is worse than repeated work.
+     *
+     * The selector matches the one used by the filtered-result check in UI5BrowserContext, so both
+     * places agree on what "this table shows no data" looks like.
+     *
+     * @return bool
+     */
+    protected function rendersNoData(): bool
+    {
+        $indicator = $this->getNodeElement()->find('css', self::NO_DATA_SELECTOR);
+        return $indicator !== null && $indicator->isVisible();
     }
 
     /**
@@ -1916,7 +2399,7 @@ JS
         // Get rows from the scroll table (preferred, contains most/all rows)
         $scrollRows = $this->getNodeElement()->findAll(
             'css',
-            'table.sapUiTableCtrlScroll .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden):not(.sapUiTableRowFirstFixedBottom)'
+            'table.sapUiTableCtrlScroll ' . self::GRID_DATA_ROW_SELECTOR
         );
         foreach ($scrollRows as $row) {
             $rowIndex = $row->getAttribute('data-sap-ui-rowindex');
@@ -1929,7 +2412,7 @@ JS
         // Get rows from the fixed table (may contain rows not in scroll table)
         $fixedRows = $this->getNodeElement()->findAll(
             'css',
-            'table.sapUiTableCtrlFixed .sapUiTableTr.sapUiTableContentRow[role="row"]:not(.sapUiTableRowHidden):not(.sapUiTableRowFirstFixedBottom)'
+            'table.sapUiTableCtrlFixed ' . self::GRID_DATA_ROW_SELECTOR
         );
         foreach ($fixedRows as $row) {
             $rowIndex = $row->getAttribute('data-sap-ui-rowindex');
