@@ -2,6 +2,7 @@
 
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
+use axenox\BDT\Behat\Common\ErrorManager;
 use axenox\BDT\Behat\Contexts\Elements\DateParsingTrait;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
@@ -21,7 +22,10 @@ use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Interfaces\DataTypes\DataTypeInterface;
 use exface\Core\Interfaces\DataTypes\EnumDataTypeInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
+use exface\Core\Interfaces\Model\ExpressionInterface;
 use exface\Core\Interfaces\Model\MetaAttributeInterface;
+use exface\Core\Interfaces\Model\UiPageInterface;
+use exface\Core\Interfaces\Model\UiScreenInterface;
 use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Interfaces\Widgets\iFilterData;
 use exface\Core\Interfaces\Widgets\iHaveButtons;
@@ -29,11 +33,15 @@ use exface\Core\Interfaces\Widgets\iHaveColumns;
 use exface\Core\Interfaces\Widgets\iHaveFilters;
 use exface\Core\Interfaces\Widgets\iShowData;
 use exface\Core\Interfaces\Widgets\iSupportLazyLoading;
+use exface\Core\Interfaces\Widgets\WidgetLinkInterface;
 use exface\Core\Widgets\DataColumn;
+use exface\Core\Widgets\DataList;
 use exface\Core\Widgets\DataTable;
+use exface\Core\Widgets\DataTree;
 use exface\Core\Widgets\Filter;
 use exface\Core\Widgets\InputComboTable;
 use exface\Core\Widgets\InputSelect;
+use exface\Core\Widgets\RangeFilter;
 use PHPUnit\Framework\Assert;
 use Throwable;
 
@@ -48,6 +56,22 @@ class UI5DataNode extends UI5AbstractNode
     /* @var $hiddenFilters Filter[] */
     private array $hiddenFilters = [];
     private DataTypeInterface $inputDataType;
+
+    /**
+     * Resolved master values for this detail's linked filters, keyed by "<filterId>|<boundary>".
+     *
+     * WHY THE BOUNDARY IS PART OF THE KEY: a RangeFilter carries two links (from/to) under one filter
+     * id, so a filter-id-only key would let one boundary overwrite the other.
+     */
+    private array $resolvedLinkedFilterValues = [];
+
+    private const MASTER_ROW_ATTEMPT_CAP = 10;
+    // 100ms (not 50) halves the CDP round-trips per poll and is still safe: the detail read is
+    // recorded on completion and the record is durable, so a wider interval only adds detection
+    // latency (bounded by the timeout), never a miss - the +65/+114ms figures are the read/busy
+    // START, not completion.
+    private const DETAIL_LOAD_POLL_INTERVAL_MS = 100;
+    private const DETAIL_LOAD_POLL_TIMEOUT_MS = 2000;
 
     public function capturesFocus(): bool
     {
@@ -149,11 +173,39 @@ class UI5DataNode extends UI5AbstractNode
         return $failed ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
     }
 
+    /**
+     * Prepares linked masters before deciding whether this detail has enough data to test its filters.
+     *
+     * WHY PREPARATION COMES FIRST: a master-detail table can be empty by design until its master has
+     * exactly one selected row. Judging that state first reports a false skip and never exercises the
+     * detail filters; preparation also supplies the proven linked value used to scope source queries.
+     *
+     * @param iHaveFilters $dataWidget
+     * @param LogBookInterface $logbook
+     * @return TestResultInterface
+     */
     protected function checkHeaderFiltersWorkAsExpected(iHaveFilters $dataWidget, LogBookInterface $logbook): TestResultInterface
     {
+        $dependencies = $this->getLinkedFilterDependencies($dataWidget);
+        $this->logLinkedFilterDependencies($dependencies, $logbook);
         $failed = false;
         $skippedFilters = [];
         $hasHeader = $this->hasHeader();
+        if ($hasHeader) {
+            $preparation = $this->prepareMasterSelection($dependencies, $dataWidget->getId(), $logbook);
+            if ($preparation['status'] === 'skipped') {
+                $reason = $preparation['reason'] ?? 'Master selection preparation was skipped';
+                $logbook->addLine('Filtering skipped - ' . $reason);
+                $this->logSubstep('Filtering skipped', StepStatusDataType::SKIPPED, $reason, static::CATEGORY_FILTERING);
+                return SubstepResult::createSkipped($reason, $logbook);
+            }
+            if ($preparation['status'] === 'failed') {
+                $reason = $preparation['reason'] ?? 'Master selection preparation failed';
+                $logbook->addLine('Filtering failed - ' . $reason);
+                $this->logSubstep('Filtering failed', StepStatusDataType::FAILED, $reason, static::CATEGORY_FILTERING);
+                return SubstepResult::createFailed(null, $logbook);
+            }
+        }
         if ($hasHeader && null !== $initialStateSkipReason = $this->getFilterSkipReasonForInitialState($dataWidget)) {
             $logbook->addLine('Filtering skipped - ' . $initialStateSkipReason);
             $this->logSubstep('Filtering skipped', StepStatusDataType::SKIPPED, $initialStateSkipReason, static::CATEGORY_FILTERING);
@@ -231,6 +283,737 @@ class UI5DataNode extends UI5AbstractNode
         $this->reset();
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
         return $failed ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
+    }
+
+    /**
+     * Detects every header filter of this data widget whose value is a live widget link to another
+     * widget on the same page - the master-detail dependency that leaves the detail empty until a
+     * row is selected in the master.
+     *
+     * WHY THE FILTER MODEL AND NOT A UXON SCAN: these links are not always written as "=master!col"
+     * in the page. Dashboard::linkChildFilterToSource() creates them programmatically while the
+     * widget tree is built, so only the model reports them reliably. Filter::getValueWidgetLink()
+     * (and, for a RangeFilter, its from/to links) is the single source of truth. The WidgetLink
+     * static cache (getLinksToWidget()/getLinksOnPage()) is deliberately NOT used - both have known
+     * defects (empty result when a direct id bucket exists; a missing key guard).
+     *
+     * WHY IT NEVER THROWS: this is observational detection. A model that cannot resolve a link must
+     * never turn a filter check into an error, so every read is guarded and a failure is recorded as
+     * an entry carrying an "error" key instead of propagating.
+     *
+     * @param iHaveFilters $dataWidget
+     * @return array<int,array<string,mixed>>
+     */
+    protected function getLinkedFilterDependencies(iHaveFilters $dataWidget): array
+    {
+        $dependencies = [];
+        // The detail's own UI screen, resolved once from the widget that owns the filters - a master
+        // is a live selection dependency only when it sits on the same screen (see logging); a link
+        // into the page behind a dialog is prefill, not a selection.
+        $detailScreenKey = $this->getScreenKey($this->resolveUiScreen($dataWidget));
+        foreach ($dataWidget->getFilters() as $filter) {
+            // RangeFilter extends Filter, so this guard keeps range filters in - only non-Filter
+            // iFilterData implementations (which expose no value link) are dropped.
+            if (! $filter instanceof Filter) {
+                continue;
+            }
+            $boundaries = [];
+            try {
+                if ($filter instanceof RangeFilter) {
+                    // A RangeFilter has no single value link - each boundary carries its own.
+                    $boundaries['from'] = [$filter->getValueFromWidgetLink(), $filter->getValueFromExpression()];
+                    $boundaries['to'] = [$filter->getValueToWidgetLink(), $filter->getValueToExpression()];
+                } else {
+                    $boundaries[''] = [$filter->getValueWidgetLink(), $filter->getValueExpression()];
+                }
+            } catch (Throwable $e) {
+                $dependencies[] = [
+                    'filter' => $filter,
+                    'caption' => $filter->getCaption(),
+                    'error' => $e->getMessage(),
+                ];
+                continue;
+            }
+            foreach ($boundaries as $boundary => $pair) {
+                [$link, $expr] = $pair;
+                // Value::getValueWidgetLink() caches FALSE for non-references; guard against that
+                // bool leaking out - isOnlyIfNotEmpty() on a bool would be a fatal Error on every
+                // table. A plain null check would let FALSE through.
+                if (! $link instanceof WidgetLinkInterface) {
+                    continue;
+                }
+                $entry = [
+                    'filter' => $filter,
+                    'caption' => $filter->getCaption(),
+                    'attribute_alias' => $filter->getAttributeAlias(),
+                    'boundary' => $boundary,
+                    'hidden' => $filter->isHidden(),
+                    'optional' => $link->isOnlyIfNotEmpty(),
+                    'magic_ref' => $this->detectMagicReference($expr),
+                    'target_widget_id' => $link->getTargetWidgetId(),
+                    'target_column_id' => $link->getTargetColumnId(),
+                    'target_widget_type' => null,
+                    'target_page_alias' => null,
+                    'same_screen' => null,
+                ];
+                // Resolving the target widget/page can throw for a broken or cross-page link; keep
+                // the cheap id/column data above and note the resolution failure without aborting.
+                try {
+                    $entry['target_page_alias'] = $link->getTargetPage()->getAliasWithNamespace();
+                    $targetWidget = $link->getTargetWidget();
+                    $entry['target_widget_type'] = $targetWidget->getWidgetType();
+                    $entry['target_widget'] = $targetWidget;
+                    // Compare by a page-alias + container-id key, not object identity: getTargetWidget()
+                    // may load the target page as a separate instance, so === would read "different
+                    // screen" for widgets that are in fact on the same one.
+                    $targetScreenKey = $this->getScreenKey($this->resolveUiScreen($targetWidget));
+                    $entry['same_screen'] = ($detailScreenKey !== null && $targetScreenKey !== null)
+                        ? ($detailScreenKey === $targetScreenKey)
+                        : null;
+                } catch (Throwable $e) {
+                    $entry['error'] = $e->getMessage();
+                }
+                $dependencies[] = $entry;
+            }
+        }
+        return $dependencies;
+    }
+
+    /**
+     * Resolves the UI screen (page, dialog or popup) a widget belongs to.
+     *
+     * WHY IT MIRRORS SubstepCoverageIdentity: "same screen" must be decided the same way coverage
+    * decides it - a widget that is itself a screen answers for itself, otherwise the widget's
+    * screen API resolves its page, dialog or popup container.
+     *
+     * @param WidgetInterface $widget
+     * @return UiScreenInterface|null
+     */
+    protected function resolveUiScreen(WidgetInterface $widget): ?UiScreenInterface
+    {
+        if ($widget instanceof UiScreenInterface) {
+            return $widget;
+        }
+        return $widget->getUiScreen();
+    }
+
+    /**
+     * Builds a stable identity key for a UI screen: the page alias plus, for a dialog/popup, its
+     * container widget id.
+     *
+     * WHY A KEY AND NOT OBJECT IDENTITY: WidgetLink::getTargetWidget() can load the target page as a
+     * separate instance, so two widgets on the same screen would be different objects and === would
+     * wrongly report different screens - which would make the later preparation reject every master.
+     *
+     * @param UiScreenInterface|null $screen
+     * @return string|null
+     */
+    protected function getScreenKey(?UiScreenInterface $screen): ?string
+    {
+        if ($screen === null) {
+            return null;
+        }
+        // A dialog/popup screen is itself a widget; a page screen is a UiPageInterface, not a widget.
+        if ($screen instanceof WidgetInterface) {
+            return $screen->getPage()->getAliasWithNamespace() . '|' . $screen->getId();
+        }
+        if ($screen instanceof UiPageInterface) {
+            return $screen->getAliasWithNamespace() . '|';
+        }
+        return null;
+    }
+
+    /**
+     * Resolves the master node for a detected dependency and decides whether v1 can prepare it.
+     *
+     * WHY A DOM-RENDERED MASTER IS REQUIRED, NOT JUST A MODEL MATCH: a widget can exist in the page
+     * model yet not be on screen (a tab not shown, a role-hidden panel). A row cannot be selected in
+     * a master that is not rendered, so a model-only match is rejected here instead of failing later.
+     *
+     * WHY ONLY EXACTLY DataTable IN v1: DataList (sap.m.List) and DataTree (sap.ui.table.TreeTable)
+     * extend DataTable but render rows differently, and UI5DataTableNode's selection affordances are
+     * only verified for sap.ui.table.Table / sap.m.Table. Charts and inputs are not row-selectable.
+     * Everything rejected here keeps today's behaviour - the detail is tested unprepared.
+     *
+     * @param array<string,mixed> $dep One entry from getLinkedFilterDependencies().
+     * @return array{node: UI5DataTableNode|null, reason: string|null}
+     */
+    protected function resolveSupportedMasterNode(array $dep): array
+    {
+        if (isset($dep['error'])) {
+            return ['node' => null, 'reason' => 'target widget not resolvable: ' . $dep['error']];
+        }
+        if (($dep['same_screen'] ?? null) !== true) {
+            $where = ($dep['same_screen'] ?? null) === false ? 'a different UI screen' : 'an undetermined UI screen';
+            return ['node' => null, 'reason' => 'master is on ' . $where . ' - the link is prefill, not a live selection'];
+        }
+        if (($dep['magic_ref'] ?? null) !== null) {
+            return ['node' => null, 'reason' => 'magic reference ' . $dep['magic_ref'] . ' - resolves by context (prefill/input), not a page selection'];
+        }
+        $master = $dep['target_widget'] ?? null;
+        if (! $master instanceof WidgetInterface) {
+            return ['node' => null, 'reason' => 'master widget instance not available'];
+        }
+        if ($master === $this->getWidget()) {
+            return ['node' => null, 'reason' => 'self-reference - the filter links to its own data widget'];
+        }
+        if ($master instanceof DataList || $master instanceof DataTree) {
+            return ['node' => null, 'reason' => 'master is a ' . $master->getWidgetType() . ' (DataTable subclass) - row selection not verified in v1'];
+        }
+        if (! $master instanceof DataTable) {
+            return ['node' => null, 'reason' => 'master is a ' . $master->getWidgetType() . ' - only DataTable masters are prepared in v1'];
+        }
+        // Model match confirmed; require the master to be on screen before it can be prepared.
+        $nodeId = $this->getBrowser()->getElementIdFromWidget($master);
+        $domNode = ! empty($nodeId) ? $this->getSession()->getPage()->findById($nodeId) : null;
+        if ($domNode === null) {
+            return ['node' => null, 'reason' => 'master widget is in the model but not rendered in the DOM (id "' . $nodeId . '")'];
+        }
+        $node = UI5FacadeNodeFactory::createFromNodeElement($domNode, $this->getSession(), $this->getBrowser(), $master);
+        if (! $node instanceof UI5DataTableNode) {
+            return ['node' => null, 'reason' => 'resolved node is a ' . get_class($node) . ', not a data table node'];
+        }
+        return ['node' => $node, 'reason' => null];
+    }
+
+    /**
+     * Returns the magic reference token (~self/~parent/~input/~data) used by a value expression, or
+     * null for an explicit widget id.
+     *
+     * WHY IT MATTERS: a magic link such as "=~input!UID" on a dialog table resolves to a widget on
+     * the page behind the dialog - that is prefill, not a live master selection, and the later
+     * preparation must not treat it as one. The resolved WidgetLink no longer shows the magic form
+     * (setWidgetId() has already replaced it with the concrete id), so the raw expression string is
+     * the only place this is still visible.
+     *
+     * @param ExpressionInterface|null $expr
+     * @return string|null
+     */
+    protected function detectMagicReference(?ExpressionInterface $expr): ?string
+    {
+        if ($expr === null) {
+            return null;
+        }
+        $raw = (string) $expr;
+        foreach ([
+            WidgetLinkInterface::REF_SELF,
+            WidgetLinkInterface::REF_PARENT,
+            WidgetLinkInterface::REF_INPUT,
+            WidgetLinkInterface::REF_DATA,
+        ] as $ref) {
+            if (strpos($raw, $ref) !== false) {
+                return $ref;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Writes the detected master-detail filter dependencies to the logbook.
+     *
+    * WHY ONE OUTER GUARD: this runs at the start of the filter phase of EVERY data widget in the
+    * suite. An uncaught logging or classification failure here would fail every filter phase, so it
+    * is downgraded to a single logbook line plus an ErrorManager entry (same pattern as
+    * buildSubstepCoverageIdentity()). The per-link inner guards stay for individual broken links.
+     *
+     * WHY LOGBOOK ONLY, NOT logSubstep(): an informational substep is persisted as a PASSED
+     * run_step row and would inflate the pass count. This output exists to reveal, on real pages,
+     * which detail widgets depend on a master selection before any selection behaviour is added, so
+     * it must stay in the free-text log.
+     *
+     * @param array<int,array<string,mixed>> $dependencies
+     * @param LogBookInterface $logbook
+     * @return void
+     */
+    protected function logLinkedFilterDependencies(array $dependencies, LogBookInterface $logbook): void
+    {
+        try {
+            if (empty($dependencies)) {
+                return;
+            }
+            $logbook->addLine('Detected ' . count($dependencies) . ' linked filter dependency(ies) - this data widget is filtered by another widget on the page:');
+            $logbook->addIndent(1);
+            try {
+                foreach ($dependencies as $dep) {
+                    // A boundary-read failure produced only a caption + error and no target id.
+                    if (isset($dep['error']) && ! isset($dep['target_widget_id'])) {
+                        $logbook->addLine('filter `' . ($dep['caption'] ?? '?') . '`: widget link not resolvable - ' . $dep['error']);
+                        continue;
+                    }
+                    $boundary = ($dep['boundary'] ?? '') === '' ? '' : ' (' . $dep['boundary'] . ')';
+                    $magic = $dep['magic_ref'] !== null ? ', magic ' . $dep['magic_ref'] : '';
+                    $sameScreen = $dep['same_screen'] === null ? 'unknown' : ($dep['same_screen'] ? 'yes' : 'no');
+                    $suffix = isset($dep['error']) ? ' - target unresolved: ' . $dep['error'] : '';
+                    $logbook->addLine(sprintf(
+                        'filter `%s`%s [%s%s%s]: driven by `%s!%s` (master `%s` on page `%s`, same screen: %s)%s',
+                        $dep['caption'],
+                        $boundary,
+                        $dep['hidden'] ? 'hidden' : 'visible',
+                        $dep['optional'] ? ', optional' : '',
+                        $magic,
+                        $dep['target_widget_id'],
+                        $dep['target_column_id'] ?? '',
+                        $dep['target_widget_type'] ?? 'unresolved',
+                        $dep['target_page_alias'] ?? '?',
+                        $sameScreen,
+                        $suffix
+                    ));
+                    // Step 3: classify whether v1 can prepare this master (logging only, no behaviour change).
+                    $logbook->addIndent(1);
+                    try {
+                        $classification = $this->resolveSupportedMasterNode($dep);
+                        $logbook->addLine($classification['reason'] === null
+                            ? 'master supported: DataTable rendered, ready for preparation'
+                            : 'master not prepared: ' . $classification['reason']);
+                    } catch (Throwable $e) {
+                        $logbook->addLine('master classification failed: ' . $e->getMessage());
+                    } finally {
+                        $logbook->addIndent(-1);
+                    }
+                }
+            } finally {
+                $logbook->addIndent(-1);
+            }
+        } catch (Throwable $e) {
+            $logbook->addLine('Could not log linked filter dependencies: ' . $e->getMessage());
+            // logException() can itself throw when the monitor filegroup is full (see runAsSubstep()).
+            try {
+                ErrorManager::getInstance()->logException($e, $this->getBrowser()->getWorkbench());
+            } catch (Throwable $ignored) {
+            }
+        }
+    }
+
+    /**
+     * Selects a master row for every supported linked filter so this detail has data, and records the
+     * resolved link values for the filter phase. Returns a tri-state so the caller can skip or fail.
+     *
+     * WHY TRI-STATE AND NOT A BOOLEAN: three outcomes must be told apart. OK = every supported master
+     * is selected and this detail is populated. SKIPPED = a precondition the tester owns (empty master,
+     * or no master row yields detail data within the cap) - the detail cannot be judged, but nothing is
+     * broken. FAILED = the link itself is broken or a click was lost (the detail filtered by a value
+     * that is not the selected master value) - a real defect that must surface, never a skip.
+     *
+    * The filter phase calls this only when a header exists and before judging the detail's initial
+    * state. The button phase remains separate because it must re-prepare after filter reset and is
+    * wired in a later step.
+     *
+        * @param array<int,array<string,mixed>> $dependencies
+        * @param string $filterDataWidgetId Widget id of the model used to detect the dependencies.
+     * @param LogBookInterface $logbook
+     * @return array{status:string,reason:?string} status is 'ok', 'skipped' or 'failed'
+     */
+    protected function prepareMasterSelection(array $dependencies, string $filterDataWidgetId, LogBookInterface $logbook): array
+    {
+        // A stale value from a previously checked widget must never leak into this detail.
+        $this->resolvedLinkedFilterValues = [];
+
+        // v1 prepares only table-type details - they own getLoadedRowCount(); other detail kinds keep
+        // today's behaviour (tested unprepared).
+        if (! $this instanceof UI5DataTableNode) {
+            return ['status' => 'ok', 'reason' => null];
+        }
+
+        if (empty($dependencies)) {
+            return ['status' => 'ok', 'reason' => null];
+        }
+
+        // UI5DataElementTrait sends the ExFace widget id as params.element; the UI5 DOM/control id
+        // is a different, view-prefixed value and cannot be used as the read-hook key.
+        $detailRequestElementId = $this->getWidget()->getId();
+        $logbook->addLine('Master-detail preparation ids: node widget `' . $detailRequestElementId
+            . '`, filter data widget `' . $filterDataWidgetId . '`');
+        foreach ($dependencies as $dep) {
+            $master = $this->resolveSupportedMasterNode($dep);
+            if ($master['node'] === null) {
+                // Unsupported masters keep today's behaviour - the detail is tested unprepared.
+                $logbook->addLine('Master not prepared for filter `' . ($dep['caption'] ?? '?') . '`: ' . $master['reason']);
+                continue;
+            }
+            $result = $this->prepareOneMaster($dep, $master['node'], $detailRequestElementId, $logbook);
+            if ($result['status'] !== 'ok') {
+                // A skip or failure on one dependency stops preparation: this detail cannot be populated
+                // consistently, so the caller must not proceed as if it were prepared.
+                return $result;
+            }
+        }
+
+        return ['status' => 'ok', 'reason' => null];
+    }
+
+    /**
+     * Drives one master node until this detail shows rows for the selected row, then proves the link.
+     *
+     * WHY THE PROOF IS AN ASSERTION, NOT A ROW FILTER: "detail shows rows" decides which master row to
+     * keep; whether the detail actually filtered by the selected master value decides whether the link
+     * works. A value mismatch is therefore FAILED (broken link or lost click), never a reason to try
+     * the next row and never a skip.
+     *
+     * @param array<string,mixed> $dep
+     * @param UI5DataTableNode $master
+        * @param string $detailRequestElementId ExFace widget id sent as the request's element parameter.
+     * @param LogBookInterface $logbook
+     * @return array{status:string,reason:?string}
+     */
+    private function prepareOneMaster(array $dep, UI5DataTableNode $master, string $detailRequestElementId, LogBookInterface $logbook): array
+    {
+        $this->installReadHook();
+        $this->clearDetailReadRecord($detailRequestElementId);
+
+        if ($master->getLoadedRowCount() < 1) {
+            return ['status' => 'skipped', 'reason' => 'empty master `' . $dep['target_widget_id'] . '` - no row to select'];
+        }
+
+        $targetColumnId = $dep['target_column_id'] ?? '';
+        $attributeAlias = $dep['attribute_alias'] ?? '';
+        $filterKey = $this->buildResolvedValueKey($dep);
+        $failure = null;
+
+        $selectedIndices = [];
+        $firstVisibleIndex = 0;
+        try {
+            // Reuse the model-side access that reads the linked value. A selection left by the
+            // master's own button phase would make the same first-row selection a no-op, emit no
+            // change event and leave the detail unread - exactly the container-traversal failure.
+            $master->getSelectedRowRawValue($targetColumnId, $selectedIndices, $firstVisibleIndex, false);
+        } catch (Throwable $e) {
+            return ['status' => 'failed', 'reason' => 'could not read the master selection before preparing the detail: ' . $e->getMessage()];
+        }
+        $attemptLimit = min($master->getLoadedRowCount(), self::MASTER_ROW_ATTEMPT_CAP);
+        $selectedRenderedRows = [];
+        foreach ($selectedIndices as $selectedIndex) {
+            $renderedRow = $selectedIndex - $firstVisibleIndex + 1;
+            if ($renderedRow >= 1 && $renderedRow <= $attemptLimit) {
+                $selectedRenderedRows[] = $renderedRow;
+            }
+        }
+        $rowOrder = [];
+        for ($rowNumber = 1; $rowNumber <= $attemptLimit; $rowNumber++) {
+            if (! in_array($rowNumber, $selectedRenderedRows, true)) {
+                $rowOrder[] = $rowNumber;
+            }
+        }
+        foreach ($selectedRenderedRows as $selectedRow) {
+            $rowOrder[] = $selectedRow;
+        }
+        $logbook->addLine('Master `' . $dep['target_widget_id'] . '` element `' . $master->getElementId()
+            . '`, selected model indices before walk: [' . implode(', ', $selectedIndices)
+            . '], rendered attempt order: [' . implode(', ', $rowOrder) . ']');
+        if (empty($rowOrder) || count($selectedRenderedRows) === count($rowOrder)) {
+            return ['status' => 'skipped', 'reason' => 'master `' . $dep['target_widget_id']
+                . '` has no unselected row inside the rendered attempt window'];
+        }
+
+        $found = $master->selectEachRowUntil(function (int $rowNumber) use ($master, $dep, $targetColumnId, $attributeAlias, $filterKey, $detailRequestElementId, $logbook, &$failure): bool {
+            $logbook->addLine('Master-detail preparation attempting rendered row ' . $rowNumber);
+            $priorSeq = $this->getDetailReadSeq($detailRequestElementId);
+
+            // Model-side value plus the exactly-one-selection assertion (throws for 0 or >1 selected),
+            // which the DOM-based selection read cannot give reliably for a recycled table.
+            try {
+                $masterValue = $master->getSelectedRowRawValue($targetColumnId);
+            } catch (Throwable $e) {
+                $failure = $e->getMessage();
+                return true; // stop the walk - this is a FAILED condition, not "try next row"
+            }
+            if ($masterValue === null) {
+                return false;
+            }
+
+            $read = $this->pollDetailReadAfter($detailRequestElementId, $priorSeq);
+            if ($read === null) {
+                // No NEW read. This cannot prove the first attempt because preparation cleared the
+                // record. It remains reachable on a later row with the same linked value as its
+                // predecessor, where the facade may suppress an identical request; only that exact
+                // last-value match is accepted.
+                $read = $this->readDetailRecord($detailRequestElementId);
+                $recordedElementIds = '[' . implode(', ', $this->getRecordedReadElementIds()) . ']';
+                if ($read === null) {
+                    $failure = 'the detail did not reload after selecting a master row within '
+                        . self::DETAIL_LOAD_POLL_TIMEOUT_MS . 'ms and no read was recorded for element `'
+                        . $detailRequestElementId . '` at all - recorded element ids: ' . $recordedElementIds;
+                    return true;
+                }
+                $lastVals = $this->extractLinkedFilterValues($read['params'], $attributeAlias);
+                if (count($lastVals) === 0) {
+                    $failure = 'a detail read was recorded for element `' . $detailRequestElementId
+                        . '` but it carries no condition on `' . $attributeAlias . '` - recorded element ids: '
+                        . $recordedElementIds . '; broken link wiring';
+                    return true;
+                }
+                if (! (count($lastVals) === 1 && (string) $lastVals[0] === (string) $masterValue)) {
+                    $failure = 'the detail did not reload after selecting a master row within '
+                        . self::DETAIL_LOAD_POLL_TIMEOUT_MS . 'ms and its last request filtered `' . $attributeAlias
+                        . '` by "' . implode('","', $lastVals) . '" rather than the selected "'
+                        . $masterValue . '" - recorded element ids: ' . $recordedElementIds
+                        . '; lost click or broken apply_on_change';
+                    return true;
+                }
+                // else: redundant-refresh skip - the detail is already scoped to this value.
+            }
+
+            $detailValues = $this->extractLinkedFilterValues($read['params'], $attributeAlias);
+            if (count($detailValues) === 0) {
+                $failure = 'the detail request carries no condition on `' . $attributeAlias . '` - cannot verify the link';
+                return true;
+            }
+            if (count($detailValues) > 1) {
+                // More than one condition on the same alias with differing values: a wrong-condition
+                // match must not pass silently as the proof.
+                $failure = 'the detail request carries ' . count($detailValues) . ' differing conditions on `'
+                    . $attributeAlias . '` ("' . implode('","', $detailValues) . '") - cannot verify which reflects the master selection';
+                return true;
+            }
+            if ((string) $detailValues[0] !== (string) $masterValue) {
+                $failure = 'the detail filtered `' . $attributeAlias . '` by "' . $detailValues[0]
+                    . '" but the selected master value is "' . $masterValue . '" - broken link or lost click';
+                return true;
+            }
+
+            // Count only after pending operations settle, with one short retry: the model can be
+            // replaced a beat before the DOM/model fully settles, and counting too early reads 0 and
+            // would skip a perfectly good master row.
+            $rowCount = $this->getDetailLoadedRowCountWithRetry();
+            if ($rowCount > 0) {
+                $this->resolvedLinkedFilterValues[$filterKey] = $masterValue;
+                $logbook->addLine('Prepared detail via master `' . $dep['target_widget_id'] . '` row ' . $rowNumber
+                    . ' (linked value "' . $masterValue . '", ' . $rowCount . ' detail rows)');
+                return true;
+            }
+            return false; // value matches but this master row has no detail data - try the next one
+        }, self::MASTER_ROW_ATTEMPT_CAP, $rowOrder);
+
+        if ($failure !== null) {
+            return ['status' => 'failed', 'reason' => $failure];
+        }
+        if (! $found) {
+            return ['status' => 'skipped', 'reason' => 'no row in master `' . $dep['target_widget_id']
+                . '` produced detail data within ' . self::MASTER_ROW_ATTEMPT_CAP . ' attempts'];
+        }
+        return ['status' => 'ok', 'reason' => null];
+    }
+
+    /**
+     * Builds the resolved-value key for a dependency, distinguishing a RangeFilter's from/to links.
+     *
+     * @param array<string,mixed> $dep
+     * @return string
+     */
+    private function buildResolvedValueKey(array $dep): string
+    {
+        $filterId = $dep['filter'] instanceof Filter ? $dep['filter']->getId() : '';
+        return $filterId . '|' . ($dep['boundary'] ?? '');
+    }
+
+    /**
+     * Installs the one-time XHR hook that records the last completed read per element id.
+     *
+     * WHY A PAGE HOOK: right after a master row click everything BDT polls is idle (the detail read
+     * fires tens of ms later), so only the detail's own completed read is a reliable "loaded because of
+     * this selection" signal - and its request parameters (POST body or GET URL) carry the linked
+    * value the detail filtered by, which is the proof source. WHY IT IS SAFE: the guard makes repeat
+    * installs a no-op, the wrapper is pure pass-through (always calls the original open/send, records
+    * inside try/catch), and preparation deletes its detail-specific record because these globals can
+    * survive SPA navigation.
+     *
+     * @return void
+     */
+    private function installReadHook(): void
+    {
+        $this->getFromJavascript(<<<JS
+(function(){
+    if (window.__bdtReadHookInstalled) { return; }
+    window.__bdtReadHookInstalled = true;
+    window.__bdtReadSeq = 0;
+    window.__bdtLastReads = {};
+    // Collect element/action and every "data..." field (the read carries them as nested form
+    // parameters, e.g. data[filters][conditions][1][expression]=... , not one JSON "data" param).
+    var fnCollect = function(sQuery, oOut){
+        if (! sQuery) { return; }
+        new URLSearchParams(sQuery).forEach(function(sVal, sKey){
+            if (sKey === 'element' || sKey === 'action' || sKey === 'data' || sKey.indexOf('data[') === 0) {
+                oOut[sKey] = sVal;
+            }
+        });
+    };
+    var fnRecord = function(oXhr){
+        try {
+            var oParams = {};
+            // Reads go out as POST (params in body) or GET (params in the URL); merge both.
+            var sUrlQuery = (oXhr.__bdtUrl && oXhr.__bdtUrl.indexOf('?') >= 0) ? oXhr.__bdtUrl.split('?').slice(1).join('?') : '';
+            fnCollect(sUrlQuery, oParams);
+            fnCollect(oXhr.__bdtBody, oParams);
+            if (oParams['element'] && oParams['action']) {
+                // Atomic single-object write so a poll never pairs a new seq with old params.
+                window.__bdtLastReads[oParams['element']] = { seq: ++window.__bdtReadSeq, params: oParams };
+            }
+        } catch (e) { /* never break app AJAX */ }
+    };
+    var fnOrigOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function(method, url){
+        try { this.__bdtUrl = (typeof url === 'string') ? url : String(url); } catch (e) {}
+        return fnOrigOpen.apply(this, arguments);
+    };
+    var fnOrigSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send = function(body){
+        try {
+            this.__bdtBody = (typeof body === 'string') ? body : '';
+            var oXhr = this;
+            oXhr.addEventListener('readystatechange', function(){
+                if (oXhr.readyState === 4) { fnRecord(oXhr); }
+            });
+        } catch (e) { /* never break app AJAX */ }
+        return fnOrigSend.apply(this, arguments);
+    };
+})()
+JS);
+    }
+
+    /**
+     * Removes the captured read for one detail before a new master-selection preparation starts.
+     *
+     * WHY DELETE INSTEAD OF ONLY REMEMBERING THE SEQUENCE: the hook globals survive SPA navigation.
+     * A record from the previous page can therefore carry a sequence that appears current and, when
+     * no new request arrives, falsely prove that this detail reloaded for the selected master.
+     *
+    * @param string $elementId ExFace widget id sent as the request's element parameter.
+     * @return void
+     */
+    private function clearDetailReadRecord(string $elementId): void
+    {
+        $idJs = json_encode($elementId, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $this->getFromJavascript("(function(sEl){ var oReads = window.__bdtLastReads||{}; Object.keys(oReads).forEach(function(sKey){ if (sKey === sEl || sKey.slice(-('__' + sEl).length) === '__' + sEl) { delete oReads[sKey]; } }); })($idJs)");
+    }
+
+    /**
+     * Reads the currently recorded read for an element id as ['seq'=>int,'params'=>array], or null.
+     *
+    * WHY THE SUFFIX FALLBACK: current UI5 requests use the exact ExFace widget id. Older or alternate
+    * emitters may use a view-prefixed UI5 id, so an exact miss may match one key ending in "__" plus
+    * the widget id. Multiple suffix matches are rejected because choosing one could prove the wrong
+    * detail and create a false green.
+    *
+    * @param string $elementId ExFace widget id sent as the request's element parameter.
+     * @return array{seq:int,params:array<string,string>}|null
+     */
+    private function readDetailRecord(string $elementId): ?array
+    {
+        $idJs = json_encode($elementId, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $json = $this->getFromJavascript("(function(sEl){ var oReads = window.__bdtLastReads||{}, r = oReads[sEl]; if (!r) { var sSuffix = '__' + sEl, aKeys = Object.keys(oReads).filter(function(sKey){ return sKey.slice(-sSuffix.length) === sSuffix; }); r = aKeys.length === 1 ? oReads[aKeys[0]] : null; } return r ? JSON.stringify(r) : null; })($idJs)");
+        if (! is_string($json) || $json === '') {
+            return null;
+        }
+        $rec = json_decode($json, true);
+        if (! is_array($rec) || ! isset($rec['seq'])) {
+            return null;
+        }
+        return ['seq' => (int) $rec['seq'], 'params' => is_array($rec['params'] ?? null) ? $rec['params'] : []];
+    }
+
+    /**
+     * Lists the element ids currently captured by the read hook for temporary live diagnostics.
+     *
+     * WHY THIS IS LOGGED ON TIMEOUT: it distinguishes a missing detail request from a lookup-key
+     * mismatch without accepting a record from another widget and creating a false green.
+     *
+     * @return string[]
+     */
+    private function getRecordedReadElementIds(): array
+    {
+        $json = $this->getFromJavascript('JSON.stringify(Object.keys(window.__bdtLastReads||{}))');
+        $keys = json_decode((string) $json, true);
+        return is_array($keys) ? array_map('strval', $keys) : [];
+    }
+
+    /**
+     * Returns the sequence number of the last completed read recorded for the given element id, or 0.
+     *
+     * @param string $elementId
+     * @return int
+     */
+    private function getDetailReadSeq(string $elementId): int
+    {
+        $rec = $this->readDetailRecord($elementId);
+        return $rec === null ? 0 : $rec['seq'];
+    }
+
+    /**
+     * Polls until a read newer than $priorSeq is recorded for the element, or the timeout elapses.
+     *
+     * @param string $elementId
+     * @param int $priorSeq
+     * @return array{seq:int,params:array<string,string>}|null The newer read, or null on timeout.
+     */
+    private function pollDetailReadAfter(string $elementId, int $priorSeq): ?array
+    {
+        $deadline = microtime(true) + self::DETAIL_LOAD_POLL_TIMEOUT_MS / 1000;
+        do {
+            $rec = $this->readDetailRecord($elementId);
+            if ($rec !== null && $rec['seq'] > $priorSeq) {
+                return $rec;
+            }
+            usleep(self::DETAIL_LOAD_POLL_INTERVAL_MS * 1000);
+        } while (microtime(true) < $deadline);
+        return null;
+    }
+
+    /**
+     * Counts this detail's loaded rows after pending operations settle, with one short retry.
+     *
+     * @return int
+     */
+    private function getDetailLoadedRowCountWithRetry(): int
+    {
+        // Only table-type details reach here (guarded in prepareMasterSelection); the instanceof also
+        // narrows $this for getLoadedRowCount(), which is declared on UI5DataTableNode.
+        if (! $this instanceof UI5DataTableNode) {
+            return 0;
+        }
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
+        $count = $this->getLoadedRowCount();
+        if ($count > 0) {
+            return $count;
+        }
+        usleep(self::DETAIL_LOAD_POLL_INTERVAL_MS * 1000);
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
+        return $this->getLoadedRowCount();
+    }
+
+    /**
+     * Returns the distinct values the detail filtered a given attribute by, from a recorded read's
+     * flat form parameters.
+     *
+     * WHY A FLAT KEY LIST, NOT json_decode: the read request does not carry one JSON "data" param but
+     * nested form fields, e.g. `data[filters][conditions][1][expression]=AngebotsAnfrage` and
+     * `data[filters][conditions][1][value]=1463`. A condition's attribute lives under a key ending in
+     * `[expression]` (or `[attribute_alias]`); its value is the sibling key with the same prefix and a
+     * `[value]` suffix, which ties value to expression at any nesting depth.
+     *
+     * WHY DISTINCT VALUES, NOT THE FIRST: more than one condition can carry the same alias. Returning
+     * the first would let a wrong-condition match pass silently as the proof; the caller instead fails
+     * when several differing values are found.
+     *
+     * @param array<string,string> $params The recorded read parameters (element/action plus data...).
+     * @param string $attributeAlias The detail filter's attribute alias.
+     * @return string[] Distinct values, in first-seen order.
+     */
+    private function extractLinkedFilterValues(array $params, string $attributeAlias): array
+    {
+        if ($attributeAlias === '') {
+            return [];
+        }
+        $values = [];
+        foreach ($params as $key => $val) {
+            foreach (['[expression]', '[attribute_alias]'] as $suffix) {
+                if (substr($key, -strlen($suffix)) !== $suffix || (string) $val !== $attributeAlias) {
+                    continue;
+                }
+                $siblingKey = substr($key, 0, -strlen($suffix)) . '[value]';
+                $v = array_key_exists($siblingKey, $params) ? (string) $params[$siblingKey] : '';
+                $values[$v] = $v; // keyed for distinctness
+            }
+        }
+        return array_values($values);
     }
 
     /**
@@ -1281,9 +2064,11 @@ class UI5DataNode extends UI5AbstractNode
      * "Cannot convert ... to a number" - the same failure family as a calculated attribute - aborting the
      * whole filter substep. Note that detectFormula() alone is NOT enough here: a widget link has no "("
      * so it is not a formula, which is exactly why "=TabelleAnfragen!Id" slipped through and blew up.
-     * There is no literal to filter by in either case, so return null; both callers already treat null as
-     * "do not add this hidden filter condition", which keeps the value-sourcing read and its
-     * checkTheValueFromTable validation consistent (both skip the same condition).
+    * A prepared widget link is the exception: prepareMasterSelection() has proved the exact raw value
+    * sent by the detail request and stores it under the same filter-id/boundary key used here. Returning
+    * that value scopes both callers to the selected master. An unresolved link still returns null, so
+    * unsupported or skipped preparation preserves the previous behaviour instead of inventing an empty
+    * filter value.
      */
     protected function getHiddenFilterValue(Filter $hiddenFilter): ?string
     {
@@ -1293,6 +2078,13 @@ class UI5DataNode extends UI5AbstractNode
         // detectCalculation() covers both (anything starting with a single "="), whereas detectFormula()
         // would only catch formulas and let widget-link references through.
         if (is_string($value) && Expression::detectCalculation($value)) {
+            $resolvedKey = $this->buildResolvedValueKey([
+                'filter' => $hiddenFilter,
+                'boundary' => '',
+            ]);
+            if (array_key_exists($resolvedKey, $this->resolvedLinkedFilterValues)) {
+                return (string) $this->resolvedLinkedFilterValues[$resolvedKey];
+            }
             return null;
         }
 
