@@ -2,13 +2,9 @@
 
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
-use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
-use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
-use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Interfaces\TestResultInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\WidgetInterface;
-use exface\Core\Widgets\Tabs;
 
 /**
  * Node for the `Tabs` widget.

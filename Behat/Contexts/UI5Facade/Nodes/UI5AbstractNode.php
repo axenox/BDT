@@ -28,7 +28,6 @@ use exface\Core\Interfaces\Actions\ActionInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\UiPageInterface;
 use exface\Core\Interfaces\WidgetInterface;
-use exface\Core\Interfaces\WorkbenchDependantInterface;
 use exface\Core\Widgets\AbstractWidget;
 use PHPUnit\Framework\Assert;
 use Throwable;
