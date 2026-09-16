@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
+use axenox\BDT\Behat\Common\Attributes\ResumeSafeStep;
 use axenox\BDT\Behat\Common\ErrorManager;
 use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5AbstractNode;
@@ -16,6 +17,7 @@ use axenox\BDT\Common\Installer\TestDataInstaller;
 use axenox\BDT\Exceptions\BrowserDriverException;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Behat\Context\Context;
+use Behat\Behat\Tester\Result\DefinedStepResult;
 use Behat\Behat\Tester\Result\UndefinedStepResult;
 use Behat\Mink\Element\NodeElement;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
@@ -118,50 +120,58 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     /**
      * @var string|null Full URL, including the UI5 route fragment, at the end of the last passed step.
      *
-     * WHY: this - not the page alias - is where a recovered Chrome has to continue. The alias collapses a
-     * dialog route onto the page behind it, and it used to be captured BEFORE a step ran, so a dialog
-     * opened by the previous step was lost twice. NULL means the resume point is unknown and must not be guessed.
+     * WHY: this - not the page alias - is where a recovered Chrome has to continue. The alias collapses a dialog
+     * route onto the page behind it. NULL means the resume point is unknown and must not be guessed.
      */
     private ?string $resumeUrl = null;
 
     /** @var string|null Logical page alias belonging to $resumeUrl; reloaded before the route is re-opened */
     private ?string $resumePageAlias = null;
 
+    /** @var array|null Focus stack at $resumeUrl as described by UI5Browser::describeFocusForResume(); NULL = not rebuildable */
+    private ?array $resumeFocus = null;
+
     /**
      * @var \WeakReference|null The UI5Browser that was active when $resumeUrl was recorded.
      *
-     * WHY: a new UI5Browser is built exactly when a full page load happened, and a full page load discards
-     * every in-browser state the URL did not carry. WHY A WEAK REFERENCE: an object id can be reused once
-     * the old browser is freed, which would make a fresh document look like the same one.
+     * WHY: a new UI5Browser is built exactly when a full page load happened, and a full page load discards every
+     * in-browser state. WHY WEAK: an object id can be reused once the old browser is freed.
      */
     private ?\WeakReference $resumeBrowser = null;
 
     /**
-     * @var string[] Passed steps since the last full page load that did not change the URL.
+     * @var string[] Passed, non-resume-safe steps that did not change the URL since the last route change.
      *
-     * WHY: such a step changed the browser in a way the URL does not carry - typed values, a selected row,
-     * an opened tab, the focused widget. Reloading the URL cannot bring that back, and continuing without it
-     * runs the remaining steps on a state the scenario never built, which can turn a real failure green.
+     * WHY SEPARATE FROM EARLIER VIEWS: this is the state of the view the scenario is in right now. It cannot be
+     * rebuilt, and every next step depends on it, so it blocks a resume immediately.
      */
-    private array $resumeBlockingSteps = [];
+    private array $blockersInCurrentView = [];
+
+    /**
+     * @var string[] Such steps in views below the current one (before the last route change, same document).
+     *
+     * WHY THEY DO NOT BLOCK IMMEDIATELY: the row selected on the page behind a dialog does not matter while the
+     * scenario works inside the dialog. It matters again only when the scenario returns - so it is checked then.
+     */
+    private array $blockersInEarlierViews = [];
+
+    /**
+     * @var string|null URL of the view a recovery resumed in while state of views below it was lost.
+     *
+     * WHY: leaving this view is the moment the lost state matters again; recordResumePoint() stops the scenario then.
+     */
+    private ?string $recoveredRouteUrl = null;
+
+    /** @var string[] Steps whose state in views below $recoveredRouteUrl was lost in a recovery */
+    private array $lostEarlierViewState = [];
 
     /**
      * @var string|null Why the scenario cannot continue after a Chrome recovery; NULL when it can.
      *
-     * WHY getBrowser() ENFORCES IT: nearly every step goes through getBrowser(), so refusing there fails the
-     * very next step with the real reason - without guarding a list of steps and without throwing from a hook.
+     * WHY getBrowser() ENFORCES IT: nearly every step goes through getBrowser(), so refusing there fails the very
+     * next step with the real reason - without guarding a list of steps and without throwing from a hook.
      */
     private ?string $unrestorableStateReason = null;
-
-    /**
-     * Marks that recoverChrome() is currently running.
-     *
-     * WHY: recoverChrome() navigates through visitPath(), and visitPath() calls ensureChromeAlive() when it
-     * meets a dead browser - which calls recoverChrome() again. If Chrome dies while it is being recovered,
-     * that loop nests restarts inside restarts, each level killing the Chrome the level above is still
-     * logging in to. The flag turns the inner call into a clean failure of the outer recovery instead.
-     */
-    private bool $chromeRecoveryInProgress = false;
 
     /**
      * Initializes and starts the workbench for the test environment.
@@ -680,9 +690,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iLogInToPage(string $url, string $userRoles = null, string $userLocale = null): void
     {
-        // Explicit login/navigation builds the scenario's state anew, so a state lost in an earlier Chrome
-        // recovery no longer matters from here on.
-        $this->unrestorableStateReason = null;
+        $this->forgetRecoveryState();
         
         // Persist login parameters so recoverChrome() can replay them.
         $this->lastLoginUrl = $url;
@@ -788,9 +796,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iVisitPage(string $url): void
     {
-        // Explicit login/navigation builds the scenario's state anew, so a state lost in an earlier Chrome
-        // recovery no longer matters from here on.
-        $this->unrestorableStateReason = null;
+        $this->forgetRecoveryState();
         
         if ($url && !StringDataType::endsWith($url, '.html')) {
             $url .= '.html';
@@ -831,6 +837,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string|null $caption Optional caption of the widget or name/alias of its data object
      * @throws \Exception
      */
+    #[ResumeSafeStep]
     public function iSeeWidgets(int $number, string $widgetType, string $caption = null): void
     {
         // Fetch widgets of the requested type, restricted to the given name if the step supplied one.
@@ -905,6 +912,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $widgetType Type of widget to look for
      * @throws \Exception
      */
+    #[ResumeSafeStep]
     public function itHasWidgetsOfType(int $number, string $widgetType): void
     {
         $focusedNode = $this->getBrowser()->getFocusedNode();
@@ -1239,6 +1247,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * @param string $filterList Comma-separated filter captions in the expected order.
      */
+    #[ResumeSafeStep]
     public function theFiltersAreDisplayedInTheFollowingOrder(string $filterList): void
     {
         $this->getFocusedDataNode()->assertFiltersDisplayedInOrder($this->explodeList($filterList));
@@ -1261,6 +1270,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * @param string $columnList Comma-separated column captions in the expected order.
      */
+    #[ResumeSafeStep]
     public function theColumnsAreDisplayedInTheFollowingOrder(string $columnList): void
     {
         $this->getFocusedDataNode()->assertColumnsDisplayedInOrder($this->explodeList($columnList));
@@ -1549,6 +1559,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @throws RuntimeException If the page has fewer widgets of that type than requested
      * @throws \Exception
      */
+    #[ResumeSafeStep]
     public function iLookAtWidget(string $widgetType, int $number = 1): void
     {
         // Set focus to this widget so the subsequent "it has..." steps have a context
@@ -1729,11 +1740,18 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * 
      * @param string $columnName Comma-separated captions of spreadsheet columns to check
     */
+    #[ResumeSafeStep]
     public function theColumnInDataSpreadsheetShouldBeDisabled(string $columnName): void
     {
         $nodes = $this->getBrowser()->getFocusedNode();
-        $node = $nodes[0] ?? null;
-        Assert::assertInstanceOf(UI5DataSpreadSheetNode::class, $node, 'No DataSpreadSheet widget found.');
+        // getFocusedNode() returns ONE node, not a list. Indexing it threw "Cannot use object of type ... as array",
+        // so the step could never pass and never reported which column was editable.
+        $node = $this->getBrowser()->getFocusedNode();
+        Assert::assertInstanceOf(
+            UI5DataSpreadSheetNode::class,
+            $node,
+            'No DataSpreadSheet widget is focused - focus one first (e.g. "I look at \'SpreadSheet\' no. 1").'
+        );
 
         // Resolve before highlighting: the debug label becomes part of the jExcel header text.
         $columnResults = [];
@@ -2074,6 +2092,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param int $index The 1-based index of the table to focus on
      * @throws RuntimeException If the table cannot be found
      */
+    #[ResumeSafeStep]
     public function iLookAtTable(int $index): void
     {
         $table = $this->getDataTableNodeByIndex($index);
@@ -2579,6 +2598,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * @param string $tabList Comma-separated tab captions in the expected order.
      */
+    #[ResumeSafeStep]
     public function theTabsAreDisplayedInTheFollowingOrder(string $tabList): void
     {
         UI5AbstractNode::assertCaptionsDisplayedInOrder(
@@ -2680,8 +2700,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     protected function getBrowser(): UI5Browser
     {
-        // See $unrestorableStateReason: the next step fails with the real reason instead of running on a lost state.
-        if ($this->unrestorableStateReason !== null) {
+        // Only steps are refused: a recovery logs in and navigates through this same method, and refusing it there
+        // would make every recovery of an already stopped scenario fail halfway.
+        if ($this->unrestorableStateReason !== null && ! $this->chromeRecoveryInProgress) {
             throw new RuntimeException($this->unrestorableStateReason);
         }
         if ($this->browser === null) {
@@ -3183,64 +3204,108 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * WHY AT THE END OF A PASSED STEP: that is the state the next step expects to start from.
      *
-     * WHY THE THREE CASES:
-     * - fresh document: a full page load discarded all earlier in-browser state, so nothing before it can
-     *   block a resume any more;
-     * - same document, URL changed: the step only moved the route (e.g. opened a dialog), which the URL
-     *   reproduces;
-     * - same document, URL unchanged: the step changed something the URL does not carry, so it blocks
-     *   resuming until the next full page load.
+     * WHY THE CASES:
+     * - fresh document: a full page load discarded all earlier in-browser state, so nothing before it can block;
+     * - same document, URL changed: the step moved the route (e.g. opened a dialog). The URL reproduces the new
+     *   view; whatever the current view had built now belongs to a view below it;
+     * - same document, URL unchanged, resume-safe step: only focus or nothing changed - rebuilt from $resumeFocus;
+     * - same document, URL unchanged, any other step: the current view now holds state that cannot be rebuilt.
+     *
+     * WHY THE LEAVE CHECK COMES FIRST: after a resume with lost state below, a step that leaves the resumed view
+     * ran correctly inside it - but the next step would work on views whose state is gone.
      *
      * @param AfterStepScope $scope The step that just passed
      */
     private function recordResumePoint(AfterStepScope $scope): void
     {
         $browser = $this->getBrowser();
-        // Same source the failure screenshots record: the driver returns window.location.href, which carries
-        // the UI5 route fragment of an open dialog. The UI5 HashChanger was never proven to be the instance
-        // the facade's router uses, so reading it could silently drop exactly the part a resume needs.
+        // Same source the failure screenshots record: window.location.href, including the route fragment.
         $url = $this->getSession()->getCurrentUrl();
+        $step = $scope->getStep();
+        $stepLabel = 'line ' . $step->getLine() . ': ' . $step->getKeyword() . ' ' . $step->getText();
+
+        if ($this->recoveredRouteUrl !== null && $url !== $this->recoveredRouteUrl && $this->unrestorableStateReason === null) {
+            $this->unrestorableStateReason = 'Chrome was lost earlier and the scenario was resumed in the view "'
+                . $this->recoveredRouteUrl . '". Step ' . $stepLabel . ' has now left that view, but the state these steps '
+                . 'had built in the views below it was lost in the recovery: ' . implode('; ', $this->lostEarlierViewState)
+                . '. Running the remaining steps on a different state could hide real failures, so the scenario stops here.';
+            $this->reportChromeRecovery($this->unrestorableStateReason);
+        }
 
         if ($this->resumeBrowser?->get() !== $browser) {
-            $this->resumeBlockingSteps = [];
-        } elseif ($url === $this->resumeUrl) {
-            $step = $scope->getStep();
-            $this->resumeBlockingSteps[] = 'line ' . $step->getLine() . ': ' . $step->getKeyword() . ' ' . $step->getText();
+            $this->blockersInCurrentView = [];
+            $this->blockersInEarlierViews = [];
+        } elseif ($url !== $this->resumeUrl) {
+            $this->blockersInEarlierViews = array_merge($this->blockersInEarlierViews, $this->blockersInCurrentView);
+            $this->blockersInCurrentView = [];
+        } elseif (! $this->isResumeSafeStep($scope)) {
+            $this->blockersInCurrentView[] = $stepLabel;
         }
 
         $this->resumeUrl = $url;
         $this->resumePageAlias = $browser->getPageAliasFromCurrentUrl();
+        $this->resumeFocus = $browser->describeFocusForResume();
         $this->resumeBrowser = \WeakReference::create($browser);
+    }
+
+    /**
+     * Tells whether the step that just passed is marked as safe to resume after a Chrome recovery.
+     *
+     * WHY THE DEFINITION'S REFLECTION: the attribute sits on the step method; Behat exposes the matched method
+     * through the executed step's definition, so no list of step names has to be kept in sync by hand.
+     *
+     * @param AfterStepScope $scope The step that just passed
+     * @return bool TRUE only if the matched step method carries #[ResumeSafeStep]
+     */
+    private function isResumeSafeStep(AfterStepScope $scope): bool
+    {
+        $result = $scope->getTestResult();
+        if (! $result instanceof DefinedStepResult) {
+            return false;
+        }
+        $definition = $result->getStepDefinition();
+        if ($definition === null) {
+            return false;
+        }
+        return $definition->getReflection()->getAttributes(ResumeSafeStep::class) !== [];
     }
 
     /**
      * Brings a recovered, logged-in Chrome back to where the scenario stopped - or records why it cannot.
      *
-     * WHY A REFUSAL IS NOT A RECOVERY FAILURE: Chrome is back and logged in, which the next scenario needs
-     * anyway. A refusal only stops THIS scenario from continuing on a state it did not build; getBrowser()
-     * fails the next step with the reason.
+     * WHY A REFUSAL IS NOT A RECOVERY FAILURE: Chrome is back and logged in, which the next scenario needs anyway.
+     * A refusal only stops THIS scenario; getBrowser() fails the next step with the reason.
      *
-     * WHY THE LOGICAL PAGE AND NOT THE ".html" FILE: a dialog opened from an SPA-routed page is only
-     * recognised as belonging to that page when the page itself is the one loaded.
+     * WHY ONLY THE CURRENT VIEW BLOCKS: see $blockersInEarlierViews. Lost state of views below is recorded and
+     * enforced by recordResumePoint() when the scenario leaves the resumed view.
      *
-     * WHY THE ROUTE IS VERIFIED: comparing the route the browser ended up on with the recorded one is the
-     * only proof that the dialog really came back. Both sides are read the same way recordResumePoint() and
-     * the failure screenshots read the URL, so the comparison cannot fail on a format difference alone.
+     * WHY THE ROUTE AND THE FOCUS ARE VERIFIED: UI5 does not report a route the facade cannot open, and a missing
+     * focus silently widens every following search to the whole page. Both must be proven, not assumed.
      *
-     * WHY THE REASON IS SET IN finally: if anything below throws after a browser was built, the scenario
-     * would otherwise continue on the page behind the dialog with no block in place.
+     * WHY THE REASON IS SET IN finally: if anything below throws after a browser was built, the scenario would
+     * otherwise continue on a partially restored state with no block in place.
      */
     private function resumeScenarioAfterRecovery(): void
     {
+        if ($this->unrestorableStateReason !== null) {
+            // A new Chrome does not bring back state that was already lost before this recovery.
+            $this->reportChromeRecovery('Not resuming - the scenario had already been stopped before this recovery.');
+            return;
+        }
+
         $reason = 'the recovery stopped before the browser state could be restored.';
         try {
             if ($this->resumeUrl === null || $this->resumePageAlias === null) {
                 $reason = 'the state at the end of the last passed step could not be recorded.';
                 return;
             }
-            if ($this->resumeBlockingSteps !== []) {
-                $reason = 'these steps changed the page without changing its URL, and that state cannot be rebuilt from the URL: '
-                    . implode('; ', $this->resumeBlockingSteps) . '.';
+            if ($this->blockersInCurrentView !== []) {
+                $reason = 'these steps changed the current view without changing its URL, and that state cannot be rebuilt: '
+                    . implode('; ', $this->blockersInCurrentView) . '.';
+                return;
+            }
+            if ($this->resumeFocus === null) {
+                $reason = 'the widget the scenario was looking at cannot be rebuilt (a focused tab, or an element without a stable id).';
                 return;
             }
 
@@ -3256,16 +3321,54 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 $reason = 'the UI5 route could not be re-opened (expected "#' . $expectedRoute . '", browser is on "#' . $actualRoute . '").';
                 return;
             }
+
+            try {
+                $this->getBrowser()->restoreFocusForResume($this->resumeFocus);
+            } catch (\Throwable $e) {
+                $reason = 'the widget the scenario was looking at could not be rebuilt: ' . $e->getMessage();
+                return;
+            }
+
+            // Merged, not replaced: a second recovery must not forget what a first one already lost.
+            $this->lostEarlierViewState = array_merge($this->lostEarlierViewState, $this->blockersInEarlierViews);
+            if ($this->lostEarlierViewState !== []) {
+                $this->recoveredRouteUrl = $this->resumeUrl;
+            }
             $reason = null;
         } finally {
             if ($reason === null) {
-                $this->reportChromeRecovery('Resumed the scenario at ' . $this->resumeUrl);
+                $this->reportChromeRecovery(
+                    'Resumed the scenario at ' . $this->resumeUrl
+                    . ($this->lostEarlierViewState === []
+                        ? ''
+                        : '. State of the views below was lost and the scenario stops if it leaves this view: '
+                        . implode('; ', $this->lostEarlierViewState))
+                );
             } else {
                 $this->unrestorableStateReason = 'Chrome was lost and has been restarted and logged in again, but this scenario cannot continue: '
                     . $reason . ' Running the remaining steps on a different state could hide real failures, so the scenario stops here.';
                 $this->reportChromeRecovery($this->unrestorableStateReason);
             }
         }
+    }
+
+    /**
+     * Forgets everything a Chrome recovery decided about this scenario's state.
+     *
+     * WHY: an explicit login or page visit builds the scenario's state anew, so neither a stopped scenario nor the
+     * lost state of views below a resumed dialog matters from there on.
+     *
+     * WHY NOT DURING A RECOVERY: recoverChrome() logs in and visits pages through the same step methods. Clearing
+     * there would erase what a previous recovery lost, and a second recovery would resume as if nothing was lost.
+     */
+    private function forgetRecoveryState(): void
+    {
+        if ($this->chromeRecoveryInProgress) {
+            return;
+        }
+        $this->unrestorableStateReason = null;
+        $this->recoveredRouteUrl = null;
+        $this->lostEarlierViewState = [];
     }
 
     /**
@@ -3315,8 +3418,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             . ($targetPageAlias !== ''
                 ? 'page "' . $targetPageAlias . '" (requested by the caller)'
                 : 'resume point ' . ($this->resumeUrl ?? '(unknown)'))
-            . '. Steps since the last full page load that did not change the URL: '
-            . ($this->resumeBlockingSteps === [] ? 'none' : implode('; ', $this->resumeBlockingSteps)) . '.'
+            . '. Blocking steps in the current view: '
+            . ($this->blockersInCurrentView === [] ? 'none' : implode('; ', $this->blockersInCurrentView))
+            . '. State of views below (lost, enforced when the scenario leaves the resumed view): '
+            . ($this->blockersInEarlierViews === [] ? 'none' : implode('; ', $this->blockersInEarlierViews)) . '.'
         );
 
         try {
@@ -3394,22 +3499,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 ));
             } catch (\Throwable $ignored) {}
         }
-    }
-
-    /**
-     * TEMPORARY LOCAL TEST AID - remove before committing.
-     *
-     * WHY: closing Chrome by hand almost always hits a running step, which fails it and ends the scenario, so
-     * the resume path cannot be exercised. This step touches no browser API while it sleeps - closing Chrome
-     * during the pause fails nothing - and then runs the same liveness check the BeforeStep hook runs, so the
-     * recovery starts from the resume point recorded by the PREVIOUS step, exactly as between two real steps.
-     *
-     * @When I pause for :seconds seconds
-     */
-    public function iPauseForSeconds(int $seconds): void
-    {
-        sleep($seconds);
-        $this->ensureChromeAlive();
     }
 
     /**
