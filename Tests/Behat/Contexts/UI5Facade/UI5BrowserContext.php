@@ -2482,6 +2482,34 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Checks that tabs appear left-to-right in the exact order you list.
+     *
+     * Unlike "I see tabs", which only checks that tabs exist, this step pins down their order on screen -
+     * useful after a layout change. The dialog or page may contain more tabs than you list; this step only
+     * checks that the ones you name appear in the stated order relative to each other.
+     *
+     * If you are looking at a dialog, only its tabs are read. The page behind it may carry tabs with the
+     * very same captions.
+     *
+     * Usage example:
+     *
+     *   Then I see 1 widget of type "Dialog"
+     *   And the tabs are displayed in the following order "General, Addresses, History"
+     *
+     * @Then the tabs are displayed in the following order :tabList
+     *
+     * @param string $tabList Comma-separated tab captions in the expected order.
+     */
+    public function theTabsAreDisplayedInTheFollowingOrder(string $tabList): void
+    {
+        UI5AbstractNode::assertCaptionsDisplayedInOrder(
+            $this->explodeList($tabList),
+            $this->getBrowser()->getTabCaptionsInOrder(),
+            'tab'
+        );
+    }
+
+    /**
      * Loads a set of prepared test data before the checks run.
      *
      * Many scenarios need known records to exist first (so results are predictable). This step

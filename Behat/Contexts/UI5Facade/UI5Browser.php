@@ -1426,9 +1426,9 @@ JS
      */
     public function findTabByCaption(string $caption, NodeElement $parent = null): ?NodeElement
     {
-        $selectors = ['.sapMITBItem .sapMITHTextContent ', '.sapUxAPAnchorBarScrollContainer > div > button.sapMBtn > span > span > bdi'];
-        // Find all tab heading elements
-        $tabHeadings = ($parent ?? $this->getPage())->findAll('css', implode(',', $selectors));
+        // the selector pair moved into findTabHeadingElements() so the order assertion collects
+        // exactly the same headings this lookup matches against
+        $tabHeadings = $this->findTabHeadingElements($parent ?? $this->getPage());
 
         // Iterate through found tab headings to locate matching one
         foreach ($tabHeadings as $tabHeading) {
@@ -1438,6 +1438,70 @@ JS
             }
         }
         return null;
+    }
+
+    /**
+     * Returns the caption-carrying elements of all tab headers inside a scope, in the order they render.
+     *
+     * WHY SHARED: an assertion about tab ORDER must see the very same set of headers that a lookup by
+     * caption would match. Two separate selector lists would drift apart, and the order step would then
+     * pass or fail over tabs that "I click tab" cannot reach at all.
+     *
+     * @param NodeElement|DocumentElement $scope
+     * @return NodeElement[] In document order, which is the rendered left-to-right order of the tab strip
+     */
+    private function findTabHeadingElements($scope): array
+    {
+        $selectors = [
+            '.sapMITBItem .sapMITHTextContent',
+            '.sapUxAPAnchorBarScrollContainer > div > button.sapMBtn > span > span > bdi'
+        ];
+        return $scope->findAll('css', implode(',', $selectors));
+    }
+
+    /**
+     * Returns the captions of the tabs on screen, in the order they are rendered.
+     *
+     * WHY the scope dance: the tab strip that matters is the one of the dialog or widget the scenario is
+     * looking at. The page behind a modal dialog still renders its own tabs and comes first in the DOM,
+     * so reading page-wide would report the wrong strip's order - and, with same-named tabs, would do so
+     * without any visible symptom. The page-wide fallback keeps the step usable while something without
+     * a tab strip is focused, typically a table.
+     *
+     * @return string[]
+     */
+    public function getTabCaptionsInOrder(): array
+    {
+        $scope = $this->getTabSearchScope();
+        $captions = $scope === null ? [] : $this->readTabCaptions($scope);
+        if (empty($captions)) {
+            $captions = $this->readTabCaptions($this->getPage());
+        }
+        return $captions;
+    }
+
+    /**
+     * Reads the visible tab captions of one scope in render order.
+     *
+     * WHY invisible headings are skipped: the same rule findTabByCaption() applies. A hidden template or
+     * a collapsed strip would otherwise contribute captions that no step could ever click.
+     *
+     * @param NodeElement|DocumentElement $scope
+     * @return string[]
+     */
+    private function readTabCaptions($scope): array
+    {
+        $captions = [];
+        foreach ($this->findTabHeadingElements($scope) as $heading) {
+            if (! $heading->isVisible()) {
+                continue;
+            }
+            $caption = trim($heading->getText());
+            if ($caption !== '') {
+                $captions[] = $caption;
+            }
+        }
+        return $captions;
     }
 
     /**
