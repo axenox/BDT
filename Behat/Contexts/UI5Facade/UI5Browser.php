@@ -669,9 +669,8 @@ JS
 
     public function clearFocusStack(): void
     {
-        $this->focusStack = []; // Focus stackini sıfırla
+        $this->focusStack = [];
 
-        // Opsiyonel: JavaScript ile de UI tarafında temizlik yapılabilir
         $this->session->executeScript('
         // if exist UI5 side focus clearing
         if (window.clearFocus) {
@@ -2302,11 +2301,9 @@ JS
      */
     public function navigateToRouteFragment(string $fragment): void
     {
-        // >>> CHANGED - was: sap.ui.core.routing.HashChanger.getInstance().setHash(...)
         $this->getSession()->executeScript(
             'window.location.hash = ' . json_encode($fragment, JSON_THROW_ON_ERROR) . ';'
         );
-        // <<< CHANGED
         $this->getWaitManager()->waitForPendingOperations(true, true, true);
     }
 
@@ -2456,5 +2453,68 @@ JS
             throw new RuntimeException('Chrome recovery callback not configured. Call setChromeRecoveryFn() first.');
         }
         ($this->chromeRecoveryFn)($targetPageAlias);
+    }
+
+    /**
+     * Describes the focus stack in a form that survives a Chrome restart: node class and DOM id per entry.
+     *
+     * WHY: the focus stack holds PHP objects bound to DOM elements of one Chrome instance. After a recovery
+     * those elements are gone, the stack is empty, and getFocusedNode() falls back to the whole page - a step
+     * meant for a dialog could then match a same-named widget behind it and pass. Class and id are enough to
+     * rebuild the same stack on the restored page.
+     *
+     * WHY NULL INSTEAD OF A PARTIAL LIST: an entry that cannot be rebuilt exactly - a focused tab (its scope is a
+     * content area tracked separately), an element without an id, or an auto-generated UI5 id ("__...") that
+     * changes on every load - would leave a different scope than the scenario built. Refusing the whole
+     * description makes the recovery stop the scenario instead of guessing.
+     *
+     * @return array<int, array{class: string, id: string}>|null Entries bottom to top, or NULL if not rebuildable
+     */
+    public function describeFocusForResume(): ?array
+    {
+        $this->pruneDeadFocus();
+        if ($this->focusedTabNode !== null && in_array($this->focusedTabNode, $this->focusStack, true)) {
+            return null;
+        }
+        $entries = [];
+        foreach ($this->focusStack as $node) {
+            try {
+                $id = (string) $node->getNodeElement()->getAttribute('id');
+            } catch (Throwable $e) {
+                // A stale entry below the top (pruneDeadFocus() only checks the top) cannot be described
+                return null;
+            }
+            if ($id === '' || str_starts_with($id, '__')) {
+                return null;
+            }
+            $entries[] = ['class' => get_class($node), 'id' => $id];
+        }
+        return $entries;
+    }
+
+    /**
+     * Rebuilds a focus stack recorded by describeFocusForResume() on the restored page.
+     *
+     * WHY THE RECORDED CLASS AND NOT THE FACTORY: the goal is the exact scope the scenario had. The factory picks
+     * the class from the element's CSS classes, which may differ from the class the original step created (e.g.
+     * a node built from the widget model). Instantiating the recorded class reproduces the original node.
+     *
+     * @param array<int, array{class: string, id: string}> $entries Output of describeFocusForResume()
+     * @throws RuntimeException If a recorded element does not exist on the restored page or a class is not a facade node
+     */
+    public function restoreFocusForResume(array $entries): void
+    {
+        $this->clearFocusStack();
+        foreach ($entries as $entry) {
+            if (! is_subclass_of($entry['class'], FacadeNodeInterface::class)) {
+                throw new RuntimeException('Recorded focus class "' . $entry['class'] . '" is not a facade node.');
+            }
+            $element = $this->getSession()->getPage()->findById($entry['id']);
+            if ($element === null) {
+                throw new RuntimeException('the focused element "' . $entry['id'] . '" does not exist on the restored page.');
+            }
+            $class = $entry['class'];
+            $this->focus(new $class($element, $this->getSession(), $this));
+        }
     }
 }
