@@ -65,6 +65,16 @@ class UI5Browser
     private UI5WaitManager $waitManager;
     private UI5ErrorDetector $errorDetector;
     private array $focusStack = [];
+
+    /**
+     * The tab node the focus stack holds for an opened tab, if any.
+     *
+     * WHY a separate reference: a tab is a scope switcher, not a nested scope. Opening tab B while the
+     * stack still holds tab A must replace A (and everything focused inside A) instead of stacking B on
+     * top - otherwise the stack keeps content that is no longer on screen and, for tabs rendered as
+     * ObjectPage sections, is still valid in the DOM, so pruneDeadFocus() would never remove it.
+     */
+    private ?FacadeNodeInterface $focusedTabNode = null;
     private array $pagesVisited = [];
     private string $locale;
     
@@ -1267,6 +1277,147 @@ JS
     }
 
     /**
+     * Opens a tab by its caption, preferring the tab strip of the container the scenario is looking at.
+     *
+     * WHY the scoped lookup first: goToTab() without a parent searches the whole document and takes the
+     * first visible match in DOM order. The page behind a modal dialog is still "visible" to the driver
+     * and comes before the dialog in the DOM, so a dialog tab named like a page tab ("General") made the
+     * step click the page tab behind the dialog - and every following assertion ran against the wrong
+     * content. The page-wide search stays as fallback, so a tab outside the focused widget (e.g. a page
+     * tab while a table is focused) is still found as before.
+     *
+     * WHY the wait: an IconTabBar renders the newly selected tab only after the click and ObjectPage
+     * sections load lazily, so anything inspecting the tab right after this call would race the rendering.
+     *
+     * @param string $caption Visible caption of the tab
+     * @return NodeElement The tab header that was opened
+     */
+    public function openTab(string $caption): NodeElement
+    {
+        $tabHeader = $this->goToTab($caption, $this->getTabSearchParent($caption));
+        $this->waitManager->waitForPendingOperations(false, true, true);
+        return $tabHeader;
+    }
+
+    /**
+     * Returns the element a tab lookup should be limited to for the given caption, or null for page-wide.
+     *
+     * WHY the scoped lookup first: a page-wide search takes the first visible match in DOM order. The page
+     * behind a modal dialog is still "visible" to the driver and comes before the dialog in the DOM, so a
+     * dialog tab named like a page tab ("Status", "Notizen") resolves to the page tab behind the dialog.
+     *
+     * WHY the page-wide fallback stays: the scenario may be looking at something that holds no tab strip
+     * at all - typically a table - while the tabs it means are on the page around it.
+     *
+     * @param string $caption Visible caption of the tab
+     * @return NodeElement|null Element to search inside, or null when the whole page should be searched
+     */
+    public function getTabSearchParent(string $caption): ?NodeElement
+    {
+        $scope = $this->getTabSearchScope();
+        if ($scope === null || $this->findTabByCaption($caption, $scope) === null) {
+            return null;
+        }
+        return $scope;
+    }
+
+    /**
+     * Returns the container a focused tab sits in - the dialog or widget that owns its tab strip.
+     *
+     * WHY: the tab focus deliberately narrows the search scope to the tab's content, but the buttons that
+     * act on a tab are regularly NOT inside it - a dialog keeps "Save" and "Cancel" in its footer, outside
+     * every tab. Without this, focusing a tab would make those buttons unreachable.
+     *
+     * WHY NOT simply falling back to the whole page: the page behind a modal dialog is still visible to
+     * the driver, so a page-wide fallback could click a same-named button behind the dialog while the
+     * dialog is open - and the step would still turn green.
+     *
+     * @return FacadeNodeInterface|null Null when no tab is focused, or when the tab belongs to the page
+     *         itself and there is no narrower container to fall back to
+     */
+    public function getFocusedTabContainerNode(): ?FacadeNodeInterface
+    {
+        $index = $this->findFocusedTabIndex();
+        if ($index === null || $index === 0) {
+            return null;
+        }
+        return $this->focusStack[$index - 1];
+    }
+
+    /**
+     * Makes the content area of an opened tab the focused scope.
+     *
+     * WHY the content area and not the header: the header is what the user clicks, but the tab's widgets
+     * are not inside it. Focusing the header would make every scoped search ("it has ...") find nothing
+     * inside a tab full of widgets. Where the content actually is, only the tab itself knows - see
+     * UI5TabNode::findContentElement().
+     *
+     * WHY an exception instead of falling back to the dialog or page: a wider scope would let "it has ..."
+     * count widgets of other tabs and pass for the wrong reason.
+     *
+     * @param NodeElement $tabHeader Header returned by openTab()
+     * @param string $caption Caption of the tab, used in the failure message only
+     * @return FacadeNodeInterface
+     * @throws RuntimeException If the content area of the tab cannot be resolved
+     */
+    public function focusTab(NodeElement $tabHeader, string $caption): FacadeNodeInterface
+    {
+        $headerNode = UI5FacadeNodeFactory::createFromWidgetType('Tab', $tabHeader, $this->session, $this);
+        $contentElement = $headerNode->findContentElement();
+        if ($contentElement === null) {
+            throw new RuntimeException(
+                'Cannot look inside tab "' . $caption . '": its content area could not be resolved - the tab '
+                . 'is neither part of a sap.m.IconTabBar nor linked to an ObjectPage section.'
+            );
+        }
+        // A second node on the content element, not the header one. WHY: the focus stack is consumed as a
+        // search SCOPE via getNodeElement(), and the header contains none of the tab's widgets.
+        $index = $this->findFocusedTabIndex();
+        if ($index !== null) {
+            $this->focusStack = array_slice($this->focusStack, 0, $index);
+        }
+        $tabNode = UI5FacadeNodeFactory::createFromWidgetType('Tab', $contentElement, $this->session, $this);
+        $this->focus($tabNode);
+        $this->focusedTabNode = $tabNode;
+        return $tabNode;
+    }
+
+    /**
+     * Returns the position of the focused tab in the focus stack, or null when no tab is focused.
+     *
+     * WHY pruning first: after a dialog closed, its tab is still in the stack until someone reads it.
+     * Without pruning, a later tab click on the page would be treated as "switching tabs" and silently
+     * move the focus into a tab the scenario never asked to look at.
+     *
+     * WHY strict identity: two tabs of the same IconTabBar wrap the very same DOM element (the shared
+     * content area), so only object identity tells them apart.
+     */
+    private function findFocusedTabIndex(): ?int
+    {
+        $this->pruneDeadFocus();
+        if ($this->focusedTabNode === null) {
+            return null;
+        }
+        $index = array_search($this->focusedTabNode, $this->focusStack, true);
+        return $index === false ? null : $index;
+    }
+
+    /**
+     * Returns the element whose tab strip a tab lookup should search first, or null for the whole page.
+     *
+     * WHY the focused tab is skipped: its scope is the content area, and tab headers are never inside it.
+     * The container the tab strip belongs to is the entry directly below the tab in the focus stack.
+     */
+    private function getTabSearchScope(): ?NodeElement
+    {
+        $index = $this->findFocusedTabIndex();
+        if ($index === null) {
+            return $this->getFocusedNode()->getNodeElement();
+        }
+        return $index > 0 ? $this->focusStack[$index - 1]->getNodeElement() : null;
+    }
+
+    /**
      * Finds a tab element by its caption text
      *
      * @param string $caption The tab caption to search for
@@ -1275,9 +1426,9 @@ JS
      */
     public function findTabByCaption(string $caption, NodeElement $parent = null): ?NodeElement
     {
-        $selectors = ['.sapMITBItem .sapMITHTextContent ', '.sapUxAPAnchorBarScrollContainer > div > button.sapMBtn > span > span > bdi'];
-        // Find all tab heading elements
-        $tabHeadings = ($parent ?? $this->getPage())->findAll('css', implode(',', $selectors));
+        // the selector pair moved into findTabHeadingElements() so the order assertion collects
+        // exactly the same headings this lookup matches against
+        $tabHeadings = $this->findTabHeadingElements($parent ?? $this->getPage());
 
         // Iterate through found tab headings to locate matching one
         foreach ($tabHeadings as $tabHeading) {
@@ -1287,6 +1438,70 @@ JS
             }
         }
         return null;
+    }
+
+    /**
+     * Returns the caption-carrying elements of all tab headers inside a scope, in the order they render.
+     *
+     * WHY SHARED: an assertion about tab ORDER must see the very same set of headers that a lookup by
+     * caption would match. Two separate selector lists would drift apart, and the order step would then
+     * pass or fail over tabs that "I click tab" cannot reach at all.
+     *
+     * @param NodeElement|DocumentElement $scope
+     * @return NodeElement[] In document order, which is the rendered left-to-right order of the tab strip
+     */
+    private function findTabHeadingElements($scope): array
+    {
+        $selectors = [
+            '.sapMITBItem .sapMITHTextContent',
+            '.sapUxAPAnchorBarScrollContainer > div > button.sapMBtn > span > span > bdi'
+        ];
+        return $scope->findAll('css', implode(',', $selectors));
+    }
+
+    /**
+     * Returns the captions of the tabs on screen, in the order they are rendered.
+     *
+     * WHY the scope dance: the tab strip that matters is the one of the dialog or widget the scenario is
+     * looking at. The page behind a modal dialog still renders its own tabs and comes first in the DOM,
+     * so reading page-wide would report the wrong strip's order - and, with same-named tabs, would do so
+     * without any visible symptom. The page-wide fallback keeps the step usable while something without
+     * a tab strip is focused, typically a table.
+     *
+     * @return string[]
+     */
+    public function getTabCaptionsInOrder(): array
+    {
+        $scope = $this->getTabSearchScope();
+        $captions = $scope === null ? [] : $this->readTabCaptions($scope);
+        if (empty($captions)) {
+            $captions = $this->readTabCaptions($this->getPage());
+        }
+        return $captions;
+    }
+
+    /**
+     * Reads the visible tab captions of one scope in render order.
+     *
+     * WHY invisible headings are skipped: the same rule findTabByCaption() applies. A hidden template or
+     * a collapsed strip would otherwise contribute captions that no step could ever click.
+     *
+     * @param NodeElement|DocumentElement $scope
+     * @return string[]
+     */
+    private function readTabCaptions($scope): array
+    {
+        $captions = [];
+        foreach ($this->findTabHeadingElements($scope) as $heading) {
+            if (! $heading->isVisible()) {
+                continue;
+            }
+            $caption = trim($heading->getText());
+            if ($caption !== '') {
+                $captions[] = $caption;
+            }
+        }
+        return $captions;
     }
 
     /**

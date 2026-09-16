@@ -1342,6 +1342,20 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $button = $focusedNode->findButtonInOverflowByCaptionLoose($caption);
         }
 
+        // when a tab is focused, widen the search to the dialog or widget that owns its tab strip.
+        // WHY: "I click tab" narrows the scope to the tab's content on purpose, but a dialog keeps its
+        // action buttons in the footer, outside every tab - they would otherwise be unreachable.
+        // WHY NOT page wide: see UI5Browser::getFocusedTabContainerNode().
+        $containerNode = $button === null ? $this->getBrowser()->getFocusedTabContainerNode() : null;
+        if ($containerNode !== null) {
+            $containerElement = $containerNode->getNodeElement();
+            $button = $containerElement->find('named', ['button', $caption])
+                ?? $this->getBrowser()->findButtonInScopeByCaption($containerElement, $caption);
+            if ($button === null && $containerNode instanceof UI5AbstractNode) {
+                $button = $containerNode->findButtonInOverflowByCaptionLoose($caption);
+            }
+        }
+
         if (!$button) {
             $hint = $focusedNode instanceof UI5AbstractNode
                 ? ' - it is not in the widget, on the page or behind its toolbar overflow'
@@ -1377,24 +1391,36 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Switches to a tab by the text on its header.
+     * Opens a tab and makes it the area you are looking at.
      *
-     * Many pages and dialogs group content into tabs. Use this step to open a specific tab by
-     * its caption before checking or filling what is inside it.
+     * Many pages and dialogs group content into tabs. After this step, checks like
+     * "it has ... widget of type ..." count only the widgets of this tab instead of the whole dialog or
+     * page. This matters because a maximized dialog shows all its tabs as sections below each other, so
+     * a count on the dialog level would mix the fields of every tab.
+     *
+     * Buttons of the surrounding dialog or page - such as "Save" in the dialog footer - stay clickable.
      *
      * Usage example:
      *
+     *   When I click button "Edit"
+     *   Then I see 1 widget of type "Dialog"
      *   When I click tab "Addresses"
-     *   Then it has 2 widget of type "Input"
+     *   Then it has 2 widgets of type "Input"
+     *   When I click button "Save"
      *
      * @When I click tab ":caption"
+     * @When I look at tab ":caption"
      *
-     * @param string $caption Text caption of the tab to click
+     * @param string $caption Text caption of the tab to open and look at
      * @return void
+     * @throws RuntimeException If the content area of the tab cannot be resolved
      */
     public function iClickTab(string $caption): void
     {
-        $this->getBrowser()->goToTab($caption);
+        $browser = $this->getBrowser();
+        $tabHeader = $browser->openTab($caption);
+        $browser->focusTab($tabHeader, $caption);
+        $browser->highlightWidget($tabHeader, 'Tab', 0);
     }
 
     /**
@@ -2428,10 +2454,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * Confirms that expected tabs (page or dialog sections) are available. Name one or more
      * tabs separated by commas. Each found tab is briefly highlighted.
      *
+     * If you are looking at a dialog or widget that has tabs, only its tabs are checked. This matters
+     * for dialogs: the page behind them may carry tabs with the very same captions.
+     *
      * Usage examples:
      *
-     *   Then I see tab "General"
-     *   Then I should see tabs "General, Addresses, History"
+     *   Then I see 1 widget of type "Dialog" with "Öffnen: ABC"
+     *   Then I see tabs "General, Addresses, History"
      *
      * @Then I see tabs :tabs
      * @Then I see tab :tabs
@@ -2443,13 +2472,41 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     public function iSeeTabs($tabs): void
     {
         $tabs = $this->explodeList($tabs);
+        $browser = $this->getBrowser();
 
-        foreach ($tabs as $tab) {
-            $foundedTab = $this->getBrowser()->findTabByCaption($tab);
+        foreach ($tabs as $index => $tab) {
+            $foundedTab = $browser->findTabByCaption($tab, $browser->getTabSearchParent($tab));
             Assert::assertNotNull($foundedTab, "The Tab " . $tab . " is not found!");
-            $this->getBrowser()->highlightWidget($foundedTab, "Tab", 0);
+            $browser->highlightWidget($foundedTab, "Tab", $index);
         }
+    }
 
+    /**
+     * Checks that tabs appear left-to-right in the exact order you list.
+     *
+     * Unlike "I see tabs", which only checks that tabs exist, this step pins down their order on screen -
+     * useful after a layout change. The dialog or page may contain more tabs than you list; this step only
+     * checks that the ones you name appear in the stated order relative to each other.
+     *
+     * If you are looking at a dialog, only its tabs are read. The page behind it may carry tabs with the
+     * very same captions.
+     *
+     * Usage example:
+     *
+     *   Then I see 1 widget of type "Dialog"
+     *   And the tabs are displayed in the following order "General, Addresses, History"
+     *
+     * @Then the tabs are displayed in the following order :tabList
+     *
+     * @param string $tabList Comma-separated tab captions in the expected order.
+     */
+    public function theTabsAreDisplayedInTheFollowingOrder(string $tabList): void
+    {
+        UI5AbstractNode::assertCaptionsDisplayedInOrder(
+            $this->explodeList($tabList),
+            $this->getBrowser()->getTabCaptionsInOrder(),
+            'tab'
+        );
     }
 
     /**
