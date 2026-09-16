@@ -1508,7 +1508,7 @@ JS);
      */
     public function assertColumnsDisplayedInOrder(array $expectedCaptions): void
     {
-        $this->assertCaptionsDisplayedInOrder(
+        self::assertCaptionsDisplayedInOrder(
             $expectedCaptions,
             $this->getRenderedColumnCaptionsInOrder(),
             'column'

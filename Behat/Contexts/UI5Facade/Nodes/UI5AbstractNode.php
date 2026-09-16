@@ -1383,6 +1383,66 @@ JS
     }
 
     /**
+     * Asserts that every expected caption is present in $actual and that the expected captions
+     * appear in $actual in the given relative order.
+     *
+     * WHY RELATIVE ORDER (SUBSEQUENCE) RATHER THAN STRICT FULL-LIST EQUALITY: a widget usually
+     * renders more filters/columns than a single scenario declares, so requiring the actual list
+     * to equal the expected list verbatim would break the assertion whenever an unrelated column
+     * is added. Checking that the listed items appear in the stated order among the rendered ones
+     * keeps the assertion focused on what the author declared.
+     *
+     * WHY IT IS GENERIC OVER "captions": columns, filters and tabs need byte-identical semantics and
+     * failure messages. One implementation prevents two copies from drifting apart.
+     *
+     * WHY static + public: tabs need byte-identical order semantics and failure messages, but they
+     * are not a data widget - the tab strip belongs to a dialog or page. Keeping one implementation is
+     * what stops a second, slowly drifting copy of the subsequence check from appearing.
+     * 
+     * @param string[] $expected
+     * @param string[] $actual
+     * @param string $itemLabel Singular noun used in failure messages (e.g. "column").
+     */
+    public static function assertCaptionsDisplayedInOrder(array $expected, array $actual, string $itemLabel): void
+    {
+        // Report a missing item explicitly first: it is a clearer failure than the order check
+        // turning the same problem into a confusing "wrong order" message.
+        foreach ($expected as $item) {
+            Assert::assertContains(
+                $item,
+                $actual,
+                sprintf(
+                    '%s "%s" is not displayed. Displayed %ss: %s',
+                    ucfirst($itemLabel),
+                    $item,
+                    $itemLabel,
+                    implode(', ', $actual)
+                )
+            );
+        }
+
+        // Walk the actual list once, advancing through the expected list whenever the next
+        // expected item is met. Consuming all expected items means their relative order holds.
+        $cursor = 0;
+        foreach ($actual as $actualItem) {
+            if ($cursor < count($expected) && $actualItem === $expected[$cursor]) {
+                $cursor++;
+            }
+        }
+
+        Assert::assertSame(
+            count($expected),
+            $cursor,
+            sprintf(
+                'The %ss are not displayed in the expected order. Expected order: %s. Actual order: %s',
+                $itemLabel,
+                implode(', ', $expected),
+                implode(', ', $actual)
+            )
+        );
+    }
+
+    /**
      * Translates a core translation key into the language of the current browser session.
      *
      * WHY A HELPER: the chain workbench -> core app -> translator -> translate() was repeated
