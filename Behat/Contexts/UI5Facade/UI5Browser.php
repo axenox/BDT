@@ -940,43 +940,6 @@ JS
     }
 
     /**
-     * Gets current URL with hash fragment
-     * This ensures we get the complete URL including UI5 routing information
-     *
-     * @return string Complete URL including hash
-     */
-    public function getCurrentUrlWithHash(): string
-    {
-        return $this->session->evaluateScript('
-        (function() {
-            var baseUrl = window.location.href;
-            var hash = window.location.hash;
-            
-            // Check for UI5 specific hash handling
-            if (typeof sap !== "undefined" && 
-                sap.ui && 
-                sap.ui.core && 
-                sap.ui.core.routing && 
-                sap.ui.core.routing.HashChanger) {
-                
-                try {
-                    // Get hash from UI5 router
-                    hash = "#" + sap.ui.core.routing.HashChanger.getInstance().getHash();
-                } catch(e) {
-                    // Fallback to browser hash if UI5 router not available
-                    console.warn("UI5 router not available:", e);
-                }
-            }
-            
-            // Ensure we don\'t duplicate the hash
-            baseUrl = baseUrl.split("#")[0];
-            
-            return baseUrl + (hash || "");
-        })();
-    ');
-    }
-
-    /**
      * Initializes XHR and AJAX Request Monitoring System
      *
      * This function sets up a comprehensive monitoring system for all network requests by:
@@ -2302,14 +2265,14 @@ JS
      * Fills the internal history of this class from the current JS state
      *
      * @return string
-     * @throws Exception
+     * @throws RuntimeException
      */
     protected function syncUiNavigation(): string
     {
         $this->getWaitManager()->waitForPendingOperations(true, true, true);
         $pageAlias = $this->getPageAliasFromCurrentUrl();
         if (!$pageAlias) {
-            throw new \RuntimeException('Cannot determine current page alias after UI navigation.');
+            throw new RuntimeException('Cannot determine current page alias after UI navigation.');
         }
 
         $prevAlias = end($this->pagesVisited);
@@ -2319,6 +2282,32 @@ JS
         }
 
         return $pageAlias;
+    }
+
+    /**
+     * Re-opens a UI5 route (the part of the URL after "#") on the page that is currently loaded.
+     *
+     * WHY THIS EXISTS: Chrome recovery reloads the page a scenario was on, but a dialog or detail view
+     * opened by a click lives only in the route fragment ("#/<pageAlias>.<dialogId>/<data>"). Loading the
+     * ".html" page alone lands on the page behind the dialog, so the scenario could not continue.
+     *
+     * WHY window.location.hash: the fragment is read back from window.location.href (the same value the
+     * failure screenshots record), so writing it through the browser's own location keeps both sides
+     * symmetrical. Changing the fragment on a loaded app fires the same hashchange event back/forward
+     * navigation does - the mechanism navigateToPreviousPage() already relies on.
+     *
+     * The caller must verify the outcome: the facade does not report a route it cannot open.
+     *
+     * @param string $fragment Route fragment without the leading "#", exactly as read from the URL
+     */
+    public function navigateToRouteFragment(string $fragment): void
+    {
+        // >>> CHANGED - was: sap.ui.core.routing.HashChanger.getInstance().setHash(...)
+        $this->getSession()->executeScript(
+            'window.location.hash = ' . json_encode($fragment, JSON_THROW_ON_ERROR) . ';'
+        );
+        // <<< CHANGED
+        $this->getWaitManager()->waitForPendingOperations(true, true, true);
     }
 
     /**

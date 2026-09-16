@@ -1,6 +1,8 @@
 <?php
 namespace axenox\BDT\Behat\Common\Traits;
 
+use axenox\BDT\Exceptions\ChromeHangException;
+
 /**
  * Detects whether a throwable originates from a broken CDP/WebSocket connection.
  *
@@ -67,5 +69,21 @@ trait CdpConnectionDetectorTrait
             $current = $current->getPrevious();
         }
         return false;
+    }
+
+    /**
+     * Decides whether a throwable means the current Chrome can no longer be used and must be restarted.
+     *
+     * WHY BOTH CHECKS: a lost connection is recognised by its message, because the driver wraps it in several
+     * exception classes. A ChromeHangException raised for a socket read timeout - Chrome still running but not
+     * answering - carries no connection keyword at all. The hooks only checked the message, so a hung Chrome
+     * never triggered a recovery there and the step hung until the outer process timeout.
+     *
+     * @param \Throwable $e The throwable caught by a hook or step
+     * @return bool TRUE if Chrome must be restarted
+     */
+    private function requiresChromeRestart(\Throwable $e): bool
+    {
+        return $e instanceof ChromeHangException || $this->isCdpConnectionError($e);
     }
 }
