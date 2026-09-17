@@ -12,6 +12,7 @@ use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5TileNode;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\Events\BeforeUserLoggedIn;
+use axenox\BDT\Exceptions\BrowserDriverException;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Mink\Element\DocumentElement;
 use Behat\Mink\Element\ElementInterface;
@@ -686,6 +687,7 @@ JS
     public function clearFocusStack(): void
     {
         $this->focusStack = [];
+        $this->focusedTabNode = null;
 
         $this->session->executeScript('
         // if exist UI5 side focus clearing
@@ -2248,27 +2250,59 @@ JS
     }
 
     /**
-     * Returns all visible tiles of the current page.
+     * Returns the visible tiles of the current search scope and fails if there are none.
      *
-     * WHY it goes through the scope helper: tiles are page-level by definition, so the focused-scope
-     * logic of findWidgetNodes() does not apply, and building the nodes through the factory keeps tile
-     * node resolution identical to every other widget type instead of hard-wiring UI5TileNode here.
+     * The scope is the focused widget if there is one - typically a tab opened by "I click tab" - and the
+     * whole page otherwise.
      *
-     * @return UI5TileNode[]
+     * WHY THERE IS NO PAGE-WIDE FALLBACK WHEN A WIDGET IS FOCUSED: focusing a tab or group is how a scenario
+     * says where tiles must be. Tile steps used to search the whole page regardless, so a tile from another
+     * tab counted as present, clickable or "seen" - a missing tile turned green instead of failing. The
+     * scoped search reuses findWidgetNodesInNode(), which exists for exactly this "never leave the container"
+     * rule. Unlike buttons, nothing outside the scope legitimately belongs to it - dialog footers hold
+     * buttons, not tiles.
+     *
+     * WHY ALL TILE STEPS GO THROUGH THIS METHOD: the scope rule would otherwise be written into every tile
+     * step separately. Keeping it here means a change to where tiles are looked for is made once.
+     *
+     * WHY THE NODES COME FROM THE FACTORY: tiles used to be built as UI5TileNode directly, which bypassed the
+     * factory and would silently miss any change to how tile nodes are resolved. The factory resolves the
+     * tile type to the same class, so nothing is lost.
+     *
+     * WHY IT ASSERTS INSTEAD OF RETURNING AN EMPTY LIST: every caller needs at least one tile, and an empty
+     * result would make the steps report only the missing captions instead of the real cause - a scope that
+     * shows no tiles at all.
+     *
+     * @return FacadeNodeInterface[]
      */
     public function findTiles(): array
     {
-        // Find tiles on the page
-        $nodes = $this->findWidgets("Tile");
+        $focusedNode = $this->getFocusedNode();
+        $tiles = $focusedNode instanceof UI5PageNode
+            ? $this->findWidgetNodes('Tile')
+            : $this->findWidgetNodesInNode($focusedNode, 'Tile');
 
-        // Store the tile names on the page
-        $tiles = [];
-        foreach ($nodes ?? [] as $node) {
-            $tile = new UI5TileNode($node, $this->getSession(), $this);
-            $tiles[] = $tile;
-        }
-        Assert::assertNotEmpty($tiles, 'No tiles found');
+        Assert::assertNotEmpty($tiles, 'No tiles found in ' . $this->describeSearchScope());
         return $tiles;
+    }
+
+    /**
+     * Describes where scoped widget lookups currently search, for use in failure messages.
+     *
+     * WHY IT EXISTS: a scoped step that finds nothing reads like "this is missing from the app" unless the
+     * message says where it looked. While a widget is focused only that widget is searched, so naming it
+     * tells the reader to check the focus before hunting for a rendering or permission problem.
+     *
+     * @return string
+     */
+    public function describeSearchScope(): string
+    {
+        $focusedNode = $this->getFocusedNode();
+        if ($focusedNode instanceof UI5PageNode) {
+            return 'the page';
+        }
+        return 'the focused ' . $focusedNode->getWidgetType() . ' "' . $focusedNode->getCaption() . '"'
+            . ' (the rest of the page is not searched while a widget is focused)';
     }
 
     /**
@@ -2438,6 +2472,80 @@ JS
     {
         $this->getSession()->executeScript('window.history.back();');
         $this->getWaitManager()->waitForPendingOperations(true, true, true);
+    }
+
+    /**
+     * Clicks an element that is expected to open another page and waits until that page can be used.
+     *
+     * WHY IT EXISTS: click() followed by waitForPendingOperations() is right for clicks that stay on the
+     * page, but not for clicks that navigate. waitForPendingOperations() cannot tell whether the document
+     * was replaced. After a full page load the HTTP interceptor and the JS error tracer of the old document
+     * are gone, so the first data requests of the new page run unobserved - a 500 on them does not fail the
+     * step - and a server error page is only noticed after the whole UI5 timeout. waitForAppLoaded() already
+     * solves exactly this for freshly loaded documents, so a full load is routed through it instead of
+     * re-implementing its checks here.
+     *
+     * WHY THE URL MUST CHANGE: the driver reports a successful click even when UI5 ignored it. Without this
+     * check a click that did nothing would leave the browser on the old page, the step would turn green and
+     * the next step would run against the wrong screen.
+     *
+     * WHY THE INTERCEPTOR FLAG DOUBLES AS RELOAD MARKER: the flag lives only in the document that installed
+     * it. SPA routing keeps the document, a full load replaces it, so its absence means "reloaded" without
+     * introducing another marker. URL and flag are read in one script so both values come from the same
+     * document - two separate reads could straddle the moment the new document takes over.
+     *
+     * @param NodeElement $trigger Element whose click is expected to navigate
+     * @param string $description Human-readable name of the trigger for messages, e.g. 'Tile "Orders"'
+     * @param int $timeoutInSeconds How long the URL may take to change after the click
+     * @return void
+     * @throws BrowserDriverException If the driver cannot click the element
+     * @throws RuntimeException If the click does not lead to another URL within the timeout
+     */
+    public function clickAndWaitForNavigation(NodeElement $trigger, string $description, int $timeoutInSeconds = 30): void
+    {
+        // JSON instead of a returned object: keeps the result independent of how the driver serializes objects
+        $readNavigationState = '(function(){ return JSON.stringify({href: window.location.href, reloaded: !window.__exfHttpInterceptorInstalled}); })()';
+
+        // Guarantees the reload marker exists in the CURRENT document even if the BeforeStep hook could not
+        // install it - otherwise an SPA route would be mistaken for a full page load.
+        $this->getErrorDetector()->installHttpInterceptor();
+        $stateBefore = json_decode((string) $this->getSession()->evaluateScript($readNavigationState), true);
+        $hrefBefore = $stateBefore['href'] ?? '';
+
+        try {
+            $trigger->click();
+        } catch (Throwable $e) {
+            throw new BrowserDriverException($this->getSession(), 'Cannot click ' . $description . '. ' . $e->getMessage(), null, $e, $this);
+        }
+
+        $lastError = null;
+        $state = $this->getSession()->getPage()->waitFor($timeoutInSeconds, function () use ($readNavigationState, $hrefBefore, &$lastError) {
+            try {
+                $current = json_decode((string) $this->getSession()->evaluateScript($readNavigationState), true);
+            } catch (Throwable $e) {
+                // Evaluating while the old document unloads can fail for a moment - that is navigation in
+                // progress, not an error. The last one is kept so a real browser failure is not hidden.
+                $lastError = $e;
+                return null;
+            }
+            return is_array($current) && ($current['href'] ?? $hrefBefore) !== $hrefBefore ? $current : null;
+        });
+
+        if ($state === null) {
+            throw new RuntimeException(
+                'Clicking ' . $description . ' did not open another page within ' . $timeoutInSeconds
+                . ' seconds - the browser is still on "' . $hrefBefore . '"'
+                . ($lastError !== null ? '. Last browser error: ' . $lastError->getMessage() : ''),
+                null,
+                $lastError
+            );
+        }
+
+        if (($state['reloaded'] ?? false) === true) {
+            $this->getWaitManager()->waitForAppLoaded(basename((string) parse_url($state['href'], PHP_URL_PATH)));
+        } else {
+            $this->getWaitManager()->waitForPendingOperations(true, true, true);
+        }
     }
 
     /**
