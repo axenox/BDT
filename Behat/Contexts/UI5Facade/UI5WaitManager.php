@@ -209,6 +209,17 @@ class UI5WaitManager
     /**
      * Waits for an element to have a specific CSS class
      *
+     * WHY null-safe: UI5 re-renders a control by replacing its DOM element. A poll that lands between the
+     * removal and the re-insertion found no element, and the TypeError from ".classList of null" escaped
+     * the wait - a normal re-render turned into a step failure.
+     *
+     * WHY json_encode: the id and the XPath used to be pasted into a double-quoted JS string, so an XPath
+     * containing a double quote produced a script syntax error instead of a wait.
+     *
+     * WHY no XPath fallback when the element has an id: Mink XPaths are positional. While the element with
+     * the id is being re-rendered, the same XPath can point at a neighbouring element that happens to carry
+     * the class - and the wait would succeed for the wrong element.
+     *
      * @param NodeElement $element The element to check
      * @param string $className The class name to wait for
      * @param int $timeout Maximum time to wait in seconds
@@ -216,21 +227,19 @@ class UI5WaitManager
      */
     public function waitForElementToHaveClass($element, string $className, int $timeout = 5): bool
     {
-        $elementId = $element->getAttribute('id');
+        $elementIdJs = json_encode((string) $element->getAttribute('id'));
+        $xpathJs = json_encode($element->getXpath());
+        $classNameJs = json_encode($className);
 
-        if (empty($elementId)) {
-            // If element has no ID, we'll use XPath to identify it
-            $xpath = $element->getXpath();
-            return $this->getSession()->wait(
-                $timeout * 1000,
-                "document.evaluate(\"$xpath\", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.classList.contains(\"$className\")"
-            );
-        }
-
-        // If element has ID, we can use it directly
         return $this->getSession()->wait(
             $timeout * 1000,
-            "document.getElementById(\"$elementId\").classList.contains(\"$className\")"
+            "(function(id, xpath, cls) {"
+            . " var el = id ? document.getElementById(id) : null;"
+            . " if (!el && !id && xpath) {"
+            . "  el = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;"
+            . " }"
+            . " return !!el && el.classList.contains(cls);"
+            . "})({$elementIdJs}, {$xpathJs}, {$classNameJs})"
         );
     }
 
