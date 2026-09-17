@@ -107,6 +107,22 @@ class UI5Browser
     public const LANE_USERNAME_TOKEN = '_lane';
 
     /**
+     * Class UI5 puts on a tab header that did not fit into its tab strip and was moved into the overflow list.
+     */
+    private const TAB_HIDDEN_IN_OVERFLOW_CLASS = 'sapMITBFilterHidden';
+
+    /**
+     * Pause between two lookups in goToTab(). Long enough for a loading page to render its tab strip,
+     * short enough that the five attempts of the login flow stay far below a step timeout.
+     */
+    private const TAB_LOOKUP_RETRY_DELAY_MS = 1000;
+
+    /**
+     * How long clickTabInOverflow() waits for the opened overflow list to show the tab.
+     */
+    private const TAB_OVERFLOW_LIST_TIMEOUT_MS = 5000;
+
+    /**
      * Constructor - initializes the UI5Browser with necessary dependencies
      *
      * @param WorkbenchInterface $workbench The application workbench
@@ -1216,25 +1232,27 @@ JS
      * Navigates to a specific tab by caption
      * If the tab is not already active, clicks it to activate
      *
+     * WHY a wait between attempts: the retry exists for tabs that are not rendered yet - typically the
+     * login form while the page is still loading. The old recursion looked at the very same DOM again
+     * without any pause, so "retry 5 times" behaved exactly like "try once".
+     *
      * @param string $caption Tab caption to find and navigate to
      * @param NodeElement|null $parent Optional parent element to search within
      * @param int $attempts Number of attempts to find the tab
      * @return NodeElement|null The found tab element or null if not found
      * @throws AssertionFailedError If tab cannot be found
+     * @throws RuntimeException If the tab is in the overflow and cannot be opened from there
      */
     public function goToTab(string $caption, NodeElement $parent = null, int $attempts = 1): ?NodeElement
     {
         $tab = $this->findTabByCaption($caption, $parent);
-        if ($tab === null && $attempts > 1) {
-            // Try again after waiting for UI updates
-            $attempts--;
-            return $this->goToTab($caption, $parent, $attempts);
+        for ($attempt = 1; $tab === null && $attempt < $attempts; $attempt++) {
+            $this->waitManager->waitForPendingOperations(false, true, true);
+            usleep(self::TAB_LOOKUP_RETRY_DELAY_MS * 1000);
+            $tab = $this->findTabByCaption($caption, $parent);
         }
         Assert::assertNotNull($tab, 'Cannot find tab "' . $caption . '"');
-        // If the tab is not active, click on it to switch to the right authenticator
-        if (!$tab->hasClass('sapMITBSelected')) {
-            $tab->click();
-        }
+        $this->activateTab($tab, $caption);
         return $tab;
     }
 
@@ -1329,7 +1347,8 @@ JS
         if ($contentElement === null) {
             throw new RuntimeException(
                 'Cannot look inside tab "' . $caption . '": its content area could not be resolved - the tab '
-                . 'is neither part of a sap.m.IconTabBar nor linked to an ObjectPage section.'
+                . 'is neither part of a sap.m.IconTabBar, nor linked to an ObjectPage section, nor a navigation '
+                . 'tab whose target panel is rendered.'
             );
         }
         // A second node on the content element, not the header one. WHY: the focus stack is consumed as a
@@ -1394,9 +1413,10 @@ JS
 
         // Iterate through found tab headings to locate matching one
         foreach ($tabHeadings as $tabHeading) {
-            if ($tabHeading->getText() === $caption && $tabHeading->isVisible()) {
-                // Return the parent tab element (navigate up to the actual tab container)
-                return $tabHeading->getParent()->getParent()->getParent();
+            // reachable instead of visible: a tab UI5 moved into the strip overflow is hidden, but a user
+            // still opens it via "More" - see isTabHeadingReachable()
+            if ($tabHeading->getText() === $caption && $this->isTabHeadingReachable($tabHeading)) {
+                return $this->getTabHeaderOfHeading($tabHeading);
             }
         }
         return null;
@@ -1409,13 +1429,20 @@ JS
      * caption would match. Two separate selector lists would drift apart, and the order step would then
      * pass or fail over tabs that "I click tab" cannot reach at all.
      *
+     * WHY limited to ".sapMITBHead": UI5 renders the overflow buttons ("More") with exactly the same inner
+     * structure as a tab, but next to the tab list instead of inside it. Without the limit they counted as
+     * tabs - "I click tab 'More'" turned green and the order assertion listed "More" as a tab once the
+     * window was narrow enough for the strip to overflow.
+     *
      * @param NodeElement|DocumentElement $scope
      * @return NodeElement[] In document order, which is the rendered left-to-right order of the tab strip
      */
     private function findTabHeadingElements($scope): array
     {
         $selectors = [
-            '.sapMITBItem .sapMITHTextContent',
+            // >>> CHANGED - was: '.sapMITBItem .sapMITHTextContent',
+            '.sapMITBHead .sapMITBItem .sapMITHTextContent',
+            // <<< CHANGED
             '.sapUxAPAnchorBarScrollContainer > div > button.sapMBtn > span > span > bdi'
         ];
         return $scope->findAll('css', implode(',', $selectors));
@@ -1443,10 +1470,13 @@ JS
     }
 
     /**
-     * Reads the visible tab captions of one scope in render order.
+     * Reads the reachable tab captions of one scope in render order.
      *
-     * WHY invisible headings are skipped: the same rule findTabByCaption() applies. A hidden template or
+     * WHY unreachable headings are skipped: the same rule findTabByCaption() applies. A hidden template or
      * a collapsed strip would otherwise contribute captions that no step could ever click.
+     *
+     * WHY tabs in the strip overflow are kept: they are still part of the tab order - UI5 only hides them
+     * because the window is narrow. Skipping them made the order assertion depend on the window width.
      *
      * @param NodeElement|DocumentElement $scope
      * @return string[]
@@ -1455,7 +1485,7 @@ JS
     {
         $captions = [];
         foreach ($this->findTabHeadingElements($scope) as $heading) {
-            if (! $heading->isVisible()) {
+            if (! $this->isTabHeadingReachable($heading)) {
                 continue;
             }
             $caption = trim($heading->getText());
@@ -1464,6 +1494,173 @@ JS
             }
         }
         return $captions;
+    }
+
+    /**
+     * Opens a tab header the way a user would, including tabs that UI5 moved into the tab strip overflow.
+     *
+     * WHY: a tab that does not fit into the strip keeps its header in the DOM, but hidden; the user reaches
+     * it through the "More" button. Clicking the hidden header directly does nothing while the driver still
+     * reports a successful click, so the previously open tab would stay open and every following check
+     * would run against it.
+     *
+     * WHY SHARED: "I click tab" and the container check of the `Tabs` widget both open tabs. One
+     * implementation makes sure both reach overflowed tabs and both leave an already selected tab alone.
+     *
+     * @param NodeElement $tabHeader Tab header as returned by findTabByCaption()
+     * @param string $caption Caption the header was found by
+     * @throws RuntimeException If the tab is in the overflow but cannot be opened from there
+     */
+    public function activateTab(NodeElement $tabHeader, string $caption): void
+    {
+        if ($tabHeader->hasClass('sapMITBSelected')) {
+            return;
+        }
+        if (! $tabHeader->hasClass(self::TAB_HIDDEN_IN_OVERFLOW_CLASS)) {
+            $tabHeader->click();
+            return;
+        }
+        $overflowButton = $this->findTabOverflowButton($tabHeader);
+        if ($overflowButton === null) {
+            throw new RuntimeException(
+                'Cannot open tab "' . $caption . '": it is hidden in the overflow of its tab strip, but no '
+                . 'overflow button is visible any more.'
+            );
+        }
+        $this->clickTabInOverflow($tabHeader, $overflowButton, $caption);
+    }
+
+    /**
+     * Returns the tab header element a caption element belongs to.
+     *
+     * WHY SHARED: the lookup by caption and the reachability check both need the header of a caption. The
+     * climb depends on the rendering, and two copies of it would drift apart.
+     *
+     * @param NodeElement $heading Element returned by findTabHeadingElements()
+     * @return NodeElement The IconTabFilter root or the ObjectPage anchor bar button
+     */
+    private function getTabHeaderOfHeading(NodeElement $heading): NodeElement
+    {
+        return $heading->getParent()->getParent()->getParent();
+    }
+
+    /**
+     * Tells whether a user could open the tab of this caption element.
+     *
+     * WHY NOT isVisible() alone: UI5 hides tabs that do not fit into the strip and lists them behind the
+     * "More" button instead. They are as reachable as any other tab, and failing them made scenarios depend
+     * on the window width of the test browser.
+     *
+     * WHY the overflow button must be visible: a hidden tab of a strip that is not on screen at all (a
+     * previous view, a closed dialog) also carries the hidden class. Only a visible overflow button proves
+     * that a user can actually get to it - otherwise "I see tab" would pass for a tab nobody can open.
+     *
+     * @param NodeElement $heading Element returned by findTabHeadingElements()
+     */
+    private function isTabHeadingReachable(NodeElement $heading): bool
+    {
+        if ($heading->isVisible()) {
+            return true;
+        }
+        $tabHeader = $this->getTabHeaderOfHeading($heading);
+        return $tabHeader->hasClass(self::TAB_HIDDEN_IN_OVERFLOW_CLASS)
+            && $this->findTabOverflowButton($tabHeader) !== null;
+    }
+
+    /**
+     * Returns the visible overflow button that lists the given hidden tab, or null if there is none.
+     *
+     * WHY the position decides between start and end overflow: in the "StartAndEnd" overflow mode UI5 moves
+     * the tabs before the visible part of the strip into a start overflow and the tabs after it into an end
+     * overflow, and each button lists only its own side. The default mode renders the end overflow only.
+     *
+     * WHY via the tab strip root and not page-wide: every IconTabHeader renders its own overflow buttons.
+     * A page-wide search could pick the button of a different strip - a dialog behind, a nested tab bar.
+     *
+     * @param NodeElement $tabHeader A tab header carrying the hidden-in-overflow class
+     */
+    private function findTabOverflowButton(NodeElement $tabHeader): ?NodeElement
+    {
+        $hasClass = function (string $class): string {
+            return 'contains(concat(" ", normalize-space(@class), " "), " ' . $class . ' ")';
+        };
+        $shownTabBefore = $tabHeader->find(
+            'xpath',
+            'preceding-sibling::*[' . $hasClass('sapMITBItem') . ' and not(' . $hasClass(self::TAB_HIDDEN_IN_OVERFLOW_CLASS) . ')]'
+        );
+        $overflowClass = $shownTabBefore === null ? 'sapMITHStartOverflow' : 'sapMITHEndOverflow';
+        $button = $tabHeader->find(
+            'xpath',
+            'ancestor::*[' . $hasClass('sapMITH') . '][1]/*[' . $hasClass($overflowClass) . ']/*[' . $hasClass('sapMITBItem') . ']'
+        );
+        // Default overflow mode: no start overflow is rendered, every hidden tab sits behind the end button.
+        if ($button === null && $overflowClass === 'sapMITHStartOverflow') {
+            $button = $tabHeader->find(
+                'xpath',
+                'ancestor::*[' . $hasClass('sapMITH') . '][1]/*[' . $hasClass('sapMITHEndOverflow') . ']/*[' . $hasClass('sapMITBItem') . ']'
+            );
+        }
+        return $button !== null && $button->isVisible() ? $button : null;
+    }
+
+    /**
+     * Opens a tab that UI5 moved into the strip overflow: opens the overflow list and picks the tab there.
+     *
+     * WHY the list entry is matched by caption and not by id: the list shows clones of the hidden tabs that
+     * UI5 creates anew every time the list opens, so their ids are not known upfront.
+     *
+     * WHY the selection is verified: a click on a list entry that lands while the popover is still opening
+     * is swallowed, and the driver reports success anyway. Without the check the step would turn green while
+     * the previously selected tab stays open.
+     *
+     * @param NodeElement $tabHeader Hidden tab header to open
+     * @param NodeElement $overflowButton Visible overflow button that lists it
+     * @param string $caption Caption of the tab
+     * @throws RuntimeException If the list does not show the tab or picking it does not select the tab
+     */
+    private function clickTabInOverflow(NodeElement $tabHeader, NodeElement $overflowButton, string $caption): void
+    {
+        $listItemSelector = 'ul.sapMITBSelectList > li.sapMITBSelectItem';
+        $overflowButton->click();
+
+        $selectorJs = json_encode($listItemSelector);
+        $captionJs = json_encode($caption);
+        $listed = $this->getSession()->wait(self::TAB_OVERFLOW_LIST_TIMEOUT_MS, <<<JS
+(function(selector, caption) {
+    var items = document.querySelectorAll(selector);
+    for (var i = 0; i < items.length; i++) {
+        if (items[i].getClientRects().length > 0 && items[i].textContent.trim() === caption) {
+            return true;
+        }
+    }
+    return false;
+})({$selectorJs}, {$captionJs})
+JS
+        );
+
+        $listItem = null;
+        if ($listed) {
+            foreach ($this->getPage()->findAll('css', $listItemSelector) as $candidate) {
+                if ($candidate->isVisible() && trim($candidate->getText()) === $caption) {
+                    $listItem = $candidate;
+                    break;
+                }
+            }
+        }
+        if ($listItem === null) {
+            throw new RuntimeException(
+                'Cannot open tab "' . $caption . '": the overflow button of its tab strip was clicked, but the '
+                . 'overflow list did not show the tab within ' . (self::TAB_OVERFLOW_LIST_TIMEOUT_MS / 1000) . ' seconds.'
+            );
+        }
+
+        $listItem->click();
+        if (! $this->waitManager->waitForElementToHaveClass($tabHeader, 'sapMITBSelected', 5)) {
+            throw new RuntimeException(
+                'Cannot open tab "' . $caption . '": it was picked from the overflow list of its tab strip, but '
+                . 'did not become the selected tab.'
+            );
+        }
     }
 
     /**
