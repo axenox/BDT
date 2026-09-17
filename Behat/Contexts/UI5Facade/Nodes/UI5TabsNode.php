@@ -42,6 +42,10 @@ class UI5TabsNode extends UI5ContainerNode
      * produces. Scoping the search to this node's element also keeps nested tabs and dialogs left
      * open in the background from matching the same caption.
      *
+     * WHY activateTab() and not a click on the header: a tab that UI5 moved into the strip overflow is
+     * hidden, and a direct click on it silently does nothing. An exception from activateTab() is recorded
+     * by the container check as a failed substep of this tab only.
+     *
      * {@inheritDoc}
      */
     protected function checkChildWorksAsExpected(WidgetInterface $childWidget, LogBookInterface $logbook) : TestResultInterface
@@ -50,7 +54,7 @@ class UI5TabsNode extends UI5ContainerNode
         if ($caption !== null && $caption !== '') {
             $tabHeader = $this->getBrowser()->findTabByCaption($caption, $this->getNodeElement());
             if ($tabHeader !== null && ! $tabHeader->hasClass('sapMITBSelected')) {
-                $tabHeader->click();
+                $this->getBrowser()->activateTab($tabHeader, $caption);
                 $this->getBrowser()->getWaitManager()->waitForPendingOperations(false, true, true);
             }
         }
