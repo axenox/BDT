@@ -9,7 +9,11 @@ use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ButtonNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ContainerNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataSpreadSheetNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5FilterNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5InputNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5MenuButtonNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5PageNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5RangeFilterNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use axenox\BDT\Behat\Events\AfterPageVisited;
@@ -698,7 +702,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->lastLoginLocale = $userLocale;
         
         // Setup the user and get the required login data
-        $userRolesArray = $this->splitArgument($userRoles);
+        $userRolesArray = $this->explodeList($userRoles);
         Assert::assertNotNull($userRolesArray, 'User roles must be provided for login');
         $loginFields = UI5Browser::setupUser($this->getWorkbench(), $userRolesArray, $userLocale);
         if ($userLocale === null) {
@@ -1537,6 +1541,69 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Fills a single-value input or both boundaries of a range input in the current search scope.
+     *
+     * If a widget is focused, only its contents are searched. Otherwise, the entire page is searched.
+     *
+     * Usage examples:
+     *
+     *   When I fill widget of type "InputTime" with "Start time" "08:30"
+     *   When I fill widget of type "RangeFilter" with "Order date" from "2026-01-01" to "2026-01-31"
+     *
+     * @When I fill widget of type ":widgetType" with ":caption" ":value"
+     * @When I fill widget of type ":widgetType" with ":caption" from ":value" to ":toValue"
+     *
+     * @param string $widgetType Type of widget to fill
+     * @param string $caption Caption of the widget
+     * @param string $value Value for a single input or the lower range boundary
+     * @param string|null $toValue Upper range boundary, or null for a single-value input
+     * @return void
+     */
+    public function iFillWidgetOfTypeWithCaption(
+        string $widgetType,
+        string $caption,
+        string $value,
+        ?string $toValue = null
+    ): void {
+        $browser = $this->getBrowser();
+        $focusedNode = $browser->getFocusedNode();
+        $widgets = $focusedNode instanceof UI5PageNode
+            ? $browser->findWidgetNodes($widgetType, 10, $caption)
+            : $browser->filterNodesByName(
+                $browser->findWidgetNodesInNode($focusedNode, $widgetType, 1, 10),
+                $caption
+            );
+        Assert::assertCount(
+            1,
+            $widgets,
+            sprintf(
+                'Expected exactly one widget of type "%s" with caption "%s" in %s, but found %d',
+                $widgetType,
+                $caption,
+                $browser->describeSearchScope(),
+                count($widgets)
+            )
+        );
+
+        $widget = reset($widgets);
+        if ($toValue !== null) {
+            Assert::assertInstanceOf(
+                UI5RangeFilterNode::class,
+                $widget,
+                sprintf('Widget of type "%s" with caption "%s" is not a range input', $widgetType, $caption)
+            );
+            $widget->setRangeVisible($value, $toValue);
+            return;
+        }
+
+        Assert::assertTrue(
+            $widget instanceof UI5InputNode || $widget instanceof UI5FilterNode,
+            sprintf('Widget of type "%s" with caption "%s" is not an input', $widgetType, $caption)
+        );
+        $widget->setValueVisible($value);
+    }
+
+    /**
      * Picks a widget of a given type so that later "it has..." steps act on it.
      *
      * Think of this as pointing at one specific element on the page. Once "looked at", that
@@ -1742,7 +1809,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     #[ResumeSafeStep]
     public function theColumnInDataSpreadsheetShouldBeDisabled(string $columnName): void
     {
-        $nodes = $this->getBrowser()->getFocusedNode();
         // getFocusedNode() returns ONE node, not a list. Indexing it threw "Cannot use object of type ... as array",
         // so the step could never pass and never reported which column was editable.
         $node = $this->getBrowser()->getFocusedNode();
@@ -1865,9 +1931,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function itHasColumn(string $caption): void
     {
-        /**
-         * @var \Behat\Mink\Element\NodeElement $tableNode
-         */
         $tableNode = $this->getBrowser()->getFocusedNode();
         Assert::assertNotNull($tableNode, 'No widget has focus right now - cannot use steps like "it has..."');
 
@@ -2463,6 +2526,50 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Checks that none of the named tiles are shown.
+     *
+     * The counterpart of "I see tiles". Use it for permission tests: confirm that a user role does not get
+     * launchpad tiles it must not open. List tile captions separated by commas. If a widget is focused (e.g.
+     * a tab opened by "I click tab"), only the tiles inside it count; without focus the whole page is checked.
+     * The step fails if the checked area shows no tiles at all, because an empty area cannot prove that a
+     * tile is hidden - it usually means the page or tab did not render.
+     *
+     * Usage example:
+     *
+     *   Given I log in to the page "my.app.home.html" as "Viewer"
+     *   When I click tab "Admin"
+     *   Then I do not see tiles "User management, Audit log"
+     *
+     * WHY IT REUSES compareTileCaptions(): the negative step must agree with "I see tiles" and "I click tile"
+     * on what counts as a match (trimmed, case-insensitive). A separate loop could drift - e.g. compare
+     * case-sensitively - and then a tile that "I click tile" can open would be reported as absent here.
+     *
+     * WHY A SCOPE WITHOUT ANY TILE FAILS INSTEAD OF PASSING: findTiles() requires at least one tile. For an
+     * absence check this is the false-green guard - a page that is still loading, a tab that did not open or
+     * a wrong page all show no tiles, and passing there would report "forbidden tile hidden" without ever
+     * having looked at a rendered launchpad.
+     *
+     * WHY ONLY "found" IS ASSERTED: "missing" holds the forbidden captions that are indeed absent, which is
+     * the expected outcome, and "unexpected" holds other tiles, which this step deliberately does not restrict.
+     * A forbidden caption shown twice still lands in "found" once, which is enough to fail.
+     *
+     * @Then I do not see tiles :tileNames
+     * @Then I do not see tile :tileNames
+     *
+     * @param string $tileNames Comma-separated list of tile captions expected to be absent
+     */
+    public function iDoNotSeeTiles(string $tileNames): void
+    {
+        $comparison = $this->compareTileCaptions($tileNames);
+
+        Assert::assertEmpty(
+            $comparison['found'],
+            'Tiles expected to be absent are shown in ' . $this->getBrowser()->describeSearchScope() . ': '
+            . implode(', ', $comparison['found'])
+        );
+    }
+
+    /**
      * Compares the tiles of the current search scope with a comma-separated list of expected captions.
      *
      * WHY IT EXISTS: "I see tiles" and "I only see tiles" ran the same matching loop in two copies, and
@@ -2820,19 +2927,30 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         return $argument;
     }
 
-    protected function splitArgument(string $delimitedList = null, string $delimiter = ','): array
-    {
-        if ($delimitedList === null) {
-            return [];
-        }
-        $array = explode($delimiter, $delimitedList);
-        $array = array_map('trim', $array);
-        return $array;
-    }
-
+    /**
+     * Splits a comma-separated caption list from a step argument into trimmed captions.
+     *
+     * WHY EMPTY ENTRIES ARE REJECTED: every caller treats the result as captions that must be checked. An
+     * empty entry - from an empty argument like "" or a stray comma like "Orders, " - matches no rendered
+     * caption. In absence checks ("I do not see tiles/columns/filters", "does not have items") that made the
+     * step pass without checking anything, a false green. In presence checks it failed with an empty name
+     * in the message, which hides the actual typo in the feature file.
+     *
+     * @param string $list Comma-separated captions as written in the feature file
+     * @return string[]
+     * @throws RuntimeException If the list contains an empty entry
+     */
     protected function explodeList(string $list): array
     {
-        return array_map('trim', explode(',', $list));
+        $items = array_map('trim', explode(',', $list));
+
+        if (in_array('', $items, true)) {
+            throw new RuntimeException(
+                'The list "' . $list . '" contains an empty entry. Check the feature file for a missing caption or a stray comma.'
+            );
+        }
+
+        return $items;
     }
 
     /**
