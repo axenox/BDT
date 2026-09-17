@@ -297,7 +297,7 @@ class UI5WaitManager
             // Extract application ID from URL and wait for it to be available
             $appId = substr($pageUrl, 0, strpos($pageUrl, '.html')) . '.app';
             
-            if ($this->waitForAppId($appId)) {
+            if (! $this->waitForAppId($appId)) {
                 throw new RuntimeException("App could not be loaded");
             }
             // Wait for busy indicators and AJAX requests to complete
