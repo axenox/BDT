@@ -9,7 +9,11 @@ use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ButtonNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ContainerNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataSpreadSheetNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5FilterNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5InputNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5MenuButtonNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5PageNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5RangeFilterNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use axenox\BDT\Behat\Events\AfterPageVisited;
@@ -1534,6 +1538,69 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         Assert::assertNotNull($widget, 'Cannot find input widget "' . $caption . '"');
         // Set the input value
         $widget->setValue($value);
+    }
+
+    /**
+     * Fills a single-value input or both boundaries of a range input in the current search scope.
+     *
+     * If a widget is focused, only its contents are searched. Otherwise, the entire page is searched.
+     *
+     * Usage examples:
+     *
+     *   When I fill widget of type "InputTime" with "Start time" "08:30"
+     *   When I fill widget of type "RangeFilter" with "Order date" from "2026-01-01" to "2026-01-31"
+     *
+     * @When I fill widget of type ":widgetType" with ":caption" ":value"
+     * @When I fill widget of type ":widgetType" with ":caption" from ":value" to ":toValue"
+     *
+     * @param string $widgetType Type of widget to fill
+     * @param string $caption Caption of the widget
+     * @param string $value Value for a single input or the lower range boundary
+     * @param string|null $toValue Upper range boundary, or null for a single-value input
+     * @return void
+     */
+    public function iFillWidgetOfTypeWithCaption(
+        string $widgetType,
+        string $caption,
+        string $value,
+        ?string $toValue = null
+    ): void {
+        $browser = $this->getBrowser();
+        $focusedNode = $browser->getFocusedNode();
+        $widgets = $focusedNode instanceof UI5PageNode
+            ? $browser->findWidgetNodes($widgetType, 10, $caption)
+            : $browser->filterNodesByName(
+                $browser->findWidgetNodesInNode($focusedNode, $widgetType, 1, 10),
+                $caption
+            );
+        Assert::assertCount(
+            1,
+            $widgets,
+            sprintf(
+                'Expected exactly one widget of type "%s" with caption "%s" in %s, but found %d',
+                $widgetType,
+                $caption,
+                $browser->describeSearchScope(),
+                count($widgets)
+            )
+        );
+
+        $widget = reset($widgets);
+        if ($toValue !== null) {
+            Assert::assertInstanceOf(
+                UI5RangeFilterNode::class,
+                $widget,
+                sprintf('Widget of type "%s" with caption "%s" is not a range input', $widgetType, $caption)
+            );
+            $widget->setRangeVisible($value, $toValue);
+            return;
+        }
+
+        Assert::assertTrue(
+            $widget instanceof UI5InputNode || $widget instanceof UI5FilterNode,
+            sprintf('Widget of type "%s" with caption "%s" is not an input', $widgetType, $caption)
+        );
+        $widget->setValueVisible($value);
     }
 
     /**
