@@ -68,7 +68,6 @@ class UI5TabNode extends UI5ContainerNode
         el = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
     }
     var oCore = sap.ui.getCore();
-    // >>> NEW: a header not owned by an IconTabBar only navigates - it has no content area of its own.
     function isStandaloneHeader(oControl) {
         if (!oControl.isA('sap.m.IconTabHeader')) {
             return false;
@@ -80,7 +79,6 @@ class UI5TabNode extends UI5ContainerNode
         var oParent = oControl.isA('sap.m.IconTabFilter') ? oControl.getParent() : null;
         return !!oParent && isStandaloneHeader(oParent);
     }
-    // <<< NEW
     // The header element may be an inner part of a control - climb to the closest control root.
     var oCtrl = null;
     for (var n = el; n && !oCtrl; n = n.parentElement) {
