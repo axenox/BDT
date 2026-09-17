@@ -925,7 +925,16 @@ JS
                 } catch (Throwable $ignored) {
                 }
                 if ($e instanceof ChromeHangException) {
-                    $this->getBrowser()->recoverChrome($this->getSession()->getCurrentUrl());
+                    // WHY NO URL FROM THE SESSION: getCurrentUrl() asks the browser that just hung, so on a dead
+                    // Chrome it threw from inside this catch block - escaping runAsSubstep() without an AfterSubstep
+                    // event and replacing the original error. It also returned a full URL where a page alias is
+                    // expected. An empty target lets the context use the page it recorded itself.
+                    // WHY GUARDED: a failed recovery must never replace $e; the failure is still recorded below.
+                    try {
+                        $this->getBrowser()->recoverChrome('');
+                    } catch (Throwable $recoveryError) {
+                        $logbook?->addLine('**WARNING:** Chrome recovery failed: ' . $recoveryError->getMessage());
+                    }
                 }
             }
 
