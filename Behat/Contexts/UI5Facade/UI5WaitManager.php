@@ -296,8 +296,10 @@ class UI5WaitManager
             $this->errorDetector->enableJsErrorTracer();
             // Extract application ID from URL and wait for it to be available
             $appId = substr($pageUrl, 0, strpos($pageUrl, '.html')) . '.app';
-            $this->waitForAppId($appId);
-
+            
+            if ($this->waitForAppId($appId)) {
+                throw new RuntimeException("App could not be loaded");
+            }
             // Wait for busy indicators and AJAX requests to complete
             $this->waitForPendingOperations(false, true, true);
 
@@ -448,10 +450,10 @@ class UI5WaitManager
      *
      * @param string $appId The application ID to wait for
      */
-    private function waitForAppId(string $appId): void
+    private function waitForAppId(string $appId): bool
     {
         $page = $this->session->getPage();
-        $page->waitFor($this->defaultTimeouts['ajax'] * 1000, function () use ($page, $appId) {
+        return $page->waitFor($this->defaultTimeouts['ajax'], function () use ($page, $appId) {
             try {
                 $app = $page->findById($appId);
                 return $app && $app->isVisible();

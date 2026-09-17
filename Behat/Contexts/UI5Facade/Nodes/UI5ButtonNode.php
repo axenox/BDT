@@ -8,6 +8,7 @@ use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use axenox\BDT\Interfaces\TestResultInterface;
 use exface\Core\Actions\GoToPage;
+use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Facades\ConsoleFacade\CliOutputPrinter;
 use exface\Core\Interfaces\Actions\iShowDialog;
 use exface\Core\Interfaces\Debug\LogBookInterface;
@@ -71,6 +72,58 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
     }
 
     /**
+     * Clicks this button and asserts that the page configured in its GoToPage action has been opened.
+     *
+     * WHY IT IS A SEPARATE METHOD: the "click and verify the target page" part was embedded in
+     * checkActionGoToPage(), which also validates the opened page and navigates back. A step that only
+     * wants to go to the page (e.g. clicking a tile) needs the first part without the rest. Keeping one
+     * implementation here means the expected-target rule cannot drift between the works-as-expected check
+     * and the click steps.
+     *
+     * WHY THE TARGET IS TAKEN FROM THE MODEL: "some page opened" is not "the right page opened" - buttons and
+     * tiles of one screen often lead into the same app, so only the action's own page can tell a mis-wired
+     * trigger apart.
+     *
+     * WHY clickAndWaitForNavigation() INSTEAD OF click(): click() only waits for pending operations, which
+     * cannot tell a full page load from an SPA route. After a full load the error detection of the old
+     * document is gone, and a click that did not navigate at all would still pass the wait.
+     *
+     * @return string Alias of the page that has been opened
+     * @throws RuntimeException If the button has no GoToPage action
+     */
+    public function clickAndAssertTargetPage(): string
+    {
+        $widget = $this->getWidget();
+        $action = $widget instanceof iTriggerAction ? $widget->getAction() : null;
+        if (! $action instanceof GoToPage) {
+            throw new RuntimeException(
+                $this->getWidgetType() . ' "' . $this->getCaption() . '" '
+                . ($action === null ? 'has no action' : 'triggers action ' . $action->getAliasOfPrototype())
+                . ' - it does not open a page'
+            );
+        }
+
+        // The model widget is resolved from the DOM id. If ids got out of line, the action belongs to another
+        // widget and the target comparison below would be made against the wrong page.
+        $this->checkCaptionMatchesWidget();
+
+        $expectedAlias = $action->getPage()->getAliasWithNamespace();
+        $this->getBrowser()->clickAndWaitForNavigation(
+            $this->getNodeElement(),
+            $this->getWidgetType() . ' "' . $this->getCaption() . '"'
+        );
+
+        $realAlias = $this->getBrowser()->getPageCurrent()->getAliasWithNamespace();
+        Assert::assertSame(
+            $expectedAlias,
+            $realAlias,
+            sprintf('%s "%s" navigated to `%s` but expected `%s`.', $this->getWidgetType(), $this->getCaption(), $realAlias, $expectedAlias)
+        );
+
+        return $realAlias;
+    }
+
+    /**
      * Validates that this tile navigates to its declared target page, then checks that page.
      *
      * WHY NO COVERAGE IDENTITY HERE: this substep is the click, not the page. UI5PageNode records
@@ -86,24 +139,13 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
         $urlBeforeClick = $this->getSession()->getCurrentUrl();
         // Substep should fail if the page cannot be loaded (shows an error) - otherwise the substep for
         // the click is passed, and we go on checking the page
-        $result = self::runNested(function () use ($logbook, $widget, $expectedAlias, $urlBeforeClick) {
+        $result = self::runNested(function () use ($logbook, $expectedAlias, $urlBeforeClick) {
             return $this->runAsSubstep(
-                function (SubstepResult $result) use ($expectedAlias, $widget, $logbook) {
+                function (SubstepResult $result) use ($expectedAlias, $logbook) {
                     $logbook->addLine('Clicking ' . $this->getWidgetType() . ' [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
                     $logbook->addIndent(+1);
 
-                    $this->click();
-                    $realAlias = $this->getBrowser()->getPageCurrent()->getAliasWithNamespace();
-                    Assert::assertSame(
-                        $expectedAlias,
-                        $realAlias,
-                        sprintf(
-                            'Tile "%s" navigated to `%s` but expected `%s`.',
-                            $widget->getCaption(),
-                            $realAlias,
-                            $expectedAlias
-                        )
-                    );
+                    $this->clickAndAssertTargetPage();
 
                     try {
                         $pageNode = new UI5PageNode($expectedAlias, $this->getSession(), $this->getBrowser());
