@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
+use axenox\BDT\Behat\Common\Attributes\ResumeSafeStep;
 use axenox\BDT\Behat\Common\ErrorManager;
 use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5AbstractNode;
@@ -17,6 +18,7 @@ use axenox\BDT\Common\Installer\TestDataInstaller;
 use axenox\BDT\Exceptions\BrowserDriverException;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Behat\Context\Context;
+use Behat\Behat\Tester\Result\DefinedStepResult;
 use Behat\Behat\Tester\Result\UndefinedStepResult;
 use Behat\Mink\Element\NodeElement;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
@@ -106,7 +108,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     /** @var string|null Caption of the login submit button; cached for recovery replay */
     private ?string $lastLoginButtonCaption = null;
     private static ?string $currentFeatureTitle = null;
-    private ?string $lastPageAlias = null;
+    
     /**
      * @var array|null Roles used by the most recent iLogInToPage() call.
      *
@@ -115,6 +117,62 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         * role set that bindBrowserToScenario() must restore after navigation or Chrome recovery.
      */
     private ?array $lastLoginUserRoles = null;
+
+    /**
+     * @var string|null Full URL, including the UI5 route fragment, at the end of the last passed step.
+     *
+     * WHY: this - not the page alias - is where a recovered Chrome has to continue. The alias collapses a dialog
+     * route onto the page behind it. NULL means the resume point is unknown and must not be guessed.
+     */
+    private ?string $resumeUrl = null;
+
+    /** @var string|null Logical page alias belonging to $resumeUrl; reloaded before the route is re-opened */
+    private ?string $resumePageAlias = null;
+
+    /** @var array|null Focus stack at $resumeUrl as described by UI5Browser::describeFocusForResume(); NULL = not rebuildable */
+    private ?array $resumeFocus = null;
+
+    /**
+     * @var \WeakReference|null The UI5Browser that was active when $resumeUrl was recorded.
+     *
+     * WHY: a new UI5Browser is built exactly when a full page load happened, and a full page load discards every
+     * in-browser state. WHY WEAK: an object id can be reused once the old browser is freed.
+     */
+    private ?\WeakReference $resumeBrowser = null;
+
+    /**
+     * @var string[] Passed, non-resume-safe steps that did not change the URL since the last route change.
+     *
+     * WHY SEPARATE FROM EARLIER VIEWS: this is the state of the view the scenario is in right now. It cannot be
+     * rebuilt, and every next step depends on it, so it blocks a resume immediately.
+     */
+    private array $blockersInCurrentView = [];
+
+    /**
+     * @var string[] Such steps in views below the current one (before the last route change, same document).
+     *
+     * WHY THEY DO NOT BLOCK IMMEDIATELY: the row selected on the page behind a dialog does not matter while the
+     * scenario works inside the dialog. It matters again only when the scenario returns - so it is checked then.
+     */
+    private array $blockersInEarlierViews = [];
+
+    /**
+     * @var string|null URL of the view a recovery resumed in while state of views below it was lost.
+     *
+     * WHY: leaving this view is the moment the lost state matters again; recordResumePoint() stops the scenario then.
+     */
+    private ?string $recoveredRouteUrl = null;
+
+    /** @var string[] Steps whose state in views below $recoveredRouteUrl was lost in a recovery */
+    private array $lostEarlierViewState = [];
+
+    /**
+     * @var string|null Why the scenario cannot continue after a Chrome recovery; NULL when it can.
+     *
+     * WHY getBrowser() ENFORCES IT: nearly every step goes through getBrowser(), so refusing there fails the very
+     * next step with the real reason - without guarding a list of steps and without throwing from a hook.
+     */
+    private ?string $unrestorableStateReason = null;
 
     /**
      * Initializes and starts the workbench for the test environment.
@@ -270,8 +328,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             // Chrome so the next step in this scenario can continue on a live browser.
             // The step itself is already recorded as failed — recovery only affects
             // what comes after it.
-            if ($exception !== null && $this->isCdpConnectionError($exception)) {
-                $this->recoverChromeAfterStepFailure();
+            if ($exception !== null && $this->requiresChromeRestart($exception)) {
+                $this->recoverChromeInHook(
+                    'Triggered after a FAILED step. Behat skips the remaining steps of this scenario, so it cannot continue '
+                    . 'whatever is restored - this recovery only prepares the browser for the next scenario.'
+                );
             }
         } catch (\Throwable $e) {
             // Logging itself failed (e.g. DB unreachable). Swallow so Behat can continue.
@@ -280,31 +341,25 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Attempts to recover Chrome after a CDP connection failure detected in @AfterStep.
+     * Restarts and re-authenticates Chrome from inside a Behat hook and reports what triggered it.
      *
-     * Reads the current URL from the session (which may itself fail if Chrome is
-     * already gone), derives the page path from it, and delegates to recoverChrome().
-     * All errors are caught and logged — this method must never throw because it runs
-     * inside an AfterStep hook where an uncaught exception would corrupt Behat's
-     * internal state.
+     * WHY ONE METHOD FOR ALL HOOKS: the BeforeStep hook, the AfterStep hook of a passed step and the AfterStep
+     * hook of a failed step need the same thing - recover at the last resume point without ever letting an
+     * exception escape the hook, which would end Behat with exit code 255. Only the explanation of what the
+     * recovery can still achieve differs, so that is the parameter.
+     *
+     * @param string $trigger Where Chrome was lost and what the recovery can still achieve, printed as-is
      */
-    private function recoverChromeAfterStepFailure(): void
+    private function recoverChromeInHook(string $trigger): void
     {
         try {
-            $pageAlias = $this->lastPageAlias ?? $this->lastLoginUrl ?? '';
-
-            $this->logDebug('CDP connection lost detected in @AfterStep — attempting Chrome recovery (page: ' . $pageAlias . ')');
-            $this->recoverChrome($pageAlias);
-            $this->logDebug('Chrome recovery successful after step failure.');
-
+            $this->reportChromeRecovery($trigger);
+            $this->recoverChrome('');
         } catch (\Throwable $recoveryError) {
-            // Recovery failed (e.g. login page unreachable, Chrome could not start).
-            // Log it but do not re-throw — the step is already failed, and surfacing
-            // a recovery error here would replace the real error in Behat's output.
-            $this->logDebug('Chrome recovery failed after step failure: ' . $recoveryError->getMessage());
+            $this->reportChromeRecovery('FAILED: ' . $recoveryError->getMessage());
             try {
                 $this->getWorkbench()->getLogger()->logException(new RuntimeException(
-                    'Chrome recovery failed after step failure: ' . $recoveryError->getMessage(),
+                    'Chrome recovery failed: ' . $recoveryError->getMessage(),
                     null,
                     $recoveryError
                 ));
@@ -313,32 +368,50 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Prepares the environment before each test step by clearing XHR logs, installing
-     * the HTTP interceptor, and recording the current page alias for crash recovery.
+     * Makes a Chrome recovery decision visible in the Behat output and in the workbench log.
      *
-     * Must never throw — any uncaught exception from a BeforeStep hook causes Behat
-     * to exit with code 255. CDP failures (e.g. Chrome crashed between steps) are
-     * caught and logged so the step itself can still run and fail gracefully.
+     * WHY NOT logDebug(): logDebug() only prints when the context runs with debug enabled, which a normal run
+     * does not. Every recovery decision - what triggered it, where it resumed, why it refused - was therefore
+     * invisible, and "the page opened without its dialog" could not be told apart from four different causes.
+     * Recoveries are rare, so printing them unconditionally adds no real noise (same as the LogID line).
+     *
+     * Never throws: it is called from hooks.
+     *
+     * @param string $message Human-readable description of the recovery decision
+     */
+    private function reportChromeRecovery(string $message): void
+    {
+        echo '[Chrome recovery] ' . $message . PHP_EOL;
+        try {
+            $this->getWorkbench()->getLogger()->info('[Chrome recovery] ' . $message);
+        } catch (\Throwable $ignored) {}
+    }
+
+    /**
+     * Prepares the environment before each test step by clearing XHR logs and installing the HTTP interceptor.
+     *
+     * Must never throw - any uncaught exception from a BeforeStep hook causes Behat to exit with code 255.
+     * If Chrome is lost while the step is being prepared, it is recovered here, before the step runs into
+     * the dead browser and ends the scenario.
      *
      * @BeforeStep
      */
     public function prepareBeforeStep(BeforeStepScope $scope): void
     {
-        if ($this->browser === null) {
+        // Must run FIRST: every call below talks to the browser. Placed above the browser check because a
+        // failed recovery can leave no UI5Browser behind, and returning first would switch off every later
+        // recovery attempt for the rest of the scenario. ensureChromeAlive() needs no browser.
+        $this->ensureChromeAlive();
+
+        // A scenario that cannot continue after a recovery has nothing to prepare; the step fails with the
+        // reason through getBrowser().
+        if ($this->browser === null || $this->unrestorableStateReason !== null) {
             return;
         }
-
-        // Must run FIRST: every call below (clearXHRLog, installHttpInterceptor, wait) talks to the
-        // browser and would throw a raw socket exception if Chrome died since the previous step.
-        $this->ensureChromeAlive();
 
         try {
             ErrorManager::getInstance()->clearErrors();
             $this->getBrowser()->clearXHRLog();
-
-            // Record the current page alias before the step runs so that Chrome
-            // recovery after a crash knows which page to reload.
-            $this->lastPageAlias = $this->getBrowser()->getPageAliasFromCurrentUrl();
 
             $this->getBrowser()->getErrorDetector()->installHttpInterceptor();
 
@@ -357,8 +430,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $this->stepStartTime = $this->getBrowser()->showStepTiming($stepName, true);
 
         } catch (\Throwable $e) {
-            // A CDP or browser error during pre-step setup must not kill Behat.
-            // The step itself will likely fail and trigger normal error handling.
             $this->logDebug('prepareBeforeStep failed: ' . $e->getMessage());
             try {
                 $this->getWorkbench()->getLogger()->logException(new RuntimeException(
@@ -367,38 +438,46 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                     $e
                 ));
             } catch (\Throwable $ignored) {}
+
+            // Chrome lost AFTER ensureChromeAlive() passed - typically during the settle pause. Recovering here
+            // resumes at the end of the previous step; without it the step runs into the dead browser, fails,
+            // and Behat skips the rest of the scenario.
+            if ($this->requiresChromeRestart($e)) {
+                $this->recoverChromeInHook('Triggered while preparing a step. The scenario continues if its state can be restored.');
+            }
         }
     }
 
 
     /**
-     * Ensures consistent state after each test step by waiting for UI5 operations
-     * and validating that no errors occurred.
+     * Ensures consistent state after each test step by waiting for UI5 operations, validating that no
+     * errors occurred, and recording the resume point a Chrome recovery would continue from.
      *
-     * Must never throw — any uncaught exception from an AfterStep hook causes Behat
-     * to exit with code 255, killing the entire test run. Chrome hang and timeout
-     * errors are caught here and logged; Chrome recovery is attempted if needed.
+     * Must never throw — any uncaught exception from an AfterStep hook causes Behat to exit with code 255.
+     * Chrome hang and timeout errors are caught here and logged; Chrome recovery is attempted if needed.
      *
      * @AfterStep
      */
     public function completeAfterStep(AfterStepScope $scope): void
     {
-        // Skip if step already failed — no point waiting for UI that may be broken
         if (!$scope->getTestResult()->isPassed()) {
             return;
         }
 
-        // Skip if browser hasn't been initialized yet
         if ($this->browser === null) {
             return;
         }
 
-        try {
-            // Wait for all pending UI5 operations to finish
-            $this->getBrowser()->handleStepWaitOperations(true);
+        $resumePointRecorded = false;
 
-            // Check for any errors that occurred during the step
+        try {
+            $this->getBrowser()->handleStepWaitOperations(true);
             $this->getBrowser()->getErrorDetector()->assertNoErrors();
+
+            // Recorded right after the step settled and BEFORE the cosmetic calls below: a Chrome lost during
+            // the timing overlay or the settle pause must not also cost the scenario its resume point.
+            $this->recordResumePoint($scope);
+            $resumePointRecorded = true;
 
             $stepKeyword = $scope->getStep()->getKeyword();
             $stepText    = $scope->getStep()->getText();
@@ -407,13 +486,15 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $this->logDebug(sprintf("\nCompleted step: %s", $stepName));
             $this->getBrowser()->showStepTiming($stepName, false, $this->stepStartTime);
 
-            // Short pause to let the UI fully settle before the next step starts
             $this->getSession()->wait(1000);
 
         } catch (\Throwable $e) {
-            // Re-throwing from an AfterStep hook kills the Behat process with exit
-            // code 255. Instead, log the error and attempt Chrome recovery if the
-            // failure was caused by a lost CDP connection.
+            // The step passed, but where it left the browser is unknown. A stale resume point would let a
+            // recovery restore an older state while claiming the scenario can continue, so it is dropped.
+            if (! $resumePointRecorded) {
+                $this->resumeUrl = null;
+            }
+
             $this->logDebug('Wait operation failed (after step): ' . $e->getMessage());
             try {
                 $this->getWorkbench()->getLogger()->logException(new RuntimeException(
@@ -423,8 +504,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 ));
             } catch (\Throwable $ignored) {}
 
-            if ($this->isCdpConnectionError($e)) {
-                $this->recoverChromeAfterStepFailure();
+            if ($this->requiresChromeRestart($e)) {
+                $this->recoverChromeInHook('Triggered after a PASSED step while it was settling. The scenario continues if its state can be restored.');
             }
         }
     }
@@ -610,6 +691,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iLogInToPage(string $url, string $userRoles = null, string $userLocale = null): void
     {
+        $this->forgetRecoveryState();
+        
         // Persist login parameters so recoverChrome() can replay them.
         $this->lastLoginUrl = $url;
         $this->lastLoginLocale = $userLocale;
@@ -714,6 +797,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iVisitPage(string $url): void
     {
+        $this->forgetRecoveryState();
+        
         if ($url && !StringDataType::endsWith($url, '.html')) {
             $url .= '.html';
         }
@@ -753,6 +838,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string|null $caption Optional caption of the widget or name/alias of its data object
      * @throws \Exception
      */
+    #[ResumeSafeStep]
     public function iSeeWidgets(int $number, string $widgetType, string $caption = null): void
     {
         // Fetch widgets of the requested type, restricted to the given name if the step supplied one.
@@ -825,6 +911,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $widgetType Type of widget to look for
      * @throws \Exception
      */
+    #[ResumeSafeStep]
     public function itHasWidgetsOfType(int $number, string $widgetType): void
     {
         $focusedNode = $this->getBrowser()->getFocusedNode();
@@ -1159,6 +1246,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * @param string $filterList Comma-separated filter captions in the expected order.
      */
+    #[ResumeSafeStep]
     public function theFiltersAreDisplayedInTheFollowingOrder(string $filterList): void
     {
         $this->getFocusedDataNode()->assertFiltersDisplayedInOrder($this->explodeList($filterList));
@@ -1181,6 +1269,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * @param string $columnList Comma-separated column captions in the expected order.
      */
+    #[ResumeSafeStep]
     public function theColumnsAreDisplayedInTheFollowingOrder(string $columnList): void
     {
         $this->getFocusedDataNode()->assertColumnsDisplayedInOrder($this->explodeList($columnList));
@@ -1469,6 +1558,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @throws RuntimeException If the page has fewer widgets of that type than requested
      * @throws \Exception
      */
+    #[ResumeSafeStep]
     public function iLookAtWidget(string $widgetType, int $number = 1): void
     {
         // Set focus to this widget so the subsequent "it has..." steps have a context
@@ -1649,11 +1739,18 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * 
      * @param string $columnName Comma-separated captions of spreadsheet columns to check
     */
+    #[ResumeSafeStep]
     public function theColumnInDataSpreadsheetShouldBeDisabled(string $columnName): void
     {
         $nodes = $this->getBrowser()->getFocusedNode();
-        $node = $nodes[0] ?? null;
-        Assert::assertInstanceOf(UI5DataSpreadSheetNode::class, $node, 'No DataSpreadSheet widget found.');
+        // getFocusedNode() returns ONE node, not a list. Indexing it threw "Cannot use object of type ... as array",
+        // so the step could never pass and never reported which column was editable.
+        $node = $this->getBrowser()->getFocusedNode();
+        Assert::assertInstanceOf(
+            UI5DataSpreadSheetNode::class,
+            $node,
+            'No DataSpreadSheet widget is focused - focus one first (e.g. "I look at \'SpreadSheet\' no. 1").'
+        );
 
         // Resolve before highlighting: the debug label becomes part of the jExcel header text.
         $columnResults = [];
@@ -1994,6 +2091,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param int $index The 1-based index of the table to focus on
      * @throws RuntimeException If the table cannot be found
      */
+    #[ResumeSafeStep]
     public function iLookAtTable(int $index): void
     {
         $table = $this->getDataTableNodeByIndex($index);
@@ -2581,6 +2679,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * @param string $tabList Comma-separated tab captions in the expected order.
      */
+    #[ResumeSafeStep]
     public function theTabsAreDisplayedInTheFollowingOrder(string $tabList): void
     {
         UI5AbstractNode::assertCaptionsDisplayedInOrder(
@@ -2682,6 +2781,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
     protected function getBrowser(): UI5Browser
     {
+        // Only steps are refused: a recovery logs in and navigates through this same method, and refusing it there
+        // would make every recovery of an already stopped scenario fail halfway.
+        if ($this->unrestorableStateReason !== null && ! $this->chromeRecoveryInProgress) {
+            throw new RuntimeException($this->unrestorableStateReason);
+        }
         if ($this->browser === null) {
             $e = new RuntimeException('BDT Browser not initialized!');
             $this->getWorkbench()->getLogger()->logException($e);
@@ -2876,7 +2980,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private function navigateToPageAlias(string $pageAlias): void
     {
         $this->getEventDispatcher()->dispatch(new AfterPageVisited($pageAlias));
-        $this->lastPageAlias = $pageAlias;
         
         // Navigate to the page using Mink's path navigation
         $url = $pageAlias . '.html';
@@ -2960,18 +3063,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         return DatabaseFormatter::getEventDispatcher();
     }
 
-    /**
-     * Overrides Mink's visitPath to add retry logic for transient Chrome WebSocket
-     * disconnections that can occur when the server is slow or Chrome's render
-     * process is under heavy load during page navigation.
-     *
-     * Any caller within the framework automatically benefits from this retry
-     * without needing to implement it themselves — visitPath is the single
-     * point of navigation for all page transitions.
-     *
-     * @param string $path The relative path to visit
-     * @throws \Throwable  The last exception if all attempts fail
-     */
     /**
      * Overrides Mink's visitPath to add retry logic for transient Chrome WebSocket
      * disconnections that can occur when the server is slow or Chrome's render
@@ -3105,7 +3196,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 
         // Only after a successful reconnect: a failed one leaves the old tab as the only thing
         // the run might still be able to fall back on, so it must not be closed.
-        $this->closeTabsLeftBehind($manager, $tabsBefore);
+        // WHY GUARDED: the session IS attached at this point - the tab cleanup is housekeeping. Letting a
+        // cleanup failure escape turned a successful reattach into an aborted recovery (no re-login) and
+        // broke the never-throws contract that visitPath() and the hooks rely on.
+        try {
+            $this->closeTabsLeftBehind($manager, $tabsBefore);
+        } catch (\Throwable $e) {
+            $this->logDebug('Session reattached, but closing the tabs left behind failed: ' . $e->getMessage());
+        }
         $this->logDebug('Mink session reattached to the running Chrome after a lost CDP connection.');
         return true;
     }
@@ -3183,29 +3281,200 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Recovers from a hung Chrome process and resumes testing at a specific page.
+     * Records where a recovered Chrome has to continue if it is lost after this step.
      *
-     * When Chrome's CDP connection is lost mid-test (detected via ChromeHangException),
-     * simply retrying the last action is not enough — the browser process itself must
-     * be restarted. This method coordinates the full recovery sequence:
+     * WHY AT THE END OF A PASSED STEP: that is the state the next step expects to start from.
      *
-     *  1. Instructs ChromeManager to terminate the stale Chrome process and start a
-     *     fresh one on the same port.
-     *  2. Restarts the Mink session so it connects to the new Chrome instance.
-     *  3. Re-authenticates using the credentials saved by the most recent
-     *     iLogInToPage() call, because the new Chrome has no session cookies.
-     *  4. Navigates directly to the target page by URL, bypassing the tile overview
-     *     and the back-button navigation that would normally be needed to reach it.
+     * WHY THE CASES:
+     * - fresh document: a full page load discarded all earlier in-browser state, so nothing before it can block;
+     * - same document, URL changed: the step moved the route (e.g. opened a dialog). The URL reproduces the new
+     *   view; whatever the current view had built now belongs to a view below it;
+     * - same document, URL unchanged, resume-safe step: only focus or nothing changed - rebuilt from $resumeFocus;
+     * - same document, URL unchanged, any other step: the current view now holds state that cannot be rebuilt.
      *
-     * Direct URL navigation (step 4) is intentional: navigateToPageAlias() uses a
-     * full page load rather than the tile click + back-button flow, so Chrome starts
-     * each retry with a clean navigation stack.
+     * WHY THE LEAVE CHECK COMES FIRST: after a resume with lost state below, a step that leaves the resumed view
+     * ran correctly inside it - but the next step would work on views whose state is gone.
      *
-     * @param string $targetPageAlias The alias of the page to open after recovery
-     *                                (typically the tile page that was being tested
-     *                                when Chrome hung).
-     * @throws \Throwable If no login parameters are available (recoverChrome()
-     *                           was called before iLogInToPage() ever ran).
+     * @param AfterStepScope $scope The step that just passed
+     */
+    private function recordResumePoint(AfterStepScope $scope): void
+    {
+        $browser = $this->getBrowser();
+        // Same source the failure screenshots record: window.location.href, including the route fragment.
+        $url = $this->getSession()->getCurrentUrl();
+        $step = $scope->getStep();
+        $stepLabel = 'line ' . $step->getLine() . ': ' . $step->getKeyword() . ' ' . $step->getText();
+
+        if ($this->recoveredRouteUrl !== null && $url !== $this->recoveredRouteUrl && $this->unrestorableStateReason === null) {
+            $this->unrestorableStateReason = 'Chrome was lost earlier and the scenario was resumed in the view "'
+                . $this->recoveredRouteUrl . '". Step ' . $stepLabel . ' has now left that view, but the state these steps '
+                . 'had built in the views below it was lost in the recovery: ' . implode('; ', $this->lostEarlierViewState)
+                . '. Running the remaining steps on a different state could hide real failures, so the scenario stops here.';
+            $this->reportChromeRecovery($this->unrestorableStateReason);
+        }
+
+        if ($this->resumeBrowser?->get() !== $browser) {
+            $this->blockersInCurrentView = [];
+            $this->blockersInEarlierViews = [];
+        } elseif ($url !== $this->resumeUrl) {
+            $this->blockersInEarlierViews = array_merge($this->blockersInEarlierViews, $this->blockersInCurrentView);
+            $this->blockersInCurrentView = [];
+        } elseif (! $this->isResumeSafeStep($scope)) {
+            $this->blockersInCurrentView[] = $stepLabel;
+        }
+
+        $this->resumeUrl = $url;
+        $this->resumePageAlias = $browser->getPageAliasFromCurrentUrl();
+        $this->resumeFocus = $browser->describeFocusForResume();
+        $this->resumeBrowser = \WeakReference::create($browser);
+    }
+
+    /**
+     * Tells whether the step that just passed is marked as safe to resume after a Chrome recovery.
+     *
+     * WHY THE DEFINITION'S REFLECTION: the attribute sits on the step method; Behat exposes the matched method
+     * through the executed step's definition, so no list of step names has to be kept in sync by hand.
+     *
+     * @param AfterStepScope $scope The step that just passed
+     * @return bool TRUE only if the matched step method carries #[ResumeSafeStep]
+     */
+    private function isResumeSafeStep(AfterStepScope $scope): bool
+    {
+        $result = $scope->getTestResult();
+        if (! $result instanceof DefinedStepResult) {
+            return false;
+        }
+        $definition = $result->getStepDefinition();
+        if ($definition === null) {
+            return false;
+        }
+        return $definition->getReflection()->getAttributes(ResumeSafeStep::class) !== [];
+    }
+
+    /**
+     * Brings a recovered, logged-in Chrome back to where the scenario stopped - or records why it cannot.
+     *
+     * WHY A REFUSAL IS NOT A RECOVERY FAILURE: Chrome is back and logged in, which the next scenario needs anyway.
+     * A refusal only stops THIS scenario; getBrowser() fails the next step with the reason.
+     *
+     * WHY ONLY THE CURRENT VIEW BLOCKS: see $blockersInEarlierViews. Lost state of views below is recorded and
+     * enforced by recordResumePoint() when the scenario leaves the resumed view.
+     *
+     * WHY THE ROUTE AND THE FOCUS ARE VERIFIED: UI5 does not report a route the facade cannot open, and a missing
+     * focus silently widens every following search to the whole page. Both must be proven, not assumed.
+     *
+     * WHY THE REASON IS SET IN finally: if anything below throws after a browser was built, the scenario would
+     * otherwise continue on a partially restored state with no block in place.
+     */
+    private function resumeScenarioAfterRecovery(): void
+    {
+        if ($this->unrestorableStateReason !== null) {
+            // A new Chrome does not bring back state that was already lost before this recovery.
+            $this->reportChromeRecovery('Not resuming - the scenario had already been stopped before this recovery.');
+            return;
+        }
+
+        $reason = 'the recovery stopped before the browser state could be restored.';
+        try {
+            if ($this->resumeUrl === null || $this->resumePageAlias === null) {
+                $reason = 'the state at the end of the last passed step could not be recorded.';
+                return;
+            }
+            if ($this->blockersInCurrentView !== []) {
+                $reason = 'these steps changed the current view without changing its URL, and that state cannot be rebuilt: '
+                    . implode('; ', $this->blockersInCurrentView) . '.';
+                return;
+            }
+            if ($this->resumeFocus === null) {
+                $reason = 'the widget the scenario was looking at cannot be rebuilt (a focused tab, or an element without a stable id).';
+                return;
+            }
+
+            $this->navigateToPageAlias($this->resumePageAlias);
+
+            $expectedRoute = (string) StringDataType::substringAfter($this->resumeUrl, '#', '');
+            $actualRoute = (string) StringDataType::substringAfter($this->getSession()->getCurrentUrl(), '#', '');
+            if ($expectedRoute !== $actualRoute) {
+                $this->getBrowser()->navigateToRouteFragment($expectedRoute);
+                $actualRoute = (string) StringDataType::substringAfter($this->getSession()->getCurrentUrl(), '#', '');
+            }
+            if ($expectedRoute !== $actualRoute) {
+                $reason = 'the UI5 route could not be re-opened (expected "#' . $expectedRoute . '", browser is on "#' . $actualRoute . '").';
+                return;
+            }
+
+            try {
+                $this->getBrowser()->restoreFocusForResume($this->resumeFocus);
+            } catch (\Throwable $e) {
+                $reason = 'the widget the scenario was looking at could not be rebuilt: ' . $e->getMessage();
+                return;
+            }
+
+            // Merged, not replaced: a second recovery must not forget what a first one already lost.
+            $this->lostEarlierViewState = array_merge($this->lostEarlierViewState, $this->blockersInEarlierViews);
+            if ($this->lostEarlierViewState !== []) {
+                $this->recoveredRouteUrl = $this->resumeUrl;
+            }
+            $reason = null;
+        } finally {
+            if ($reason === null) {
+                $this->reportChromeRecovery(
+                    'Resumed the scenario at ' . $this->resumeUrl
+                    . ($this->lostEarlierViewState === []
+                        ? ''
+                        : '. State of the views below was lost and the scenario stops if it leaves this view: '
+                        . implode('; ', $this->lostEarlierViewState))
+                );
+            } else {
+                $this->unrestorableStateReason = 'Chrome was lost and has been restarted and logged in again, but this scenario cannot continue: '
+                    . $reason . ' Running the remaining steps on a different state could hide real failures, so the scenario stops here.';
+                $this->reportChromeRecovery($this->unrestorableStateReason);
+            }
+        }
+    }
+
+    /**
+     * Forgets everything a Chrome recovery decided about this scenario's state.
+     *
+     * WHY: an explicit login or page visit builds the scenario's state anew, so neither a stopped scenario nor the
+     * lost state of views below a resumed dialog matters from there on.
+     *
+     * WHY NOT DURING A RECOVERY: recoverChrome() logs in and visits pages through the same step methods. Clearing
+     * there would erase what a previous recovery lost, and a second recovery would resume as if nothing was lost.
+     */
+    private function forgetRecoveryState(): void
+    {
+        if ($this->chromeRecoveryInProgress) {
+            return;
+        }
+        $this->unrestorableStateReason = null;
+        $this->recoveredRouteUrl = null;
+        $this->lostEarlierViewState = [];
+    }
+
+    /**
+     * Recovers from a lost, hung or closed Chrome process and brings the scenario back to where it stopped.
+     *
+     *  1. Instructs ChromeManager to terminate the stale Chrome process and start a fresh one on the same port.
+     *  2. Reattaches the Mink session to the new Chrome and fails loudly if that is not possible.
+     *  3. Discards the UI5Browser of the dead page, so the next visit behaves like a first visit.
+     *  4. Re-authenticates the browser with the login form values cached by iLogInToPage().
+     *  5. Opens the page the caller asked for, or resumes the scenario at the end of its last passed step.
+     *
+     * WHY TWO KINDS OF TARGET: a container sweep retrying one child owns its own state and only needs its
+     * page back. The step hooks and a hung substep continue a scenario whose state was built by earlier
+     * steps, so they must get that state back - or the scenario must be stopped (resumeScenarioAfterRecovery()).
+     *
+     * WHY THE STALE BROWSER IS DISCARDED: it belongs to a page of the Chrome that was just killed. Keeping it
+     * made visitPath() run its pre-navigation UI5 wait on the blank tab of the new Chrome, which can never
+     * report "not busy", so the login visit timed out after 30 s.
+     *
+     * WHY A FAILED REATTACH ABORTS: continuing on a session bound to the dead process only produces socket
+     * errors later, far away from the actual cause.
+     *
+     * @param string $targetPageAlias Alias of a page to open after recovery, or an empty string to resume
+     *                                the scenario at the end of its last passed step
+     * @throws \Throwable If no login parameters are stored, a recovery is already running, or a recovery step fails
      */
     public function recoverChrome(string $targetPageAlias): void
     {
@@ -3216,57 +3485,74 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             );
         }
 
-        // Step 1: Restart the Chrome process via ChromeManager.
-        ChromeManager::getInstance()->restart();
+        if ($this->chromeRecoveryInProgress) {
+            throw new RuntimeException(
+                'Chrome recovery was requested while another recovery is still running - Chrome was lost again '
+                . 'during recovery. No nested restart is started; the running recovery fails instead.'
+            );
+        }
+        $this->chromeRecoveryInProgress = true;
 
-        // Step 2: Reconnect the Mink session to the freshly started Chrome. Session::restart() is
-        // not usable here: its stop() talks to the Chrome that was just killed and throws, so its
-        // start() would never run and the session would stay bound to the dead process.
-        $this->reconnectSession();
-
-        // Step 3: Re-authenticate the BROWSER only — replay just the login form with the values
-        // cached on the first login. We are continuing the same scenario, so the DB user/roles/
-        // locale setup and the process-side authentication from the original iLogInToPage() are
-        // still valid; only the fresh Chrome lost its cookies/session. We deliberately do NOT
-        // call setupUser() again, which would re-bump the USER_AUTHENTICATOR row the browser
-        // login already updated and fail with an optimistic-lock "changed in the meantime" error.
-        $this->browserLogin(
-            $this->lastLoginUrl,
-            $this->lastLoginTabCaption,
-            $this->lastLoginButtonCaption,
-            $this->lastLoginFields
+        // Printed BEFORE anything can fail, so the output always shows what the recovery started from.
+        $this->reportChromeRecovery(
+            'Chrome was lost - restarting it and logging in again. Target: '
+            . ($targetPageAlias !== ''
+                ? 'page "' . $targetPageAlias . '" (requested by the caller)'
+                : 'resume point ' . ($this->resumeUrl ?? '(unknown)'))
+            . '. Blocking steps in the current view: '
+            . ($this->blockersInCurrentView === [] ? 'none' : implode('; ', $this->blockersInCurrentView))
+            . '. State of views below (lost, enforced when the scenario leaves the resumed view): '
+            . ($this->blockersInEarlierViews === [] ? 'none' : implode('; ', $this->blockersInEarlierViews)) . '.'
         );
 
-        // Step 4: Navigate directly to the target page without going via the tile
-        // overview, so no back-button history needs to be rebuilt.
-        $this->navigateToPageAlias($targetPageAlias);
+        try {
+            ChromeManager::getInstance()->restart();
+
+            if (! $this->reconnectSession()) {
+                throw new RuntimeException(
+                    'Chrome was restarted, but the Mink session could not be attached to it. '
+                    . 'See the debug line "Could not reattach the Mink session" for the driver error.'
+                );
+            }
+
+            $this->browser = null;
+
+            // Re-authenticate the BROWSER only; setupUser() must not run again (USER_AUTHENTICATOR optimistic lock).
+            $this->browserLogin(
+                $this->lastLoginUrl,
+                $this->lastLoginTabCaption,
+                $this->lastLoginButtonCaption,
+                $this->lastLoginFields
+            );
+
+            if ($targetPageAlias !== '') {
+                $this->navigateToPageAlias($targetPageAlias);
+            } else {
+                $this->resumeScenarioAfterRecovery();
+            }
+        } finally {
+            $this->chromeRecoveryInProgress = false;
+        }
     }
-    
+
     /**
-     * Makes sure a usable Chrome exists BEFORE the next step runs, restarting and re-authenticating
-     * it if the current one is gone.
+     * Makes sure a usable Chrome exists BEFORE the next step runs, restarting and re-authenticating it if the
+     * current one is gone.
      *
-     * WHY PROACTIVE INSTEAD OF REACTIVE: until now a dead browser was only noticed when some call
-     * crashed into it. If that call happened inside a step, the AfterStep hook could still trigger a
-     * restart. But Mink manages its sessions with its OWN hooks (reset/stop between scenarios), and a
-     * socket exception thrown there escapes every guard this context owns - Behat then dies with exit
-     * code 255 and the whole lane, including its DB recording, is lost. Probing liveness before the
-     * step means a dead Chrome is replaced while we are still inside code we control.
+     * WHY PROACTIVE INSTEAD OF REACTIVE: a dead browser used to be noticed only when some call crashed into it.
+     * Mink manages its sessions with its OWN hooks, and a socket exception thrown there escapes every guard this
+     * context owns - Behat then dies with exit code 255. Probing liveness before the step replaces a dead Chrome
+     * while we are still inside code we control.
      *
-     * WHY IT MUST NEVER THROW: it runs from the BeforeStep hook, where an uncaught exception kills
-     * the Behat process. A failed recovery is logged and the step is allowed to run and fail
-     * normally, which is strictly better than aborting the run.
+     * WHY IT MUST NEVER THROW: it runs from the BeforeStep hook, where an uncaught exception kills the Behat
+     * process. A failed recovery is reported and the step is allowed to run and fail normally.
      */
     private function ensureChromeAlive(): void
     {
         try {
             $manager = ChromeManager::getInstance();
 
-            // WHY THE PORT AND NOT THE PID: the PID is resolved from netstat at launch and can be
-            // null even for a perfectly healthy Chrome (netstat race), while stop() clears it as
-            // well. Gating on the PID therefore silently disables the liveness probe for the rest
-            // of the lane. The port is set by start() unconditionally and is the same identity
-            // isAlive() probes, so it is the only correct "has Chrome ever been started" marker.
+            // The port, not the PID, is the reliable "has Chrome ever been started" marker (see ChromeManager).
             if ($manager->getPort() === null) {
                 return;
             }
@@ -3275,29 +3561,17 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 return;
             }
 
-            $this->logDebug('Chrome is not reachable before the next step — restarting it.');
-
-            // No login has happened yet in this scenario, so there is nothing to replay: bring up a
-            // fresh Chrome and reattach the session. Doing the full recoverChrome() here would throw,
-            // because it requires cached login parameters that do not exist yet.
             if ($this->lastLoginUrl === null) {
+                $this->reportChromeRecovery('Triggered before a step, before any login - restarting Chrome only, there is no state to restore.');
                 ChromeManager::getInstance()->restart();
-                // Reattach the session so it opens a new WebSocket to the new process instead of
-                // reusing the socket of the one that just died.
                 $this->reconnectSession();
-                $this->logDebug('Chrome restarted before login — session reattached.');
                 return;
             }
 
-            // A login already happened: the new Chrome has no cookies, so the full recovery sequence
-            // (restart, session restart, browser-side re-login, direct navigation) is required.
-            $this->recoverChrome($this->lastPageAlias ?? $this->lastLoginUrl);
-            $this->logDebug('Chrome recovered before the step.');
+            $this->recoverChromeInHook('Triggered before a step. The scenario continues if its state can be restored.');
 
         } catch (\Throwable $e) {
-            // Recovery failed. Log loudly, but let the step run: it will fail with the real browser
-            // error and go through the normal failed-step reporting instead of aborting the lane.
-            $this->logDebug('ensureChromeAlive failed: ' . $e->getMessage());
+            $this->reportChromeRecovery('FAILED before a step: ' . $e->getMessage());
             try {
                 $this->getWorkbench()->getLogger()->logException(new RuntimeException(
                     'Chrome could not be revived before the step: ' . $e->getMessage(),

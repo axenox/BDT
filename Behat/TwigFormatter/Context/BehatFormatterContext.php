@@ -107,6 +107,11 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
         }
 
         $fileNameBase = $this->provider->getName();
+        try {
+            $currentUrl = $this->getSession()->getCurrentUrl();
+        } catch (\Throwable $e) {
+            ErrorManager::getInstance()->logException($e, $this->getWorkbench());
+        }
         if ($fileNameBase === null || $fileNameBase === '') {
             // Not an error worth raising: the step this screenshot would document was never recorded,
             // so there is nothing that could reference the image.
@@ -141,7 +146,7 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
             try {
                 $this->saveScreenshot($fileName, $dir);
                 $this->provider->setScreenshot($fileName, $relativePath);
-                $this->provider->setUrl($this->getSession()->getCurrentUrl());
+                $this->provider->setUrl($currentUrl ?? null);
                 return;
             } catch (\Throwable $e) {
                 if ($attempt === $maxAttempts) {
