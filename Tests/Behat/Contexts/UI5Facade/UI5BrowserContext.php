@@ -4,6 +4,7 @@ namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 use axenox\BDT\Behat\Common\ErrorManager;
 use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5AbstractNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ButtonNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ContainerNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataSpreadSheetNode;
@@ -778,6 +779,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             }
         }
 
+        if (!empty($widgetNodes)) {
+            foreach ($widgetNodes as $i => $node) {
+                // change to NodeElement with getNodeElement() 
+                $nodeElement = $node->getNodeElement();
+                $this->getBrowser()->highlightWidget($nodeElement, $widgetType, $i);
+            }
+        }
+
         // Assert the number of widgets.
         // The message names the filter "name" rather than "alias", because filterNodesByName() accepts
         // the caption and the object name just as well - reporting it as an alias sends whoever reads the
@@ -793,16 +802,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 count($widgetNodes)
             )
         );
-
-        // Optionally highlight widgets for debugging
-        if (!empty($widgetNodes)) {
-            $maxHighlight = min(count($widgetNodes), 3);
-            for ($i = 0; $i < $maxHighlight; $i++) {
-                // change to NodeElement with getNodeElement() 
-                $nodeElement = $widgetNodes[$i]->getNodeElement();
-                $this->getBrowser()->highlightWidget($nodeElement, $widgetType, $i);
-            }
-        }
     }
 
     /**
@@ -841,6 +840,15 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         );
 
         $widgetNodes = $this->getBrowser()->findWidgetNodesInNode($focusedNode, $widgetType, $number, 15);
+        
+        // Highlight the first few matches for visual debugging only - has no effect on the assertion above
+        foreach ($widgetNodes as $index => $node) {
+            $this->getBrowser()->highlightWidget(
+                $node->getNodeElement(),
+                $widgetType,
+                $index
+            );
+        }
 
         Assert::assertCount(
             $number,
@@ -853,15 +861,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 count($widgetNodes)
             )
         );
-
-        // Highlight the first few matches for visual debugging only - has no effect on the assertion above
-        foreach (array_slice($widgetNodes, 0, 3) as $index => $node) {
-            $this->getBrowser()->highlightWidget(
-                $node->getNodeElement(),
-                $widgetType,
-                $index
-            );
-        }
     }
 
     /**
@@ -2312,14 +2311,16 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
-     * Checks that the named tiles are shown on the page.
+     * Checks that the named tiles are shown.
      *
      * Tiles are the clickable cards on a launchpad/home page. Use this to confirm the expected
      * tiles are present. Other tiles may also be present - this step only requires the ones you
-     * name. List tile captions separated by commas.
+     * name. List tile captions separated by commas. If a widget is focused (e.g. a tab opened by
+     * "I click tab"), only the tiles inside it count; without focus the whole page is checked.
      *
      * Usage example:
      *
+     *   When I click tab "Admin"
      *   Then I see tiles "Orders, Customers, Reports"
      *
      * @Then I see tiles :tileNames
@@ -2328,44 +2329,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSeeTiles(string $tileNames): void
     {
-        // Convert the comma-separated tile names into an array
-        // Trims whitespace and handles multiple tile names
-        $captions = $this->explodeList($tileNames);
+        $comparison = $this->compareTileCaptions($tileNames);
 
-        // Array to track which tiles have been found
-        // Helps in providing detailed reporting
-        $foundTiles = [];
-
-        // Iterate through all tiles found on the page
-        // Uses the browser's tile finding method to locate tile elements
-        foreach ($this->getBrowser()->findTiles() as $tile) {
-            // Extract the caption (name/text) of the current tile
-            $tileName = $tile->getCaption();
-
-            // Check if the current tile's name matches any of the expected tile names
-            // array_search allows for exact matching and provides the index
-            $matchIndex = array_search($tileName, $captions);
-
-            // If a match is found
-            if ($matchIndex !== false) {
-                // Add the found tile to the list of discovered tiles
-                $foundTiles[] = $tileName;
-
-                // Remove the found tile from the list of expected tiles
-                // This helps track which tiles are still missing
-                unset($captions[$matchIndex]);
-            }
-        }
-
-        // Final assertion to ensure all expected tiles are found
-        // If any tiles remain in $captions, it means they were not discovered
         Assert::assertEmpty(
-            $captions,
-            // Detailed error message showing:
-            // 1. Which tiles were not found
-            // 2. Which tiles were successfully located
-            'Tiles not found: ' . implode(', ', $captions) .
-            '. Found tiles: ' . implode(', ', $foundTiles)
+            $comparison['missing'],
+            'Tiles not found in ' . $this->getBrowser()->describeSearchScope() . ': ' . implode(', ', $comparison['missing'])
+            . '. Tiles there: ' . implode(', ', array_merge($comparison['found'], $comparison['unexpected']))
         );
     }
 
@@ -2374,10 +2343,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * Stricter than "I see tiles": this step also fails if any tile other than the ones you
      * list is present. Great for verifying that a user role sees precisely the expected set of
-     * launchpad tiles. List tile captions separated by commas.
+     * launchpad tiles. List tile captions separated by commas. If a widget is focused (e.g. a tab
+     * opened by "I click tab"), only the tiles inside it count; without focus the whole page is checked.
      *
      * Usage example:
      *
+     *   When I click tab "Admin"
      *   Then I only see tiles "Orders, Customers"
      *
      * @Then I only see tiles :tileNames
@@ -2386,20 +2357,130 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iOnlySeeTiles(string $tileNames): void
     {
-        $captions = $this->explodeList($tileNames);
+        $comparison = $this->compareTileCaptions($tileNames);
+        $scope = $this->getBrowser()->describeSearchScope();
 
-        $otherCaptions = [];
+        Assert::assertEmpty($comparison['missing'], 'Tiles not found in ' . $scope . ': ' . implode(', ', $comparison['missing']));
+        Assert::assertEmpty($comparison['unexpected'], 'Found more tiles than expected in ' . $scope . ': ' . implode(', ', $comparison['unexpected']));
+    }
+
+    /**
+     * Compares the tiles of the current search scope with a comma-separated list of expected captions.
+     *
+     * WHY IT EXISTS: "I see tiles" and "I only see tiles" ran the same matching loop in two copies, and
+     * the copies already differed in their messages. One implementation keeps both steps agreeing on what
+     * counts as a match; they differ only in which part of the result they assert.
+     *
+     * WHY CASE-INSENSITIVE: "I click tile" matches captions case-insensitively. A step that can click a tile
+     * but reports the same tile as not seen would contradict itself.
+     *
+     * WHY A MATCH IS CONSUMED: each expected caption accounts for one tile only, so a second tile with the
+     * same caption is reported as unexpected instead of hiding behind the first.
+     *
+     * @param string $tileNames Comma-separated list of expected tile captions
+     * @return array{missing: string[], found: string[], unexpected: string[]}
+     */
+    private function compareTileCaptions(string $tileNames): array
+    {
+        $missing = $this->explodeList($tileNames);
+        $found = [];
+        $unexpected = [];
+
         foreach ($this->getBrowser()->findTiles() as $tile) {
-            $tileName = $tile->getCaption();
-            $tileIdx = array_search($tileName, $captions);
-            if ($tileIdx !== false) {
-                unset($captions[$tileIdx]);
+            $tileCaption = trim($tile->getCaption());
+            $matchIndex = null;
+            foreach ($missing as $index => $expectedCaption) {
+                if (strcasecmp($expectedCaption, $tileCaption) === 0) {
+                    $matchIndex = $index;
+                    break;
+                }
+            }
+
+            if ($matchIndex !== null) {
+                unset($missing[$matchIndex]);
+                $found[] = $tileCaption;
             } else {
-                $otherCaptions[] = $tileName;
+                $unexpected[] = $tileCaption;
             }
         }
-        Assert::assertEmpty($captions, 'Tiles not found: ' . implode(', ', $captions));
-        Assert::assertEmpty($otherCaptions, 'Found more tiles than expected: ' . implode(', ', $otherCaptions));
+
+        return [
+            'missing' => array_values($missing),
+            'found' => $found,
+            'unexpected' => $unexpected,
+        ];
+    }
+
+    /**
+     * Clicks a tile by its caption and checks that the page configured for it has been opened.
+     *
+     * Tiles are the clickable cards on a launchpad/home page. This step clicks the tile with the given
+     * caption, waits until the new page is loaded and fails if the tile opened another page than the one it
+     * is configured for - or no page at all. If a widget is focused (e.g. a tab opened by "I click tab"),
+     * the tile is looked for ONLY inside it; without focus the whole page is searched. Use "I see tiles" if
+     * you only want to check that a tile is there.
+     *
+     * Usage example:
+     *
+     *   Given I log in to the page "my.app.home.html" as "Support"
+     *   When I click tab "Admin"
+     *   And I click tile "Interfaces"
+     *   Then I see 1 widget of type "DataTable"
+     *
+     * WHY THE LOOKUP GOES THROUGH findTiles(): all tile steps must agree on where tiles are searched - the
+     * focused widget only, or the page when nothing is focused. The rule lives there once.
+     *
+     * WHY THE CLICK IS DELEGATED TO THE NODE: the button node - which the tile node extends - owns the rule
+     * for verifying a GoToPage target, and its works-as-expected check uses the same method. Reusing it keeps
+     * both paths judging a navigation the same way.
+     *
+     * WHY AN AMBIGUOUS CAPTION FAILS: two tiles with the same caption in the searched scope cannot be told
+     * apart by the step. Clicking the first in DOM order would make the outcome depend on rendering order
+     * instead of on the scenario.
+     *
+     * WHY THE FOCUS IS CLEARED: widgets focused on the tile page mean nothing on the target page, and with
+     * SPA routing the previous view stays in the DOM, so pruning dead focus entries would never drop them -
+     * the next "it has..." step would silently act on the page that was left.
+     *
+     * @When I click tile ":caption"
+     *
+     * @param string $caption Caption of the tile to click
+     * @return void
+     * @throws RuntimeException If the tile is missing, ambiguous, opens no page or opens the wrong page
+     */
+    public function iClickTile(string $caption): void
+    {
+        $browser = $this->getBrowser();
+        $needle = trim($caption);
+
+        $matches = [];
+        $visibleCaptions = [];
+        foreach ($browser->findTiles() as $tile) {
+            $tileCaption = trim($tile->getCaption());
+            $visibleCaptions[] = $tileCaption;
+            if (strcasecmp($tileCaption, $needle) === 0) {
+                $matches[] = $tile;
+            }
+        }
+
+        if (empty($matches)) {
+            throw new RuntimeException(
+                'Tile "' . $needle . '" not found in ' . $browser->describeSearchScope()
+                . '. Visible tiles there: ' . implode(', ', $visibleCaptions)
+            );
+        }
+        if (count($matches) > 1) {
+            throw new RuntimeException('Tile "' . $needle . '" is shown ' . count($matches) . ' times - the step cannot tell which one is meant');
+        }
+        $tile = $matches[0];
+
+        if (! $tile instanceof UI5ButtonNode) {
+            throw new RuntimeException('Tile "' . $needle . '" is represented by ' . get_class($tile) . ', which cannot verify page navigation');
+        }
+
+        $browser->highlightWidget($tile->getNodeElement(), 'Tile', 0);
+        $tile->clickAndAssertTargetPage();
+        $browser->clearFocusStack();
     }
 
     /**
