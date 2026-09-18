@@ -2,6 +2,7 @@
 namespace axenox\BDT;
 
 use axenox\BDT\Common\Installer\BDTConfigInstaller;
+use axenox\GenAI\Common\AiAgentInstaller;
 use exface\Core\CommonLogic\AppInstallers\StaticEventListenerInstaller;
 use exface\Core\Events\Workbench\OnCleanUpEvent;
 use exface\Core\Interfaces\InstallerInterface;
@@ -44,6 +45,10 @@ class BDTApp extends App
         // BDT Config
         $bdtInstaller = new BDTConfigInstaller($this->getSelector());
         $installer->addInstaller($bdtInstaller);
+
+        // BDT AI agents and skills
+        $aiInstaller = new AiAgentInstaller($this->getSelector());
+        $installer->addInstaller($aiInstaller);
         
         return $installer;
     }
