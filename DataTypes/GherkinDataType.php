@@ -1,8 +1,12 @@
 <?php
 namespace axenox\BDT\DataTypes;
 
+use Behat\Behat\Definition\Pattern\PatternTransformer;
+use Behat\Behat\Definition\Pattern\Policy\RegexPatternPolicy;
+use Behat\Behat\Definition\Pattern\Policy\TurnipPatternPolicy;
 use exface\Core\DataTypes\CodeDataType;
 use exface\Core\DataTypes\StringDataType;
+use exface\Core\Exceptions\RuntimeException;
 
 /**
  * Data type for Gherkin source code (Cucumber / Behat `.feature` files) with structural validation.
@@ -53,6 +57,16 @@ class GherkinDataType extends CodeDataType
      * Gherkin keywords that must start every step line
      */
     private const STEP_KEYWORDS = ['Given', 'When', 'Then', 'And', 'But', '*'];
+
+    /**
+     * PHP attributes Behat accepts as step definitions (alternative to docblock annotations)
+     */
+    private const STEP_DEFINITION_ATTRIBUTES = ['Behat\Step\Given', 'Behat\Step\When', 'Behat\Step\Then'];
+
+    /**
+     * @var array<string, string[]> Compiled step regexes per set of context classes - see getStepRegexes()
+     */
+    private static array $stepRegexCache = [];
 
     /**
      * @var bool|null NULL means "not set explicitly" - see isStrict()
@@ -1014,5 +1028,274 @@ class GherkinDataType extends CodeDataType
     private static function countTableColumns(string $row) : int
     {
         return count(self::splitTableRow($row));
+    }
+
+    /**
+     * Returns all steps of the given Gherkin content that are not matched by any step definition
+     * of the given context classes - i.e. the steps Behat would report as "undefined" at runtime.
+     *
+     * Kept separate from findErrors() on purpose: undefined steps do not break the parser and
+     * must not block saving work in progress (see class description). But a scenario with an
+     * undefined step never runs its remaining steps, so editors, importers or a pre-run check of
+     * a suite need a way to find these steps BEFORE the nightly run instead of after it.
+     *
+     * Matching is delegated to Behat's own pattern policies, so turnip patterns (`:url`,
+     * optional words, alternatives) and regex patterns are interpreted exactly like at runtime.
+     * Like Behat, the step keyword is ignored for matching - a "Given" definition also matches
+     * a "When" step.
+     *
+     * Scenario Outline steps are expanded with every Examples row before matching, because Behat
+     * only ever matches the substituted text - a step can be defined for one row and undefined
+     * for another.
+     *
+     * The result uses the same "Line N: ..." format as findErrors(), so formatErrors() can be
+     * used to present it.
+     *
+     * @param string $gherkin Raw text content of a .feature file
+     * @param string[] $contextClasses Fully qualified class names of the Behat contexts the suite uses
+     * @throws RuntimeException if a context class does not exist or contains an invalid step pattern
+     * @return string[]
+     */
+    public static function findUndefinedSteps(string $gherkin, array $contextClasses) : array
+    {
+        //$undefined = GherkinDataType::findUndefinedSteps($featureContent, [UI5BrowserContext::class]);
+        $regexes   = self::getStepRegexes($contextClasses);
+        $undefined = [];
+
+        foreach (self::extractExecutableSteps(StringDataType::splitLines($gherkin)) as [$lineNo, $text]) {
+            if (self::isStepDefined($text, $regexes)) {
+                continue;
+            }
+            // Keyed by line + text: several Examples rows can produce the very same step text,
+            // which must be reported once and not once per row.
+            $undefined[$lineNo . '|' . $text] = 'Line ' . $lineNo . ': Undefined step "' . $text . '"';
+        }
+
+        return self::sortErrorsByLine(array_values($undefined));
+    }
+
+    /**
+     * Returns the steps Behat would actually execute as [line number, step text] pairs.
+     *
+     * Needed because the raw step lines are not what Behat matches against definitions: outline
+     * steps contain <placeholders> that are only replaced per Examples row, and lines inside
+     * DocStrings, tables, comments or free-text descriptions must not be mistaken for steps.
+     *
+     * Outline steps without placeholders are returned once. Steps with placeholders are returned
+     * once per Examples row - an outline without any Examples produces no scenario at runtime,
+     * so its placeholder steps are not returned either.
+     *
+     * @param string[] $lines
+     * @return array<int, array{0: int, 1: string}>
+     */
+    private static function extractExecutableSteps(array $lines) : array
+    {
+        $steps          = [];
+        $inDocString    = false;
+        $inScenario     = false;
+        $inOutline      = false;
+        $inExamples     = false;
+        $outlineSteps   = [];
+        $examplesHeader = null;
+
+        foreach ($lines as $i => $line) {
+            $trimmed = trim($line);
+
+            if (self::startsWith($trimmed, '"""')) {
+                $inDocString = ! $inDocString;
+                continue;
+            }
+            if ($inDocString || $trimmed === '' || self::startsWith($trimmed, '#') || self::startsWith($trimmed, '@')) {
+                continue;
+            }
+
+            // Gherkin keywords are case sensitive - misspelled ones are reported by findErrors().
+            if (preg_match('/^Scenario (Outline|Template):/', $trimmed) === 1) {
+                $inScenario     = true;
+                $inOutline      = true;
+                $inExamples     = false;
+                $outlineSteps   = [];
+                $examplesHeader = null;
+                continue;
+            }
+            if (preg_match('/^(Scenario|Background):/', $trimmed) === 1) {
+                $inScenario = true;
+                $inOutline  = false;
+                $inExamples = false;
+                continue;
+            }
+            // Feature and Rule descriptions are free text, even if a line starts with "Given".
+            if (preg_match('/^(Feature|Rule):/', $trimmed) === 1) {
+                $inScenario = false;
+                $inOutline  = false;
+                $inExamples = false;
+                continue;
+            }
+            if (self::startsWith($trimmed, 'Examples:')) {
+                // Examples under a plain "Scenario:" are reported by checkExamplesRequireOutline().
+                $inExamples     = $inOutline;
+                $examplesHeader = null;
+                continue;
+            }
+
+            if (self::startsWith($trimmed, '|')) {
+                // Outside Examples a table is a step argument - it does not change the step text.
+                if (! $inExamples) {
+                    continue;
+                }
+                $cells = array_map('trim', self::splitTableRow($trimmed));
+                if ($examplesHeader === null) {
+                    $examplesHeader = $cells;
+                    continue;
+                }
+                $replacements = [];
+                foreach ($examplesHeader as $col => $name) {
+                    $replacements['<' . $name . '>'] = $cells[$col] ?? '';
+                }
+                foreach ($outlineSteps as [$lineNo, $text]) {
+                    $steps[] = [$lineNo, strtr($text, $replacements)];
+                }
+                continue;
+            }
+
+            if (! $inScenario) {
+                continue;
+            }
+            $text = self::extractStepText($trimmed);
+            if ($text === null) {
+                // Scenario description line
+                continue;
+            }
+            $inExamples = false;
+
+            if ($inOutline && preg_match('/<[^<>]+>/', $text) === 1) {
+                $outlineSteps[] = [$i + 1, $text];
+            } else {
+                $steps[] = [$i + 1, $text];
+            }
+        }
+
+        return $steps;
+    }
+
+    /**
+     * Returns the step text without its keyword or NULL if the line is not a step.
+     *
+     * Behat matches definitions against the text AFTER the keyword, so the keyword has to be cut
+     * off before matching. Empty steps (a bare "Given") return NULL, because there is nothing a
+     * definition could match.
+     *
+     * @param string $trimmed A single trimmed line
+     * @return string|null
+     */
+    private static function extractStepText(string $trimmed) : ?string
+    {
+        foreach (self::STEP_KEYWORDS as $kw) {
+            if (self::startsWith($trimmed, $kw . ' ')) {
+                $text = trim(substr($trimmed, strlen($kw)));
+                return $text === '' ? null : $text;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Returns TRUE if at least one of the given step regexes matches the step text.
+     *
+     * @param string $stepText Step text without keyword
+     * @param string[] $regexes
+     * @return bool
+     */
+    private static function isStepDefined(string $stepText, array $regexes) : bool
+    {
+        foreach ($regexes as $regex) {
+            if (preg_match($regex, $stepText) === 1) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Returns the step definitions of the given contexts compiled to regular expressions.
+     *
+     * The patterns are converted by Behat's own PatternTransformer instead of a home-made
+     * conversion - any deviation from Behat's turnip rules would report steps as undefined that
+     * work at runtime (or the other way round).
+     *
+     * Cached per set of context classes, because reflection and regex compilation would
+     * otherwise be repeated for every single feature file when a whole suite is checked.
+     *
+     * @param string[] $contextClasses
+     * @throws RuntimeException
+     * @return string[]
+     */
+    private static function getStepRegexes(array $contextClasses) : array
+    {
+        $cacheKey = implode(',', $contextClasses);
+        if (isset(self::$stepRegexCache[$cacheKey])) {
+            return self::$stepRegexCache[$cacheKey];
+        }
+
+        $transformer = new PatternTransformer();
+        // Order matters: the turnip policy accepts ANY pattern, so the regex policy must get
+        // the first chance - otherwise "/^I click (.*)$/" would be treated as literal text.
+        $transformer->registerPatternPolicy(new RegexPatternPolicy());
+        $transformer->registerPatternPolicy(new TurnipPatternPolicy());
+
+        $regexes = [];
+        foreach (self::getStepDefinitionPatterns($contextClasses) as $pattern) {
+            try {
+                $regexes[] = $transformer->transformPatternToRegex($pattern);
+            } catch (\Throwable $e) {
+                throw new RuntimeException('Invalid step definition pattern "' . $pattern . '": ' . $e->getMessage(), null, $e);
+            }
+        }
+
+        return self::$stepRegexCache[$cacheKey] = $regexes;
+    }
+
+    /**
+     * Reads all step definition patterns from the public methods of the given context classes.
+     *
+     * Mirrors what Behat's context readers do: docblock annotations (Given/When/Then, case
+     * insensitive) and the equivalent PHP attributes. Inherited and trait methods are included
+     * by reflection automatically, just like at runtime.
+     *
+     * A missing class is an exception and not an empty result: silently skipping it would make
+     * every step of that context look undefined and hide the real cause - a wrong class name.
+     *
+     * @param string[] $contextClasses
+     * @throws RuntimeException
+     * @return string[]
+     */
+    private static function getStepDefinitionPatterns(array $contextClasses) : array
+    {
+        $patterns = [];
+        foreach ($contextClasses as $class) {
+            if (! class_exists($class)) {
+                throw new RuntimeException('Cannot check for undefined steps: context class "' . $class . '" not found!');
+            }
+            $reflection = new \ReflectionClass($class);
+            // Behat only registers public methods as step definitions.
+            foreach ($reflection->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
+                $docComment = $method->getDocComment();
+                if ($docComment !== false) {
+                    $matches = [];
+                    preg_match_all('/^\s*(?:\/\*\*)?\s*\*?\s*@(?:given|when|then)\s+(.+?)\s*(?:\*\/)?\s*$/im', $docComment, $matches);
+                    array_push($patterns, ...$matches[1]);
+                }
+                foreach (self::STEP_DEFINITION_ATTRIBUTES as $attributeClass) {
+                    foreach ($method->getAttributes($attributeClass) as $attribute) {
+                        $args    = $attribute->getArguments();
+                        $pattern = $args[0] ?? $args['pattern'] ?? null;
+                        if ($pattern !== null) {
+                            $patterns[] = $pattern;
+                        }
+                    }
+                }
+            }
+        }
+        return array_values(array_unique($patterns));
     }
 }
