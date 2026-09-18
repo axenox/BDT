@@ -82,10 +82,10 @@ interface ScreenshotProviderInterface
     /**
      * Store the URL where the screenshot was captured.
      *
-     * @param string $url The URL of the page where the screenshot was taken
+     * @param string|null $url The URL of the page where the screenshot was taken, or NULL if it could not be read
      * @return void
      */
-    public function setUrl(string $url): void;
+    public function setUrl(?string $url): void;
 
     /**
      * Get the URL where the screenshot was captured.
