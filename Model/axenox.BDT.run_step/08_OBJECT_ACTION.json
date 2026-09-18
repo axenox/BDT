@@ -65,33 +65,38 @@
     ],
     "rows": [
         {
-            "_EXPORT_SUMMARY": "BDT step run: Error details [ShowRunStepErrorDetails]",
-            "CREATED_ON": "2026-02-05 14:23:44",
-            "MODIFIED_ON": "2026-02-06 09:00:53",
-            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
-            "UID": "0x11f1bdafe596adc8bdaf025041000001",
+            "_EXPORT_SUMMARY": "BDT step run: Log details [RunStepLogDetailsDialog]",
+            "CREATED_ON": "2026-09-18 11:40:34",
+            "MODIFIED_ON": "2026-09-18 11:47:40",
+            "CREATED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
+            "MODIFIED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
+            "UID": "0x11f19f11fee336889f11025041000001",
             "OBJECT": "0x11f0ac35222d57aeac35025041000001",
-            "ACTION_PROTOTYPE": "exface/core/Actions/ShowObjectEditDialog.php",
-            "ALIAS": "ShowRunStepErrorDetails",
-            "NAME": "Error details",
+            "ACTION_PROTOTYPE": "exface/core/Actions/ShowDialogFromFile.php",
+            "ALIAS": "RunStepLogDetailsDialog",
+            "NAME": "Log details",
             "SHORT_DESCRIPTION": "",
             "CONFIG_UXON": {
                 "icon": "bug",
+                "input_object_alias": "axenox.BDT.run_step",
                 "input_rows_min": 1,
                 "input_rows_max": 1,
-                "object_alias": "exface.Core.MONITOR_ERROR",
-                "input_mappers": [
+                "input_invalid_if": [
                     {
-                        "from_object_alias": "axenox.BDT.run_step",
-                        "column_to_column_mappings": [
+                        "error_text": "This step has no Log-ID",
+                        "operator": "AND",
+                        "conditions": [
                             {
-                                "from": "monitor_error__UID",
-                                "to": "UID"
+                                "expression": "error_log_id",
+                                "comparator": "==",
+                                "value": ""
                             }
                         ]
                     }
-                ]
+                ],
+                "file_path_attribute_alias": "error_log_details_path",
+                "file_extension": "json",
+                "folder_path": "logs/details"
             },
             "APP": "0x11efa2214f96c8b8a221025041000001",
             "USE_IN_OBJECT_BASKET_FLAG": 0,
