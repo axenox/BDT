@@ -216,12 +216,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     private const WORKER_ENV = [
         'XDEBUG_MODE'         => 'off',
         'XDEBUG_SESSION'      => false,
-        'XDEBUG_TRIGGER'      => false,
-        // Force the ExFace Monitor OFF in every lane worker. UI5BrowserContext boots its own workbench
-        // with monitoring ON by default (so manual runs keep it), and reads this var to override that.
-        // Set as a string because Symfony Process removes a var only when the value is false; a string
-        // value is what actually SETS the var in the child environment.
-        'BDT_MONITOR_ENABLED' => '0',
+        'XDEBUG_TRIGGER'      => false
     ];
 
     /**
