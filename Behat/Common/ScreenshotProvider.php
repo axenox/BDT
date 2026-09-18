@@ -112,7 +112,7 @@ class ScreenshotProvider implements ScreenshotProviderInterface
     /**
      * {@inheritDoc}
      */
-    public function setUrl(string $url): void
+    public function setUrl(?string $url): void
     {
         $this->url = $url;
     }
