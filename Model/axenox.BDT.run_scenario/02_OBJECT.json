@@ -87,9 +87,9 @@
         {
             "_EXPORT_SUMMARY": "BDT scenario run [axenox.BDT.run_scenario]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-06-08 15:49:48",
+            "MODIFIED_ON": "2026-09-18 11:49:14",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
-            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
             "UID": "0x11f08f0e222d25a48f0e025041000001",
             "READABLE_FLAG": 1,
             "WRITABLE_FLAG": 1,
@@ -215,7 +215,7 @@
                                                 "bind_to_double_click": true
                                             },
                                             {
-                                                "action_alias": "axenox.BDT.ShowRunStepErrorDetails",
+                                                "action_alias": "axenox.BDT.RunStepLogDetailsDialog",
                                                 "disabled_if": {
                                                     "operator": "AND",
                                                     "conditions": [
