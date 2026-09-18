@@ -1,0 +1,245 @@
+{
+    "object_alias": "axenox.GenAI.AI_SKILL",
+    "columns": [
+        {
+            "name": "_EXPORT_SUMMARY",
+            "hidden": true,
+            "attribute_alias": "NAME"
+        },
+        {
+            "name": "CREATED_ON",
+            "attribute_alias": "CREATED_ON"
+        },
+        {
+            "name": "MODIFIED_ON",
+            "attribute_alias": "MODIFIED_ON"
+        },
+        {
+            "name": "CREATED_BY_USER",
+            "attribute_alias": "CREATED_BY_USER"
+        },
+        {
+            "name": "MODIFIED_BY_USER",
+            "attribute_alias": "MODIFIED_BY_USER"
+        },
+        {
+            "name": "UID",
+            "attribute_alias": "UID"
+        },
+        {
+            "name": "NAME",
+            "attribute_alias": "NAME"
+        },
+        {
+            "name": "ALIAS",
+            "attribute_alias": "ALIAS"
+        },
+        {
+            "name": "DESCRIPTION",
+            "attribute_alias": "DESCRIPTION"
+        },
+        {
+            "name": "APP",
+            "attribute_alias": "APP"
+        },
+        {
+            "name": "INSTRUCTIONS",
+            "attribute_alias": "INSTRUCTIONS"
+        },
+        {
+            "name": "CONFIG_UXON",
+            "attribute_alias": "CONFIG_UXON"
+        },
+        {
+            "name": "PROTOTYPE_CLASS",
+            "attribute_alias": "PROTOTYPE_CLASS"
+        }
+    ],
+    "rows": [
+        {
+            "_EXPORT_SUMMARY": "Gherkin Feature Management",
+            "CREATED_ON": "2026-09-17 00:00:00",
+            "MODIFIED_ON": "2026-09-17 09:30:52",
+            "CREATED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "MODIFIED_BY_USER": "0x11e8fe1c902c8ebea23ee4b318306b9a",
+            "UID": "0x2e9f4a65d6804e4ca7a39c0407e08b61",
+            "NAME": "Gherkin Feature Management",
+            "ALIAS": "GherkinReadWrite",
+            "DESCRIPTION": "Supports analyzing, creating and maintaining automatable Gherkin feature files for BDT while enforcing the available step catalog and validation before saving.",
+            "APP": "0x11efa2214f96c8b8a221025041000001",
+            "INSTRUCTIONS": [
+                "// Multiline text delimited by `\n`",
+                "# Gherkin Feature Management",
+                "",
+                "You support analyzing, creating and maintaining automatable Gherkin feature files.",
+                "",
+                "## Available Steps",
+                "",
+                "[#gherkin_step_catalog#]",
+                "",
+                "## Workflow",
+                "",
+                "1. Before every creation or change, inspect the existing `.feature` files in the relevant `Tests` directory.",
+                "2. Use `read_folder` or `search_files` to find existing features and possible overlap before reading, creating or changing a feature.",
+                "3. Read every functionally affected feature file with `read_file` before proposing or making changes.",
+                "4. Use only step formulations from the provided step catalog. Copy them exactly and do not invent synonyms.",
+                "5. If a required step does not exist, do not add it as an executable step. Clearly report the missing step and suggest a possible formulation separately.",
+                "6. Prefer extending an existing feature over creating a new feature when behavior, domain and business context belong together.",
+                "7. Use `patch_file` for changes to existing files. Read the current file immediately before patching and use small, unique SEARCH/REPLACE blocks.",
+                "8. Use `write_file` only to import or create a new `.feature` file. Do not overwrite an existing file unless the user explicitly asks for a full overwrite.",
+                "9. Preserve existing tags, feature descriptions, backgrounds, scenario names, comments, indentation and line endings unless they must change.",
+                "10. Avoid duplicate scenarios and redundant test coverage.",
+                "11. Before using `write_file` or `patch_file`, validate the complete final Gherkin content with `validate_gherkin` in strict mode. If validation returns errors, fix the content and validate again before saving.",
+                "12. After saving, validate the saved file content again with `validate_gherkin` and report any remaining diagnostics explicitly.",
+                "",
+                "## Quality Rules",
+                "",
+                "* Describe observable business behavior instead of technical implementation details.",
+                "* Keep every scenario focused on one clearly bounded behavior.",
+                "* Use `Background` only for setup that is genuinely shared by multiple scenarios.",
+                "* Use `Scenario Outline` only for the same behavior with several data sets.",
+                "* Cover positive flows, relevant error cases, boundaries, permissions and regressions when they follow from the requirement.",
+                "* Do not invent pages, roles, labels, test data or expected results.",
+                "* Before write operations, briefly state which file will be created or changed and why.",
+                "* Perform write or patch operations only when the user has requested creation or modification.",
+                "* Report precisely which files and scenarios were created or changed. Include the validation result."
+            ],
+            "CONFIG_UXON": {
+                "concepts": {
+                    "gherkin_step_catalog": {
+                        "alias": "axenox.BDT.GherkinStepCatalogConcept",
+                        "include_contexts": true,
+                        "include_step_descriptions": true,
+                        "include_heading": true,
+                        "heading_level": 2,
+                        "max_steps": 300
+                    }
+                },
+                "tools": {
+                    "read_gherkin_folder": {
+                        "alias": "axenox.GenAI.FolderReadTool",
+                        "description": "Lists files and subfolders in installed app Tests directories. Use before reading or creating features to discover existing feature files and their folder structure.",
+                        "use_vendor_folder_as_base": true,
+                        "allowed_paths": [
+                            "*/*/Tests",
+                            "*/*/Tests/**"
+                        ],
+                        "depth": 4,
+                        "arguments": [
+                            {
+                                "name": "path",
+                                "description": "Path to a Tests directory relative to the vendor folder, for example axenox/bdt/Tests."
+                            }
+                        ]
+                    },
+                    "search_gherkin_files": {
+                        "alias": "axenox.GenAI.FileSearchTool",
+                        "description": "Searches Tests directories for existing feature files, scenarios, tags or text. Never search the whole vendor folder without a restricted Tests path.",
+                        "use_vendor_folder_as_base": true,
+                        "allowed_paths": [
+                            "*/*/Tests",
+                            "*/*/Tests/**"
+                        ],
+                        "include_extract_line": true
+                    },
+                    "read_gherkin_file": {
+                        "alias": "axenox.GenAI.FileReadTool",
+                        "description": "Reads the current content of an existing Gherkin feature file. Use before every patch and before deciding whether to reuse or extend an existing feature.",
+                        "use_vendor_folder_as_base": true,
+                        "allowed_paths": [
+                            "*/*/Tests/*.feature",
+                            "*/*/Tests/**/*.feature"
+                        ],
+                        "include_instructions_for_github_copilot": true,
+                        "arguments": [
+                            {
+                                "name": "path",
+                                "description": "Path of an existing .feature file relative to the vendor folder, for example axenox/bdt/Tests/Behat/Features/example.feature."
+                            }
+                        ]
+                    },
+                    "validate_gherkin": {
+                        "alias": "axenox.BDT.GherkinValidateTool",
+                        "description": "Validates complete Gherkin feature content before and after saving. Use strict mode before every write_file or patch_file operation and fix diagnostics before saving whenever possible."
+                    },
+                    "write_gherkin_file": {
+                        "alias": "axenox.GenAI.FileWriteTool",
+                        "description": "Imports or creates a new Gherkin feature file in a Tests directory. Use only for new files or, when explicitly requested, for complete overwrites. Validate the complete content with validate_gherkin before calling this tool.",
+                        "use_vendor_folder_as_base": true,
+                        "allowed_paths": [
+                            "*/*/Tests/*.feature",
+                            "*/*/Tests/**/*.feature"
+                        ],
+                        "arguments": [
+                            {
+                                "name": "path",
+                                "description": "Target .feature path relative to the vendor folder. Only files inside a Tests directory are allowed.",
+                                "data_type": {
+                                    "alias": "exface.Core.String"
+                                }
+                            },
+                            {
+                                "name": "content",
+                                "description": "Complete UTF-8 Gherkin feature file content. This must already have passed validate_gherkin in strict mode.",
+                                "data_type": {
+                                    "alias": "exface.Core.String"
+                                }
+                            }
+                        ]
+                    },
+                    "patch_gherkin_file": {
+                        "alias": "axenox.GenAI.FilePatchTool",
+                        "description": "Changes an existing Gherkin feature file with small, exact SEARCH/REPLACE blocks. Use after an immediate read_file and prefer it over full overwrites. Validate the complete resulting content with validate_gherkin before calling this tool.",
+                        "use_vendor_folder_as_base": true,
+                        "allowed_paths": [
+                            "*/*/Tests/*.feature",
+                            "*/*/Tests/**/*.feature"
+                        ],
+                        "arguments": [
+                            {
+                                "name": "path",
+                                "description": "Path of the .feature file to change relative to the vendor folder.",
+                                "data_type": {
+                                    "alias": "exface.Core.String"
+                                }
+                            },
+                            {
+                                "name": "patch",
+                                "description": "One or more SEARCH/REPLACE blocks. Every SEARCH section must exactly match the last read file content, including indentation and spaces. The resulting complete feature content must already have passed validate_gherkin in strict mode.",
+                                "data_type": {
+                                    "alias": "exface.Core.String"
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+            "PROTOTYPE_CLASS": "axenox/genai/AI/Skills/GenericSkill.php"
+        }
+    ],
+    "totals_rows": [],
+    "filters": {
+        "operator": "AND",
+        "base_object_alias": "axenox.GenAI.AI_SKILL",
+        "conditions": [
+            {
+                "expression": "APP",
+                "comparator": "=",
+                "value": "0x11efa2214f96c8b8a221025041000001",
+                "object_alias": "axenox.GenAI.AI_SKILL"
+            }
+        ]
+    },
+    "rows_limit": null,
+    "rows_offset": 0,
+    "sorters": [
+        {
+            "attribute_alias": "CREATED_ON",
+            "direction": "ASC"
+        },
+        {
+            "attribute_alias": "UID",
+            "direction": "ASC"
+        }
+    ]
+}
