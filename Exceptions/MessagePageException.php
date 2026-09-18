@@ -25,7 +25,7 @@ class MessagePageException extends RuntimeException
     {
         $debugMessage = parent::createDebugWidget($debugMessage);
         $tab = $debugMessage->createTab();
-        $tab->setCaption($this->getBrowserName());
+        $tab->setCaption('Chrome');
         $tab->addWidget(WidgetFactory::createFromUxonInParent($tab, new UxonObject([
             'widget_type' => 'Markdown',
             'height' => '100%',
