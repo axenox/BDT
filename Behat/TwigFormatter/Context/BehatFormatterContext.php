@@ -90,7 +90,17 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
      * step row exists at all (dry run, no open scenario, a failed step INSERT), so with no name there is
      * also no row for the screenshot to be attached to. Generating a substitute name would produce an
      * orphaned file that nothing in the UI can ever reach.
-     * 
+     *
+     * WHY A SESSION THAT WAS NEVER STARTED MEANS "SKIP": when a step fails before the browser session
+     * exists (typically a Background step that could not reach Chrome), the driver has no page object.
+     * Every capture attempt then dies on a null page inside the driver, burns the retry sleeps and
+     * stacks a misleading "screenshot failed" entry on top of the real step failure.
+     *
+     * WHY THE URL IS BEST-EFFORT: the URL is context, the image is the evidence. Reading the URL waits
+     * for the DOM and can fail while the screenshot itself still works (page still loading, JS dialog).
+     * A missing URL is therefore stored as NULL instead of failing the capture - and NULL is stored
+     * explicitly so that a URL from an earlier step can never be attached to this image.
+     *
      *  THROWS ON FINAL FAILURE BY DESIGN: every current caller guards it - the AfterStep hook catches
      *  it, and UI5Browser::captureScreenshot() routes it into ErrorManager. That is deliberate, because
      *  a swallowed failure here would lose the only trace that evidence was not collected. Any NEW
@@ -107,15 +117,16 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
         }
 
         $fileNameBase = $this->provider->getName();
-        try {
-            $currentUrl = $this->getSession()->getCurrentUrl();
-        } catch (\Throwable $e) {
-            ErrorManager::getInstance()->logException($e, $this->getWorkbench());
-        }
+
         if ($fileNameBase === null || $fileNameBase === '') {
             // Not an error worth raising: the step this screenshot would document was never recorded,
             // so there is nothing that could reference the image.
             error_log('Screenshot skipped: no step is currently recorded, so the image would have no owning row.');
+            return;
+        }
+
+        if (! $this->getSession()->isStarted()) {
+            error_log('Screenshot skipped: the browser session is not started, so there is no page to capture.');
             return;
         }
 
@@ -145,10 +156,8 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
         for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
             try {
                 $this->saveScreenshot($fileName, $dir);
-                $this->provider->setScreenshot($fileName, $relativePath);
-                $this->provider->setUrl($currentUrl ?? null);
-                return;
-            } catch (\Throwable $e) {
+                break;
+            } catch (\Exception $e) {
                 if ($attempt === $maxAttempts) {
                     error_log('Screenshot failed after ' . $maxAttempts . ' attempts: ' . $e->getMessage());
                     throw $e;
@@ -156,5 +165,17 @@ class BehatFormatterContext extends MinkContext implements SnippetAcceptingConte
                 sleep(2);
             }
         }
+
+        $this->provider->setScreenshot($fileName, $relativePath);
+
+        $currentUrl = null;
+        try {
+            $currentUrl = $this->getSession()->getCurrentUrl();
+        } catch (\Throwable $e) {
+            // error_log, not ErrorManager: ErrorManager would replace the last log id, and the step row
+            // must keep pointing at the log entry of the real step failure.
+            error_log('Screenshot stored without URL: the current URL could not be read: ' . $e->getMessage());
+        }
+        $this->provider->setUrl($currentUrl);
     }
 }

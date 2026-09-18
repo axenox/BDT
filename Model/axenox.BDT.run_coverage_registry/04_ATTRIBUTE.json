@@ -785,7 +785,7 @@
         {
             "_EXPORT_SUMMARY": "Run uid [run_uid]",
             "CREATED_ON": "2026-09-04 10:37:38",
-            "MODIFIED_ON": "2026-09-04 10:38:12",
+            "MODIFIED_ON": "2026-09-18 10:13:41",
             "CREATED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
             "MODIFIED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
             "UID": "0x11f1b273e2a8c4ceb273025041000001",
@@ -828,9 +828,7 @@
             "DATA_ADDRESS_PROPS": null,
             "DEFAULT_VALUE": "",
             "FIXED_VALUE": "",
-            "CUSTOM_DATA_TYPE": {
-                "length_max": 32
-            }
+            "CUSTOM_DATA_TYPE": null
         }
     ],
     "totals_rows": [],
