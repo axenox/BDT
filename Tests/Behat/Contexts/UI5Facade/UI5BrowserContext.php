@@ -373,6 +373,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function prepareBeforeStep(BeforeStepScope $scope): void
     {
+        // Cleared before anything else and outside every guard below: a step's verdict now depends on what
+        // the ErrorManager holds when the step ends, so an error left over from an earlier step would fail
+        // an innocent one. Clearing needs neither a browser nor a live session, so no early return may skip it.
+        ErrorManager::getInstance()->clearErrors();
+        
         // Must run FIRST: every call below talks to the browser. Placed above the browser check because a
         // failed recovery can leave no UI5Browser behind, and returning first would switch off every later
         // recovery attempt for the rest of the scenario. ensureChromeAlive() needs no browser.
@@ -385,7 +390,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
 
         try {
-            ErrorManager::getInstance()->clearErrors();
             $this->getBrowser()->clearXHRLog();
 
             $this->getBrowser()->getErrorDetector()->installHttpInterceptor();
