@@ -439,9 +439,12 @@ JS;
      * right for an explicit "open the overflow menu" step, but wrong for a fallback search - there we
      * simply want to look into every menu in reach instead of failing on ambiguity.
      *
+     * WHY IT IS PUBLIC: the browser's button absence check must see the same overflow buttons the fallback
+     * search of this node sees, otherwise the two could disagree on which toolbar belongs to the widget.
+     * 
      * @return NodeElement[]
      */
-    protected function findOverflowButtons(): array
+    public function findOverflowButtons(): array
     {
         // The node element first: when the toolbar IS inside it, these buttons are unambiguous by
         // definition and the scope must not be widened any further.
@@ -641,21 +644,43 @@ JS;
     public function findInOverflow(callable $search): ?NodeElement
     {
         $button = $this->findOverflowButton();
+        if ($button === null) {
+            return null;
+        }
+        return $this->findInOverflowOf($button, $search);
+    }
+
+    /**
+     * Opens the given overflow button's menu and runs the search inside it.
+     *
+     * WHY IT IS SPLIT FROM findInOverflow(): findInOverflow() first has to decide WHICH overflow button
+     * belongs to this node and refuses ambiguous scopes. The button absence check already holds the exact
+     * overflow button it wants to inspect - it walks every visible "..." of the search scope - and must not
+     * be turned away by that ownership rule. Opening, searching and closing stay in one place, so both
+     * paths handle the popover identically.
+     *
+     * WHY IT CLOSES THE MENU WHEN NOTHING IS FOUND: the caller will report "not found" and go on working
+     * with the page behind the popover, which an open popover would swallow the next click of.
+     *
+     * @param NodeElement $overflowButton The overflow ("...") button whose menu is searched
+     * @param callable $search Receives the opened popover NodeElement, returns a NodeElement or null
+     * @return NodeElement|null
+     */
+    public function findInOverflowOf(NodeElement $overflowButton, callable $search): ?NodeElement
+    {
         // UI5 keeps the overflow button in the DOM even while the toolbar has room for all its
         // buttons. Clicking a hidden one does nothing and would only burn a full menu timeout.
-        if ($button === null || ! $this->isElementVisibleInBrowser($button)) {
+        if (! $this->isElementVisibleInBrowser($overflowButton)) {
             return null;
         }
 
-        $menu = $this->pressOverflowButton($button);
+        $menu = $this->pressOverflowButton($overflowButton);
         if ($menu === null) {
             return null;
         }
 
         $found = $search($menu);
         if ($found === null) {
-            // Leave the UI as we found it: the caller will report "not found" and go on working with
-            // the page behind the popover.
             $this->closeOverflowMenuIfOpened();
         }
         return $found;
