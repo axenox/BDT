@@ -3,6 +3,7 @@ namespace axenox\BDT\Actions;
 
 use axenox\BDT\Behat\Common\BdtPaths;
 use axenox\BDT\Behat\Common\Traits\ChromeProfileReaperTrait;
+use axenox\BDT\Behat\Common\Traits\FeaturePathResolverTrait;
 use axenox\BDT\Behat\Common\Traits\PortProbingTrait;
 use exface\Core\CommonLogic\AbstractActionDeferred;
 use exface\Core\CommonLogic\Actions\ServiceParameter;
@@ -40,6 +41,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
 {
     use PortProbingTrait;
     use ChromeProfileReaperTrait;
+    use FeaturePathResolverTrait;
     // CLI option names - kept as constants so the option declarations in getCliOptions()
     // and the reads via getTaskParam() can never drift apart.
     private const OPT_BEHAT_CONFIG = 'behat_config';
@@ -138,19 +140,15 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
         }
         
         $cwd = $this->getWorkbench()->getInstallationPath();
-        
-        // The feature path must be checked against the directory BEHAT will run in, not against the
-        // PHP process's own working directory: under IIS those are different, so a relative path -
-        // the natural thing to type into the console preset - would be rejected here even though
-        // Behat resolves it fine. Only the existence check is resolved; the original value is passed
-        // on unchanged, because Behat applies exactly the same base.
+
+        // The feature path is resolved through the SAME resolver RunParallel uses: vendor folder first,
+        // then the installation root. The vendor-relative form is what this framework itself prints
+        // (run log, run_feature.filename, recorded rerun command), so it is the form a tester copies
+        // back in - and checking it only against the installation root rejected every such path.
+        // The RESOLVED absolute path is handed on to Behat, not the raw value: Behat runs with the
+        // installation root as CWD, so a vendor-relative value would not resolve there either.
         if ($feature !== '') {
-            $featureAbs = FilePathDataType::isRelative($feature)
-                ? FilePathDataType::normalize($cwd . DIRECTORY_SEPARATOR . $feature)
-                : $feature;
-            if (! file_exists($featureAbs)) {
-                throw new RuntimeException('feature does not exist: ' . $feature . ' (resolved to ' . $featureAbs . ')');
-            }
+            $feature = $this->resolveFeatureScanRoot($feature);
         }
 
         // These become the positional arguments of performDeferred() - order MUST match its
@@ -526,7 +524,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
             $cmd .= $this->cliOption('tags', $tags);
         }
         if ($feature !== null && $feature !== '') {
-            $cmd .= $this->cliOption('feature', $feature);
+            $cmd .= $this->cliOption('feature', $this->featureRelativePath($feature));
         }
         if ($suite !== null && $suite !== '') {
             $cmd .= $this->cliOption('suite', $suite);
