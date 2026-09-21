@@ -4,6 +4,7 @@ namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 use axenox\BDT\Behat\Common\Attributes\ResumeSafeStep;
 use axenox\BDT\Behat\Common\ErrorManager;
 use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5AbstractNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ButtonNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ContainerNode;
@@ -1366,6 +1367,68 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     public function iSeeTheValueInColumnHighlightedIn(string $columnName, string $color): void
     {
         $this->getFocusedDataTableNode()->assertColumnValuesColored($columnName, $color);
+    }
+
+    /**
+     * Checks that a confirmation popup with the given title is open and makes it the area you are looking at.
+     *
+     * Deleting data, discarding inputs and similar actions ask for confirmation in a small popup
+     * with its own buttons. Such a popup is not a widget of the page, so "I see 1 widget of type Dialog"
+     * does not find it - use this step instead. Write the title exactly as it appears on screen.
+     *
+     * After this step, "I click button ..." searches inside the confirmation first. That matters because
+     * its buttons are often named like the button that opened it: without this step, clicking "Löschen"
+     * would press the table's "Löschen" again instead of confirming.
+     *
+     * Once the confirmation closes, the area you looked at before (e.g. the table) is active again.
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   And I select table row 1
+     *   And I click button "Löschen"
+     *   Then I see a confirmation with "Wirklich löschen?"
+     *   When I click button "Löschen"
+     *
+     * @Then I see a confirmation with :title
+     *
+     * @param string $title Title of the confirmation as rendered
+     */
+    public function iSeeAConfirmationWith(string $title): void
+    {
+        // The MessageBox is opened by the click of the previous step and may still be animating in.
+        // Waiting for ANY open MessageBox first keeps the title lookup below from racing that animation;
+        // the return value is ignored on purpose, the assertion below reports the actual outcome.
+        $this->getBrowser()->getWaitManager()->waitForDOMElements('.sapMMessageDialog.sapMDialogOpen', 1, 10);
+
+        // The lookup lives in UI5AbstractNode and only needs a node bound to this session - it always
+        // searches the whole page, because MessageBoxes render into UI5's static area outside every widget.
+        $pageNode = new GenericHtmlNode(
+            $this->getSession()->getPage()->find('css', 'body'),
+            $this->getSession(),
+            $this->getBrowser()
+        );
+        $confirmation = $pageNode->findOpenConfirmationByTitle($title);
+
+        // Name what IS on screen: a typo in the title and "no confirmation at all" need different fixes.
+        if ($confirmation === null) {
+            $openTitles = [];
+            foreach ($this->getSession()->getPage()->findAll('css', '.sapMMessageDialog.sapMDialogOpen .sapMDialogTitle') as $titleEl) {
+                $openTitles[] = '"' . trim($titleEl->getText()) . '"';
+            }
+            Assert::fail(sprintf(
+                'Expected an open confirmation with title "%s", but %s',
+                $title,
+                empty($openTitles) ? 'no confirmation is open' : 'found only: ' . implode(', ', $openTitles)
+            ));
+        }
+
+        $this->getBrowser()->highlightWidget($confirmation, 'Dialog', 0);
+
+        // Pushed on top of the stack WITHOUT clearing it. WHY: the confirmation is short-lived - once
+        // answered, UI5 destroys it, pruneDeadFocus() drops it and the widget focused before (usually the
+        // table the row was deleted from) is active again for the following assertions.
+        $this->getBrowser()->focus($confirmation);
     }
 
     /**
