@@ -1348,23 +1348,48 @@ JS
      * WHY THE TITLE IS PART OF THE SELECTOR: `sapMMessageDialog` is worn by every MessageBox the
      * core raises - delete confirmations, error popups, "discard inputs" warnings. Dismissing
      * whatever wears that class would hide real problems instead of solving one. The dialog is
-     * therefore identified by the combination of "is an open dialog" and "carries exactly this
+     * therefore identified by the combination of "is an open MessageBox" and "carries exactly this
      * translated title".
+     *
+     * WHY IT DELEGATES: the lookup itself is shared with the "I see a confirmation with ..." step,
+     * so what "an open confirmation with this title" means is defined in one place only.
      *
      * @return NodeElement|null
      */
     protected function findDiscardChangesConfirmation(): ?NodeElement
     {
-        $title = $this->translate(self::TRANSLATION_DISCARD_CHANGES_TITLE);
+        return $this->findOpenConfirmationByTitle(
+            $this->translate(self::TRANSLATION_DISCARD_CHANGES_TITLE)
+        );
+    }
+
+    /**
+     * Returns the top-most open MessageBox whose title is exactly the given text, or null.
+     *
+     * WHY THIS EXISTS: confirmations raised by the core (delete, discard changes, ...) are
+     * sap.m.MessageBox instances, not widgets of the UI model. They carry no exfw class and only an
+     * auto-generated id, so the widget lookups ("I see 1 widget of type Dialog") cannot find them.
+     * The title is the only stable thing that tells one confirmation apart from another.
+     *
+     * WHY sapMMessageDialog IS REQUIRED: without it, a regular dialog of the UI model that happens
+     * to carry the same title would be accepted as a confirmation.
+     *
+     * WHY THE LAST VISIBLE MATCH: UI5 appends newly opened dialogs to the static area, so the last
+     * one is the top-most. Earlier matches can be leftovers of dialogs that are being closed.
+     *
+     * @param string $title Title exactly as rendered, i.e. already in the language of the test user
+     * @return NodeElement|null
+     */
+    public function findOpenConfirmationByTitle(string $title): ?NodeElement
+    {
         $xpath = sprintf(
-            '//div[contains(concat(" ", normalize-space(@class), " "), " sapMDialogOpen ")]'
+            '//div[contains(concat(" ", normalize-space(@class), " "), " sapMMessageDialog ")]'
+            . '[contains(concat(" ", normalize-space(@class), " "), " sapMDialogOpen ")]'
             . '[.//h1[contains(concat(" ", normalize-space(@class), " "), " sapMDialogTitle ")]'
             . '[normalize-space(.)=%s]]',
             $this->xpathLiteral($title)
         );
 
-        // Prefer the last match: UI5 appends newly opened dialogs, so the last one is the
-        // top-most. Earlier matches can be leftovers of dialogs that were already dismissed.
         foreach (array_reverse($this->getSession()->getPage()->findAll('xpath', $xpath)) as $el) {
             if ($this->isElementVisibleInBrowser($el)) {
                 return $el;
