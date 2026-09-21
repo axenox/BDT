@@ -2,6 +2,7 @@
 namespace axenox\BDT\AI\Tools;
 
 use axenox\BDT\DataTypes\GherkinDataType;
+use axenox\BDT\Tests\Behat\Contexts\UI5Facade\UI5BrowserContext;
 use axenox\GenAI\Common\AbstractAiTool;
 use axenox\GenAI\Common\AiToolResultString;
 use axenox\GenAI\Exceptions\AiToolRuntimeError;
@@ -52,8 +53,9 @@ class GherkinValidateTool extends AbstractAiTool
             $strict = $this->parseStrictArgument($strictInput);
             $errors = GherkinDataType::findErrors($gherkin, $strict);
             
-            // TODO adding the method findWarnings
-            //$warnings = GherkinDataType::findWarnings($gherkin, $strict);
+            // TODO the facade should be defined because the steps depends on the facade,
+            // we now use just UI5 but in the future this can be used as a parameter
+            $undefinedSteps = GherkinDataType::findUndefinedSteps($gherkin, [UI5BrowserContext::class]);
 
             return new AiToolResultString(
                 $this,
@@ -67,6 +69,13 @@ class GherkinValidateTool extends AbstractAiTool
                             'message' => $error,
                         ],
                         $errors
+                    ),
+                    'undefinedSteps' => array_map(
+                        static fn(string $step): array => [
+                            'line' => self::extractLineNo($step),
+                            'message' => $step,
+                        ],
+                        $undefinedSteps
                     ),
                     'message' => $errors === [] ? 'Gherkin is valid.' : GherkinDataType::formatErrors($errors),
                 ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
