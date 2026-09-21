@@ -1247,6 +1247,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             'duration_ms' => 0,
             'status' => StepStatusDataType::FAILED
         ];
+        $ds->addRow($row);
         if ($e) {
             $ds->setCellValue('error_message', 0, $e->getMessage());
             if ($e instanceof ExceptionInterface) {
@@ -1254,7 +1255,6 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             }
             $this->workbench->getLogger()->logException($e);
         }
-        $ds->addRow($row);
         $ds->dataCreate(false);
         return $ds;
     }
@@ -1375,7 +1375,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         $sorted = $roles;
         sort($sorted);
         return implode('|', $sorted);
-    }    
+    }
 
     /**
      * Guaranteed to run even on fatal PHP errors and uncaught exceptions.
