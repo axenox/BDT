@@ -1640,7 +1640,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string|null $tableName Optional caption or object of the widget to search in
      * @throws \Exception If a button is not found
      */
-    public function iSeeButton(string $buttonText, string $tableName = null): void
+    public function iSeeButton(string $buttonText, ?string $tableName = null): void
     {
         $result = $this->findVisibleButtons($buttonText, $tableName);
 
@@ -2706,6 +2706,62 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $result['found'],
             (count($result['found']) === 1 ? 'Unexpected button found: ' : 'Unexpected buttons found: ')
             . implode(', ', array_keys($result['found']))
+        );
+    }
+
+    /**
+     * Checks that the user does not see a single action button.
+     *
+     * Made for read-only permission tests: instead of listing every button a user must not see, this step
+     * fails as soon as any action button is shown. It keeps working when buttons are renamed or new ones are
+     * added, without touching the feature file.
+     *
+     * If a widget is focused (e.g. a dialog or a tab opened by "I click tab"), only that widget is checked;
+     * without focus the whole page is checked. Buttons hidden in a toolbar's "..." menu are checked too, and
+     * greyed-out buttons count as seen.
+    // >>> CHANGED - was:
+    //  * The close button of a dialog and launchpad tiles are not counted.
+     * Not counted: the close button of a dialog, launchpad tiles, and the buttons the core adds to every
+     * data toolbar (global actions like export or favorites, search and reset). Buttons of a tab that is not
+     * opened are not visible and therefore not checked - open the tab first.
+    // <<< END CHANGED
+     *
+     * Usage examples:
+     *
+     *   Then I do not see any buttons at all
+     *
+     *   When I click tab "Positions"
+     *   Then I do not see any buttons at all
+     *
+     * @Then I do not see any buttons at all
+     * @Then I should not see any buttons at all
+     */
+    public function iDoNotSeeAnyButtons(): void
+    {
+        $browser = $this->getBrowser();
+
+        $overflow = $browser->findActionButtonsBehindOverflow();
+        $buttons = array_merge($browser->findVisibleActionButtons(), $overflow['buttons']);
+
+        $found = [];
+        foreach ($buttons as $index => $button) {
+            $element = $button->getNodeElement();
+            $browser->highlightWidget($element, 'Button', $index);
+            $caption = trim((string)$button->getCaption());
+            if ($caption === '') {
+                $caption = trim((string)$element->getAttribute('title'));
+            }
+            $found[] = $caption !== '' ? '"' . $caption . '"' : 'a button without caption (' . $button->getWidgetType() . ')';
+        }
+
+        Assert::assertEmpty(
+            $found,
+            'Expected no buttons in ' . $browser->describeSearchScope() . ', but found: ' . implode(', ', $found)
+        );
+        Assert::assertEmpty(
+            $overflow['uninspected'],
+            'Cannot prove that there are no buttons in ' . $browser->describeSearchScope() . ': the toolbar overflow'
+            . ' menu(s) ' . implode(', ', $overflow['uninspected']) . ' could not be opened and checked.'
         );
     }
 
