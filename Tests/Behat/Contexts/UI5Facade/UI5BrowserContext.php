@@ -1888,6 +1888,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * captions followed by values, while older scenarios use "Column" and "Value" pairs. Behat's
      * getHash() represents these shapes differently, so normalising them here keeps feature-table
      * interpretation in the step and guarantees the node receives typed captions and values.
+    * The last rendered row is resolved once because jExcel may append a new blank row after the
+    * first edit; resolving it for every value would spread one input record across multiple rows.
      *
      * Usage examples:
      *
@@ -1917,11 +1919,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iFillTheNthRowOfDataSpreadsheetWith(TableNode $table, int|string|null $rowIndex = null): void
     {
-        $nodes = $this->getBrowser()->getFocusedNode();
-        $node = $nodes[0] ?? null;
+        $node = $this->getBrowser()->getFocusedNode();
         Assert::assertInstanceOf(UI5DataSpreadSheetNode::class, $node, 'No DataSpreadSheet widget found.');
         $rowNumber = $rowIndex === null || strtolower((string) $rowIndex) === 'last'
-            ? null
+            ? count($node->getTableRows())
             : (int) $rowIndex;
 
         $tableRows = $table->getHash();
