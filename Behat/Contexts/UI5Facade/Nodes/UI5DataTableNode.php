@@ -1718,57 +1718,6 @@ JS
     }
 
     /**
-     * Opens the toolbar overflow ("...") menu of THIS table and returns the opened popover.
-     *
-     * WHY IT RETURNS THE POPOVER: the step that follows this one always wants to act on an entry of
-     * that menu. Handing back the resolved container means the follow-up step never has to search
-     * the page for "a popover" and can never act on the menu of the neighbouring table.
-     *
-     * @throws RuntimeException If no overflow button is rendered, if it is rendered but hidden, or
-     *         if clicking it does not open the menu.
-     * @return NodeElement The opened overflow popover.
-     */
-    public function clickOverflowButton(): NodeElement
-    {
-        $button = $this->findOverflowButton();
-        if ($button === null) {
-            throw new RuntimeException(
-                'Overflow button not found for table `' . $this->getCaption() . '`'
-            );
-        }
-
-        // Distinguish "not rendered" from "rendered but hidden": UI5 keeps the overflow button in the
-        // DOM and only shows it once the toolbar actually overflows. Clicking a hidden button does
-        // nothing at all, which would otherwise surface as the misleading "menu did not open" below.
-        if (! $this->isElementVisibleInBrowser($button)) {
-            throw new RuntimeException(
-                'Overflow button of table `' . $this->getCaption()
-                . '` exists but is not visible - the toolbar is wide enough to show all buttons'
-            );
-        }
-
-        $this->getBrowser()->highlightWidget($button, 'Button', 0);
-        $button->click();
-
-        $menu = $this->waitForOverflowMenu($button);
-        if ($menu === null) {
-            // Retry once: the first click is occasionally swallowed while UI5 is still attaching the
-            // toolbar press handler, and a second click then opens the menu.
-            $button->click();
-            $menu = $this->waitForOverflowMenu($button);
-        }
-
-        if ($menu === null) {
-            throw new RuntimeException(
-                'Overflow button of table `' . $this->getCaption()
-                . '` was clicked, but its overflow menu did not become visible'
-            );
-        }
-
-        return $menu;
-    }
-
-    /**
      * Clicks an entry of this table's toolbar overflow menu, opening the menu first if needed.
      *
      * WHY IT OPENS THE MENU ITSELF: a scenario reads "click X in the overflow menu" as one action.
