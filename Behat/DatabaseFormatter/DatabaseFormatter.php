@@ -40,6 +40,7 @@ use exface\Core\DataTypes\SortingDirectionsDataType;
 use exface\Core\DataTypes\StringDataType;
 use exface\Core\Events\Workbench\OnCleanUpEvent;
 use exface\Core\Exceptions\DataSources\DataQueryUniqueConstraintError;
+use exface\Core\Exceptions\InternalError;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Factories\DataSheetFactory;
 use exface\Core\Factories\UiPageFactory;
@@ -1764,8 +1765,21 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         
         try {
             self::cleanUpTestRuns($event);
-        } finally {
+        } catch (\Throwable $e) {
+            if (! $e instanceof ExceptionInterface) {
+                $e = new InternalError($e->getMessage(), null, $e);
+            }
+            $event->addResultMessage('BDT test run cleanup failed: see Log-ID "' . $e->getLogId() . '". ' . $e->getMessage());
+            $event->getWorkbench()->getLogger()->logException($e);
+        }
+        try {
             self::cleanUpTestData($event);
+        } catch (\Throwable $e) {
+            if (! $e instanceof ExceptionInterface) {
+                $e = new InternalError($e->getMessage(), null, $e);
+            }
+            $event->addResultMessage('BDT test data cleanup failed: see Log-ID "' . $e->getLogId() . '". ' . $e->getMessage());
+            $event->getWorkbench()->getLogger()->logException($e);
         }
     }
 
