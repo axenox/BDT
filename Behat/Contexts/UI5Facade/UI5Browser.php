@@ -7,8 +7,9 @@ use axenox\BDT\Behat\Common\ErrorManager;
 use axenox\BDT\Behat\Common\Traits\AuthenticatorTimeStampingTrait;
 use axenox\BDT\Behat\Common\Traits\DeadlockRetryTrait;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5AbstractNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ButtonNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5PageNode;
-use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5TileNode;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
 use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\Events\BeforeUserLoggedIn;
@@ -35,6 +36,8 @@ use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\UiPageInterface;
 use exface\Core\Interfaces\WidgetInterface;
 use exface\Core\Interfaces\WorkbenchInterface;
+use exface\Core\Widgets\ButtonGroup;
+use exface\Core\Widgets\DataToolbar;
 use exface\UI5Facade\Facades\UI5Facade;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\AssertionFailedError;
@@ -1672,7 +1675,7 @@ JS
      * @param NodeElement|null $parent Optional parent element to search within
      * @return NodeElement|null The found button element or null if not found
      */
-    public function findButtonByCaption(string $caption, NodeElement $parent = null): ?NodeElement
+    public function findButtonByCaption(string $caption, ?NodeElement $parent = null): ?NodeElement
     {
         $page = $this->getPage();
         // Find all button elements with BDI text container
@@ -1922,15 +1925,23 @@ JS
      * that shared part here means the object alias filter is implemented once and cannot drift between
      * the two entry points.
      *
+     * WHY THE SELECTOR IS RESOLVED FROM $widgetType WHEN MISSING: the selector parameter is optional, but the
+     * search used it unconditionally, so a caller relying on the default ended up in findAll('css', null) -
+     * and $widgetType, which the selector used to be built from, was no longer read at all. Building the
+     * selector here when none is passed keeps the optional parameter honest and gives $widgetType its purpose
+     * back. Callers that already built a selector still pass it and skip the extra DOM type scan.
+     *
      * @param ElementInterface $scope Document or DOM element to search within
-     * @param string $widgetType
+     * @param string $widgetType Base widget type; used to build the selector when $cssSelector is not given
      * @param string|null $caption Optional meta object alias to restrict the result to
      * @param string|null $cssSelector Pre-resolved selector - pass it when the caller already built one,
-     *        so the DOM type scan is not repeated over CDP for the same step
+     *        so the DOM type scan is not repeated over CDP for the same step. Built from $widgetType if null
      * @return FacadeNodeInterface[]
      */
     protected function findWidgetNodesInScope(ElementInterface $scope, string $widgetType, ?string $caption = null, ?string $cssSelector = null): array
     {
+        $cssSelector = $cssSelector ?? $this->buildCssSelectorForWidgetType($widgetType);
+
         // Identify the scope element ONCE instead of per match. A DocumentElement has no id and can
         // never be matched by an `.exfw-*` selector anyway, so a page-wide search skips the self-check
         // below entirely and pays nothing for it - which matters, because every attribute read here is
@@ -2250,17 +2261,206 @@ JS
     }
 
     /**
+     * Returns the visible widgets of the given type inside the current search scope.
+     *
+     * The scope is the focused widget if there is one - typically a tab opened by "I click tab" or a dialog
+     * seen by "I see 1 widget of type Dialog" - and the whole page otherwise.
+     *
+     * WHY THIS EXISTS: the "focused widget, otherwise the page" rule was written into findTiles() only. The
+     * button absence step needs exactly the same rule, and a second copy would drift - a scope change made
+     * for tiles would silently not apply to buttons, so one step could search a dialog while the other
+     * searched the page behind it.
+     *
+     * WHY THERE IS NO PAGE-WIDE FALLBACK WHEN A WIDGET IS FOCUSED: focusing is how a scenario says where to
+     * look. Falling back to the page would let widgets outside the focus satisfy (or break) the assertion.
+     * findWidgetNodesInNode() exists for exactly this "never leave the container" rule.
+     *
+     * WHY THE TIMEOUT IS A PARAMETER: presence checks want to wait for at least one widget to render. An
+     * absence check must not - waiting for a widget that is correctly missing would burn the full timeout on
+     * every passing run. A timeout of 0 still waits for pending UI5 operations before scanning.
+     *
+     * @param string $widgetType Base widget type, subtypes are included
+     * @param int $timeoutInSeconds Time to wait for at least one widget to appear, 0 to not wait for one
+     * @return FacadeNodeInterface[]
+     */
+    public function findWidgetNodesInSearchScope(string $widgetType, int $timeoutInSeconds = 10): array
+    {
+        $focusedNode = $this->getFocusedNode();
+        if ($focusedNode instanceof UI5PageNode) {
+            return $this->findWidgetNodes($widgetType, $timeoutInSeconds);
+        }
+        return $this->findWidgetNodesInNode($focusedNode, $widgetType, $timeoutInSeconds > 0 ? 1 : 0, $timeoutInSeconds);
+    }
+
+    /**
+     * Returns every visible action button of the current search scope.
+     *
+     * WHY ONLY METAMODEL BUTTONS: every UI5 control renders a `button` element - the shell header, tab
+     * headers, table personalization, value help icons. Counting those would make "no buttons at all" fail
+     * on every page. Actions a permission can take away are Button widgets of the metamodel, which the facade
+     * marks with `.exfw-Button` (or a subtype of it).
+     *
+     * @return FacadeNodeInterface[]
+     */
+    public function findVisibleActionButtons(): array
+    {
+        return $this->filterActionButtons($this->findWidgetNodesInSearchScope('Button', 0));
+    }
+
+    /**
+     * Removes the buttons a read-only user always sees from a list of Button widget nodes.
+     *
+     * WHY ONE FILTER FOR TOOLBAR AND OVERFLOW: a button UI5 moved into the "..." menu is the same widget as
+     * the one in the toolbar. If the two places were filtered differently, the same global action would pass
+     * on a wide window and fail on a narrow one.
+     *
+     * WHY TILES ARE EXCLUDED: Tile derives from Button in the metamodel, but a launchpad tile is navigation,
+     * not an action, and it has its own steps.
+     *
+     * WHY THE DIALOG CLOSE BUTTON IS EXCLUDED: every dialog renders it, also for a user who may only read.
+     *
+     * WHY THE AUTO-INCLUDED TOOLBAR BUTTONS ARE EXCLUDED: see isAutoIncludedToolbarButton().
+     *
+     * @param FacadeNodeInterface[] $nodes
+     * @return FacadeNodeInterface[]
+     */
+    protected function filterActionButtons(array $nodes): array
+    {
+        $buttons = [];
+        foreach ($nodes as $node) {
+            if (UI5FacadeNodeFactory::isWidgetTypeDerivedFrom((string)$node->getWidgetType(), 'Tile')) {
+                continue;
+            }
+            if ($node instanceof UI5ButtonNode && $node->isDialogCloseButton()) {
+                continue;
+            }
+            if ($this->isAutoIncludedToolbarButton($node)) {
+                continue;
+            }
+            $buttons[] = $node;
+        }
+        return $buttons;
+    }
+
+    /**
+     * Tells whether the button was added to a data toolbar by the core, not by the page designer.
+     *
+     * Every DataToolbar gets two button groups automatically: the global actions configured in the core
+     * option WIDGET.DATATOOLBAR.GLOBAL_ACTIONS (basket, favorites, exports) and the search actions (search,
+     * reset). They are shown on every data widget regardless of the user's permissions, so a read-only
+     * check must not count them.
+     *
+     * WHY THE CORE'S OWN BUTTON GROUPS AND NOT THE CONFIG OPTION: the option can be overridden per
+     * installation, apps can add global buttons through OnGlobalActionsAddedEvent, and the search actions are
+     * not in any config at all. The groups DataToolbar hands out hold exactly what it rendered, so the test
+     * cannot drift from the core.
+     *
+     * WHY AN UNREADABLE MODEL COUNTS AS A REAL BUTTON: excluding a button the test could not identify would
+     * let a genuine action pass unnoticed - a false green. Counting it fails the step visibly instead.
+     *
+     * @param FacadeNodeInterface $node
+     * @return bool
+     */
+    protected function isAutoIncludedToolbarButton(FacadeNodeInterface $node): bool
+    {
+        try {
+            $group = $node->getWidget()->getParent();
+        } catch (Throwable $e) {
+            return false;
+        }
+        if (! $group instanceof ButtonGroup) {
+            return false;
+        }
+        $toolbar = $group->getParent();
+        if (! $toolbar instanceof DataToolbar) {
+            return false;
+        }
+        return $group === $toolbar->getButtonGroupForGlobalActions()
+            || $group === $toolbar->getButtonGroupForSearchActions();
+    }
+
+    /**
+     * Opens every visible overflow ("...") menu of the search scope and returns the action buttons in it.
+     *
+     * WHY THE MENUS ARE OPENED INSTEAD OF COUNTING THE "..." BUTTONS: every data toolbar puts the global
+     * actions behind the overflow, so a visible "..." proves nothing about the user's permissions. Only
+     * what is inside the menu, after filterActionButtons(), tells a real action apart.
+     *
+     * WHY THE OWNER IS THE NEAREST WIDGET OF THE "..." BUTTON: opening, waiting and closing the popover is
+     * node behaviour (findInOverflowOf()), and the node only acts as the carrier here - the exact overflow
+     * button is passed in, so no ownership guess is involved.
+     *
+     * WHY A MENU THAT CANNOT BE INSPECTED IS REPORTED: absence can only be proven for menus that were
+     * actually looked into. Silently skipping one would turn "could not check" into "no buttons".
+     *
+     * @return array{buttons: FacadeNodeInterface[], uninspected: string[]} Found buttons and ids of the
+     *         overflow buttons whose menu could not be inspected
+     */
+    public function findActionButtonsBehindOverflow(): array
+    {
+        $buttons = [];
+        $uninspected = [];
+        foreach ($this->findVisibleOverflowButtonsInSearchScope() as $overflowButton) {
+            $ownerElement = UI5FacadeNodeFactory::findParentWithWidgetClass($overflowButton);
+            $owner = $ownerElement === null
+                ? null
+                : UI5FacadeNodeFactory::createFromNodeElement($ownerElement, $this->getSession(), $this);
+            if (! $owner instanceof UI5AbstractNode) {
+                $uninspected[] = (string)$overflowButton->getAttribute('id');
+                continue;
+            }
+
+            $opened = false;
+            try {
+                $owner->findInOverflowOf($overflowButton, function (NodeElement $menu) use (&$buttons, &$opened) {
+                    $opened = true;
+                    foreach ($this->filterActionButtons($this->findWidgetNodesInScope($menu, 'Button')) as $button) {
+                        $buttons[] = $button;
+                    }
+                    // Always report "nothing found", so findInOverflowOf() closes the menu again.
+                    return null;
+                });
+            } finally {
+                // The check is observational: an open popover must never swallow the next step.
+                $owner->closeOverflowMenuIfOpened();
+            }
+
+            if ($opened === false) {
+                $uninspected[] = (string)$overflowButton->getAttribute('id');
+            }
+        }
+        return ['buttons' => $buttons, 'uninspected' => $uninspected];
+    }
+
+    /**
+     * Returns the visible toolbar overflow ("...") buttons of the current search scope.
+     *
+     * WHY THIS EXISTS: UI5 moves toolbar buttons that do not fit into an overflow popover, where they are not
+     * visible until the menu is opened. findActionButtonsBehindOverflow() needs every visible "..." of the
+     * search scope to look into those menus; hidden ones are skipped because UI5 keeps them in the DOM while
+     * the toolbar has room for everything.
+     *
+     * WHY THE FOCUSED NODE RESOLVES ITS OWN OVERFLOW BUTTONS: depending on the facade template the toolbar
+     * is rendered as a sibling of the widget element. findOverflowButtons() already knows how to widen the
+     * scope for that case, so it is reused instead of repeating the rule here.
+     *
+     * @return NodeElement[]
+     */
+    public function findVisibleOverflowButtonsInSearchScope(): array
+    {
+        $focusedNode = $this->getFocusedNode();
+        $candidates = $focusedNode instanceof UI5AbstractNode
+            ? $focusedNode->findOverflowButtons()
+            : $focusedNode->getNodeElement()->findAll('css', UI5AbstractNode::CSS_OVERFLOW_BUTTON);
+
+        return array_values(array_filter($candidates, fn(NodeElement $button) => $button->isVisible()));
+    }
+
+    /**
      * Returns the visible tiles of the current search scope and fails if there are none.
      *
      * The scope is the focused widget if there is one - typically a tab opened by "I click tab" - and the
      * whole page otherwise.
-     *
-     * WHY THERE IS NO PAGE-WIDE FALLBACK WHEN A WIDGET IS FOCUSED: focusing a tab or group is how a scenario
-     * says where tiles must be. Tile steps used to search the whole page regardless, so a tile from another
-     * tab counted as present, clickable or "seen" - a missing tile turned green instead of failing. The
-     * scoped search reuses findWidgetNodesInNode(), which exists for exactly this "never leave the container"
-     * rule. Unlike buttons, nothing outside the scope legitimately belongs to it - dialog footers hold
-     * buttons, not tiles.
      *
      * WHY ALL TILE STEPS GO THROUGH THIS METHOD: the scope rule would otherwise be written into every tile
      * step separately. Keeping it here means a change to where tiles are looked for is made once.
@@ -2277,10 +2477,7 @@ JS
      */
     public function findTiles(): array
     {
-        $focusedNode = $this->getFocusedNode();
-        $tiles = $focusedNode instanceof UI5PageNode
-            ? $this->findWidgetNodes('Tile')
-            : $this->findWidgetNodesInNode($focusedNode, 'Tile');
+        $tiles = $this->findWidgetNodesInSearchScope('Tile');
 
         Assert::assertNotEmpty($tiles, 'No tiles found in ' . $this->describeSearchScope());
         return $tiles;

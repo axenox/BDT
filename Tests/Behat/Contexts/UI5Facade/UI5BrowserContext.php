@@ -4,6 +4,7 @@ namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 use axenox\BDT\Behat\Common\Attributes\ResumeSafeStep;
 use axenox\BDT\Behat\Common\ErrorManager;
 use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5AbstractNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ButtonNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ContainerNode;
@@ -181,23 +182,15 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     /**
      * Initializes and starts the workbench for the test environment.
      *
-     * WHY $monitorEnabled defaults to true: this is the ONE workbench the UI5 steps actually run
-     * against, so it is where the ExFace Monitor (exf_monitor_action / exf_monitor_error writes) is
-     * effectively gated for a run. Manual/interactive runs keep monitoring ON, matching normal app
-     * behaviour. Parallel lane workers force it OFF via the BDT_MONITOR_ENABLED env var (see
-     * resolveMonitorEnabled) to keep their high-volume, concurrent action/exception stream out of the
-     * shared app DB - critical while the PRIMARY filegroup is under storage pressure.
-     *
      * @param bool $debug          Echo debug lines to stdout (unchanged).
-     * @param bool $monitorEnabled Default monitor state; overridden by BDT_MONITOR_ENABLED when set.
      */
-    public function __construct(bool $debug = false, bool $monitorEnabled = true)
+    public function __construct(bool $debug = false)
     {
         self::$isDryRun = in_array('--dry-run', $_SERVER['argv'] ?? [], true);
         if (self::$isDryRun) {
             return;
         }
-        $this->workbench = new Workbench();
+        $this->workbench = new Workbench(['MONITOR.ENABLED' => false]);
         $this->workbench->start();
         // Authenticated with the default CLI user if called from CLI. The authenticated
         // user will change with Browser::setupUser() later, but for now the CLI user is
@@ -225,27 +218,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             );
         }
         $this->debug = $debug;
-    }
-
-    /**
-     * Resolves the effective monitor state, letting the parallel launcher force it off per worker.
-     *
-     * WHY an env override instead of a behat.yml context arg: the auto-generated lane config only
-     * imports the base behat.yml and is suite-agnostic, so forcing the flag off there would mean
-     * redefining every suite's contexts block - fragile and easy to drift. BDT_MONITOR_ENABLED is set
-     * once in the coordinator's WORKER_ENV, so every lane inherits "off" with no per-suite plumbing,
-     * while a manual run (which sets no such var) keeps the constructor default. The env value wins
-     * over $default on purpose: it is the launcher's explicit, run-scoped decision.
-     *
-     * @param bool $default The value to use when BDT_MONITOR_ENABLED is not set.
-     */
-    private function resolveMonitorEnabled(bool $default): bool
-    {
-        $env = getenv('BDT_MONITOR_ENABLED');
-        if ($env === false || $env === '') {
-            return $default;
-        }
-        return ! in_array(strtolower($env), ['0', 'false', 'off', 'no'], true);
     }
 
     private function logDebug(string $message): void
@@ -402,6 +374,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function prepareBeforeStep(BeforeStepScope $scope): void
     {
+        // Cleared before anything else and outside every guard below: a step's verdict now depends on what
+        // the ErrorManager holds when the step ends, so an error left over from an earlier step would fail
+        // an innocent one. Clearing needs neither a browser nor a live session, so no early return may skip it.
+        ErrorManager::getInstance()->clearErrors();
+        
         // Must run FIRST: every call below talks to the browser. Placed above the browser check because a
         // failed recovery can leave no UI5Browser behind, and returning first would switch off every later
         // recovery attempt for the rest of the scenario. ensureChromeAlive() needs no browser.
@@ -414,7 +391,6 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         }
 
         try {
-            ErrorManager::getInstance()->clearErrors();
             $this->getBrowser()->clearXHRLog();
 
             $this->getBrowser()->getErrorDetector()->installHttpInterceptor();
@@ -1394,6 +1370,68 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Checks that a confirmation popup with the given title is open and makes it the area you are looking at.
+     *
+     * Deleting data, discarding inputs and similar actions ask for confirmation in a small popup
+     * with its own buttons. Such a popup is not a widget of the page, so "I see 1 widget of type Dialog"
+     * does not find it - use this step instead. Write the title exactly as it appears on screen.
+     *
+     * After this step, "I click button ..." searches inside the confirmation first. That matters because
+     * its buttons are often named like the button that opened it: without this step, clicking "Löschen"
+     * would press the table's "Löschen" again instead of confirming.
+     *
+     * Once the confirmation closes, the area you looked at before (e.g. the table) is active again.
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   And I select table row 1
+     *   And I click button "Löschen"
+     *   Then I see a confirmation with "Wirklich löschen?"
+     *   When I click button "Löschen"
+     *
+     * @Then I see a confirmation with :title
+     *
+     * @param string $title Title of the confirmation as rendered
+     */
+    public function iSeeAConfirmationWith(string $title): void
+    {
+        // The MessageBox is opened by the click of the previous step and may still be animating in.
+        // Waiting for ANY open MessageBox first keeps the title lookup below from racing that animation;
+        // the return value is ignored on purpose, the assertion below reports the actual outcome.
+        $this->getBrowser()->getWaitManager()->waitForDOMElements('.sapMMessageDialog.sapMDialogOpen', 1, 10);
+
+        // The lookup lives in UI5AbstractNode and only needs a node bound to this session - it always
+        // searches the whole page, because MessageBoxes render into UI5's static area outside every widget.
+        $pageNode = new GenericHtmlNode(
+            $this->getSession()->getPage()->find('css', 'body'),
+            $this->getSession(),
+            $this->getBrowser()
+        );
+        $confirmation = $pageNode->findOpenConfirmationByTitle($title);
+
+        // Name what IS on screen: a typo in the title and "no confirmation at all" need different fixes.
+        if ($confirmation === null) {
+            $openTitles = [];
+            foreach ($this->getSession()->getPage()->findAll('css', '.sapMMessageDialog.sapMDialogOpen .sapMDialogTitle') as $titleEl) {
+                $openTitles[] = '"' . trim($titleEl->getText()) . '"';
+            }
+            Assert::fail(sprintf(
+                'Expected an open confirmation with title "%s", but %s',
+                $title,
+                empty($openTitles) ? 'no confirmation is open' : 'found only: ' . implode(', ', $openTitles)
+            ));
+        }
+
+        $this->getBrowser()->highlightWidget($confirmation, 'Dialog', 0);
+
+        // Pushed on top of the stack WITHOUT clearing it. WHY: the confirmation is short-lived - once
+        // answered, UI5 destroys it, pruneDeadFocus() drops it and the widget focused before (usually the
+        // table the row was deleted from) is active again for the following assertions.
+        $this->getBrowser()->focus($confirmation);
+    }
+
+    /**
      * Clicks a button by the text shown on it.
      *
      * This is the everyday "press this button" step. It first looks inside the widget you are
@@ -1665,7 +1703,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string|null $tableName Optional caption or object of the widget to search in
      * @throws \Exception If a button is not found
      */
-    public function iSeeButton(string $buttonText, string $tableName = null): void
+    public function iSeeButton(string $buttonText, ?string $tableName = null): void
     {
         $result = $this->findVisibleButtons($buttonText, $tableName);
 
@@ -1850,6 +1888,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * captions followed by values, while older scenarios use "Column" and "Value" pairs. Behat's
      * getHash() represents these shapes differently, so normalising them here keeps feature-table
      * interpretation in the step and guarantees the node receives typed captions and values.
+    * The last rendered row is resolved once because jExcel may append a new blank row after the
+    * first edit; resolving it for every value would spread one input record across multiple rows.
      *
      * Usage examples:
      *
@@ -1879,11 +1919,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iFillTheNthRowOfDataSpreadsheetWith(TableNode $table, int|string|null $rowIndex = null): void
     {
-        $nodes = $this->getBrowser()->getFocusedNode();
-        $node = $nodes[0] ?? null;
+        $node = $this->getBrowser()->getFocusedNode();
         Assert::assertInstanceOf(UI5DataSpreadSheetNode::class, $node, 'No DataSpreadSheet widget found.');
         $rowNumber = $rowIndex === null || strtolower((string) $rowIndex) === 'last'
-            ? null
+            ? count($node->getTableRows())
             : (int) $rowIndex;
 
         $tableRows = $table->getHash();
@@ -2731,6 +2770,62 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             $result['found'],
             (count($result['found']) === 1 ? 'Unexpected button found: ' : 'Unexpected buttons found: ')
             . implode(', ', array_keys($result['found']))
+        );
+    }
+
+    /**
+     * Checks that the user does not see a single action button.
+     *
+     * Made for read-only permission tests: instead of listing every button a user must not see, this step
+     * fails as soon as any action button is shown. It keeps working when buttons are renamed or new ones are
+     * added, without touching the feature file.
+     *
+     * If a widget is focused (e.g. a dialog or a tab opened by "I click tab"), only that widget is checked;
+     * without focus the whole page is checked. Buttons hidden in a toolbar's "..." menu are checked too, and
+     * greyed-out buttons count as seen.
+    // >>> CHANGED - was:
+    //  * The close button of a dialog and launchpad tiles are not counted.
+     * Not counted: the close button of a dialog, launchpad tiles, and the buttons the core adds to every
+     * data toolbar (global actions like export or favorites, search and reset). Buttons of a tab that is not
+     * opened are not visible and therefore not checked - open the tab first.
+    // <<< END CHANGED
+     *
+     * Usage examples:
+     *
+     *   Then I do not see any buttons at all
+     *
+     *   When I click tab "Positions"
+     *   Then I do not see any buttons at all
+     *
+     * @Then I do not see any buttons at all
+     * @Then I should not see any buttons at all
+     */
+    public function iDoNotSeeAnyButtons(): void
+    {
+        $browser = $this->getBrowser();
+
+        $overflow = $browser->findActionButtonsBehindOverflow();
+        $buttons = array_merge($browser->findVisibleActionButtons(), $overflow['buttons']);
+
+        $found = [];
+        foreach ($buttons as $index => $button) {
+            $element = $button->getNodeElement();
+            $browser->highlightWidget($element, 'Button', $index);
+            $caption = trim((string)$button->getCaption());
+            if ($caption === '') {
+                $caption = trim((string)$element->getAttribute('title'));
+            }
+            $found[] = $caption !== '' ? '"' . $caption . '"' : 'a button without caption (' . $button->getWidgetType() . ')';
+        }
+
+        Assert::assertEmpty(
+            $found,
+            'Expected no buttons in ' . $browser->describeSearchScope() . ', but found: ' . implode(', ', $found)
+        );
+        Assert::assertEmpty(
+            $overflow['uninspected'],
+            'Cannot prove that there are no buttons in ' . $browser->describeSearchScope() . ': the toolbar overflow'
+            . ' menu(s) ' . implode(', ', $overflow['uninspected']) . ' could not be opened and checked.'
         );
     }
 

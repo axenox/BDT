@@ -87,7 +87,7 @@
         {
             "_EXPORT_SUMMARY": "BDT step run [axenox.BDT.run_step]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-07-29 14:22:24",
+            "MODIFIED_ON": "2026-09-18 11:51:49",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
             "UID": "0x11f0ac35222d57aeac35025041000001",
@@ -134,6 +134,10 @@
                                                 "widget_type": "InputHidden"
                                             },
                                             {
+                                                "attribute_alias": "error_log_details_path",
+                                                "widget_type": "InputHidden"
+                                            },
+                                            {
                                                 "attribute_alias": "name",
                                                 "id": "name"
                                             },
@@ -154,10 +158,6 @@
                                             {
                                                 "attribute_alias": "line",
                                                 "id": "line"
-                                            },
-                                            {
-                                                "attribute_alias": "monitor_error",
-                                                "widget_type": "InputHidden"
                                             },
                                             {
                                                 "attribute_alias": "error_log_id",
@@ -268,7 +268,7 @@
                 ],
                 "buttons": [
                     {
-                        "action_alias": "axenox.BDT.ShowRunStepErrorDetails",
+                        "action_alias": "axenox.BDT.RunStepLogDetailsDialog",
                         "close_dialog": false,
                         "disabled_if": {
                             "operator": "AND",
