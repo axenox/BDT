@@ -1758,6 +1758,10 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
      */
     public static function onCleanUp(OnCleanUpEvent $event) : void
     {
+        if (! $event->isAreaToBeCleaned(self::CLEANUP_AREA_BDT)) {
+            return;
+        }
+        
         try {
             self::cleanUpTestRuns($event);
         } finally {
