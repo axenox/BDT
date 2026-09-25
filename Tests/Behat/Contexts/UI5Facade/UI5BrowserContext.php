@@ -1777,6 +1777,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *   When I look at table 2
      *   Then it has buttons "Save, Delete"
      *
+     * @Then it has a button ":buttons"
      * @Then it has buttons ":buttons"
      *
      * @param string $buttons Comma-separated captions of buttons expected in the focused widget
