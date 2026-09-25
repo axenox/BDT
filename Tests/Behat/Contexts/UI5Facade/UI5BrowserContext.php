@@ -7,6 +7,7 @@ use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5AbstractNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ButtonNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataCardsNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ContainerNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataSpreadSheetNode;
@@ -1128,6 +1129,30 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Resolves a 1-based DataCards index on the current page to its renderer-specific node.
+     *
+     * WHY A TYPED WRAPPER: the generic widget lookup cannot promise card selection methods. A
+     * readable failure here prevents a factory mismatch from becoming a fatal undefined-method
+     * error in the selection step.
+     *
+     * @param int $index 1-based index of the DataCards widget on the page.
+     * @throws RuntimeException|\Exception If the widget is not rendered or resolves incorrectly.
+     * @return UI5DataCardsNode
+     */
+    private function getDataCardsNodeByIndex(int $index): UI5DataCardsNode
+    {
+        $node = $this->getWidgetNodeByIndex('DataCards', $index);
+
+        if (! $node instanceof UI5DataCardsNode) {
+            throw new RuntimeException(
+                'Widget no. ' . $index . ' is not DataCards, but a `' . get_class($node) . '`'
+            );
+        }
+
+        return $node;
+    }
+
+    /**
      * Ensures a data widget is focused before a filter-scoped assertion runs and returns it typed.
      *
      * WHY THIS STAYS IN THE CONTEXT: the focus stack is a Behat concept - a node cannot know
@@ -1169,6 +1194,28 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             'No DataTable is focused (current focus: "'
             . ($node ? get_class($node) : 'none')
             . '"). Focus a table first, e.g. with "I look at table 1".'
+        );
+        return $node;
+    }
+
+    /**
+     * Ensures a DataCards widget is focused before a card-scoped interaction runs.
+     *
+     * WHY THE NARROW TYPE CHECK: DataCards inherits table behavior internally, so accepting any
+     * UI5DataTableNode here would let a card step act on an ordinary table. The explicit subtype
+     * keeps scenario vocabulary and the rendered control aligned.
+     *
+     * @return UI5DataCardsNode
+     */
+    private function getFocusedDataCardsNode(): UI5DataCardsNode
+    {
+        $node = $this->getBrowser()->getFocusedNode();
+        Assert::assertInstanceOf(
+            UI5DataCardsNode::class,
+            $node,
+            'No DataCards widget is focused (current focus: "'
+            . ($node ? get_class($node) : 'none')
+            . '"). Focus one first, e.g. with "I look at DataCards 1".'
         );
         return $node;
     }
@@ -2203,6 +2250,32 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Picks one of several DataCards widgets so following item interactions are unambiguous.
+     *
+     * WHY A FOCUS STEP: pages can render multiple card collections. Reusing the browser focus
+     * stack follows the established table workflow and prevents a selection from silently acting
+     * on the first collection when the scenario intended another one.
+     *
+     * Usage example:
+     *
+     *   When I look at DataCards 1
+     *   And I select DataCard item 2
+     *
+     * @When I look at DataCards :index
+     *
+     * @param int $index The 1-based index of the DataCards widget to focus on.
+     * @throws RuntimeException If the DataCards widget cannot be found.
+     * @return void
+     */
+    #[ResumeSafeStep]
+    public function iLookAtDataCards(int $index): void
+    {
+        $cards = $this->getDataCardsNodeByIndex($index);
+        $this->getBrowser()->highlightWidget($cards->getNodeElement(), 'DataCards', $index - 1);
+        $this->getBrowser()->focus($cards);
+    }
+
+    /**
      * Selects (ticks) a row in the table you are looking at.
      *
      * Selecting a row is often required before pressing a button that acts on it, such as
@@ -2229,6 +2302,33 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
 
         Assert::assertTrue($table->isRowSelected($rowNumber), "Failed to select row {$rowNumber}");
+    }
+
+    /**
+     * Selects one visible item in the focused DataCards widget and verifies the resulting state.
+     *
+     * WHY READ-BACK IS REQUIRED: clicking a card can be intercepted by an inner control or a UI5
+     * re-render. Waiting and checking the selection marker makes the step fail at the interaction
+     * instead of letting a later row-bound action report the misleading "no item selected" error.
+     *
+     * Usage example:
+     *
+     *   When I look at DataCards 1
+     *   And I select DataCard item 2
+     *
+     * @When I select DataCard item :number
+     *
+     * @param int $number The 1-based number of the card item to select.
+     * @return void
+     */
+    public function iSelectDataCardItem(int $number): void
+    {
+        $cards = $this->getFocusedDataCardsNode();
+        $cards->selectItem($number);
+
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+
+        Assert::assertTrue($cards->isItemSelected($number), "Failed to select DataCard item {$number}");
     }
 
     /**
