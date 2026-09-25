@@ -39,15 +39,31 @@ class InputGherkin extends InputCustom
 HTML;
     }
 
+    /**
+     * Loads Ace and gives long Gherkin steps enough horizontal space to remain readable.
+     *
+     * @param bool $addIncludes Whether parent includes should be added
+     * @return string[] HTML head tags required by the editor
+     */
     public function getHtmlHeadTags(bool $addIncludes = true) : array
     {
         $includes = parent::getHtmlHeadTags();
         $includes[] = '<script src="vendor/npm-asset/ace-builds/src-min/ace.js"></script>';
         $includes[] = '<script src="vendor/npm-asset/ace-builds/src-min/ext-language_tools.js"></script>';
         $includes[] = '<script src="vendor/npm-asset/ace-builds/src-min/ext-searchbox.js"></script>';
+        $includes[] = '<style>.ace_autocomplete { width: min(700px, calc(100vw - 32px)) !important; }</style>';
         return $includes;
     }
 
+    /**
+     * Builds the Gherkin-aware Ace editor, including insertion that replaces an already typed step prefix.
+     *
+     * WHY CUSTOM INSERTION: Ace only replaces the current word by default. After a user types `I `,
+     * its detected prefix is empty, so selecting `I look at table` otherwise produces `I I look at table`.
+     *
+     * @param string $editorVariable Script variable that stores the Ace editor
+     * @return string|null JavaScript used to initialize the editor
+     */
     public function buildJsAce(string $editorVariable) : ?string   
     {
         return <<<JS
@@ -64,11 +80,33 @@ HTML;
     const oCompleter = {
       getCompletions: function (oEditor, session, pos, prefix, callback) {
         // Show all phrases containing the typed word (case-insensitive)
-        const matches = aCompletions.filter((completion) =>
-          completion.caption.toLowerCase().includes(prefix.toLowerCase())
-        );
+                const matches = aCompletions
+                    .filter((completion) => completion.caption.toLowerCase().includes(prefix.toLowerCase()))
+                    .map((completion) => ({...completion, typedPrefix: prefix, completer: oCompleter}));
         callback(null, matches);
       },
+            insertMatch: function (oEditor, completion) {
+                const value = completion.value || completion.caption;
+                const pos = oEditor.getCursorPosition();
+                const textBeforeCursor = oEditor.session.getLine(pos.row).slice(0, pos.column);
+                const maxOverlap = Math.min(textBeforeCursor.length, value.length);
+                let overlapLength = 0;
+
+                // Replace the full phrase fragment already typed, including spaces Ace does not treat as a prefix.
+                for (let length = maxOverlap; length > 0; length--) {
+                    if (textBeforeCursor.slice(-length).toLowerCase() === value.slice(0, length).toLowerCase()) {
+                        overlapLength = length;
+                        break;
+                    }
+                }
+
+                const replaceLength = overlapLength || completion.typedPrefix.length;
+                const Range = ace.require("ace/range").Range;
+                const range = new Range(pos.row, pos.column - replaceLength, pos.row, pos.column);
+                const end = oEditor.session.replace(range, value);
+                oEditor.clearSelection();
+                oEditor.moveCursorToPosition(end);
+            },
     };
     oLangTools.setCompleters([oCompleter]);
 
