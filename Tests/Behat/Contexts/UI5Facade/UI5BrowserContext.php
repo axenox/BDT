@@ -1766,6 +1766,42 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Checks that the focused widget contains the requested buttons.
+     *
+     * WHY A FOCUSED VARIANT: page-wide caption lookup can match an identically named button in a
+     * neighbouring widget. Reusing the scoped lookup keeps ordinary and overflowed buttons tied to
+     * the widget selected by the preceding "I look at" step.
+     *
+     * Usage example:
+     *
+     *   When I look at table 2
+     *   Then it has buttons "Save, Delete"
+     *
+     * @Then it has buttons ":buttons"
+     *
+     * @param string $buttons Comma-separated captions of buttons expected in the focused widget
+     * @throws \Exception If no widget is focused or a button is not found there
+     */
+    public function itHasButtons(string $buttons): void
+    {
+        $focusedNode = $this->getBrowser()->getFocusedNode();
+        Assert::assertNotInstanceOf(
+            UI5PageNode::class,
+            $focusedNode,
+            'No widget is currently focused. Call "I look at" first.'
+        );
+
+        $result = $this->findVisibleButtons($buttons, null, [$focusedNode]);
+
+        Assert::assertEmpty(
+            $result['missing'],
+            (count($result['missing']) === 1 ? "Button with text '" : "Buttons with text '")
+            . implode("', '", array_keys($result['missing'])) . "' not found in the focused widget."
+            . ($result['overflowHint'] ?? '')
+        );
+    }
+
+    /**
      * Answers which requested buttons the user can see in the named widget and its overflow.
      *
      * WHY BOTH ASSERTIONS USE THIS METHOD: presence and absence are complements only when they search
