@@ -87,7 +87,7 @@
         {
             "_EXPORT_SUMMARY": "BDT test run [axenox.BDT.run]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-09-21 13:44:56",
+            "MODIFIED_ON": "2026-09-25 10:00:23",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
             "UID": "0x11f08c1d222cd23e8c1d025041000001",
@@ -483,8 +483,27 @@
                                         ],
                                         "buttons": [
                                             {
+                                                "icon": "folder-open",
+                                                "caption": "Open",
                                                 "action_alias": "exface.Core.ShowObjectEditDialog",
                                                 "bind_to_double_click": true
+                                            },
+                                            {
+                                                "caption": "Edit feature",
+                                                "action": {
+                                                    "alias": "exface.Core.ShowObjectEditDialog",
+                                                    "object_alias": "axenox.BDT.BEHAT_FEATURE",
+                                                    "input_mapper": {
+                                                        "from_object_alias": "axenox.BDT.run_step",
+                                                        "to_object_alias": "axenox.BDT.BEHAT_FEATURE",
+                                                        "column_to_column_mappings": [
+                                                            {
+                                                                "from": "run_scenario__run_feature__filename",
+                                                                "to": "PATHNAME_RELATIVE"
+                                                            }
+                                                        ]
+                                                    }
+                                                }
                                             }
                                         ]
                                     }
