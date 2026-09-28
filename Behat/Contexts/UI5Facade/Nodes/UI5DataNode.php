@@ -1437,16 +1437,23 @@ JS);
      */
     public function checkButtonsWorkAsExpectedOnly(LogBookInterface $logbook): TestResultInterface
     {
-        return $this->checkCategoryWorksAsExpected(
-            function (iShowData $widget, LogBookInterface $lb) {
-                if (!$widget instanceof iHaveButtons) {
-                    $lb->addLine('Widget has no buttons to check');
-                    return SubstepResult::createPassed($lb);
-                }
-                return $this->checkButtonsWorkAsExpected($widget, $lb);
-            },
-            $logbook
-        );
+        // WHY SHALLOW: this step tests the buttons of the focused widget only. A button that opens a
+        // dialog or navigates to a detail page passes as soon as that screen appears - the buttons
+        // inside it are the responsibility of that screen's own scenario. Running without descent
+        // keeps the failure attribution on the widget under test and avoids re-testing pages that
+        // already have dedicated test cases. The combined "It works as expected" step is unaffected.
+        return self::runWithoutDescendingIntoActionResults(function () use ($logbook) {
+            return $this->checkCategoryWorksAsExpected(
+                function (iShowData $widget, LogBookInterface $lb) {
+                    if (!$widget instanceof iHaveButtons) {
+                        $lb->addLine('Widget has no buttons to check');
+                        return SubstepResult::createPassed($lb);
+                    }
+                    return $this->checkButtonsWorkAsExpected($widget, $lb);
+                },
+                $logbook
+            );
+        });
     }
 
     /**

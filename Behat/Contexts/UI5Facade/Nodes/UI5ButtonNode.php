@@ -131,10 +131,23 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
      * still produces one record. Passing the target's identity here as well made both substeps
      * resolve to the same registry row: the inner insert won, the outer one hit the uniqueness
      * constraint and was discarded, and the navigation assertion's own outcome was lost with it.
+     *
+     * WHY NO SHALLOW BRANCH HERE: how deep the target page is checked is decided inside
+     * UI5PageNode::checkWorksAsExpected(), where the page's own substep lives. This method only
+     * navigates, delegates and navigates back - identically in both modes.
      */
     protected function checkActionGoToPage(GoToPage $action, iTriggerAction $widget, LogBookInterface $logbook): SubstepResult
     {
         $expectedAlias = $action->getPage()->getAliasWithNamespace();
+
+        // Do not follow this navigation any deeper. WHY: a page linking to a page that links back is a
+        // real cycle; without this guard the recursion only ends when Chrome or the DB gives out. This
+        // mirrors the dialog path's limit so both action kinds are bounded the same way. WHY before the
+        // click: navigating and only then refusing to check would leave the run on the wrong page.
+        if (self::isNestingLimitReached()) {
+            $logbook->addLine('Skipping page `' . $expectedAlias . '` of button `' . $this->getCaption() . '` - nesting limit of ' . self::MAX_NESTING_DEPTH . ' reached');
+            return SubstepResult::createSkipped('Nesting limit of ' . self::MAX_NESTING_DEPTH . ' reached', $logbook);
+        }
 
         $urlBeforeClick = $this->getSession()->getCurrentUrl();
         // Substep should fail if the page cannot be loaded (shows an error) - otherwise the substep for
@@ -144,19 +157,24 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
                 function (SubstepResult $result) use ($expectedAlias, $logbook) {
                     $logbook->addLine('Clicking ' . $this->getWidgetType() . ' [' . $this->getCaption() . '](' . $this->getSession()->getCurrentUrl() . ')');
                     $logbook->addIndent(+1);
-
-                    $this->clickAndAssertTargetPage();
-
+                    // the indent is balanced on every path. Navigating back on failure stays with
+                    // the onFailure closure below.
                     try {
-                        $pageNode = new UI5PageNode($expectedAlias, $this->getSession(), $this->getBrowser());
-                        $result = $pageNode->checkWorksAsExpected($logbook);
-                    } catch (Throwable $e) {
-                        $result = SubstepResult::createFailed($e, $logbook);
-                        $logbook->addLine('**Failed** to check if page `' . $expectedAlias . '` works as expected - skipping to next widget. ' . CliOutputPrinter::printExceptionMessage($e));
+                        $this->clickAndAssertTargetPage();
+
+                        // only the former else branch remains - UI5PageNode decides the depth.
+                        try {
+                            $pageNode = new UI5PageNode($expectedAlias, $this->getSession(), $this->getBrowser());
+                            $result = $pageNode->checkWorksAsExpected($logbook);
+                        } catch (Throwable $e) {
+                            $result = SubstepResult::createFailed($e, $logbook);
+                            $logbook->addLine('**Failed** to check if page `' . $expectedAlias . '` works as expected - skipping to next widget. ' . CliOutputPrinter::printExceptionMessage($e));
+                        }
+                        $this->getBrowser()->navigateToPreviousPage();
+                        $logbook->addLine('Pressing browser back button');
+                    } finally {
+                        $logbook->addIndent(-1);
                     }
-                    $this->getBrowser()->navigateToPreviousPage();
-                    $logbook->addLine('Pressing browser back button');
-                    $logbook->addIndent(-1);
 
                     return $result;
                 },
@@ -280,9 +298,22 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
         $logbook->addIndent(+1);
 
         try {
-            $result = self::runNested(function () use ($logbook, $widget, $dialogNodeElement, $coverageIdentity) {
+            $result = self::runNested(function () use ($logbook, $widget, $dialogNodeElement, $coverageIdentity, $expectedId) {
                 return $this->runAsSubstep(
-                    function (SubstepResult $result) use ($logbook, $widget, $dialogNodeElement) {
+                    function (SubstepResult $result) use ($logbook, $widget, $dialogNodeElement, $expectedId) {
+                        // Shallow button check: the dialog opening is the success criterion, its contents
+                        // belong to the dialog's own scenario. WHY INSIDE THIS SUBSTEP: a failure then goes
+                        // through runAsSubstep()'s screenshot, error log and error-dialog dismissal in that
+                        // order, so the evidence exists before the popup is closed. The finally below still
+                        // closes the dialog itself. WHY assertNoErrors(): a dialog can open and then fail to
+                        // load its content without any error dialog (e.g. a failed data request); the
+                        // detector sees that too and carries the real message and Log-ID.
+                        if (! self::shouldDescendIntoActionResults()) {
+                            $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+                            $this->getBrowser()->getErrorDetector()->assertNoErrors();
+                            $logbook->addLine('Dialog `' . $expectedId . '` opened - contents not checked (shallow button check)');
+                            return SubstepResult::createPassed($logbook);
+                        }
                         $dialogNode = UI5FacadeNodeFactory::createFromNodeElement($dialogNodeElement, $this->getSession(), $this->getBrowser());
                         return $dialogNode->checkWorksAsExpected($logbook);
                     },
@@ -297,6 +328,8 @@ class UI5ButtonNode extends UI5AbstractNode implements FacadeNodeInterface
             $result = SubstepResult::createFailed($e, $logbook);
             $logbook->addLine('**Failed** to check if dialog `' . $expectedId . '` works as expected - skipping to next widget. ' . CliOutputPrinter::printExceptionMessage($e));
         } finally {
+            // Balances the addIndent(+1) above on every path (early shallow return included).
+            $logbook->addIndent(-1);
             // Runs on both paths: the check normally closes the dialog through its own close button,
             // but a failed or incomplete check leaves it open and modal for everything that follows.
             $this->closeDialogIfOpen($expectedId);

@@ -135,6 +135,15 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
     private ?string $overflowMenuIdOpened = null;
     
     private static int $nestingDepth = 0;
+
+    /**
+     * Whether button checks may descend into the dialogs/pages their actions open.
+     *
+     * WHY it is static and why it defaults to true: see shouldDescendIntoActionResults(). The
+     * combined "It works as expected" step relies on the default; only the buttons-only step flips
+     * it off for the duration of its run.
+     */
+    private static bool $descendIntoActionResults = true;
     /** @var UI5Browser|null */
     protected $browser;
 
@@ -209,6 +218,53 @@ abstract class UI5AbstractNode implements FacadeNodeInterface
             return $check();
         } finally {
             self::$nestingDepth--;
+        }
+    }
+
+    /**
+     * Whether a button check may descend into the screen its action opens (a dialog, a target page).
+     *
+     * WHY THIS EXISTS: the "The buttons work as expected" step tests the buttons of ONE widget. When
+     * a button opens a dialog or navigates to a detail page, the button's job is done once that
+     * screen appears - the buttons living inside it belong to that screen's own scenario. Descending
+     * into them turned a list-view button check into a full recursive sweep of every page and dialog
+     * reachable from it: slower, and - worse - it reported a failure of a button two levels down as a
+     * failure of the list view under test, blurring which scenario actually owns the defect. The
+     * combined "It works as expected" step still descends (this stays true for it); only the
+     * buttons-only step turns it off via runWithoutDescendingIntoActionResults().
+     * 
+     * WHY PUBLIC: UI5PageNode does not extend this class but decides the depth of its own screen check.
+     *
+     * @return bool
+     */
+    public static function shouldDescendIntoActionResults(): bool
+    {
+        return self::$descendIntoActionResults;
+    }
+
+    /**
+     * Runs the given check in "shallow" mode: buttons are still clicked and their dialog/page is
+     * still verified to open, but the opened screen's own contents are not tested.
+     *
+     * WHY THE FLAG IS RESTORED IN A finally BLOCK: the check may fail with an exception, and a flag
+     * left at false would silently make every later "It works as expected" step of the same scenario
+     * shallow too. The exception itself is not touched - it propagates as before.
+     *
+     * WHY IT IS STATIC: the descent happens on freshly created child nodes deep inside the call tree
+     * (a menu entry node, a dialog button node), none of which the buttons-only entry point holds a
+     * reference to. Only a process-wide flag reaches all of them.
+     *
+     * @param callable $check
+     * @return TestResultInterface
+     */
+    protected static function runWithoutDescendingIntoActionResults(callable $check): TestResultInterface
+    {
+        $previous = self::$descendIntoActionResults;
+        self::$descendIntoActionResults = false;
+        try {
+            return $check();
+        } finally {
+            self::$descendIntoActionResults = $previous;
         }
     }
 
@@ -1207,6 +1263,11 @@ JS
      * WHY FAILURES RETURN NULL: registry recording is observational and must never change the test
      * result. Logging the model-resolution error and omitting coverage causes future sweeps to repeat
      * the work, which is safer than filing it under guessed identity values.
+     *
+     * WHY SHALLOW MODE RETURNS NULL: a buttons-only sweep verifies only that a button opens its
+     * dialog/page, not that the opened screen behaves. Recording that shallow PASSED under a real
+     * identity would let a later "It works as expected" replay it and skip the dialog entirely - a
+     * false green. A shallow verdict must never be storable, so it can never satisfy a deep check.
      */
     protected function buildSubstepCoverageIdentity(
         WidgetInterface $coveredWidget,
@@ -1214,6 +1275,9 @@ JS
         ?ActionInterface $action = null
     ): ?SubstepCoverageIdentity
     {
+        if (! self::shouldDescendIntoActionResults()) {
+            return null;
+        }
         try {
             if (! $element instanceof AbstractWidget) {
                 return null;
@@ -1239,11 +1303,18 @@ JS
      *
      * WHY FAILURES RETURN NULL: coverage recording is observational and must not turn a successful
      * screen check into a failed test. Omitting the identity causes a later sweep to repeat the work.
+     *
+     * WHY SHALLOW MODE RETURNS NULL: see buildSubstepCoverageIdentity(). A shallow "the dialog opened"
+     * verdict must never be recorded as coverage of that whole screen, or a later deep check would
+     * replay it and never enter the dialog.
      */
     public function buildWholeScreenSubstepCoverageIdentity(
         WidgetInterface $screenWidget
     ): ?SubstepCoverageIdentity
     {
+        if (! self::shouldDescendIntoActionResults()) {
+            return null;
+        }
         try {
             return SubstepCoverageIdentity::forWholeScreen(
                 $screenWidget,

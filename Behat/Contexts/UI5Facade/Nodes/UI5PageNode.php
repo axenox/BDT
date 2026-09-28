@@ -5,6 +5,7 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatter;
+use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use axenox\BDT\Interfaces\TestResultInterface;
 use Behat\Mink\Element\NodeElement;
@@ -117,9 +118,7 @@ class UI5PageNode implements FacadeNodeInterface
         DatabaseFormatter::addTestLogbook($logbook);
 
         $rootWidget = $this->getUiPage()->getWidgetRoot();
-        $rootElementId = $this->getBrowser()->getElementIdFromWidget($rootWidget);
-        $rootNode = $this->getSession()->getPage()->findById($rootElementId);
-        Assert::assertNotNull($rootNode, 'Cannot determine the main widget for the current page.(' . $alias . '.html)');
+        $rootNode = $this->assertPageRootRendered();
 
         $widgetType = $rootWidget->getWidgetType();
 
@@ -136,7 +135,20 @@ class UI5PageNode implements FacadeNodeInterface
         }
 
         $result = $facadeNode->runAsSubstep(
-            function () use ($facadeNode, $logbook) {
+            function () use ($facadeNode, $logbook, $alias) {
+                // Shallow button check: the page opening is the success criterion, its contents belong to
+                // the page's own scenario. WHY THE SAME SUBSTEP: only the body differs between the modes, so
+                // a failure here still gets runAsSubstep()'s screenshot, error log and error-dialog dismissal
+                // in that order - the evidence is captured before the popup is closed.
+                // WHY assertNoErrors(): "root rendered" is not "rendered without errors" - the detector sees
+                // network errors, error popups, error dialogs and MessageManager errors in one pass and puts
+                // the real message and Log-ID into the exception.
+                if (! UI5AbstractNode::shouldDescendIntoActionResults()) {
+                    $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+                    $this->getBrowser()->getErrorDetector()->assertNoErrors();
+                    $logbook->addLine('Page `' . $alias . '` opened - contents not checked (shallow button check)');
+                    return SubstepResult::createPassed($logbook);
+                }
                 return $facadeNode->checkWorksAsExpected($logbook);
             },
             'Checking page "' . $alias . '"',
@@ -153,6 +165,25 @@ class UI5PageNode implements FacadeNodeInterface
         }
 
         return $result;
+    }
+
+    /**
+     * Asserts the page's root widget is actually rendered and returns its DOM element.
+     *
+     * WHY EXTRACTED: the shallow buttons-only check (UI5ButtonNode::checkActionGoToPage) must verify a
+     * navigated-to page really rendered its root without sweeping its contents. "The URL changed" is
+     * not "the page rendered" - the root can fail to appear. Reusing this one assertion keeps the
+     * shallow check and the deep checkWorksAsExpected() from drifting on what "the page loaded" means.
+     *
+     * @return NodeElement
+     */
+    public function assertPageRootRendered(): NodeElement
+    {
+        $rootWidget = $this->getUiPage()->getWidgetRoot();
+        $rootElementId = $this->getBrowser()->getElementIdFromWidget($rootWidget);
+        $rootNode = $this->getSession()->getPage()->findById($rootElementId);
+        Assert::assertNotNull($rootNode, 'Cannot determine the main widget for the current page.(' . $this->pageSelector . '.html)');
+        return $rootNode;
     }
 
     public function getCaption(): string

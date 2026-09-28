@@ -3291,6 +3291,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * on a given page, and you only want to green-light the buttons. Focus a table first (e.g.
      * "I look at table 1").
      *
+     * This check is deliberately SHALLOW: a button that opens a dialog or navigates to a detail
+     * page passes as soon as that screen appears - the buttons inside the opened dialog or page
+     * are NOT tested here. Those belong to their own dedicated scenarios. This keeps a list-view
+     * button test focused on the list view and prevents a defect two levels deeper from being
+     * reported against the current scenario.
+     *
      * Usage example:
      *
      *   Given I log in to the page "my.app.orders.html" as "Support"
