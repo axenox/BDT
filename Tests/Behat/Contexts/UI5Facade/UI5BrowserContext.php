@@ -1600,6 +1600,32 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Asserts that the app is not showing any error right now.
+     *
+     * WHY AN EXPLICIT STEP: an action fired by a previous step (e.g. confirming a delete) can fail
+     * server-side and only surface as an error popup, error dialog or MessageManager entry AFTER that
+     * step's own settling already finished. Placing this step right after such an action makes the
+     * failure fail HERE with the real message and Log-ID, instead of a later unrelated step tripping
+     * over the leftover modal error popup.
+     *
+     * Usage example:
+     *
+     *   When I click button "Löschen"
+     *   And I confirm the confirmation dialog
+     *   Then I do not see any errors
+     *
+     * @Then I do not see any errors
+     * @Then I do not see any error
+     */
+    public function iDoNotSeeAnyErrors(): void
+    {
+        // Settle first so a request the previous action triggered has surfaced its error (if any)
+        // before it is probed for - otherwise the check races an in-flight response and passes blind.
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+        $this->getBrowser()->getErrorDetector()->assertNoErrors();
+    }
+
+    /**
      * Clicks a button by the text shown on it.
      *
      * This is the everyday "press this button" step. It first looks inside the widget you are
