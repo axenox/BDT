@@ -325,13 +325,20 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * exception escape the hook, which would end Behat with exit code 255. Only the explanation of what the
      * recovery can still achieve differs, so that is the parameter.
      *
+     * WHY IT RETURNS THE REASON: the failure used to be swallowed here, so a caller like ensureChromeAlive()
+     * (and through it visitPath()) could never learn WHY a restart failed - the failing step's error message
+     * said only "restart requested". Returning null on success or a short reason on failure lets that caller
+     * put the real cause into the step's error message instead of hiding it in a log nobody reads.
+     *
      * @param string $trigger Where Chrome was lost and what the recovery can still achieve, printed as-is
+     * @return string|null Null when Chrome was recovered, a short human-readable reason when recovery failed
      */
-    private function recoverChromeInHook(string $trigger): void
+    private function recoverChromeInHook(string $trigger): ?string
     {
         try {
             $this->reportChromeRecovery($trigger);
             $this->recoverChrome('');
+            return null;
         } catch (\Throwable $recoveryError) {
             $this->reportChromeRecovery('FAILED: ' . $recoveryError->getMessage());
             try {
@@ -341,6 +348,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                     $recoveryError
                 ));
             } catch (\Throwable $ignored) {}
+            return $recoveryError->getMessage();
         }
     }
 
@@ -592,11 +600,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * code 255, discarding the per-scenario results the run exists to produce. The steps fail on
      * their own when they try to use the browser, and the normal error handling records them.
      *
-     * WHY IT STILL RECORDS SOMETHING RATHER THAN IGNORING: ChromeManager reports two of its three
-     * failure paths itself (readiness timeout and foreign process on the port both reach the
-     * DatabaseFormatter), but the configuration path - unresolvable executable or user_data_dir -
-     * only writes a logbook line. Swallowing here would make a moved or missing Chrome binary look
-     * like a page that merely failed to load, which is the most misleading symptom available.
+     * WHY IT STILL RECORDS SOMETHING RATHER THAN IGNORING: ChromeManager no longer reports any of its failure
+     * paths itself - it only throws. This method's workbench logException() is therefore the single record for
+     * all three paths (readiness timeout, foreign process on the port, and an unresolvable executable or
+     * user_data_dir). Swallowing here would make any of them look like a page that merely failed to load, which
+     * is the most misleading symptom available.
      *
      * WHY STOP COMES BEFORE LOGGING: the logger writes to the database and can itself throw while
      * the DB is under pressure, so the browser must be reclaimed before anything DB-backed runs.
@@ -3488,7 +3496,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 //
                 // Chrome is GONE: every retry would hit the same dead socket, so the process must be
                 // restarted first. ensureChromeAlive() does that (and replays the login when one
-                // already happened) and never throws, so calling it here is safe.
+                // already happened) and never throws, so calling it here is safe. It returns the reason
+                // a restart failed (null on success), which is recorded so the failing step's error
+                // message names the real cause instead of an unexplained "restart requested".
                 //
                 // Chrome is ALIVE: the process still answers /json/version and the page may even have
                 // loaded already - what broke is THIS session's WebSocket to it. Retrying over that
@@ -3503,8 +3513,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                     $recoveryLog[] = 'attempt ' . $attempt . ': Chrome alive, session reattach '
                         . ($this->reconnectSession() ? 'succeeded' : 'FAILED');
                 } else {
-                    $this->ensureChromeAlive();
-                    $recoveryLog[] = 'attempt ' . $attempt . ': Chrome not reachable, restart requested';
+                    // ensureChromeAlive() returns the real reason a restart failed (null on success), so the
+                    // failing step's "Recovery: ..." line names the actual cause instead of the old, useless
+                    // "restart requested" that hid whether Chrome ever came back.
+                    $restartReason = $this->ensureChromeAlive();
+                    $recoveryLog[] = 'attempt ' . $attempt . ': Chrome not reachable, '
+                        . ($restartReason === null ? 'restart succeeded' : 'restart FAILED: ' . $restartReason);
                 }
                 // CDP transient — give a still-alive-but-slow browser time to settle, then retry.
                 $this->sleepBeforeVisitRetry($attempt);
@@ -3902,29 +3916,47 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * WHY IT MUST NEVER THROW: it runs from the BeforeStep hook, where an uncaught exception kills the Behat
      * process. A failed recovery is reported and the step is allowed to run and fail normally.
+     *
+     * WHY IT RETURNS THE REASON: callers such as visitPath() need to know WHY a restart failed so they can put
+     * the real cause into the failing step's error message. Returning null (alive or revived) or a short reason
+     * (recovery failed) replaces the old "restart requested" message that never said what actually went wrong.
+     *
+     * WHY THE PORT ALONE IS NOT THE "NEVER STARTED" MARKER: the port is null both before the first start AND
+     * after a failed restart (stop() nulls it, start() only restores it on success). Returning null on a null
+     * port therefore used to make every recovery attempt after a failed restart a silent no-op that was then
+     * reported as "restart succeeded". hasStartBeenAttempted() distinguishes the two: only a genuine
+     * never-started manager returns early; a lost/failed-restart Chrome falls through to the restart path.
+     *
+     * @return string|null Null when Chrome is alive or was revived, a short human-readable reason when recovery failed
      */
-    private function ensureChromeAlive(): void
+    private function ensureChromeAlive(): ?string
     {
         try {
             $manager = ChromeManager::getInstance();
 
-            // The port, not the PID, is the reliable "has Chrome ever been started" marker (see ChromeManager).
-            if ($manager->getPort() === null) {
-                return;
+            // Only a manager that never launched Chrome in this process has nothing to revive. A null port with
+            // a start already attempted means Chrome is down (typically a failed restart) - fall through and
+            // restart it, do not mistake it for "never started".
+            if (! $manager->hasStartBeenAttempted()) {
+                return null;
             }
 
-            if ($manager->isAlive()) {
-                return;
+            if ($manager->getPort() !== null && $manager->isAlive()) {
+                return null;
             }
 
             if ($this->lastLoginUrl === null) {
                 $this->reportChromeRecovery('Triggered before a step, before any login - restarting Chrome only, there is no state to restore.');
                 ChromeManager::getInstance()->restart();
-                $this->reconnectSession();
-                return;
+                // reconnectSession() returns false when Chrome came back but the session could not be reattached;
+                // reporting null there would be the same false "restart succeeded" this fix exists to remove.
+                if (! $this->reconnectSession()) {
+                    return 'Chrome restarted but the session could not be reattached';
+                }
+                return null;
             }
 
-            $this->recoverChromeInHook('Triggered before a step. The scenario continues if its state can be restored.');
+            return $this->recoverChromeInHook('Triggered before a step. The scenario continues if its state can be restored.');
 
         } catch (\Throwable $e) {
             $this->reportChromeRecovery('FAILED before a step: ' . $e->getMessage());
@@ -3935,6 +3967,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                     $e
                 ));
             } catch (\Throwable $ignored) {}
+            return $e->getMessage();
         }
     }
 

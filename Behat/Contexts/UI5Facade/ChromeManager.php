@@ -80,11 +80,11 @@ class ChromeManager
      * @var DatabaseFormatter|null
      * The active DatabaseFormatter, injected on the first getInstance() call.
      *
-     * Typed against the concrete DatabaseFormatter (not TestRunObserverInterface) on purpose:
-     * we specifically rely on its logError() implementation, which creates a FAILED run_step
-     * bound to the current scenario/step in the results DB. Holding the formatter instead of a
-     * plain logger lets a Chrome startup failure show up as a real failed step, rather than an
-     * unexplained timeout with the cause buried in the logbook.
+     * WHY IT IS STILL HELD: only for getWorkbench() (see the calls to $this->databaseFormatter?->getWorkbench()).
+     * It is NOT used to report failures any more. ChromeManager used to call the formatter's logError() to write
+     * a Chrome startup failure as a FAILED run_step, but that turned every failed restart attempt during step
+     * recovery into a phantom step row. Reporting is the caller's decision now: ChromeManager is infrastructure
+     * and only throws; the caller decides whether that throw is swallowed or surfaced in a step's error message.
      */
     private ?DatabaseFormatter $databaseFormatter = null;
 
@@ -151,11 +151,12 @@ class ChromeManager
     /**
      * Private constructor enforces singleton usage via getInstance().
      *
-     * The formatter is optional so getInstance() can be called without arguments once the
-     * instance already exists. It is the DatabaseFormatter, the only component able to write a
-     * failed step to the results DB via its overridden logError().
+     * The formatter is optional so getInstance() can be called without arguments once the instance already
+     * exists. It is kept ONLY to reach the workbench (getWorkbench()) - ChromeManager no longer reports its
+     * own failures. It just throws; whether a failure becomes a step, a log line or is swallowed is decided
+     * by the caller, because only the caller knows the context the failure happened in.
      *
-     * @param DatabaseFormatter|null $databaseFormatter Formatter used to report Chrome startup failures as a test step
+     * @param DatabaseFormatter|null $databaseFormatter Formatter kept only for workbench access, not for reporting
      */
     private function __construct(?DatabaseFormatter $databaseFormatter = null)
     {
@@ -167,11 +168,13 @@ class ChromeManager
      *
      * The formatter parameter is only meaningful on the very first call (from
      * DatabaseFormatter::__construct(), which passes itself). All subsequent callers should
-     * omit it; the instance retains the formatter injected during initialization.
+     * omit it; the instance retains the formatter injected during initialization. The formatter
+     * is kept only to reach the workbench - ChromeManager no longer reports failures through it,
+     * it only throws and lets the caller decide how to surface the failure.
      *
      * Pattern: initialize-once singleton with optional constructor injection.
      *
-     * @param DatabaseFormatter|null $databaseFormatter Formatter to inject; ignored if the instance already exists
+     * @param DatabaseFormatter|null $databaseFormatter Formatter kept only for workbench access, not for reporting
      * @return static The singleton instance
      */
     public static function getInstance(?DatabaseFormatter $databaseFormatter = null): static
@@ -314,15 +317,9 @@ class ChromeManager
                 $this->getLogbook()->addLine($msg);
                 $this->getLogbook()->addIndent(-1);
                 $this->getLogbook()->addIndent(-1);
-                $exception = new RuntimeException($msg);
-                try {
-                    // Same reporting path as waitUntilReady(): surface the failure as a real failed
-                    // step in the results DB instead of an unexplained timeout.
-                    $this->databaseFormatter?->logError($msg, $exception);
-                } catch (\Throwable $logError) {
-                    $this->getLogbook()->addLine('Could not report the foreign-process conflict to the DatabaseFormatter: ' . $logError->getMessage());
-                }
-                throw $exception;
+                // Only throw - reporting belongs to the caller. Writing a failed step here turned every
+                // recovery restart attempt into a phantom FAILED row before the real failing step.
+                throw new RuntimeException($msg);
             }
         } else {
             $this->getLogbook()->addLine("No existing process found on port {$port}");
@@ -552,6 +549,26 @@ class ChromeManager
     public function getPort(): ?int
     {
         return $this->port;
+    }
+
+    /**
+     * Returns TRUE once this manager has ever tried to launch Chrome with a resolved profile.
+     *
+     * WHY THIS EXISTS: the port cannot answer this question. getPort() is null in TWO different
+     * situations - before the very first start(), and after a FAILED restart (stop() nulls the port,
+     * and start() only sets it again once waitUntilReady() succeeds). A caller that treats "port is
+     * null" as "Chrome was never started" therefore does nothing after a failed restart and leaves a
+     * dead browser in place. This method tells the two apart so the caller can retry the restart in
+     * the second case.
+     *
+     * WHY userDataDir: start() sets it the moment the config resolves, and stop() deliberately never
+     * clears it (it is the "we manage a profile" marker the teardown sweep relies on). So a non-null
+     * userDataDir means "a start with a resolved profile has happened at least once", which is exactly
+     * the question here - no new flag and no duplicated state.
+     */
+    public function hasStartBeenAttempted(): bool
+    {
+        return $this->userDataDir !== null;
     }
 
     /**
@@ -846,14 +863,9 @@ class ChromeManager
         $msg = "**ERROR** Chrome did not become ready on port {$port} within {$timeoutSeconds} seconds.";
         $this->getLogbook()->addLine($msg . " (total attempts: {$attempt})");
         $this->getLogbook()->addIndent(-1);
-        $exception = new RuntimeException($msg);
-        try {
-            $this->databaseFormatter?->logError($msg, $exception);
-        } catch (\Throwable $logError) {
-            $this->getLogbook()->addLine('Could not report the Chrome startup failure to the DatabaseFormatter: ' . $logError->getMessage());
-        }
-
-        throw $exception;
+        // Only throw - reporting belongs to the caller. Writing a failed step here turned every
+        // recovery restart attempt into a phantom FAILED row before the real failing step.
+        throw new RuntimeException($msg);
     }
 
     /**
