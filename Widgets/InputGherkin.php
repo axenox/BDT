@@ -52,6 +52,7 @@ HTML;
         $includes[] = '<script src="vendor/npm-asset/ace-builds/src-min/ext-language_tools.js"></script>';
         $includes[] = '<script src="vendor/npm-asset/ace-builds/src-min/ext-searchbox.js"></script>';
         $includes[] = '<style>.ace_autocomplete { width: min(700px, calc(100vw - 32px)) !important; }</style>';
+        $includes[] = '<style>.gherkin-var-highlight { position: absolute; background-color: rgba(255, 213, 79, 0.45); border-radius: 2px; }</style>';
         return $includes;
     }
 
@@ -77,6 +78,28 @@ HTML;
 
     // Define custom autocompletion phrases
     const aCompletions = {$this->buildJsCompletionsArray()};
+
+    // Turn a step's Behat variable tokens into Ace snippet tab stops so the inserted step highlights
+    // every variable (e.g. :caption or the quoted ":value" form) as a box the user can Tab through and
+    // overwrite. Everything else is emitted as literal text with the snippet meta-characters escaped,
+    // otherwise a stray \$ or } in a step would be swallowed by the snippet parser.
+    const fnStepToSnippet = function (text) {
+        let tabIndex = 0;
+        return text
+            .split(/(:[A-Za-z_][A-Za-z0-9_]*)/g)
+            .map(function (part) {
+                const match = part.match(/^:([A-Za-z_][A-Za-z0-9_]*)\$/);
+                if (match) {
+                    tabIndex++;
+                    // Keep the leading colon in the default text so an unfilled variable stays a loud
+                    // :placeholder (never a plausible-looking real value) and is picked up by fnRefreshVarMarkers.
+                    return '\${' + tabIndex + ':' + ':' + match[1] + '}';
+                }
+                return part.replace(/([\\\\\$}])/g, '\\\\\$1');
+            })
+            .join('');
+    };
+
     const oCompleter = {
       getCompletions: function (oEditor, session, pos, prefix, callback) {
         // Show all phrases containing the typed word (case-insensitive)
@@ -103,12 +126,42 @@ HTML;
                 const replaceLength = overlapLength || completion.typedPrefix.length;
                 const Range = ace.require("ace/range").Range;
                 const range = new Range(pos.row, pos.column - replaceLength, pos.row, pos.column);
-                const end = oEditor.session.replace(range, value);
-                oEditor.clearSelection();
-                oEditor.moveCursorToPosition(end);
+
+                // Drop the already-typed fragment first, then insert as a snippet so the variable tab stops
+                // are computed from the final cursor position rather than the pre-removal one.
+                oEditor.session.remove(range);
+                oEditor.moveCursorToPosition(range.start);
+                const oSnippetManager = ace.require("ace/snippets").snippetManager;
+                oSnippetManager.insertSnippet(oEditor, fnStepToSnippet(value));
             },
     };
     oLangTools.setCompleters([oCompleter]);
+
+    // Persistently highlight every still-unfilled :variable. WHY: the snippet tab stops only mark a
+    // variable while the cursor sits on it; tabbing past an unedited one drops that mark, leaving a
+    // bare :placeholder that reads like a real value. A background marker keeps it visibly pending and
+    // vanishes on its own once the token is overwritten. Re-scanning the whole (small) document on every
+    // change keeps marker positions correct without tracking anchors across edits.
+    let aVarMarkerIds = [];
+    const fnRefreshVarMarkers = function () {
+        const oSession = oEditor.session;
+        aVarMarkerIds.forEach(function (id) { oSession.removeMarker(id); });
+        aVarMarkerIds = [];
+        const Range = ace.require("ace/range").Range;
+        const aLines = oSession.getDocument().getAllLines();
+        // Negative lookbehind on : and word chars so @Status::Ready / word:word are not mistaken for variables.
+        const oVarRegex = /(?<![:A-Za-z0-9_]):[A-Za-z_][A-Za-z0-9_]*/g;
+        for (let iRow = 0; iRow < aLines.length; iRow++) {
+            oVarRegex.lastIndex = 0;
+            let oMatch;
+            while ((oMatch = oVarRegex.exec(aLines[iRow])) !== null) {
+                const oRange = new Range(iRow, oMatch.index, iRow, oMatch.index + oMatch[0].length);
+                aVarMarkerIds.push(oSession.addMarker(oRange, "gherkin-var-highlight", "text"));
+            }
+        }
+    };
+    oEditor.session.on("change", fnRefreshVarMarkers);
+    fnRefreshVarMarkers();
 
     // Set completion options AFTER adding the custom completer in order to avoid
     // local completions - words from the current documents

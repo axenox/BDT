@@ -325,13 +325,20 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * exception escape the hook, which would end Behat with exit code 255. Only the explanation of what the
      * recovery can still achieve differs, so that is the parameter.
      *
+     * WHY IT RETURNS THE REASON: the failure used to be swallowed here, so a caller like ensureChromeAlive()
+     * (and through it visitPath()) could never learn WHY a restart failed - the failing step's error message
+     * said only "restart requested". Returning null on success or a short reason on failure lets that caller
+     * put the real cause into the step's error message instead of hiding it in a log nobody reads.
+     *
      * @param string $trigger Where Chrome was lost and what the recovery can still achieve, printed as-is
+     * @return string|null Null when Chrome was recovered, a short human-readable reason when recovery failed
      */
-    private function recoverChromeInHook(string $trigger): void
+    private function recoverChromeInHook(string $trigger): ?string
     {
         try {
             $this->reportChromeRecovery($trigger);
             $this->recoverChrome('');
+            return null;
         } catch (\Throwable $recoveryError) {
             $this->reportChromeRecovery('FAILED: ' . $recoveryError->getMessage());
             try {
@@ -341,6 +348,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                     $recoveryError
                 ));
             } catch (\Throwable $ignored) {}
+            return $recoveryError->getMessage();
         }
     }
 
@@ -592,11 +600,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * code 255, discarding the per-scenario results the run exists to produce. The steps fail on
      * their own when they try to use the browser, and the normal error handling records them.
      *
-     * WHY IT STILL RECORDS SOMETHING RATHER THAN IGNORING: ChromeManager reports two of its three
-     * failure paths itself (readiness timeout and foreign process on the port both reach the
-     * DatabaseFormatter), but the configuration path - unresolvable executable or user_data_dir -
-     * only writes a logbook line. Swallowing here would make a moved or missing Chrome binary look
-     * like a page that merely failed to load, which is the most misleading symptom available.
+     * WHY IT STILL RECORDS SOMETHING RATHER THAN IGNORING: ChromeManager no longer reports any of its failure
+     * paths itself - it only throws. This method's workbench logException() is therefore the single record for
+     * all three paths (readiness timeout, foreign process on the port, and an unresolvable executable or
+     * user_data_dir). Swallowing here would make any of them look like a page that merely failed to load, which
+     * is the most misleading symptom available.
      *
      * WHY STOP COMES BEFORE LOGGING: the logger writes to the database and can itself throw while
      * the DB is under pressure, so the browser must be reclaimed before anything DB-backed runs.
@@ -1476,6 +1484,145 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // answered, UI5 destroys it, pruneDeadFocus() drops it and the widget focused before (usually the
         // table the row was deleted from) is active again for the following assertions.
         $this->getBrowser()->focus($confirmation);
+    }
+
+    /**
+     * Presses the confirm button of the confirmation popup that is currently open.
+     *
+     * WHY A SHORTCUT: testers almost always follow "I see a confirmation with ..." with a second
+     * "I click button ..." whose caption they have to copy from the screen and keep in sync with the
+     * translation. This one step removes that duplication - the confirm button is the emphasized begin
+     * button of every core ConfirmationMessage, so it is identified by its role in the popup rather
+     * than by a caption that changes per language and is often equal to the button that opened it.
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   And I select table row 1
+     *   And I click button "Löschen"
+     *   And I confirm the confirmation dialog
+     *
+     * @When I confirm the confirmation dialog
+     */
+    public function iConfirmTheConfirmationDialog(): void
+    {
+        $this->answerOpenConfirmation(true);
+    }
+
+    /**
+     * Presses the cancel button of the confirmation popup that is currently open.
+     *
+     * WHY A SHORTCUT: the counterpart of "I confirm the confirmation dialog" - see there for why the
+     * button is picked by its role. The cancel button is the plain end button of the core
+     * ConfirmationMessage.
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   And I select table row 1
+     *   And I click button "Löschen"
+     *   And I cancel the confirmation dialog
+     *
+     * @When I cancel the confirmation dialog
+     */
+    public function iCancelTheConfirmationDialog(): void
+    {
+        $this->answerOpenConfirmation(false);
+    }
+
+    /**
+     * Answers the open confirmation popup by pressing its confirm (begin) or cancel (end) button.
+     *
+     * WHY IT PICKS THE BUTTON BY ROLE, NOT CAPTION: the core renders every ConfirmationMessage as a
+     * sap.m.Dialog whose confirm button is emphasized (begin) and whose cancel button is plain (end) -
+     * see UI5ConfirmationMessage. Matching that role keeps the step working across languages and stops
+     * it from pressing a same-named button of the widget behind the popup (the confirm caption is often
+     * identical to the button that opened the confirmation).
+     *
+     * @param bool $confirm True to press the confirm button, false for the cancel button
+     */
+    private function answerOpenConfirmation(bool $confirm): void
+    {
+        // The MessageBox is opened by the click of the previous step and may still be animating in.
+        // Waiting for ANY open MessageBox first keeps the button lookup below from racing that
+        // animation; the return value is ignored on purpose, the assertion below reports the outcome.
+        $this->getBrowser()->getWaitManager()->waitForDOMElements('.sapMMessageDialog.sapMDialogOpen', 1, 10);
+
+        // MessageBoxes render into UI5's static area outside every widget, so the search is page wide.
+        // The last visible open dialog is the top-most one (UI5 appends newly opened dialogs); earlier
+        // matches can be leftovers of dialogs that are being closed.
+        $pageNode = new GenericHtmlNode(
+            $this->getSession()->getPage()->find('css', 'body'),
+            $this->getSession(),
+            $this->getBrowser()
+        );
+        $dialog = null;
+        foreach (array_reverse($this->getSession()->getPage()->findAll('css', '.sapMMessageDialog.sapMDialogOpen')) as $el) {
+            if ($pageNode->isElementVisibleInBrowser($el)) {
+                $dialog = $el;
+                break;
+            }
+        }
+
+        if ($dialog === null) {
+            Assert::fail('Cannot answer a confirmation: no confirmation popup is open.');
+        }
+
+        // The confirm button is the emphasized begin button, the cancel button is the plain end button
+        // (see UI5ConfirmationMessage). The ".//bdi" filter keeps the match on the text footer buttons
+        // and off any icon-only control the dialog might carry.
+        $emphasized = "descendant::*[contains(concat(' ', normalize-space(@class), ' '), ' sapMBtnEmphasized ')]";
+        $xpath = $confirm
+            ? ".//button[.//bdi][$emphasized]"
+            : ".//button[.//bdi][not($emphasized)]";
+
+        $button = $dialog->find('xpath', $xpath);
+        if ($button === null) {
+            Assert::fail(sprintf(
+                'Cannot %1$s the confirmation: its %1$s button was not found in the open popup.',
+                $confirm ? 'confirm' : 'cancel'
+            ));
+        }
+
+        $this->getBrowser()->highlightWidget($button, 'Button', 0);
+
+        try {
+            $button->click();
+        } catch (\Throwable $e) {
+            throw new BrowserDriverException(
+                $this->getSession(),
+                'Cannot click the ' . ($confirm ? 'confirm' : 'cancel') . ' button of the confirmation. ' . $e->getMessage(),
+                null,
+                $e,
+                $this->getBrowser()
+            );
+        }
+    }
+
+    /**
+     * Asserts that the app is not showing any error right now.
+     *
+     * WHY AN EXPLICIT STEP: an action fired by a previous step (e.g. confirming a delete) can fail
+     * server-side and only surface as an error popup, error dialog or MessageManager entry AFTER that
+     * step's own settling already finished. Placing this step right after such an action makes the
+     * failure fail HERE with the real message and Log-ID, instead of a later unrelated step tripping
+     * over the leftover modal error popup.
+     *
+     * Usage example:
+     *
+     *   When I click button "Löschen"
+     *   And I confirm the confirmation dialog
+     *   Then I do not see any errors
+     *
+     * @Then I do not see any errors
+     * @Then I do not see any error
+     */
+    public function iDoNotSeeAnyErrors(): void
+    {
+        // Settle first so a request the previous action triggered has surfaced its error (if any)
+        // before it is probed for - otherwise the check races an in-flight response and passes blind.
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+        $this->getBrowser()->getErrorDetector()->assertNoErrors();
     }
 
     /**
@@ -3291,6 +3438,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * on a given page, and you only want to green-light the buttons. Focus a table first (e.g.
      * "I look at table 1").
      *
+     * This check is deliberately SHALLOW: a button that opens a dialog or navigates to a detail
+     * page passes as soon as that screen appears - the buttons inside the opened dialog or page
+     * are NOT tested here. Those belong to their own dedicated scenarios. This keeps a list-view
+     * button test focused on the list view and prevents a defect two levels deeper from being
+     * reported against the current scenario.
+     *
      * Usage example:
      *
      *   Given I log in to the page "my.app.orders.html" as "Support"
@@ -3482,7 +3635,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 //
                 // Chrome is GONE: every retry would hit the same dead socket, so the process must be
                 // restarted first. ensureChromeAlive() does that (and replays the login when one
-                // already happened) and never throws, so calling it here is safe.
+                // already happened) and never throws, so calling it here is safe. It returns the reason
+                // a restart failed (null on success), which is recorded so the failing step's error
+                // message names the real cause instead of an unexplained "restart requested".
                 //
                 // Chrome is ALIVE: the process still answers /json/version and the page may even have
                 // loaded already - what broke is THIS session's WebSocket to it. Retrying over that
@@ -3497,8 +3652,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                     $recoveryLog[] = 'attempt ' . $attempt . ': Chrome alive, session reattach '
                         . ($this->reconnectSession() ? 'succeeded' : 'FAILED');
                 } else {
-                    $this->ensureChromeAlive();
-                    $recoveryLog[] = 'attempt ' . $attempt . ': Chrome not reachable, restart requested';
+                    // ensureChromeAlive() returns the real reason a restart failed (null on success), so the
+                    // failing step's "Recovery: ..." line names the actual cause instead of the old, useless
+                    // "restart requested" that hid whether Chrome ever came back.
+                    $restartReason = $this->ensureChromeAlive();
+                    $recoveryLog[] = 'attempt ' . $attempt . ': Chrome not reachable, '
+                        . ($restartReason === null ? 'restart succeeded' : 'restart FAILED: ' . $restartReason);
                 }
                 // CDP transient — give a still-alive-but-slow browser time to settle, then retry.
                 $this->sleepBeforeVisitRetry($attempt);
@@ -3896,29 +4055,47 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * WHY IT MUST NEVER THROW: it runs from the BeforeStep hook, where an uncaught exception kills the Behat
      * process. A failed recovery is reported and the step is allowed to run and fail normally.
+     *
+     * WHY IT RETURNS THE REASON: callers such as visitPath() need to know WHY a restart failed so they can put
+     * the real cause into the failing step's error message. Returning null (alive or revived) or a short reason
+     * (recovery failed) replaces the old "restart requested" message that never said what actually went wrong.
+     *
+     * WHY THE PORT ALONE IS NOT THE "NEVER STARTED" MARKER: the port is null both before the first start AND
+     * after a failed restart (stop() nulls it, start() only restores it on success). Returning null on a null
+     * port therefore used to make every recovery attempt after a failed restart a silent no-op that was then
+     * reported as "restart succeeded". hasStartBeenAttempted() distinguishes the two: only a genuine
+     * never-started manager returns early; a lost/failed-restart Chrome falls through to the restart path.
+     *
+     * @return string|null Null when Chrome is alive or was revived, a short human-readable reason when recovery failed
      */
-    private function ensureChromeAlive(): void
+    private function ensureChromeAlive(): ?string
     {
         try {
             $manager = ChromeManager::getInstance();
 
-            // The port, not the PID, is the reliable "has Chrome ever been started" marker (see ChromeManager).
-            if ($manager->getPort() === null) {
-                return;
+            // Only a manager that never launched Chrome in this process has nothing to revive. A null port with
+            // a start already attempted means Chrome is down (typically a failed restart) - fall through and
+            // restart it, do not mistake it for "never started".
+            if (! $manager->hasStartBeenAttempted()) {
+                return null;
             }
 
-            if ($manager->isAlive()) {
-                return;
+            if ($manager->getPort() !== null && $manager->isAlive()) {
+                return null;
             }
 
             if ($this->lastLoginUrl === null) {
                 $this->reportChromeRecovery('Triggered before a step, before any login - restarting Chrome only, there is no state to restore.');
                 ChromeManager::getInstance()->restart();
-                $this->reconnectSession();
-                return;
+                // reconnectSession() returns false when Chrome came back but the session could not be reattached;
+                // reporting null there would be the same false "restart succeeded" this fix exists to remove.
+                if (! $this->reconnectSession()) {
+                    return 'Chrome restarted but the session could not be reattached';
+                }
+                return null;
             }
 
-            $this->recoverChromeInHook('Triggered before a step. The scenario continues if its state can be restored.');
+            return $this->recoverChromeInHook('Triggered before a step. The scenario continues if its state can be restored.');
 
         } catch (\Throwable $e) {
             $this->reportChromeRecovery('FAILED before a step: ' . $e->getMessage());
@@ -3929,6 +4106,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                     $e
                 ));
             } catch (\Throwable $ignored) {}
+            return $e->getMessage();
         }
     }
 
