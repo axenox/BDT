@@ -1487,6 +1487,119 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Presses the confirm button of the confirmation popup that is currently open.
+     *
+     * WHY A SHORTCUT: testers almost always follow "I see a confirmation with ..." with a second
+     * "I click button ..." whose caption they have to copy from the screen and keep in sync with the
+     * translation. This one step removes that duplication - the confirm button is the emphasized begin
+     * button of every core ConfirmationMessage, so it is identified by its role in the popup rather
+     * than by a caption that changes per language and is often equal to the button that opened it.
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   And I select table row 1
+     *   And I click button "Löschen"
+     *   And I confirm the confirmation dialog
+     *
+     * @When I confirm the confirmation dialog
+     */
+    public function iConfirmTheConfirmationDialog(): void
+    {
+        $this->answerOpenConfirmation(true);
+    }
+
+    /**
+     * Presses the cancel button of the confirmation popup that is currently open.
+     *
+     * WHY A SHORTCUT: the counterpart of "I confirm the confirmation dialog" - see there for why the
+     * button is picked by its role. The cancel button is the plain end button of the core
+     * ConfirmationMessage.
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   And I select table row 1
+     *   And I click button "Löschen"
+     *   And I cancel the confirmation dialog
+     *
+     * @When I cancel the confirmation dialog
+     */
+    public function iCancelTheConfirmationDialog(): void
+    {
+        $this->answerOpenConfirmation(false);
+    }
+
+    /**
+     * Answers the open confirmation popup by pressing its confirm (begin) or cancel (end) button.
+     *
+     * WHY IT PICKS THE BUTTON BY ROLE, NOT CAPTION: the core renders every ConfirmationMessage as a
+     * sap.m.Dialog whose confirm button is emphasized (begin) and whose cancel button is plain (end) -
+     * see UI5ConfirmationMessage. Matching that role keeps the step working across languages and stops
+     * it from pressing a same-named button of the widget behind the popup (the confirm caption is often
+     * identical to the button that opened the confirmation).
+     *
+     * @param bool $confirm True to press the confirm button, false for the cancel button
+     */
+    private function answerOpenConfirmation(bool $confirm): void
+    {
+        // The MessageBox is opened by the click of the previous step and may still be animating in.
+        // Waiting for ANY open MessageBox first keeps the button lookup below from racing that
+        // animation; the return value is ignored on purpose, the assertion below reports the outcome.
+        $this->getBrowser()->getWaitManager()->waitForDOMElements('.sapMMessageDialog.sapMDialogOpen', 1, 10);
+
+        // MessageBoxes render into UI5's static area outside every widget, so the search is page wide.
+        // The last visible open dialog is the top-most one (UI5 appends newly opened dialogs); earlier
+        // matches can be leftovers of dialogs that are being closed.
+        $pageNode = new GenericHtmlNode(
+            $this->getSession()->getPage()->find('css', 'body'),
+            $this->getSession(),
+            $this->getBrowser()
+        );
+        $dialog = null;
+        foreach (array_reverse($this->getSession()->getPage()->findAll('css', '.sapMMessageDialog.sapMDialogOpen')) as $el) {
+            if ($pageNode->isElementVisibleInBrowser($el)) {
+                $dialog = $el;
+                break;
+            }
+        }
+
+        if ($dialog === null) {
+            Assert::fail('Cannot answer a confirmation: no confirmation popup is open.');
+        }
+
+        // The confirm button is the emphasized begin button, the cancel button is the plain end button
+        // (see UI5ConfirmationMessage). The ".//bdi" filter keeps the match on the text footer buttons
+        // and off any icon-only control the dialog might carry.
+        $emphasized = "descendant::*[contains(concat(' ', normalize-space(@class), ' '), ' sapMBtnEmphasized ')]";
+        $xpath = $confirm
+            ? ".//button[.//bdi][$emphasized]"
+            : ".//button[.//bdi][not($emphasized)]";
+
+        $button = $dialog->find('xpath', $xpath);
+        if ($button === null) {
+            Assert::fail(sprintf(
+                'Cannot %1$s the confirmation: its %1$s button was not found in the open popup.',
+                $confirm ? 'confirm' : 'cancel'
+            ));
+        }
+
+        $this->getBrowser()->highlightWidget($button, 'Button', 0);
+
+        try {
+            $button->click();
+        } catch (\Throwable $e) {
+            throw new BrowserDriverException(
+                $this->getSession(),
+                'Cannot click the ' . ($confirm ? 'confirm' : 'cancel') . ' button of the confirmation. ' . $e->getMessage(),
+                null,
+                $e,
+                $this->getBrowser()
+            );
+        }
+    }
+
+    /**
      * Clicks a button by the text shown on it.
      *
      * This is the everyday "press this button" step. It first looks inside the widget you are
