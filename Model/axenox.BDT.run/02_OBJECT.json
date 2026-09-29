@@ -87,7 +87,7 @@
         {
             "_EXPORT_SUMMARY": "BDT test run [axenox.BDT.run]",
             "CREATED_ON": "2025-06-24 15:57:14",
-            "MODIFIED_ON": "2026-09-29 10:02:10",
+            "MODIFIED_ON": "2026-09-29 10:27:09",
             "CREATED_BY_USER": "0x31000000000000000000000000000000",
             "MODIFIED_BY_USER": "0x11efa72c1fb56dfea72c025041000001",
             "UID": "0x11f08c1d222cd23e8c1d025041000001",
@@ -483,10 +483,6 @@
                                         ],
                                         "buttons": [
                                             {
-                                                "action_alias": "exface.Core.ShowObjectInfoDialog",
-                                                "bind_to_double_click": true
-                                            },
-                                            {
                                                 "caption": "Edit feature",
                                                 "action": {
                                                     "alias": "exface.Core.ShowObjectEditDialog",
@@ -502,6 +498,10 @@
                                                         ]
                                                     }
                                                 }
+                                            },
+                                            {
+                                                "action_alias": "exface.Core.ShowObjectInfoDialog",
+                                                "bind_to_double_click": true
                                             },
                                             {
                                                 "caption": "Show scenario",
