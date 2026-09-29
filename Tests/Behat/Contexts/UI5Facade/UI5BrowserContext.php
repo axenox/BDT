@@ -1597,6 +1597,19 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 $this->getBrowser()
             );
         }
+        try {
+            $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+            $this->getBrowser()->getErrorDetector()->assertNoErrors();
+        }
+        catch (\Throwable $e) {
+            throw new BrowserDriverException(
+                $this->getSession(),
+                'After clicking the ' . ($confirm ? 'confirm' : 'cancel') . ' button of the confirmation, an error was detected. ' . $e->getMessage(),
+                null,
+                $e,
+                $this->getBrowser()
+            );
+        }
     }
 
     /**
