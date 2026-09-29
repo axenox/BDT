@@ -11,7 +11,7 @@
     "created_by_user_selector": "0x11eca7f5b092f284a7f5005056bea39f",
     "created_on": "2025-10-08 18:22:39",
     "modified_by_user_selector": "0x11efa72c1fb56dfea72c025041000001",
-    "modified_on": "2026-09-28 08:20:00",
+    "modified_on": "2026-09-29 08:39:37",
     "contents": {
         "object_alias": "exface.Core.DUMMY",
         "widget_type": "SplitHorizontal",
@@ -52,6 +52,26 @@
                                                     "text_attribute_alias": "LABEL",
                                                     "table": {
                                                         "object_alias": "exface.Core.APP",
+                                                        "filters": [
+                                                            {
+                                                                "attribute_alias": "ALIAS",
+                                                                "comparator": "!=",
+                                                                "value": "axenox",
+                                                                "hidden": true
+                                                            },
+                                                            {
+                                                                "attribute_alias": "ALIAS",
+                                                                "comparator": "!=",
+                                                                "value": "exface",
+                                                                "hidden": true
+                                                            },
+                                                            {
+                                                                "attribute_alias": "ALIAS",
+                                                                "comparator": "!=",
+                                                                "value": "powerui",
+                                                                "hidden": true
+                                                            }
+                                                        ],
                                                         "columns": [
                                                             {
                                                                 "attribute_alias": "PACKAGE",
