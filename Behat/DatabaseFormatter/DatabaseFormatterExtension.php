@@ -2,9 +2,11 @@
 namespace axenox\BDT\Behat\DatabaseFormatter;
 
 use axenox\BDT\Behat\Common\Traits\AuthenticatorTimeStampingTrait;
+use axenox\BDT\Behat\Contexts\UI5Facade\LazyChromeDriver;
 use Behat\Behat\EventDispatcher\ServiceContainer\EventDispatcherExtension;
 use Behat\Testwork\ServiceContainer\Extension;
 use Behat\Testwork\ServiceContainer\ExtensionManager;
+use DMore\ChromeDriver\ChromeDriver;
 use exface\Core\CommonLogic\Workbench;
 use Symfony\Component\Config\Definition\Builder\ArrayNodeDefinition;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
@@ -72,7 +74,7 @@ class DatabaseFormatterExtension implements Extension
         $container->set('database_formatter.workbench', $workbench);
     }
 
-    /*
+    /**
      * Boots the formatter workbench and eagerly resolves the ambient CLI identity, returning the ready
      * workbench.
      *
@@ -90,9 +92,6 @@ class DatabaseFormatterExtension implements Extension
      * so "last writer wins" is exactly the semantics we want. The behavior is re-enabled immediately
      * after the identity is resolved, so the rest of the worker's run (which writes real test data) has
      * its normal guarantees back.
-     *
-     * WHY PARALLEL ONLY: a single interactive run has no herd to collide with, so it has no reason to
-     * give up a safety net. The disable is therefore bound to attach-mode (an injected run_uid).
      *
      * WHY THE RETRY REMAINS: booting the workbench may itself touch the identity row before we get a
      * chance to disable anything. The retry stays as the backstop for that window - and it is what keeps
@@ -163,6 +162,51 @@ class DatabaseFormatterExtension implements Extension
     {
         return mb_stripos($e->getMessage(), 'in the meantime') !== false;
     }
-    
-    public function process(ContainerBuilder $container) {}
+
+    /**
+     * Swaps the stock ChromeDriver for LazyChromeDriver in every Mink session definition.
+     *
+     * WHY HERE: process() runs as a compiler pass - after MinkExtension has registered its sessions,
+     * but before the container creates any service. It is the only point where the driver class can
+     * still be changed before the stock constructor would contact Chrome at Behat startup.
+     */
+    public function process(ContainerBuilder $container)
+    {
+        foreach ($container->getDefinitions() as $definition) {
+            $this->replaceEagerChromeDriver($definition, $container);
+        }
+    }
+
+    /**
+     * Recursively replaces the ChromeDriver class in a definition and in every inline definition it holds.
+     *
+     * WHY RECURSIVE: MinkExtension does not register drivers as top-level services. Each driver is an
+     * inline definition inside a Session definition, which in turn is an argument of a registerSession()
+     * method call on the "mink" service. A flat scan of top-level definitions would find none of them.
+     *
+     * WHY THE CLASS NAME IS RESOLVED: a definition class may be given as a %parameter%; comparing the raw
+     * string would silently skip it and leave the eager driver in place.
+     *
+     * @param mixed $value A Definition, an argument array, or anything else (ignored)
+     */
+    private function replaceEagerChromeDriver($value, ContainerBuilder $container): void
+    {
+        if (is_array($value)) {
+            foreach ($value as $item) {
+                $this->replaceEagerChromeDriver($item, $container);
+            }
+            return;
+        }
+        if (! $value instanceof Definition) {
+            return;
+        }
+        $class = $value->getClass();
+        if ($class !== null && $container->getParameterBag()->resolveValue($class) === ChromeDriver::class) {
+            $value->setClass(LazyChromeDriver::class);
+        }
+        $this->replaceEagerChromeDriver($value->getArguments(), $container);
+        foreach ($value->getMethodCalls() as $call) {
+            $this->replaceEagerChromeDriver($call[1] ?? [], $container);
+        }
+    }
 }

@@ -9,7 +9,7 @@
         "behat/mink-browserkit-driver": "^2.2",
         "behat/mink-selenium2-driver": "^1.7",
         "npm-asset/ace-builds": "^1",
-        "dmore/chrome-mink-driver": "^2.9",
+        "dmore/chrome-mink-driver": "~2.11.0",
         "twig/twig": "^2||^3"
     },
     "authors": [
