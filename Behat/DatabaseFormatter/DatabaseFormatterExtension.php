@@ -11,8 +11,6 @@ use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\Reference;
 use exface\Core\Exceptions\RuntimeException;
-use exface\Core\Behaviors\TimeStampingBehavior;
-use exface\Core\Interfaces\Model\BehaviorInterface;
 
 class DatabaseFormatterExtension implements Extension
 {

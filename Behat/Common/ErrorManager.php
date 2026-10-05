@@ -124,7 +124,6 @@ class ErrorManager
     public function clearErrors(): void
     {
         $this->errors = [];
-        $this->processedErrors = [];
         $this->lastErrorTime = 0;
     }
 

@@ -114,6 +114,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     /** @var string|null Caption of the login submit button; cached for recovery replay */
     private ?string $lastLoginButtonCaption = null;
     private static ?string $currentFeatureTitle = null;
+    private bool $chromeRecoveryInProgress= false;
     
     /**
      * @var array|null Roles used by the most recent iLogInToPage() call.
