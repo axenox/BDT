@@ -29,6 +29,7 @@ use exface\Core\Interfaces\Widgets\iHaveFilters;
 use exface\Core\Interfaces\Widgets\iShowData;
 use exface\Core\Widgets\Data;
 use exface\Core\Widgets\DataColumn;
+use exface\Core\Widgets\DataTable;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\AssertionFailedError;
 
@@ -505,7 +506,7 @@ class UI5DataTableNode extends UI5DataNode
         if ($plan['target'] === null) {
             $reason = empty($plan['hidden'])
                 ? 'no selector cell or checkbox is rendered and every visible data cell holds an '
-                    . 'interactive control (input, link or button), so the row cannot be selected by clicking'
+                . 'interactive control (input, link or button), so the row cannot be selected by clicking'
                 : 'the only selection affordances found are hidden: ' . implode(', ', $plan['hidden']);
             throw new RuntimeException(
                 "Cannot select row {$rowNumber}: the table renders no usable way to select it - " . $reason . '.'
@@ -1389,6 +1390,16 @@ JS);
         $columnCaption = null;
         $column = $this->findColumnWithAttribute($dataWidget, $filterAttr, $logbook);
 
+        // If the filtered attribute is not shown in a visible column, but the table groups its rows
+        // by it, the value is displayed in the group headers (e.g. `Maßnahme-Id: #1 ...`) instead.
+        $grouperColumn = $this->findRowGrouperColumnForAttribute($dataWidget, $filterAttr);
+        $verifyInRowGroups = $grouperColumn !== null
+            && ($column === null || ! $this->isColumnHeaderVisible($column->getCaption()));
+        if ($verifyInRowGroups) {
+            $column = $grouperColumn;
+            $logbook->continueLine(' - filter is represented by the row grouper, verifying group headers');
+        }
+
         if ($column === null) {
             $logbook->continueLine(' - filter `' . $filterAttr->getName() . '` has no corresponding column in the table, skipping content verification');
             return SubstepResult::createSkipped(
@@ -1404,7 +1415,7 @@ JS);
         // such a column and would fail with "Column '...' not found in table". Since the
         // column is intentionally not shown, we skip the content verification for this
         // filter instead of failing the step.
-        if ($column->isHidden() || $column->getVisibility() === EXF_WIDGET_VISIBILITY_OPTIONAL) {
+        if (! $verifyInRowGroups && ($column->isHidden() || $column->getVisibility() === EXF_WIDGET_VISIBILITY_OPTIONAL)) {
             $logbook->continueLine(' - column `' . $columnCaption . '` is optional/hidden, skipping content verification');
             return SubstepResult::createSkipped(
                 'Column `' . $columnCaption . '` for filter `' . $filter->getCaption() . '` is optional/hidden and is not rendered in the table',
@@ -1443,6 +1454,11 @@ JS);
             }
 
             $result->setTitle($result->getTitle() . ' with range "' . $range['from'] . '" – "' . $range['to'] . '"');
+            if ($verifyInRowGroups) {
+                $this->verifyRowGroupContent($range['from'], '>=', $this->getInputDataType());
+                $this->verifyRowGroupContent($range['to'], '<=', $this->getInputDataType());
+                return $result;
+            }
             $this->verifyTableContent([
                 ['column' => $columnCaption, 'value' => $range['from'], 'comparator' => '>=', 'dataType' => $this->getInputDataType()]
             ]);
@@ -1488,9 +1504,13 @@ JS);
             $logbook->continueLine(' (' . $diagnostic . ')');
         }
 
-        $this->verifyTableContent([
-            ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
-        ]);
+        if ($verifyInRowGroups) {
+            $this->verifyRowGroupContent($filterVal, $filter->getComparator(), $this->getInputDataType());
+        } else {
+            $this->verifyTableContent([
+                ['column' => $columnCaption, 'value' => $filterVal, 'comparator' => $filter->getComparator(), 'dataType' => $this->getInputDataType()]
+            ]);
+        }
 
         $logbook->continueLine(' - resetting filter');
 
@@ -1922,6 +1942,127 @@ JS
         return false;
     }
 
+    /**
+     * Tells whether a column with the given caption is rendered AND visible as a table header.
+     *
+     * @param string $caption
+     * @return bool
+     */
+    protected function isColumnHeaderVisible(string $caption) : bool
+    {
+        $caption = trim($caption);
+        foreach ($this->getRenderedColumns() as $col) {
+            if ($col['caption'] === $caption && $col['visible']) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Returns the group-by column of the table's row grouper if it shows the given attribute.
+     *
+     * @param iShowData $dataWidget
+     * @param MetaAttributeInterface $attribute
+     * @return DataColumn|null
+     */
+    protected function findRowGrouperColumnForAttribute(iShowData $dataWidget, MetaAttributeInterface $attribute) : ?DataColumn
+    {
+        if (! ($dataWidget instanceof DataTable) || ! $dataWidget->hasRowGroups()) {
+            return null;
+        }
+        $column = $dataWidget->getRowGrouper()->getGroupByColumn();
+        if (! $column->isBoundToAttribute()) {
+            return null;
+        }
+        if ($column->getAttribute()->is($attribute) || $this->endsWith($column->getAttributeAlias(), $attribute->getAliasWithRelationPath())) {
+            return $column;
+        }
+        return null;
+    }
+
+    /**
+     * Tells whether the given column is the group-by column of the table's row grouper and is
+     * therefore displayed in the group headers instead of a visible column.
+     *
+     * @param DataColumn $column
+     * @return bool
+     */
+    protected function isShownInRowGroupsOnly(DataColumn $column) : bool
+    {
+        $table = $column->getDataWidget();
+        return $table instanceof DataTable
+            && $table->hasRowGroups()
+            && $table->getRowGrouper()->getGroupByColumn() === $column
+            && ! $this->isColumnHeaderVisible($column->getCaption());
+    }
+
+    /**
+     * Returns the values shown in the visible row group headers (without the `Caption: ` prefix).
+     *
+     * Covers both table variants rendered by the UI5 facade: sap.ui.table (`.sapUiTableGroupIcon`)
+     * and sap.m.Table (`sap.m.GroupHeaderListItem`).
+     *
+     * @return string[]
+     */
+    protected function getRowGroupValues() : array
+    {
+        $prefix = '';
+        $table = $this->getWidget();
+        if ($table instanceof DataTable && $table->hasRowGroups()) {
+            $grouper = $table->getRowGrouper();
+            $caption = $grouper->getHideCaption() ? '' : trim($grouper->getCaption() ?? '');
+            $prefix = $caption !== '' ? $caption . ':' : '';
+        }
+
+        $values = [];
+        $headers = $this->getNodeElement()->findAll('css', '.sapUiTableGroupIcon, .sapMGHLI .sapMGHLITitle');
+        foreach ($headers as $header) {
+            if (! $header->isVisible()) {
+                continue;
+            }
+            $text = trim(str_replace("\u{00A0}", ' ', $header->getText()));
+            if ($text === '') {
+                continue;
+            }
+            if ($prefix !== '' && mb_stripos($text, $prefix) === 0) {
+                $text = trim(mb_substr($text, mb_strlen($prefix)));
+            }
+            $values[$text] = $text;
+        }
+        return array_values($values);
+    }
+
+    /**
+     * Verifies that every visible row group header matches the expected value.
+     *
+     * @param mixed $value
+     * @param string $comparator
+     * @param DataTypeInterface $dataType
+     * @throws AssertionFailedError
+     * @return void
+     */
+    protected function verifyRowGroupContent($value, string $comparator, DataTypeInterface $dataType) : void
+    {
+        $searchValue = trim((string) $value, '"\'');
+        $groupValues = $this->getRowGroupValues();
+        Assert::assertNotEmpty($groupValues, 'No row group headers found in table for content verification');
+
+        $mismatches = [];
+        foreach ($groupValues as $groupValue) {
+            if (! $this->compareCell($groupValue, $searchValue, $comparator, $dataType)) {
+                $mismatches[] = $groupValue;
+            }
+        }
+
+        Assert::assertEmpty(
+            $mismatches,
+            'Not all row groups of the table fit the filter value `' . $searchValue . '`. '
+            . (count($groupValues) - count($mismatches)) . '/' . count($groupValues) . ' matched. First mismatches: '
+            . implode(' | ', array_slice($mismatches, 0, 3))
+        );
+    }
+
     protected function checkButtonsWorkAsExpected(iHaveButtons $dataWidget, LogBookInterface $logbook) : TestResultInterface
     {
         $skippedButtons = [];
@@ -2167,6 +2308,15 @@ JS
     protected function findValueInColumn(DataColumn $column, LogBookInterface $logbook): ?string
     {
         $columnCaption = $column->getCaption();
+
+        if ($this->isShownInRowGroupsOnly($column)) {
+            $this->setInputDataType($column->getDataType());
+            $filterVal = $this->getRowGroupValues()[0] ?? null;
+            if ($filterVal !== null) {
+                $logbook->continueLine(' with value `' . $filterVal . '` found in row group `' . $columnCaption . '`');
+            }
+            return $filterVal;
+        }
         $i = $this->getVisibleColumnIndex($column);
 
         // Resolve the DOM column id via the shared header scan so a frozen column's
