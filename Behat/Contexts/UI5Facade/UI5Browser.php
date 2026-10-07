@@ -6,6 +6,7 @@ use axenox\BDT\Behat\Common\BdtPaths;
 use axenox\BDT\Behat\Common\ErrorManager;
 use axenox\BDT\Behat\Common\Traits\AuthenticatorTimeStampingTrait;
 use axenox\BDT\Behat\Common\Traits\DeadlockRetryTrait;
+use axenox\BDT\Behat\Common\Traits\ExceptionArgumentsSuppressionTrait;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5AbstractNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ButtonNode;
@@ -60,6 +61,7 @@ class UI5Browser
 {
     use AuthenticatorTimeStampingTrait;
     use DeadlockRetryTrait;
+    use ExceptionArgumentsSuppressionTrait;
 
     private const USER_PROVISIONING_LOCK_TIMEOUT_SECONDS = 60;
     private EventDispatcherInterface $eventDispatcher;
@@ -153,7 +155,6 @@ class UI5Browser
     public static function setupUser(WorkbenchInterface $workbench, array $roles, string $locale = null): array
     {
         $config = $workbench->getApp('axenox.BDT')->getConfig();
-        $testRunnerPassword = $config->getOption('TEST_USER.PASSWORD');
 
         // In a parallel run each worker carries a lane_id (wired through DatabaseFormatter). Give every
         // lane its OWN exface.Core.USER row by suffixing the username, so concurrent workers never
@@ -191,14 +192,18 @@ class UI5Browser
             ]);
             $userSheet->dataRead();
             if ($userSheet->isEmpty()) {
-                $userSheet->addRow([
-                    'USERNAME' => $testRunnerUsername,
-                    'PASSWORD' => $testRunnerPassword,
-                    'FIRST_NAME' => $config->getOption('TEST_USER.FIRST_NAME'),
-                    'LAST_NAME' => $config->getOption('TEST_USER.LAST_NAME'),
-                    'LOCALE' => $workbench->getConfig()->getOption('SERVER.DEFAULT_LOCALE')
-                ]);
-                $userSheet->dataCreate();
+                self::withoutExceptionArguments($workbench, function () use ($workbench, $config, $userSheet, $testRunnerUsername) {
+                    $userSheet->addRow([
+                        'USERNAME' => $testRunnerUsername,
+                        'PASSWORD' => self::getTestUserPassword($workbench),
+                        'FIRST_NAME' => $config->getOption('TEST_USER.FIRST_NAME'),
+                        'LAST_NAME' => $config->getOption('TEST_USER.LAST_NAME'),
+                        'LOCALE' => $workbench->getConfig()->getOption('SERVER.DEFAULT_LOCALE')
+                    ]);
+                    $userSheet->dataCreate();
+                    // The sheet is reused for the unguarded dataUpdate() below, so it must not carry the password.
+                    $userSheet->getColumns()->removeByKey('PASSWORD');
+                });
             }
             $userId = $userSheet->getUidColumn()->getValue(0);
 
@@ -275,17 +280,18 @@ class UI5Browser
         // tiles on the same page, where there would be also ids "Tile" and "Tile02", but those would be different
         // tiles if the scenario user is not allowed to see the first couple of tiles in the menu (in this case,
         // his "first" tile is different from the SUPERUSERs first tile).
-        $testRunnerToken = new MetamodelUsernamePasswordAuthToken(
-            $testRunnerUsername,
-            $testRunnerPassword,
-        );
-
         // The browser is about to submit the very same credentials to the web server, which writes the
         // same USER_AUTHENTICATOR row from another process. Without the guard the two writers race on
         // the row's optimistic lock and the lane dies with "changed in the meantime".
+        // The token is built inside the argument guard too, because its constructor receives the password.
         self::withoutAuthenticatorTimeStamping(
             $workbench,
-            fn() => $workbench->getSecurity()->authenticate($testRunnerToken)
+            fn() => self::withoutExceptionArguments(
+                $workbench,
+                fn() => $workbench->getSecurity()->authenticate(
+                    new MetamodelUsernamePasswordAuthToken($testRunnerUsername, self::getTestUserPassword($workbench))
+                )
+            )
         );
 
         $loginFields = [];
@@ -298,7 +304,8 @@ class UI5Browser
                 $loginDataObj = MetaObjectFactory::createFromString($workbench, 'exface.Core.LOGIN_DATA');
                 $loginFields['_tab'] = $authUxon->getProperty('name') ?? $workbench->getCoreApp()->getTranslator($localeOfAnonymous)->translate('SECURITY.SIGN_IN');
                 $loginFields[$loginDataObj->getAttribute('USERNAME')->getName()] = $testRunnerUsername;
-                $loginFields[$loginDataObj->getAttribute('PASSWORD')->getName()] = $testRunnerPassword;
+                // Only the caption: the caller reads the password itself right before filling the input.
+                $loginFields['_password_field'] = $loginDataObj->getAttribute('PASSWORD')->getName();
                 $loginAction = ActionFactory::createFromString($workbench, Login::class);
                 $loginFields['_button'] = $loginAction->getName();
                 break;
@@ -2585,6 +2592,22 @@ JS
         return $laneId !== null
             ? $baseUsername . self::laneUserSuffix($laneId)
             : $baseUsername;
+    }
+
+    /**
+     * Returns the password of the BDT test user.
+     *
+     * WHY A SINGLE ACCESSOR: the password must never travel as an argument of our own methods, because
+     * PHP records the arguments of every frame in an exception trace and the workbench's exception
+     * renderer writes them into the DB log. Every place that needs the password reads it from here into
+     * a local variable right where it is used, instead of receiving it from a caller.
+     * 
+     * @param WorkbenchInterface $workbench
+     * @return string
+     */
+    public static function getTestUserPassword(WorkbenchInterface $workbench): string
+    {
+        return (string) $workbench->getApp('axenox.BDT')->getConfig()->getOption('TEST_USER.PASSWORD');
     }
 
     /**
