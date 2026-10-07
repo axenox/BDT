@@ -48,6 +48,7 @@ use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataTableNode;
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 use axenox\BDT\Behat\Common\Traits\CdpConnectionDetectorTrait;
 use axenox\BDT\Behat\Common\Traits\AuthenticatorTimeStampingTrait;
+use axenox\BDT\Behat\Common\Traits\ExceptionArgumentsSuppressionTrait;
 
 
 /**
@@ -65,6 +66,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
 {
     use CdpConnectionDetectorTrait;
     use AuthenticatorTimeStampingTrait;
+    use ExceptionArgumentsSuppressionTrait;
     
     /**
      * visitPath() retry tuning. A dropped CDP/WebSocket during navigation is
@@ -107,8 +109,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private static bool $isDryRun = false;
     private ?string $lastLoginUrl = null;
     private ?string $lastLoginLocale = null;
-    /** @var array|null Browser-side login form fields (caption => value) computed during the first login and replayed verbatim by recoverChrome() without touching the DB */
+    /** @var array|null Non-secret login form fields (caption => value) computed during the first login and replayed verbatim by recoverChrome() without touching the DB - never contains the password */
     private ?array $lastLoginFields = null;
+    /** @var string|null Caption of the password field; the password itself is read again on every replay */
+    private ?string $lastLoginPasswordFieldCaption = null;
     /** @var string|null Caption of the authenticator tab to open on the login form; cached for recovery replay */
     private ?string $lastLoginTabCaption = null;
     /** @var string|null Caption of the login submit button; cached for recovery replay */
@@ -699,19 +703,22 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         unset($loginFields['_tab']);
         $btnCaption = $loginFields['_button'];
         unset($loginFields['_button']);
+        $passwordFieldCaption = $loginFields['_password_field'];
+        unset($loginFields['_password_field']);
 
         // Cache the resolved, browser-only login data so recoverChrome() can replay just the
         // form fill on the fresh Chrome without calling setupUser() (and thus the DB) again.
         $this->lastLoginFields = $loginFields;
         $this->lastLoginTabCaption = $tabCaption;
         $this->lastLoginButtonCaption = $btnCaption;
+        $this->lastLoginPasswordFieldCaption = $passwordFieldCaption;
         // Roles belong to the whole scenario and must be restored on every browser built later.
         $this->lastLoginUserRoles = $userRolesArray;
         
         $this->setLocale($userLocale);
 
         // Fill the form
-        $this->browserLogin($url, $tabCaption, $btnCaption, $loginFields);
+        $this->browserLogin($url, $tabCaption, $btnCaption, $loginFields, $passwordFieldCaption);
     }
 
     /**
@@ -727,10 +734,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $url Page URL to log in to
      * @param string $tabCaption Caption of the authenticator tab to open
      * @param string $btnCaption Caption of the login submit button
-     * @param array $loginFields Form fields as caption => value (without the _tab/_button keys)
+     * @param array $loginFields Non-secret form fields as caption => value (without the _tab/_button/_password_field keys)
+     * @param string $passwordFieldCaption Caption of the password field - the password itself is never passed in,
+     *                                     so it cannot end up in the trace of an exception raised here
      * @throws \Exception
      */
-    private function browserLogin(string $url, string $tabCaption, string $btnCaption, array $loginFields): void
+    private function browserLogin(string $url, string $tabCaption, string $btnCaption, array $loginFields, string $passwordFieldCaption): void
     {
         // Go to the page
         $this->iVisitPage($url);
@@ -753,6 +762,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             Assert::assertNotNull($input, 'Cannot find login field "' . $caption . '"');
             $input->setValue($value);
         }
+
+        $passwordInput = $this->getBrowser()->findInputByCaption($passwordFieldCaption);
+        Assert::assertNotNull($passwordInput, 'Cannot find login field "' . $passwordFieldCaption . '"');
+        $workbench = $this->getWorkbench();
+        self::withoutExceptionArguments($workbench, function () use ($workbench, $passwordInput) {
+            $password = UI5Browser::getTestUserPassword($workbench);
+            $passwordInput->setValue($password);
+        });
 
         // Clear XHR logs before login
         $this->getBrowser()->clearXHRLog();
@@ -4045,7 +4062,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 $this->lastLoginUrl,
                 $this->lastLoginTabCaption,
                 $this->lastLoginButtonCaption,
-                $this->lastLoginFields
+                $this->lastLoginFields,
+                $this->lastLoginPasswordFieldCaption
             );
 
             if ($targetPageAlias !== '') {
