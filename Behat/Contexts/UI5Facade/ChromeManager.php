@@ -94,6 +94,9 @@ class ChromeManager
     /** @var array Chrome launch configuration stored by configure(); used by every start() call */
     private array $config = [];
 
+    private bool $remoteStartAttempted = false;
+    private ?array $remoteInitialPageIds = null;
+
     /** @var array[] Log of every start() call; cleared by DatabaseFormatter after each feature is written */
     private array $startHistory = [];
     /** App-config key deciding Chrome window visibility; see resolveHeadless(). */
@@ -186,15 +189,131 @@ class ChromeManager
     }
 
     /**
+     * Gives the coordinator independent cleanup ownership when the Behat child crashes or times out.
+     * It must not reconfigure a formatter's singleton or assume the child's teardown hooks will run.
+     */
+    public static function createRemote(string $endpoint): static
+    {
+        $manager = new static();
+        $manager->configure(['endpoint' => $endpoint]);
+        return $manager;
+    }
+
+    /**
      * Stores the Chrome launch configuration so that subsequent start() and restart() calls
      * can use it without requiring the caller to pass config each time.
      *
      * Must be called once before start() — typically from DatabaseFormatter::__construct(),
      * which is the only place that has access to the behat.yml chrome section.
+    * An endpoint selects externally managed Chrome and is validated before any connection.
      */
     public function configure(array $config): void
     {
+        if (($config['endpoint'] ?? '') !== '') {
+            $config['endpoint'] = self::normalizeEndpoint($config['endpoint']);
+        }
         $this->config = $config;
+    }
+
+    /**
+     * Normalizes a CDP URL so the driver, health probes and endpoint lock use the same address.
+     * Credentials and query strings are rejected to avoid leaking secrets into run configuration.
+     */
+    public static function normalizeEndpoint(string $endpoint): string
+    {
+        $parts = parse_url($endpoint);
+        if (!filter_var($endpoint, FILTER_VALIDATE_URL)
+            || !is_array($parts)
+            || !in_array(strtolower($parts['scheme'] ?? ''), ['http', 'https'], true)
+            || isset($parts['user'])
+            || isset($parts['pass'])
+            || isset($parts['query'])
+            || isset($parts['fragment'])) {
+            throw new ConfigException('Chrome endpoint must be an HTTP(S) URL without credentials, query or fragment.');
+        }
+
+        $scheme = strtolower($parts['scheme']);
+        $port = $parts['port'] ?? ($scheme === 'https' ? 443 : 80);
+        $defaultPort = $scheme === 'https' ? 443 : 80;
+        return $scheme . '://' . strtolower($parts['host'])
+            . ($port === $defaultPort ? '' : ':' . $port)
+            . rtrim($parts['path'] ?? '', '/');
+    }
+
+    /**
+     * Identifies externally managed Chrome so cleanup and recovery cannot kill local processes.
+     */
+    public function isRemote(): bool
+    {
+        return ($this->config['endpoint'] ?? '') !== '';
+    }
+
+    /**
+     * Centralizes CDP addressing so remote probes never silently fall back to Windows loopback.
+     */
+    public function getApiUrl(?int $port = null): string
+    {
+        if ($this->isRemote()) {
+            return $this->config['endpoint'];
+        }
+
+        return 'http://127.0.0.1:' . ($port ?? $this->port ?? $this->config['port'] ?? 9222);
+    }
+
+    /**
+     * Excludes pre-existing remote pages from recovery cleanup; this run owns only later pages.
+     * This relies on an exclusively reserved endpoint, not on a shared personal Chrome instance.
+     */
+    public function isTestOwnedTab(string $targetId): bool
+    {
+        return !$this->isRemote()
+            || ($this->remoteInitialPageIds !== null && !in_array($targetId, $this->remoteInitialPageIds, true));
+    }
+
+    /**
+     * Attaches without a process launch: container lifecycle belongs to the operator, not Behat.
+     * A responsive browser-level CDP endpoint is sufficient; the driver creates its own page.
+    * Snapshotting existing pages prevents recovery and teardown from closing someone else's tabs.
+    * Attachment must expose transport failures; a boolean health probe hides the reason from the UI.
+     */
+    private function attachRemote(): ChromeStartResult
+    {
+        if ($this->port !== null && $this->isAlive()) {
+            return new ChromeStartResult(port: $this->port, pid: null, startupMs: 0.0);
+        }
+        $this->remoteStartAttempted = true;
+        $startedAt = microtime(true);
+        $endpoint = $this->getApiUrl();
+        $parts = parse_url($endpoint);
+        $port = $parts['port'] ?? ($parts['scheme'] === 'https' ? 443 : 80);
+        $version = $this->runGuzzleApi($endpoint . '/json/version', self::HEALTH_CONFIRM_TIMEOUT_SECONDS, true);
+        if (!is_string($version['webSocketDebuggerUrl'] ?? null) || $version['webSocketDebuggerUrl'] === '') {
+            throw new RuntimeException('Remote endpoint at ' . $endpoint . ' did not advertise a CDP webSocketDebuggerUrl.');
+        }
+        if ($this->remoteInitialPageIds === null) {
+            $tabs = $this->runGuzzleApi($endpoint . '/json/list', null, true);
+            $this->remoteInitialPageIds = [];
+            foreach ($tabs as $tab) {
+                if (($tab['type'] ?? null) === 'page' && isset($tab['id'])) {
+                    $this->remoteInitialPageIds[] = $tab['id'];
+                }
+            }
+        }
+
+        $this->pid = null;
+        $this->port = $port;
+        $elapsedMs = round((microtime(true) - $startedAt) * 1000, 1);
+        $this->startHistory[] = [
+            'pid' => null,
+            'port' => $port,
+            'endpoint' => $endpoint,
+            'mode' => 'remote',
+            'startup_duration' => $elapsedMs,
+            'started_at' => date('Y-m-d H:i:s')
+        ];
+        $this->getLogbook()->addLine('Attached to externally managed Chrome at ' . $endpoint);
+
+        return new ChromeStartResult(port: $port, pid: null, startupMs: $elapsedMs);
     }
 
     /**
@@ -231,9 +350,13 @@ class ChromeManager
      *
      * @return ChromeStartResult Metadata about the started or reused Chrome process
      * @throws ConfigException If config is incomplete or Chrome does not become ready in time
+    * An endpoint instead attaches to an existing browser; no local executable or profile is used.
      */
     public function start(): ChromeStartResult
     {
+        if ($this->isRemote()) {
+            return $this->attachRemote();
+        }
         $this->getLogbook()->addLine('ChromeManager::start() called');
         $this->getLogbook()->addIndent(+1);
         // WHY AN IDEMPOTENCY GUARD: the docblock has always promised that a second start() is a
@@ -419,9 +542,31 @@ class ChromeManager
      *
      * WHY IT NEVER THROWS: teardown runs from hooks and finally blocks that are forbidden to throw. A
      * browser that could not be killed is logged, never escalated.
+    * Remote teardown closes only pages created during this exclusive run and never kills Chrome.
      */
     public function stop(): void
     {
+        if ($this->isRemote()) {
+            try {
+                if ($this->remoteInitialPageIds !== null) {
+                    foreach ($this->getTabList() as $tab) {
+                        if (($tab['type'] ?? null) === 'page'
+                            && isset($tab['id'])
+                            && $this->isTestOwnedTab($tab['id'])) {
+                            $this->closeTab($tab['id']);
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                // Remote cleanup is best-effort; a lost endpoint must not prevent releasing its lock.
+                $this->getLogbook()->addLine('Remote tab cleanup failed: ' . $e->getMessage());
+            }
+            $this->pid = null;
+            $this->port = null;
+            $this->remoteInitialPageIds = null;
+            $this->getLogbook()->addLine('Detached from remote Chrome; the externally managed browser remains running.');
+            return;
+        }
         $this->getLogbook()->addLine("ChromeManager::stop() called");
         $this->getLogbook()->addIndent(+1);
 
@@ -496,9 +641,15 @@ class ChromeManager
      *
      * @throws RuntimeException If stop() cannot terminate the process or start()
      *                          cannot confirm readiness within its timeout.
+    * Remote recovery resets owned tabs and reattaches; it cannot restart the container process.
      */
     public function restart(): void
     {
+        if ($this->isRemote()) {
+            $this->stop();
+            $this->start();
+            return;
+        }
         $this->getLogbook()->addLine("ChromeManager::restart() called");
         $this->getLogbook()->addIndent(+1);
 
@@ -564,11 +715,12 @@ class ChromeManager
      * WHY userDataDir: start() sets it the moment the config resolves, and stop() deliberately never
      * clears it (it is the "we manage a profile" marker the teardown sweep relies on). So a non-null
      * userDataDir means "a start with a resolved profile has happened at least once", which is exactly
-     * the question here - no new flag and no duplicated state.
+     * the question here for a local browser.
+     * Remote attempts need a separate marker because they never create a local profile.
      */
     public function hasStartBeenAttempted(): bool
     {
-        return $this->userDataDir !== null;
+        return $this->remoteStartAttempted || $this->userDataDir !== null;
     }
 
     /**
@@ -663,7 +815,7 @@ class ChromeManager
      */
     private function probeCdpEndpoint(int $port, float $timeoutSeconds): bool
     {
-        $body = $this->runGuzzleApi('http://127.0.0.1:' . $port . '/json/version', $timeoutSeconds);
+        $body = $this->runGuzzleApi($this->getApiUrl($port) . '/json/version', $timeoutSeconds);
         return ($body['webSocketDebuggerUrl'] ?? '') !== '';
     }
 
@@ -688,7 +840,7 @@ class ChromeManager
      */
     public function getTabList(?int $port = null): array
     {
-        return $this->runGuzzleApi('http://127.0.0.1:' . ($port ?? $this->getPort()) . '/json/list');
+        return $this->runGuzzleApi($this->getApiUrl($port) . '/json/list');
     }
 
     /**
@@ -711,7 +863,7 @@ class ChromeManager
     public function closeTab(string $targetId, ?int $port = null): void
     {
         $this->runGuzzleApi(
-            'http://127.0.0.1:' . ($port ?? $this->getPort()) . '/json/close/' . rawurlencode($targetId)
+            $this->getApiUrl($port) . '/json/close/' . rawurlencode($targetId)
         );
     }
 
@@ -890,8 +1042,10 @@ class ChromeManager
      * @param string     $url            Full URL of the CDP endpoint (e.g. http://127.0.0.1:9222/json/list)
      * @param float|null $timeoutSeconds Wall-clock ceiling; defaults to the hot-path probe ceiling
      * @return array Decoded JSON response body, or an empty array on any error
+    * A required JSON response makes attachment fail instead of treating a failed tab snapshot as
+    * an empty browser, which would allow cleanup to close pre-existing pages.
      */
-    private function runGuzzleApi(string $url, ?float $timeoutSeconds = null): array
+    protected function runGuzzleApi(string $url, ?float $timeoutSeconds = null, bool $requireJson = false): array
     {
         $timeout = $timeoutSeconds ?? self::HEALTH_PROBE_TIMEOUT_SECONDS;
         try {
@@ -905,7 +1059,14 @@ class ChromeManager
             $response = $client->request('GET', $url);
 
             if ($response->getStatusCode() === 200) {
-                return json_decode($response->getBody()->__toString(), true) ?? [];
+                $body = json_decode($response->getBody()->__toString(), true);
+                if (is_array($body)) {
+                    return $body;
+                }
+                if ($requireJson) {
+                    throw new RuntimeException('Chrome returned an invalid JSON response at ' . $url);
+                }
+                return [];
             }
 
             $this->getLogbook()->addLine("runGuzzleApi({$url}): unexpected HTTP status " . $response->getStatusCode());
@@ -913,8 +1074,14 @@ class ChromeManager
             // Guzzle throws ConnectException while Chrome is still starting up;
             // log the details so we can distinguish a real failure from normal startup delay
             $this->getLogbook()->addLine("**ERROR** runGuzzleApi({$url}): " . get_class($e) . ' — ' . $e->getMessage());
+            if ($requireJson) {
+                throw new RuntimeException('Could not query remote Chrome at ' . $url . ': ' . $e->getMessage(), null, $e);
+            }
         }
 
+        if ($requireJson) {
+            throw new RuntimeException('Could not query remote Chrome at ' . $url);
+        }
         return [];
     }
 

@@ -35,6 +35,9 @@ class DatabaseFormatterExtension implements Extension
 
     public function initialize(ExtensionManager $extensionManager) {}
 
+    /**
+     * Accepts remote CDP endpoints without removing the existing local Chrome launch settings.
+     */
     public function configure(ArrayNodeDefinition $builder) {
         $builder
             ->children()
@@ -43,6 +46,7 @@ class DatabaseFormatterExtension implements Extension
             ->scalarNode('port')->defaultNull()->end()
             ->scalarNode('executable')->defaultNull()->end()
             ->scalarNode('user_data_dir')->defaultNull()->end()
+            ->scalarNode('endpoint')->defaultNull()->end()
             ->end()
             ->end()
             ->scalarNode('run_uid')->defaultNull()->end()

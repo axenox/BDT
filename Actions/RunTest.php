@@ -5,6 +5,7 @@ use axenox\BDT\Behat\Common\BdtPaths;
 use axenox\BDT\Behat\Common\Traits\ChromeProfileReaperTrait;
 use axenox\BDT\Behat\Common\Traits\FeaturePathResolverTrait;
 use axenox\BDT\Behat\Common\Traits\PortProbingTrait;
+use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
 use exface\Core\CommonLogic\AbstractActionDeferred;
 use exface\Core\CommonLogic\Actions\ServiceParameter;
 use exface\Core\DataTypes\FilePathDataType;
@@ -15,6 +16,7 @@ use exface\Core\Interfaces\Tasks\ResultMessageStreamInterface;
 use exface\Core\Interfaces\Tasks\TaskInterface;
 use Symfony\Component\Process\Process;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
+use Symfony\Component\Yaml\Yaml;
 
 /**
  * Wrapper action for a single INTERACTIVE Behat run with dynamic Chrome-port allocation.
@@ -46,6 +48,8 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
     // and the reads via getTaskParam() can never drift apart.
     private const OPT_BEHAT_CONFIG = 'behat_config';
     private const OPT_CHROME_PATH  = 'chrome_path';
+    private const OPT_CHROME_ENDPOINT = 'chrome_endpoint';
+    private const OPT_BASE_URL = 'base_url';
     private const OPT_SUITE        = 'suite';
     private const OPT_TAGS         = 'tags';
     private const OPT_FEATURE      = 'feature';
@@ -56,6 +60,8 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
     // is set we still fail loudly (see resolvePathParam) - we never silently guess a path.
     private const CFG_BEHAT_CONFIG = 'PARALLEL.BEHAT_CONFIG';
     private const CFG_CHROME_PATH  = 'PARALLEL.CHROME_PATH';
+    private const CFG_CHROME_ENDPOINT = 'REMOTE.CHROME_ENDPOINT';
+    private const CFG_BASE_URL = 'REMOTE.BASE_URL';
 
     // Base config filename the behat_config resolution defaults to when neither the option nor the
     // app-config key is set. Mirrors RunParallel::DEFAULT_BEHAT_CONFIG: the interactive page runs
@@ -110,7 +116,9 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
      * behat_config and chrome_path first would answer a mis-clicked, empty console preset with an
      * infrastructure error about a path the tester never typed, hiding what actually went wrong.
      *
-     * @return array{0:string,1:string,2:string,3:string,4:string,5:string} arguments for performDeferred()
+    * Remote runs bypass executable validation because Chrome is managed outside Windows.
+    *
+    * @return string[] arguments for performDeferred()
      */
     protected function performImmediately(TaskInterface $task, DataTransactionInterface $transaction, ResultMessageStreamInterface $result): array
     {
@@ -132,11 +140,23 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
         // resolveBehatConfig), so a tester never has to set anything; chrome_path has no safe
         // default and still fails loudly when unresolved.
         $behatConfig = $this->resolveBehatConfig($task);
-        $chromePath  = $this->resolvePathParam($task, self::OPT_CHROME_PATH, self::CFG_CHROME_PATH, 'chrome.exe');
-        
-        if (! is_file($chromePath)) {
-            throw new RuntimeException('chrome_path is not a file: ' . $chromePath
-                . ' (must be chrome.exe, NOT GoogleChromePortable.exe - its single-instance lock breaks concurrent runs)');
+        $chromeEndpoint = $this->resolveOptionalSetting($task, self::OPT_CHROME_ENDPOINT, self::CFG_CHROME_ENDPOINT);
+        $baseUrl = $this->resolveOptionalSetting($task, self::OPT_BASE_URL, self::CFG_BASE_URL);
+        if ($chromeEndpoint !== '') {
+            $chromeEndpoint = ChromeManager::normalizeEndpoint($chromeEndpoint);
+            $this->shellArg($chromeEndpoint, 'Chrome endpoint');
+        }
+        if ($baseUrl !== '') {
+            $baseUrl = ChromeManager::normalizeEndpoint($baseUrl) . '/';
+            $this->shellArg($baseUrl, 'browser-facing base URL');
+        }
+        $chromePath = '';
+        if ($chromeEndpoint === '') {
+            $chromePath = $this->resolvePathParam($task, self::OPT_CHROME_PATH, self::CFG_CHROME_PATH, 'chrome.exe');
+            if (! is_file($chromePath)) {
+                throw new RuntimeException('chrome_path is not a file: ' . $chromePath
+                    . ' (must be chrome.exe, NOT GoogleChromePortable.exe - its single-instance lock breaks concurrent runs)');
+            }
         }
         
         $cwd = $this->getWorkbench()->getInstallationPath();
@@ -154,7 +174,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
         // These become the positional arguments of performDeferred() - order MUST match its
         // signature. The deferred generator only starts when the facade drains the result, so the
         // init/port/config/run work is still lazy; we merely resolved its inputs eagerly.
-        return [$cwd, $behatConfig, $chromePath, $suite, $tags, $feature];
+        return [$cwd, $behatConfig, $chromePath, $suite, $tags, $feature, $chromeEndpoint, $baseUrl];
     }
 
     /**
@@ -182,6 +202,8 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
      * banner on the live console is the loud, legible failure signal for the interactive path;
      * the authoritative outcome remains in the DB rows. A TIMEOUT, by contrast, is an abort we
      * cannot complete, so it throws (after cleanup) to fail the action.
+    *
+    * Remote runs reserve an endpoint instead of a Windows port and never reap a local profile.
      */
     protected function performDeferred(
         string $cwd = '',
@@ -189,7 +211,9 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
         string $chromePath = '',
         string $suite = '',
         string $tags = '',
-        string $feature = ''
+        string $feature = '',
+        string $chromeEndpoint = '',
+        string $baseUrl = ''
     ): \Generator {
         // --- Step 0: init exactly like every Behat run does, streaming its output too ---
         // `Behat init` (re)creates the global behat.yml, registers app suites and refreshes
@@ -198,23 +222,37 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
         yield "===== BDT interactive run =====\n";
 
         // --- Step 1: allocate a collision-free port from the INTERACTIVE band (late, on purpose) ---
-        [$portStart, $portEnd] = $this->resolvePortBand(
-            $behatConfig,
-            self::OVERRIDE_KEY_INTERACTIVE,
-            self::CFG_PORT_BAND_INTERACTIVE
-        );
         // Reserve the port ACROSS PROCESSES, not just probe it: independent concurrent interactive
         // runs each pick a port seconds before Chrome binds it, so a bare probe hands the same port
         // to all of them (and, because the port also names the profile dir, collapses their Chrome
         // profiles into one). The cross-process lock keeps this port ours from here until the run
         // ends - released in the outer finally below so the next tester can claim it.
-        $reservation = $this->reserveFreePort($portStart, $portEnd);
-        $port = $reservation['port'];
-        yield 'Allocated port ' . $port . ' (band ' . $portStart . '-' . $portEnd . ")\n";
+        if ($chromeEndpoint !== '') {
+            $reservation = $this->reserveRemoteEndpoint($chromeEndpoint);
+            $port = 0;
+            $allocationMessage = 'Reserved remote Chrome at ' . $chromeEndpoint . "\n";
+        } else {
+            [$portStart, $portEnd] = $this->resolvePortBand(
+                $behatConfig,
+                self::OVERRIDE_KEY_INTERACTIVE,
+                self::CFG_PORT_BAND_INTERACTIVE
+            );
+            $reservation = $this->reserveFreePort($portStart, $portEnd);
+            $port = $reservation['port'];
+            $allocationMessage = 'Allocated port ' . $port . ' (band ' . $portStart . '-' . $portEnd . ")\n";
+        }
+        $configPath = null;
+        $remoteManager = null;
+        $process = null;
 
         try {
+            yield $allocationMessage;
+            if ($chromeEndpoint !== '') {
+                $remoteManager = ChromeManager::createRemote($chromeEndpoint);
+                $remoteManager->start();
+            }
             // --- Step 2: generate the per-run config carrying the port into Behat ---
-            $configPath = $this->writeInteractiveConfig($cwd, $behatConfig, $port, $chromePath);
+            $configPath = $this->writeInteractiveConfig($cwd, $behatConfig, $port, $chromePath, $chromeEndpoint, $baseUrl);
             yield 'Config: ' . basename($configPath) . "\n\n";
 
             // --- Step 3: run Behat, streaming output; classify the exit code at the end ---
@@ -226,7 +264,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
             // behat_interactive_<port>.yml ..." argv. Passing an env array to Symfony Process ADDS
             // this var while still inheriting everything else, so a developer running under a
             // debugger keeps normal single-session debugging (the Xdebug env stays intact).
-            $runCommand = $this->describeInvocation($suite, $tags, $feature);
+            $runCommand = $this->describeInvocation($suite, $tags, $feature, $chromeEndpoint, $baseUrl);
             $process = Process::fromShellCommandline(
                 $cmd,
                 $cwd,
@@ -283,18 +321,32 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
                         . " - this is NOT a normal test failure. Check the output above and the run record. *****\n";
                 }
             } finally {
+                if ($process->isRunning()) {
+                    $process->stop(0);
+                }
                 // Delete the generated config regardless of how the run ended. The port-based
                 // filename means the next run on this port simply overwrites it, so a leftover on a
                 // hard failure is harmless - but tidy up on the normal path.
                 @unlink($configPath);
             }
         } finally {
+            if ($process !== null && $process->isRunning()) {
+                $process->stop(0);
+            }
+            if ($remoteManager !== null) {
+                $remoteManager->stop();
+            }
             // Reap any orphaned Chrome bound to THIS run's interactive profile and remove the profile
             // dir BEFORE releasing the port. The Behat child launches Chrome detached (start /B), so a
             // timed-out/crashed run can leave the browser alive holding the profile - hence an explicit
             // reap, not a bare rmdir. Done before releaseReservedPort() so the freed port cannot be
             // reclaimed by another interactive run whose fresh interactive<port> dir we would then delete.
-            $this->cleanupInteractiveChrome($cwd, (int) $port);
+            if ($configPath !== null) {
+                @unlink($configPath);
+            }
+            if ($chromeEndpoint === '') {
+                $this->cleanupInteractiveChrome($cwd, (int) $port);
+            }
             // Release the cross-process port reservation no matter how the run ended (including a throw
             // from writeInteractiveConfig before the inner try opens).
             $this->releaseReservedPort($reservation);
@@ -385,6 +437,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
      * behat.yml (see resolveBehatConfig); chrome_path falls back to app config and only THEN fails
      * loudly if unresolved; while suite/tags/feature are genuine pass-throughs a tester may combine
      * freely and are omitted from the Behat command when unset.
+    * Remote endpoint and browser URL options avoid changing the global application URL.
      *
      * {@inheritDoc}
      * @see \exface\Core\Interfaces\Actions\iCanBeCalledFromCLI::getCliOptions()
@@ -399,6 +452,14 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
             (new ServiceParameter($this))
                 ->setName(self::OPT_CHROME_PATH)
                 ->setDescription('Path to chrome.exe (NOT GoogleChromePortable.exe). Falls back to app-config ' . self::CFG_CHROME_PATH . ' when omitted.')
+                ->setDefaultValue(''),
+            (new ServiceParameter($this))
+                ->setName(self::OPT_CHROME_ENDPOINT)
+                ->setDescription('CDP HTTP endpoint of externally managed Chrome; bypasses local Chrome launch. Falls back to ' . self::CFG_CHROME_ENDPOINT . '.')
+                ->setDefaultValue(''),
+            (new ServiceParameter($this))
+                ->setName(self::OPT_BASE_URL)
+                ->setDescription('Browser-facing application URL for this run. Falls back to ' . self::CFG_BASE_URL . ', otherwise preserves the base config URL.')
                 ->setDefaultValue(''),
             (new ServiceParameter($this))
                 ->setName(self::OPT_SUITE)
@@ -434,9 +495,40 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
      * IMPORTANT: user_data_dir is written as a RELATIVE path because ChromeManager::start()
      * prepends getcwd(); an absolute path would be double-prepended into a broken
      * "C:\...\C:\..." path and Chrome would fall back to the real default profile.
+     * Remote overrides explicitly clear imported local launch settings and create no profile.
      */
-    private function writeInteractiveConfig(string $workingDir, string $behatConfig, int $port, string $chromePath): string
+    private function writeInteractiveConfig(string $workingDir, string $behatConfig, int $port, string $chromePath, string $chromeEndpoint = '', string $baseUrl = ''): string
     {
+        if ($chromeEndpoint !== '') {
+            $extensions = [
+                'Behat\\MinkExtension' => [
+                    'sessions' => [
+                        'CHROME_DEBUG_API' => ['chrome' => ['api_url' => $chromeEndpoint]]
+                    ]
+                ],
+                '\\' . \axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatterExtension::class => [
+                    'chrome' => [
+                        'endpoint' => $chromeEndpoint,
+                        'port' => null,
+                        'executable' => null,
+                        'user_data_dir' => null
+                    ]
+                ]
+            ];
+            if ($baseUrl !== '') {
+                $extensions['Behat\\MinkExtension']['base_url'] = $baseUrl;
+            }
+            $configPath = dirname($behatConfig) . DIRECTORY_SEPARATOR
+                . 'behat_interactive_remote_' . hash('sha256', $chromeEndpoint) . '.yml';
+            $yaml = Yaml::dump([
+                'imports' => [basename($behatConfig)],
+                'default' => ['extensions' => $extensions]
+            ], 10, 2);
+            if (file_put_contents($configPath, $yaml) === false) {
+                throw new RuntimeException('Failed to write interactive config: ' . $configPath);
+            }
+            return $configPath;
+        }
         $userDataDirRelative = $this->interactiveProfileDirRelative($port);
         $userDataDirAbsolute = BdtPaths::ensure($workingDir, BdtPaths::FOLDER_CHROME_PROFILES, 'interactive' . $port);
         if (! is_dir($userDataDirAbsolute) && ! @mkdir($userDataDirAbsolute, 0755, true) && ! is_dir($userDataDirAbsolute)) {
@@ -462,10 +554,16 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
             . "            api_url: 'http://localhost:" . $port . "'\n"
             . "    \\" . $extensionFqn . ":\n"
             . "      chrome:\n"
+            . "        endpoint: null\n"
             . "        port: " . $port . "\n"
             . "        executable: '" . $this->yamlEscapeWindowsPath($chromePath) . "'\n"
             . "        user_data_dir: '" . $this->yamlEscapeWindowsPath($userDataDirRelative) . "'\n";
 
+        if ($baseUrl !== '') {
+            $config = Yaml::parse($yaml);
+            $config['default']['extensions']['Behat\\MinkExtension']['base_url'] = $baseUrl;
+            $yaml = Yaml::dump($config, 10, 2);
+        }
         if (file_put_contents($configPath, $yaml) === false) {
             throw new RuntimeException('Failed to write interactive config: ' . $configPath);
         }
@@ -516,8 +614,9 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
      * "vendor\bin\action" ships to the browser as "vendor\\bin\\action" and runs literally with doubled
      * separators. Forward slashes resolve identically on Windows and carry no JSON meaning, matching the
      * console's own static "vendor/bin/action ... Behat init" start command.
+    * Remote connection settings are recorded so a rerun does not silently switch to local Chrome.
      */
-    private function describeInvocation(?string $suite, ?string $tags, ?string $feature ): string
+    private function describeInvocation(?string $suite, ?string $tags, ?string $feature, string $chromeEndpoint = '', string $baseUrl = ''): string
     {
         $cmd = 'vendor/bin/action axenox.BDT:RunTest';
         if ($tags !== null && $tags !== '') {
@@ -529,7 +628,46 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
         if ($suite !== null && $suite !== '') {
             $cmd .= $this->cliOption('suite', $suite);
         }
+        if ($chromeEndpoint !== '') {
+            $cmd .= ' --' . self::OPT_CHROME_ENDPOINT . '=' . $this->shellArg($chromeEndpoint, 'Chrome endpoint');
+        }
+        if ($baseUrl !== '') {
+            $cmd .= ' --' . self::OPT_BASE_URL . '=' . $this->shellArg($baseUrl, 'browser-facing base URL');
+        }
         return $cmd;
+    }
+
+    /**
+     * Keeps optional remote settings opt-in while allowing UI runs to use application config.
+     */
+    private function resolveOptionalSetting(TaskInterface $task, string $option, string $configKey): string
+    {
+        $value = $this->getTaskParam($task, $option);
+        if ($value !== '') {
+            return $value;
+        }
+        $config = $this->getWorkbench()->getApp(self::APP_ALIAS)->getConfig();
+        return $config->hasOption($configKey) ? trim((string) $config->getOption($configKey)) : '';
+    }
+
+    /**
+     * Prevents concurrent interactive runs in this installation from sharing one remote browser.
+     * The full normalized endpoint, not just its port, identifies the cross-process reservation.
+     * Reuses port-lock release semantics so crashes cannot strand an existence-based lock forever.
+     */
+    private function reserveRemoteEndpoint(string $endpoint): array
+    {
+        $lockPath = $this->getPortLockDir() . DIRECTORY_SEPARATOR
+            . 'chrome_endpoint_' . hash('sha256', ChromeManager::normalizeEndpoint($endpoint)) . '.lock';
+        $handle = @fopen($lockPath, 'c');
+        if ($handle === false) {
+            throw new RuntimeException('Could not open remote Chrome endpoint lock: ' . $lockPath);
+        }
+        if (!flock($handle, LOCK_EX | LOCK_NB)) {
+            fclose($handle);
+            throw new RuntimeException('Remote Chrome endpoint is already reserved by another BDT run: ' . $endpoint);
+        }
+        return ['handle' => $handle, 'lockPath' => $lockPath];
     }
 
     /**
