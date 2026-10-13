@@ -3770,12 +3770,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * @param ChromeManager $manager The manager owning the Chrome process to query.
      * @return string[] Target IDs of all open page tabs.
+    * Remote snapshots exclude pre-existing pages so reconnect cleanup cannot close foreign tabs.
      */
     private function listPageTargetIds(ChromeManager $manager): array
     {
         $ids = [];
         foreach ($manager->getTabList() as $tab) {
-            if (($tab['type'] ?? null) === 'page' && ($tab['id'] ?? '') !== '') {
+            if (($tab['type'] ?? null) === 'page' && ($tab['id'] ?? '') !== ''
+                && $manager->isTestOwnedTab($tab['id'])) {
                 $ids[] = $tab['id'];
             }
         }
@@ -4024,6 +4026,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * @param string $targetPageAlias Alias of a page to open after recovery, or an empty string to resume
      *                                the scenario at the end of its last passed step
      * @throws \Throwable If no login parameters are stored, a recovery is already running, or a recovery step fails
+    * Remote recovery reattaches and logs in again; restarting the container remains operator-owned.
      */
     public function recoverChrome(string $targetPageAlias): void
     {
@@ -4041,10 +4044,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             );
         }
         $this->chromeRecoveryInProgress = true;
+        $manager = ChromeManager::getInstance();
 
         // Printed BEFORE anything can fail, so the output always shows what the recovery started from.
         $this->reportChromeRecovery(
-            'Chrome was lost - restarting it and logging in again. Target: '
+            ($manager->isRemote()
+                ? 'Remote Chrome session was lost - reattaching and logging in again. Target: '
+                : 'Chrome was lost - restarting it and logging in again. Target: ')
             . ($targetPageAlias !== ''
                 ? 'page "' . $targetPageAlias . '" (requested by the caller)'
                 : 'resume point ' . ($this->resumeUrl ?? '(unknown)'))
@@ -4055,11 +4061,11 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         );
 
         try {
-            ChromeManager::getInstance()->restart();
+            $manager->restart();
 
             if (! $this->reconnectSession()) {
                 throw new RuntimeException(
-                    'Chrome was restarted, but the Mink session could not be attached to it. '
+                    'Chrome recovery completed, but the Mink session could not be attached to it. '
                     . 'See the debug line "Could not reattach the Mink session" for the driver error.'
                 );
             }
