@@ -2,8 +2,10 @@
 
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
+use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\BDT\Interfaces\TestResultInterface;
 use Behat\Mink\Element\NodeElement;
+use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use PHPUnit\Framework\Assert;
 
@@ -18,6 +20,65 @@ class UI5DialogNode extends UI5ContainerNode
      * to report rather than something to retry into a timeout.
      */
     const MAX_CLOSE_ATTEMPTS = 2;
+
+    /**
+     * Resolves a visible field by model caption and type without leaving this dialog.
+     *
+     * WHY SHARED LOOKUP: Display and Input fields share caption and element-id resolution,
+     * but need different value readers. The factory preserves specialised node behavior
+     * instead of treating every input as a plain input. Only value-reading node families
+     * are accepted; unsupported types and duplicate visible captions fail explicitly.
+     *
+     * An explicit depth includes header and sidebar fields: Dialog's default NULL depth
+     * adds those containers without descending into their children. Model traversal avoids
+     * widgets belonging to button actions, and DOM lookup stays scoped to this dialog.
+     * The concrete type and CSS class must match the requested type, so an InputDate
+     * with the same caption cannot accidentally satisfy a request for Input.
+     *
+     * @param string $caption Model caption of the field
+     * @param string $type Widget type, including Display and Input subtypes
+     * @return UI5DisplayNode|UI5InputNode|null
+     */
+    public function findFieldByCaption(string $caption, string $type): UI5DisplayNode|UI5InputNode|null
+    {
+        if (!UI5FacadeNodeFactory::isWidgetTypeDerivedFrom($type, 'Display')
+            && !UI5FacadeNodeFactory::isWidgetTypeDerivedFrom($type, 'Input')) {
+            throw new RuntimeException('Unsupported field type "' . $type . '": expected Display, Input or a subtype.');
+        }
+        $browser = $this->getBrowser();
+        $browser->getWaitManager()->waitForPendingOperations(true, true, true);
+        $match = null;
+        foreach ($this->getWidget()->getWidgetsRecursive(null, PHP_INT_MAX) as $widget) {
+            if ($widget->isHidden() || $widget->getCaption() !== $caption
+                || $widget->getWidgetType() !== $type) {
+                continue;
+            }
+            $element = $this->getNodeElement()->find(
+                'xpath',
+                './/*[@id=' . $this->xpathLiteral($browser->getElementIdFromWidget($widget))
+                . ' and contains(concat(" ", normalize-space(@class), " "), '
+                . $this->xpathLiteral(' exfw-' . $type . ' ') . ')]'
+            );
+            if ($element === null || !$this->isElementVisibleInBrowser($element)) {
+                continue;
+            }
+            if ($match !== null) {
+                throw new RuntimeException('Multiple visible fields of type "' . $type . '" have caption "' . $caption . '" in the focused dialog.');
+            }
+            $node = UI5FacadeNodeFactory::createFromWidgetType(
+                $widget->getWidgetType(),
+                $element,
+                $this->getSession(),
+                $browser,
+                $widget
+            );
+            if (!$node instanceof UI5DisplayNode && !$node instanceof UI5InputNode) {
+                throw new RuntimeException('The node for field type "' . $widget->getWidgetType() . '" does not support reading field values.');
+            }
+            $match = $node;
+        }
+        return $match;
+    }
 
     public function checkWorksAsExpected(LogBookInterface $logbook): TestResultInterface
     {

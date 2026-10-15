@@ -46,8 +46,11 @@ class UI5HeaderColumnNode extends UI5AbstractNode
     }
 
     /**
-     * Ensures the column is sorted in the desired direction ('asc' | 'desc').
-     * Tries up to $retries clicks, waiting after each click.
+     * Applies the requested sort through the header menu because clicking a grid header only
+     * opens that menu; it does not toggle sorting.
+     *
+     * Accepts ascending/descending and the existing asc/desc shorthand.
+     * Waits for pending operations before checking the resulting header state.
      * 
      * @param string $direction
      * @param int $retries
@@ -55,10 +58,7 @@ class UI5HeaderColumnNode extends UI5AbstractNode
      */
     public function sort(string $direction, int $retries = 3): void
     {
-        $direction = strtolower($direction);
-        if (!in_array($direction, ['asc', 'desc'], true)) {
-            throw new RuntimeException("Invalid sort direction '$direction'. Use 'asc' or 'desc'.");
-        }
+        $direction = self::normalizeSortDirection($direction);
 
         // Already in desired state?
         if ($this->isSorted($direction)) {
@@ -67,6 +67,19 @@ class UI5HeaderColumnNode extends UI5AbstractNode
 
         for ($i = 0; $i < $retries; $i++) {
             $this->clickHeader();
+            $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+
+            $item = null;
+            foreach ($this->getSession()->getPage()->findAll('css', '.sapUiTableColumnMenu.sapUiMnu') as $menu) {
+                if ($menu->isVisible()) {
+                    $item = $menu->find('css', '[id$="-' . $direction . '"]');
+                    break;
+                }
+            }
+            if (!$item || !$item->isVisible()) {
+                throw new RuntimeException("Sort action '$direction' not found for column '{$this->getCaption()}'.");
+            }
+            $item->click();
             $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
 
             if ($this->isSorted($direction)) {
@@ -89,5 +102,25 @@ class UI5HeaderColumnNode extends UI5AbstractNode
         $state = $this->getSortState();
         return ($direction === 'asc'  && $state === 'ascending')
             || ($direction === 'desc' && $state === 'descending');
+    }
+
+    /**
+     * Resolves scenario wording and existing shorthand consistently so sorting and validation
+     * cannot interpret the same requested order differently.
+     *
+     * @param string $direction ascending, descending, asc or desc
+     * @return string asc or desc
+     */
+    public static function normalizeSortDirection(string $direction): string
+    {
+        switch (strtolower(trim($direction))) {
+            case 'ascending':
+            case 'asc':
+                return 'asc';
+            case 'descending':
+            case 'desc':
+                return 'desc';
+        }
+        throw new RuntimeException("Invalid sort direction '$direction'. Use 'ascending' or 'descending'.");
     }
 }
