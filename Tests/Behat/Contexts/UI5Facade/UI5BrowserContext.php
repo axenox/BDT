@@ -1435,7 +1435,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * Usage example:
      *
      *   When I look at table 1
-     *   Then the columns are displayed in the following order Name, City, Created on
+     *   Then the columns are displayed in the following order "Name, City, Created on"
      *
      * @Then the columns are displayed in the following order :columnList
      *
@@ -1458,7 +1458,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * Usage example:
      *
      *   When I look at table 1
-     *   Then I do not see columns Salary, Bonus
+     *   Then I do not see columns "Salary, Bonus"
      *
      * @Then I do not see columns :columnList
      * @Then I do not see column :columnList
