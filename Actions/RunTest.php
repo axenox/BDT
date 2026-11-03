@@ -585,10 +585,13 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
      * value could close its argument and append commands that then run as the web-server user.
      * shellArg() supplies the quoting itself, which is why none of the values is wrapped in quotes
      * here any more - doing so would put literal quotes inside the value.
+     *
+     * WHY PLATFORM SEPARATORS: an unquoted Windows backslash is consumed by the Linux shell,
+     * so the App Service runner must use its native path to the Composer Behat executable.
      */
     private function buildBehatCommand(string $configPath, string $suite, string $tags, string $feature): string
     {
-        $cmd = 'vendor\\bin\\behat ';
+        $cmd = 'vendor' . DIRECTORY_SEPARATOR . 'bin' . DIRECTORY_SEPARATOR . 'behat ';
         if ($suite !== '') {
             $cmd .= ' --suite=' . $this->shellArg($suite, 'suite name');
         }
