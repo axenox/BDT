@@ -1025,8 +1025,14 @@ class ChromeManager
      *
      * A new Guzzle client is created per call because Chrome's CDP endpoints are only
      * queried occasionally (startup polling, health probes, tab diagnostics) and do not warrant a
-     * persistent HTTP client. Guzzle exceptions are caught, logged, and swallowed so
-     * that callers such as waitUntilReady() can simply retry on the next iteration.
+     * persistent HTTP client. Best-effort probes log failures and return an empty array so
+     * startup polling can retry. Required JSON queries throw instead of treating a failed
+     * tab snapshot as an empty browser, which could make cleanup close pre-existing pages.
+     *
+     * Chrome rejects DNS names in the HTTP Host header. Match
+     * DMore's existing IPv4 resolution while keeping the request URL hostname for DNS and TLS.
+     * Using the resolved IP instead of localhost also keeps advertised WebSocket URLs reachable
+     * from the remote PHP runner.
      *
      * WHY EXPLICIT TIMEOUTS: Guzzle's default request timeout is UNLIMITED. A Chrome that binds
      * the port but never answers - exactly the wedged state we are trying to detect - would make
@@ -1041,9 +1047,8 @@ class ChromeManager
      *
      * @param string     $url            Full URL of the CDP endpoint (e.g. http://127.0.0.1:9222/json/list)
      * @param float|null $timeoutSeconds Wall-clock ceiling; defaults to the hot-path probe ceiling
-     * @return array Decoded JSON response body, or an empty array on any error
-    * A required JSON response makes attachment fail instead of treating a failed tab snapshot as
-    * an empty browser, which would allow cleanup to close pre-existing pages.
+    * @param bool       $requireJson    Fail attachment if the HTTP or JSON response is invalid
+    * @return array Decoded JSON response body, or an empty array on a best-effort probe failure
      */
     protected function runGuzzleApi(string $url, ?float $timeoutSeconds = null, bool $requireJson = false): array
     {
@@ -1056,7 +1061,17 @@ class ChromeManager
                 'connect_timeout' => $timeout,
                 'timeout'         => $timeout
             ]);
-            $response = $client->request('GET', $url);
+            $parts = parse_url($url);
+            $host = $parts['host'];
+            $resolvedHost = $host === 'localhost' ? $host : gethostbyname($host);
+            $options = [];
+
+            // add resolved host header if necessary
+            if ($resolvedHost !== $host) {
+                $options['headers']['Host'] = $resolvedHost
+                    . (isset($parts['port']) ? ':' . $parts['port'] : '');
+            }
+            $response = $client->request('GET', $url, $options);
 
             if ($response->getStatusCode() === 200) {
                 $body = json_decode($response->getBody()->__toString(), true);
