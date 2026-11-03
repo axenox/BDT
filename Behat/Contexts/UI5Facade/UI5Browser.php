@@ -718,6 +718,11 @@ JS
      * id lookup used by UI5 controls. Failure is explicit because an absent marker makes diagnostic
      * screenshots misleading.
      *
+     * WHY CSS LABEL TEXT: a text child becomes part of Mink's getText() result and
+     * makes a highlighted Display report "TESTING Display #1" instead of "TESTING".
+     * Generated CSS content keeps the diagnostic label visible without altering the
+     * widget's DOM text, including when the same field is checked more than once.
+     *
      * @param NodeElement $node Widget element to highlight
      * @param string $widgetType Type of the widget (used in label)
      * @param int $index Index number of the widget
@@ -764,11 +769,18 @@ JS
     if (existingLabel) {
         existingLabel.remove();
     }
+    if (!document.getElementById('bdt-highlight-label-style')) {
+        var labelStyle = document.createElement('style');
+        labelStyle.id = 'bdt-highlight-label-style';
+        labelStyle.textContent = '.debug-highlight-label::before { content: attr(data-highlight-label); }';
+        document.head.appendChild(labelStyle);
+    }
     var label = document.createElement('div');
     label.className = 'debug-highlight-label';
+    label.setAttribute('aria-hidden', 'true');
     label.style.cssText = 'position:absolute;top:0;left:0;background:' + color
         + ';color:white;padding:2px;font-size:10px;z-index:9999;';
-    label.textContent = labelText;
+    label.setAttribute('data-highlight-label', labelText);
     element.appendChild(label);
     if (window.highlightElement && typeof window.highlightElement === 'function') {
         window.highlightElement(element, color, labelText);

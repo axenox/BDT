@@ -291,6 +291,37 @@ class UI5DataTableNode extends UI5DataNode
     }
 
     /**
+     * Checks adjacent rendered values so an incorrect result order fails even if the header
+     * reports the requested sorting. Unloaded pages are not inspected.
+     *
+     * Numeric strings use numeric comparison; other values use case-insensitive text comparison.
+     * Equal adjacent values are valid. An empty table fails because there is no result to check.
+     *
+     * @param string $columnCaption The visible column caption
+     * @param string $direction ascending, descending, asc or desc
+     */
+    public function assertColumnValuesSorted(string $columnCaption, string $direction): void
+    {
+        $direction = UI5HeaderColumnNode::normalizeSortDirection($direction);
+        $values = $this->getColumnCellValues($columnCaption);
+        Assert::assertNotEmpty($values, "Column '$columnCaption' has no values to check for sorting.");
+
+        for ($index = 1, $count = count($values); $index < $count; $index++) {
+            $previous = $values[$index - 1];
+            $current = $values[$index];
+            $comparison = is_numeric($previous) && is_numeric($current)
+                ? $previous <=> $current
+                : strcasecmp($previous, $current);
+
+            Assert::assertTrue(
+                $direction === 'asc' ? $comparison <= 0 : $comparison >= 0,
+                "Column '$columnCaption' is not sorted in '$direction' order: "
+                . "row $index ('$previous') precedes row " . ($index + 1) . " ('$current')."
+            );
+        }
+    }
+
+    /**
      * Ensures the row-selection precondition of the given action is satisfied before
      * the action is triggered.
      *
@@ -2308,7 +2339,13 @@ JS
         $this->getSession()->wait(1000, 'true');
     }
 
-    protected function resetFilterColumn(string $caption) :void
+    /**
+     * Clears a header filter through the same interaction used to apply it, so explicit steps
+     * and automatic column checks remove the restriction consistently.
+     *
+     * @param string $caption The visible column caption
+     */
+    public function resetFilterColumn(string $caption) :void
     {
         $this->filterColumn($caption, "");
     }

@@ -4,6 +4,7 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 use axenox\BDT\Behat\Contexts\Elements\DateParsingTrait;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Mink\Element\NodeElement;
+use exface\Core\Exceptions\RuntimeException;
 use PHPUnit\Framework\Assert;
 
 /**
@@ -14,6 +15,28 @@ class UI5InputNode extends UI5AbstractNode
 {
 
     use DateParsingTrait;
+
+    /**
+     * Finds a captioned input in the dialog body or header without duplicating field lookup.
+     *
+     * Input and InputDate expose a native input, while InputText exposes a textarea;
+     * the existing value reader handles both and preserves the displayed date format.
+     * Restricting this entry point to those types prevents returning a Display node
+     * through the input API.
+     *
+     * @param UI5DialogNode $dialog Dialog to search
+     * @param string $caption Model caption of the field
+     * @param string $type Input, InputDate or InputText
+     * @return UI5InputNode|null
+     */
+    public static function findByCaption(UI5DialogNode $dialog, string $caption, string $type = 'Input'): ?self
+    {
+        if (!in_array($type, ['Input', 'InputDate', 'InputText'], true)) {
+            throw new RuntimeException('Unsupported input field type "' . $type . '": expected Input, InputDate or InputText.');
+        }
+        return $dialog->findFieldByCaption($caption, $type);
+    }
+
     public function getCaption() : string
     {
         $label = $this->getNodeElement()->find(
