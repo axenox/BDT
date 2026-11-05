@@ -1923,6 +1923,60 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Checks whether a captioned input allows the user to set or change its value.
+     *
+     * Read-only fields count as disabled even if they can still receive focus.
+     * The subtype-aware lookup keeps this step independent of the input implementation
+     * and stays inside the focused widget, or searches the page when none is focused.
+     * Unsupported states fail explicitly to prevent a typo from checking the wrong state.
+     * The matched input is highlighted before checking its state so failure screenshots
+     * identify the field being checked.
+     *
+     * Usage examples:
+     *
+     *   Then the "Name" input field is "enabled"
+     *   Then the "Status" input field is "disabled"
+     *
+     * @Then the ":caption" input field is ":state"
+     *
+     * @param string $caption Caption of the input field
+     * @param string $state Either "enabled" or "disabled"
+     * @return void
+     */
+    public function theInputFieldIs(string $caption, string $state): void
+    {
+        if (!in_array($state, ['enabled', 'disabled'], true)) {
+            throw new RuntimeException(
+                'Unsupported input field state "' . $state . '": expected "enabled" or "disabled".'
+            );
+        }
+
+        $browser = $this->getBrowser();
+        $inputs = array_values(array_filter(
+            $browser->findWidgetNodesInSearchScope('Input'),
+            function (FacadeNodeInterface $node) use ($caption): bool {
+                return $node->getCaption() === $caption || $node->getWidget()->getCaption() === $caption;
+            }
+        ));
+        Assert::assertCount(
+            1,
+            $inputs,
+            sprintf(
+                'Expected exactly one input field with caption "%s" in %s, but found %d',
+                $caption,
+                $browser->describeSearchScope(),
+                count($inputs)
+            )
+        );
+        $browser->highlightWidget($inputs[0]->getNodeElement(), 'Input', 0);
+        Assert::assertSame(
+            $state === 'disabled',
+            $inputs[0]->checkDisabled(),
+            sprintf('Input field "%s" should be %s for setting or changing a value', $caption, $state)
+        );
+    }
+
+    /**
      * Fills a single-value input or both boundaries of a range input in the current search scope.
      *
      * If a widget is focused, only its contents are searched. Otherwise, the entire page is searched.
