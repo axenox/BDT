@@ -1193,6 +1193,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     /**
      * Sorts the focused table through its column header so scenarios can control result order.
      * Checks displayed column values so a sort indicator alone cannot make a broken sort pass.
+     * Text columns retain text ordering even when their values contain only digits.
+     * Enum columns are checked by their stored values, not their translated display labels.
+     * Date and datetime columns are compared chronologically using their configured display format
+     * and locale; invalid non-empty dates fail. Empty dates come first ascending and last descending.
      *
      * Focus the target table first (e.g. "I look at table 1").
      *
@@ -1201,6 +1205,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *   When I look at table 1
      *   And I sort column "Name" in "ascending" order
      *   And I sort column "Name" in "descending" order
+     *   And I sort column "Created on" in "ascending" order
      *
      * @When I sort column :column in :direction order
      *
@@ -1209,8 +1214,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSortColumnInOrder(string $column, string $direction): void
     {
-        $this->getFocusedDataTableNode()->getColumnByCaption($column)->sort($direction);
-        $this->getFocusedDataTableNode()->assertColumnValuesSorted($column, $direction);
+        $table = $this->getFocusedDataTableNode();
+        $table->getColumnByCaption($column)->sort($direction);
+        $table->assertColumnValuesSorted($column, $direction);
     }
 
     /**
