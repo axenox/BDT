@@ -74,14 +74,14 @@
             "DESCRIPTION": "",
             "NAME": "Parallel run Status::Ready",
             "TASK_UXON": {
-                "timeout": "4 hours",
+                "timeout": "5 hours",
                 "time_to_check": "1 hour",
                 "task_to_run": {
                     "class": "\\exface\\Core\\CommonLogic\\Tasks\\CliScriptTask",
                     "commands": [
                         "vendor\\bin\\action axenox.BDT:RunParallel --tags=@Status::Ready"
                     ],
-                    "command_timeout": "4 hours",
+                    "command_timeout": "5 hours",
                     "ignored_exit_codes": [
                         1
                     ]
