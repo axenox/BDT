@@ -1,0 +1,45 @@
+# Local headless Chrome and Windows/WSL relay for BDT: podman kube play bdt-chrome.kube.yaml
+#
+# The flags are passed as `args`, NOT as `command`: `command` would replace the image entrypoint
+# (/headless-shell/run.sh), which sets the debugging port and address and starts the socat forwarder
+# that makes the endpoint reachable from outside the container. `args` appends to it instead.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bdt-chrome
+spec:
+  restartPolicy: Always
+  containers:
+  - name: chrome
+    image: docker.io/chromedp/headless-shell:stable
+    args:
+    # Kept even though Podman could raise --shm-size: ACI cannot, so relying on a bigger /dev/shm
+    # here would hide a crash that only happens in Azure.
+    - --disable-dev-shm-usage
+    - --disable-extensions
+    - --window-size=1920,1080
+    - --remote-allow-origins=*
+    - --lang=de-DE
+    - --accept-lang=de-DE
+    env:
+    - name: TZ
+      value: Europe/Berlin
+    ports:
+    - containerPort: 9222
+      hostPort: 19222
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bdt-cdp-relay
+spec:
+  restartPolicy: Always
+  hostNetwork: true
+  containers:
+  - name: relay
+    image: docker.io/chromedp/headless-shell:stable
+    command:
+    - socat
+    args:
+    - TCP4-LISTEN:9222,bind=127.0.0.1,reuseaddr,fork
+    - TCP4:127.0.0.1:19222

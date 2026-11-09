@@ -3,6 +3,8 @@
 ## Install headless browsers
 
 - [Install Chrome](Setting_up_Chrome_for_testing.md)
+- [Run Chrome in a local Podman container](Running_Chrome_in_a_local_Podman_container.md)
+- [Run Chrome in Azure Container Apps](Running_Chrome_in_Azure_Container_Apps.md)
 
 ## Configure PHP
 
