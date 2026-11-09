@@ -14,6 +14,7 @@ use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataSpreadSheetNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DialogNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DisplayNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5FilterNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5InputComboTableNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5InputNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5MenuButtonNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5PageNode;
@@ -1145,6 +1146,40 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             . '"). Focus a data widget first, e.g. with "I look at table 1".'
         );
         $focusedNode->findFilterByCaption($filterName)->setValueVisible($value);
+    }
+
+    /**
+     * Opens the advanced search provided by a filter's InputComboTable.
+     *
+     * WHY THIS IS A SEPARATE STEP: opening the combo's value-help dialog is a user action, not
+     * setting the filter's visible value. Reusing the focused-data and caption-based filter
+     * lookup keeps it consistent with the existing filter steps without changing their behavior.
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   And I open the advanced search for filter "Customer"
+     *   Then I see 1 widget of type "DataLookupDialog"
+     *   Then I see 1 widget of type "DataTable"
+     *   When I look at table 1
+     *   When I enter "Customer1" in filter "Name"
+     *   When I click button "Search"
+     *   Then I select table row 1
+     *   Then I see 1 widget of type "DataLookupDialog"
+     *   Then I click button "Apply"
+     *
+     * @When I open the advanced search for filter :filterCaption
+     * @param string $filterCaption Caption of the filter whose advanced search should open
+     */
+    public function iOpenAdvancedSearchForFilter(string $filterCaption): void
+    {
+        $inputNode = $this->getFocusedDataNode()->findFilterByCaption($filterCaption)->getInputNode();
+        Assert::assertInstanceOf(
+            UI5InputComboTableNode::class,
+            $inputNode,
+            'Filter "' . $filterCaption . '" does not provide an InputComboTable advanced search.'
+        );
+        $inputNode->openAdvancedSearch();
     }
 
     /**

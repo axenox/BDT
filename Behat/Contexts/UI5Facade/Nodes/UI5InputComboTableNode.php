@@ -3,6 +3,7 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use Behat\Mink\Element\NodeElement;
+use exface\Core\Exceptions\RuntimeException;
 use PHPUnit\Framework\Assert;
 
 /**
@@ -31,6 +32,26 @@ class UI5InputComboTableNode extends UI5InputNode
             'ancestor::div[contains(@class,"sapUiVlt")]//span[contains(@class,"sapMLabel")]//bdi'
         );
         return $label !== null ? trim($label->getText()) : '';
+    }
+
+    /**
+     * Opens this combo table's value-help search dialog.
+     *
+     * WHY THE TRIGGER IS RESOLVED HERE: UI5 renders the value-help icon as a control-specific
+     * child whose id ends in `-vhi`. Keeping that selector with the node preserves the boundary
+     * between UI-specific DOM details and the reusable Gherkin step.
+     */
+    public function openAdvancedSearch(): void
+    {
+        $trigger = $this->getNodeElement()->find('css', '[id$="-vhi"]');
+        if ($trigger === null || $trigger === false) {
+            throw new RuntimeException(
+                'Cannot find the value-help trigger for InputComboTable "' . $this->getElementId() . '".'
+            );
+        }
+
+        $trigger->click();
+        $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
     }
     
     public function getValueVisible()
