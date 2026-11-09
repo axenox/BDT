@@ -20,6 +20,7 @@ use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Factories\SelectorFactory;
 use exface\Core\Interfaces\Actions\ActionInterface;
 use exface\Core\Interfaces\DataTypes\DataTypeInterface;
+use exface\Core\Interfaces\DataTypes\EnumDataTypeInterface;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 use exface\Core\Interfaces\Model\MetaAttributeInterface;
 use exface\Core\Interfaces\Widgets\iFilterData;
@@ -30,6 +31,7 @@ use exface\Core\Interfaces\Widgets\iShowData;
 use exface\Core\Widgets\Data;
 use exface\Core\Widgets\DataColumn;
 use exface\Core\Widgets\DataTable;
+use exface\Core\Widgets\InputDate;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\AssertionFailedError;
 
@@ -294,8 +296,17 @@ class UI5DataTableNode extends UI5DataNode
      * Checks adjacent rendered values so an incorrect result order fails even if the header
      * reports the requested sorting. Unloaded pages are not inspected.
      *
-     * Numeric strings use numeric comparison; other values use case-insensitive text comparison.
-     * Equal adjacent values are valid. An empty table fails because there is no result to check.
+     * Date columns use their configured display format and locale, including the time for datetimes.
+     * WHY NOT FLEXIBLE DATE PARSING: ambiguous dates such as 03/04/2026 must follow the column's
+     * format, not whichever pattern happens to match first. Invalid non-empty dates fail explicitly.
+     * Enums compare stored row values rather than labels, because the header sorts the attribute
+     * and translated or duplicate labels cannot reliably identify its value.
+     * Numeric values in number columns use numeric comparison; text uses case-insensitive text
+     * comparison. WHY THE TYPE MATTERS: numeric-looking identifiers in text
+     * columns must retain text order ("1205" before "123"), not be coerced into numbers.
+     * Empty dates sort before non-empty dates ascending and after them descending, preserving the
+     * existing empty-cell ordering. Equal adjacent values are valid. An empty table fails because
+     * there is no result to check.
      *
      * @param string $columnCaption The visible column caption
      * @param string $direction ascending, descending, asc or desc
@@ -303,15 +314,79 @@ class UI5DataTableNode extends UI5DataNode
     public function assertColumnValuesSorted(string $columnCaption, string $direction): void
     {
         $direction = UI5HeaderColumnNode::normalizeSortDirection($direction);
+        $column = null;
+        foreach ($this->getWidget()->getColumns() as $candidate) {
+            if (trim($candidate->getCaption()) === trim($columnCaption)) {
+                $column = $candidate;
+                break;
+            }
+        }
+        Assert::assertNotNull($column, "Column '$columnCaption' not found in the table widget model.");
+        $dataType = $column->getDataType();
         $values = $this->getColumnCellValues($columnCaption);
         Assert::assertNotEmpty($values, "Column '$columnCaption' has no values to check for sorting.");
+
+        $sortValues = $values;
+        if ($dataType instanceof EnumDataTypeInterface) {
+            $sortValues = $this->getRenderedEnumSortValues($column);
+            Assert::assertCount(count($values), $sortValues, "Enum row count changed for column '$columnCaption'.");
+        } elseif ($dataType instanceof DateDataType) {
+            $cellWidget = $column->getCellWidget();
+            $format = $cellWidget instanceof InputDate ? $cellWidget->getFormat() : $dataType->getFormat();
+            $formatter = new \IntlDateFormatter(
+                $dataType->getLocale(),
+                \IntlDateFormatter::NONE,
+                \IntlDateFormatter::NONE,
+                'UTC',
+                \IntlDateFormatter::GREGORIAN,
+                $format
+            );
+            $formatter->setLenient(false);
+            foreach ($values as $index => $value) {
+                if ($value === '') {
+                    $sortValues[$index] = null;
+                    continue;
+                }
+                $position = 0;
+                $timestamp = $formatter->parse($value, $position);
+                Assert::assertTrue(
+                    $timestamp !== false && $position === mb_strlen($value),
+                    "Cannot parse date in column '$columnCaption', row " . ($index + 1)
+                    . " ('$value') using display format '$format'."
+                );
+                $sortValues[$index] = $timestamp;
+            }
+        }
 
         for ($index = 1, $count = count($values); $index < $count; $index++) {
             $previous = $values[$index - 1];
             $current = $values[$index];
-            $comparison = is_numeric($previous) && is_numeric($current)
-                ? $previous <=> $current
-                : strcasecmp($previous, $current);
+            if ($dataType instanceof EnumDataTypeInterface) {
+                $left = $sortValues[$index - 1];
+                $right = $sortValues[$index];
+                $leftEmpty = $left === null || $left === '';
+                $rightEmpty = $right === null || $right === '';
+                if ($leftEmpty || $rightEmpty) {
+                    $comparison = (! $leftEmpty) <=> (! $rightEmpty);
+                } else {
+                    $comparison = $dataType instanceof NumberDataType
+                        ? $left <=> $right
+                        : strcasecmp((string) $left, (string) $right);
+                }
+            } elseif ($dataType instanceof DateDataType) {
+                $left = $sortValues[$index - 1];
+                $right = $sortValues[$index];
+                // Explicit null ordering also works for pre-1970 dates and the Unix epoch.
+                $comparison = $left === null || $right === null
+                    ? ($left !== null) <=> ($right !== null)
+                    : $left <=> $right;
+            } else {
+                $comparison = $dataType instanceof NumberDataType
+                    && ! ($dataType instanceof NumberEnumDataType)
+                    && is_numeric($previous) && is_numeric($current)
+                    ? $previous <=> $current
+                    : strcasecmp($previous, $current);
+            }
 
             Assert::assertTrue(
                 $direction === 'asc' ? $comparison <= 0 : $comparison >= 0,
@@ -319,6 +394,60 @@ class UI5DataTableNode extends UI5DataNode
                 . "row $index ('$previous') precedes row " . ($index + 1) . " ('$current')."
             );
         }
+    }
+
+    /**
+     * Reads enum keys from binding contexts so translated or duplicate labels cannot change sort order.
+     *
+     * Only the rows inspected by cell assertions are read. Missing contexts or properties fail
+     * rather than falling back to labels, which could make an incorrectly sorted result pass.
+     *
+     * @param DataColumn $column The column whose attribute is sorted by the UI5 header
+     * @return array Stored enum keys in rendered row order
+     */
+    private function getRenderedEnumSortValues(DataColumn $column): array
+    {
+        $rowIds = [];
+        foreach ($this->getAllTableRows() as $row) {
+            $rowIds[] = $row->getAttribute('id');
+        }
+        $rowIdsJs = json_encode($rowIds, JSON_THROW_ON_ERROR);
+        $keyJs = json_encode($column->getDataColumnName(), JSON_THROW_ON_ERROR);
+        $json = $this->getFromJavascript(<<<JS
+(function(aRowIds, sKey) {
+    var aValues = [];
+    for (var i = 0; i < aRowIds.length; i++) {
+        var oRow = sap.ui.getCore().byId(aRowIds[i]);
+        var oContext = oRow && typeof oRow.getBindingContext === 'function'
+            ? oRow.getBindingContext() : null;
+        if (!oContext) {
+            throw new Error('Cannot read enum sort key: rendered row has no binding context (' + aRowIds[i] + ').');
+        }
+        var oData = oContext.getObject();
+        if (!oData || !Object.prototype.hasOwnProperty.call(oData, sKey) || oData[sKey] === undefined) {
+            throw new Error('Cannot read enum sort key: missing model property ' + sKey + '.');
+        }
+        aValues.push(oData[sKey]);
+    }
+    return JSON.stringify(aValues);
+})($rowIdsJs, $keyJs)
+JS);
+        $values = json_decode((string) $json, true, 512, JSON_THROW_ON_ERROR);
+        Assert::assertIsArray($values, 'Could not read rendered enum sort values.');
+        $numeric = $column->getDataType() instanceof NumberDataType;
+        foreach ($values as $index => $value) {
+            Assert::assertTrue(
+                $value === null || is_string($value) || is_int($value) || is_float($value),
+                'Invalid enum sort key in column "' . $column->getCaption() . '", row ' . ($index + 1) . '.'
+            );
+            if ($numeric && $value !== null && $value !== '') {
+                Assert::assertTrue(
+                    is_numeric($value),
+                    'Non-numeric enum sort key in column "' . $column->getCaption() . '", row ' . ($index + 1) . '.'
+                );
+            }
+        }
+        return $values;
     }
 
     /**

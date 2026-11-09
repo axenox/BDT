@@ -14,6 +14,7 @@ use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DataSpreadSheetNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DialogNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5DisplayNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5FilterNode;
+use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5InputComboTableNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5InputNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5MenuButtonNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5PageNode;
@@ -1148,6 +1149,40 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     }
 
     /**
+     * Opens the advanced search provided by a filter's InputComboTable.
+     *
+     * WHY THIS IS A SEPARATE STEP: opening the combo's value-help dialog is a user action, not
+     * setting the filter's visible value. Reusing the focused-data and caption-based filter
+     * lookup keeps it consistent with the existing filter steps without changing their behavior.
+     *
+     * Usage example:
+     *
+     *   When I look at table 1
+     *   And I open the advanced search for filter "Customer"
+     *   Then I see 1 widget of type "DataLookupDialog"
+     *   Then I see 1 widget of type "DataTable"
+     *   When I look at table 1
+     *   When I enter "Customer1" in filter "Name"
+     *   When I click button "Search"
+     *   Then I select table row 1
+     *   Then I see 1 widget of type "DataLookupDialog"
+     *   Then I click button "Apply"
+     *
+     * @When I open the advanced search for filter :filterCaption
+     * @param string $filterCaption Caption of the filter whose advanced search should open
+     */
+    public function iOpenAdvancedSearchForFilter(string $filterCaption): void
+    {
+        $inputNode = $this->getFocusedDataNode()->findFilterByCaption($filterCaption)->getInputNode();
+        Assert::assertInstanceOf(
+            UI5InputComboTableNode::class,
+            $inputNode,
+            'Filter "' . $filterCaption . '" does not provide an InputComboTable advanced search.'
+        );
+        $inputNode->openAdvancedSearch();
+    }
+
+    /**
      * Searches the focused table through a column's header filter instead of a toolbar filter.
      *
      * Focus a table first (e.g. "I look at table 1"). The column caption identifies the header
@@ -1193,6 +1228,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     /**
      * Sorts the focused table through its column header so scenarios can control result order.
      * Checks displayed column values so a sort indicator alone cannot make a broken sort pass.
+     * Text columns retain text ordering even when their values contain only digits.
+     * Enum columns are checked by their stored values, not their translated display labels.
+     * Date and datetime columns are compared chronologically using their configured display format
+     * and locale; invalid non-empty dates fail. Empty dates come first ascending and last descending.
      *
      * Focus the target table first (e.g. "I look at table 1").
      *
@@ -1201,6 +1240,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *   When I look at table 1
      *   And I sort column "Name" in "ascending" order
      *   And I sort column "Name" in "descending" order
+     *   And I sort column "Created on" in "ascending" order
      *
      * @When I sort column :column in :direction order
      *
@@ -1209,8 +1249,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iSortColumnInOrder(string $column, string $direction): void
     {
-        $this->getFocusedDataTableNode()->getColumnByCaption($column)->sort($direction);
-        $this->getFocusedDataTableNode()->assertColumnValuesSorted($column, $direction);
+        $table = $this->getFocusedDataTableNode();
+        $table->getColumnByCaption($column)->sort($direction);
+        $table->assertColumnValuesSorted($column, $direction);
     }
 
     /**
@@ -1920,6 +1961,60 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         Assert::assertNotNull($widget, 'Cannot find input widget "' . $caption . '"');
         // Set the input value
         $widget->setValue($value);
+    }
+
+    /**
+     * Checks whether a captioned input allows the user to set or change its value.
+     *
+     * Read-only fields count as disabled even if they can still receive focus.
+     * The subtype-aware lookup keeps this step independent of the input implementation
+     * and stays inside the focused widget, or searches the page when none is focused.
+     * Unsupported states fail explicitly to prevent a typo from checking the wrong state.
+     * The matched input is highlighted before checking its state so failure screenshots
+     * identify the field being checked.
+     *
+     * Usage examples:
+     *
+     *   Then the "Name" input field is "enabled"
+     *   Then the "Status" input field is "disabled"
+     *
+     * @Then the ":caption" input field is ":state"
+     *
+     * @param string $caption Caption of the input field
+     * @param string $state Either "enabled" or "disabled"
+     * @return void
+     */
+    public function theInputFieldIs(string $caption, string $state): void
+    {
+        if (!in_array($state, ['enabled', 'disabled'], true)) {
+            throw new RuntimeException(
+                'Unsupported input field state "' . $state . '": expected "enabled" or "disabled".'
+            );
+        }
+
+        $browser = $this->getBrowser();
+        $inputs = array_values(array_filter(
+            $browser->findWidgetNodesInSearchScope('Input'),
+            function (FacadeNodeInterface $node) use ($caption): bool {
+                return $node->getCaption() === $caption || $node->getWidget()->getCaption() === $caption;
+            }
+        ));
+        Assert::assertCount(
+            1,
+            $inputs,
+            sprintf(
+                'Expected exactly one input field with caption "%s" in %s, but found %d',
+                $caption,
+                $browser->describeSearchScope(),
+                count($inputs)
+            )
+        );
+        $browser->highlightWidget($inputs[0]->getNodeElement(), 'Input', 0);
+        Assert::assertSame(
+            $state === 'disabled',
+            $inputs[0]->checkDisabled(),
+            sprintf('Input field "%s" should be %s for setting or changing a value', $caption, $state)
+        );
     }
 
     /**
