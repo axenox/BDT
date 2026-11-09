@@ -17,6 +17,56 @@ class UI5InputNode extends UI5AbstractNode
     use DateParsingTrait;
 
     /**
+     * Reports whether the user is prevented from changing this input's value.
+     *
+     * WHY BOTH PROPERTIES: UI5 controls can be enabled but read-only, and selects,
+     * checkboxes and segmented buttons do not all expose the same properties.
+     * Embedded editors and custom inputs may use an HTML control without either
+     * property, so their rendered editing elements determine the state instead.
+     * An unrecognised rendering must fail rather than silently report "enabled".
+     *
+     * @return bool
+     */
+    public function checkDisabled(): bool
+    {
+        $idJs = json_encode($this->getElementId(), JSON_THROW_ON_ERROR);
+        return $this->getFromJavascript(<<<JS
+            (function(sId) {
+                var oControl = sap.ui.getCore().byId(sId);
+                var oRoot = document.getElementById(sId);
+                if (!oRoot) {
+                    throw new Error('Input element not found: ' + sId);
+                }
+                var bHasEnabled = oControl && typeof oControl.getEnabled === 'function';
+                var bHasEditable = oControl && typeof oControl.getEditable === 'function';
+                if ((bHasEnabled && !oControl.getEnabled())
+                    || (bHasEditable && !oControl.getEditable())) {
+                    return true;
+                }
+                if (bHasEnabled || bHasEditable) {
+                    return false;
+                }
+                var sSelector = 'input:not([type="hidden"]), textarea, select, [contenteditable], '
+                    + '[role="textbox"], [role="checkbox"], [role="combobox"], '
+                    + '[role="switch"], [role="slider"], [role="spinbutton"], [role="radio"]';
+                var aInputs = Array.prototype.slice.call(oRoot.querySelectorAll(sSelector));
+                if (oRoot.matches(sSelector)) {
+                    aInputs.unshift(oRoot);
+                }
+                if (aInputs.length === 0) {
+                    throw new Error('Cannot determine whether input is editable: ' + sId);
+                }
+                return aInputs.every(function(oInput) {
+                    return oInput.matches(':disabled') || oInput.readOnly === true
+                        || oInput.closest('[disabled], [readonly], [aria-disabled="true"], [aria-readonly="true"]') !== null
+                        || (oInput.hasAttribute('contenteditable') && !oInput.isContentEditable);
+                });
+            })($idJs)
+            JS
+        );
+    }
+
+    /**
      * Finds a captioned input in the dialog body or header without duplicating field lookup.
      *
      * Input and InputDate expose a native input, while InputText exposes a textarea;
