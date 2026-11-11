@@ -5,7 +5,10 @@ use axenox\BDT\Behat\Common\BdtPaths;
 use axenox\BDT\Behat\Common\Traits\ChromeProfileReaperTrait;
 use axenox\BDT\Behat\Common\Traits\FeaturePathResolverTrait;
 use axenox\BDT\Behat\Common\Traits\PortProbingTrait;
-use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
+use axenox\BDT\Behat\BrowserManagers\BrowserManagerFactory;
+use axenox\BDT\Behat\BrowserManagers\ChromeDevToolsHttpClient;
+use axenox\BDT\Behat\BrowserManagers\RemoteChromeManager;
+use exface\Core\CommonLogic\UxonObject;
 use exface\Core\CommonLogic\AbstractActionDeferred;
 use exface\Core\CommonLogic\Actions\ServiceParameter;
 use exface\Core\DataTypes\FilePathDataType;
@@ -44,6 +47,9 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
     use PortProbingTrait;
     use ChromeProfileReaperTrait;
     use FeaturePathResolverTrait;
+
+    private ?string $browserExecutable = null;
+
     // CLI option names - kept as constants so the option declarations in getCliOptions()
     // and the reads via getTaskParam() can never drift apart.
     private const OPT_BEHAT_CONFIG = 'behat_config';
@@ -72,7 +78,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
     // App-config keys. The interactive band is DELIBERATELY separate from the scheduled band
     // (PARALLEL.PORT_BAND_SCHEDULED): a tester pressing the button while the nightly fleet is
     // running must be steered into a disjoint port window, so even a probe race can only hit
-    // another interactive run - which ChromeManager's foreign-Chrome guard then fails loudly.
+    // another interactive run - which the local manager's foreign-Chrome guard then fails loudly.
     private const CFG_PORT_BAND_INTERACTIVE = 'PARALLEL.PORT_BAND_INTERACTIVE';
     private const CFG_WORKER_TIMEOUT        = 'PARALLEL.WORKER_TIMEOUT_SECONDS';
 
@@ -143,11 +149,11 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
         $chromeEndpoint = $this->resolveOptionalSetting($task, self::OPT_CHROME_ENDPOINT, self::CFG_CHROME_ENDPOINT);
         $baseUrl = $this->resolveOptionalSetting($task, self::OPT_BASE_URL, self::CFG_BASE_URL);
         if ($chromeEndpoint !== '') {
-            $chromeEndpoint = ChromeManager::normalizeEndpoint($chromeEndpoint);
+            $chromeEndpoint = ChromeDevToolsHttpClient::normalizeEndpoint($chromeEndpoint);
             $this->shellArg($chromeEndpoint, 'Chrome endpoint');
         }
         if ($baseUrl !== '') {
-            $baseUrl = ChromeManager::normalizeEndpoint($baseUrl) . '/';
+            $baseUrl = ChromeDevToolsHttpClient::normalizeEndpoint($baseUrl) . '/';
             $this->shellArg($baseUrl, 'browser-facing base URL');
         }
         $chromePath = '';
@@ -215,6 +221,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
         string $chromeEndpoint = '',
         string $baseUrl = ''
     ): \Generator {
+        $this->browserExecutable = $chromePath;
         // --- Step 0: init exactly like every Behat run does, streaming its output too ---
         // `Behat init` (re)creates the global behat.yml, registers app suites and refreshes
         // base_url to the current workbench URL. Skipping it would let the generated config
@@ -248,7 +255,15 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
         try {
             yield $allocationMessage;
             if ($chromeEndpoint !== '') {
-                $remoteManager = ChromeManager::createRemote($chromeEndpoint);
+                $remoteOverrides = ['endpoint' => $chromeEndpoint];
+                if ($baseUrl !== '') {
+                    $remoteOverrides['base_url'] = $baseUrl;
+                }
+                $remoteManager = BrowserManagerFactory::create(
+                    $this->getWorkbench(),
+                    new UxonObject($remoteOverrides),
+                    RemoteChromeManager::class
+                );
                 $remoteManager->start();
             }
             // --- Step 2: generate the per-run config carrying the port into Behat ---
@@ -337,7 +352,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
                 $remoteManager->stop();
             }
             // Reap any orphaned Chrome bound to THIS run's interactive profile and remove the profile
-            // dir BEFORE releasing the port. The Behat child launches Chrome detached (start /B), so a
+            // dir BEFORE releasing the port. The Behat child launches Chrome detached, so a
             // timed-out/crashed run can leave the browser alive holding the profile - hence an explicit
             // reap, not a bare rmdir. Done before releaseReservedPort() so the freed port cannot be
             // reclaimed by another interactive run whose fresh interactive<port> dir we would then delete.
@@ -492,7 +507,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
      * bounded by the band width, so nothing accumulates across runs; a later run on the same
      * port reuses/overwrites them.
      *
-     * IMPORTANT: user_data_dir is written as a RELATIVE path because ChromeManager::start()
+     * IMPORTANT: user_data_dir is written as a RELATIVE path because the local manager
      * prepends getcwd(); an absolute path would be double-prepended into a broken
      * "C:\...\C:\..." path and Chrome would fall back to the real default profile.
      * Remote overrides explicitly clear imported local launch settings and create no profile.
@@ -509,6 +524,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
                 '\\' . \axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatterExtension::class => [
                     'chrome' => [
                         'endpoint' => $chromeEndpoint,
+                        'base_url' => $baseUrl !== '' ? $baseUrl : null,
                         'port' => null,
                         'executable' => null,
                         'user_data_dir' => null
@@ -661,7 +677,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
     private function reserveRemoteEndpoint(string $endpoint): array
     {
         $lockPath = $this->getPortLockDir() . DIRECTORY_SEPARATOR
-            . 'chrome_endpoint_' . hash('sha256', ChromeManager::normalizeEndpoint($endpoint)) . '.lock';
+            . 'chrome_endpoint_' . hash('sha256', ChromeDevToolsHttpClient::normalizeEndpoint($endpoint)) . '.lock';
         $handle = @fopen($lockPath, 'c');
         if ($handle === false) {
             throw new RuntimeException('Could not open remote Chrome endpoint lock: ' . $lockPath);
@@ -743,9 +759,20 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
     }
     
     /**
+     * Supplies the executable passed to this run so its browser processes can be found by image name.
+     *
+     * WHY NULLABLE: process enumeration can be reached before a local executable is known, and a
+     * remote run has no local browser executable at all.
+     */
+    protected function getBrowserExecutable(): ?string
+    {
+        return $this->browserExecutable;
+    }
+
+    /**
      * Reaps any orphaned Chrome bound to THIS run's interactive profile and removes the profile dir.
      *
-     * WHY IT EXISTS: the Behat child launches Chrome detached (start /B), so a timed-out or crashed
+     * WHY IT EXISTS: the Behat child launches Chrome detached, so a timed-out or crashed
      * interactive run can leave the browser alive holding data\...\chrome_profiles\interactive<port>.
      * Nothing else removes it, and because the dir is named by PORT (not reused like the fleet's fixed
      * lane dirs), every run leaves a fresh one - so without this they accumulate without bound.
@@ -846,7 +873,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
      *
      * WHY NO BACKSLASH DOUBLING: in single-quoted YAML a backslash is a literal character -
      * the only escape is '' for a quote. The previous doubling therefore CHANGED the value:
-     * Symfony Yaml handed the doubled string to ChromeManager, Chrome was launched with
+     * Symfony Yaml handed the doubled string to the local manager, Chrome was launched with
      * "data\\axenox\\..." and, while Win32 path handling tolerates repeated separators, every
      * string-equality check in the Chrome reapers compared against the coordinator's
      * single-separator paths and silently matched nothing - so orphaned Chrome trees and their
@@ -897,7 +924,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
      * documented.
      *
      * WHY RELATIVE: writeInteractiveConfig() must write exactly this value into the config's
-     * user_data_dir, which ChromeManager::start() resolves against getcwd(); the cleanup simply
+     * user_data_dir, which the local manager resolves against getcwd(); the cleanup simply
      * prepends its own working dir. Returning the relative form serves both without a second method.
      */
     private function interactiveProfileDirRelative(int $port): string

@@ -1,7 +1,10 @@
 <?php
 namespace axenox\BDT\Exceptions;
 
-use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
+use axenox\BDT\Behat\BrowserManagers\BrowserManagerFactory;
+use axenox\BDT\Behat\BrowserManagers\BrowserTabControlInterface;
+use axenox\BDT\Behat\BrowserManagers\SupportsParallelLanesInterface;
+use axenox\BDT\Exceptions\ConfigException;
 use Behat\Mink\Session;
 use exface\Core\CommonLogic\UxonObject;
 use exface\Core\Exceptions\RuntimeException;
@@ -62,9 +65,13 @@ class BrowserDriverException extends RuntimeException
      */
     protected function getBrowserProcessId() : ?int
     {
-        // TODO get browser name from the inner exception once we use other browser than chrome
-        // getPid() is an instance method - calling it statically is a fatal error.
-        return ChromeManager::getInstance()->getPid();
+        try {
+            $manager = BrowserManagerFactory::getInstance();
+            return $manager instanceof SupportsParallelLanesInterface ? $manager->getPid() : null;
+        } catch (ConfigException $e) {
+            // The debug widget can be built before formatter initialization, when no manager exists yet.
+            return null;
+        }
     }
     
     /**
@@ -79,8 +86,8 @@ class BrowserDriverException extends RuntimeException
     protected function getDriverTabList() : array
     {
         try {
-            // getTabList() is an instance method - calling it statically is a fatal error.
-            return ChromeManager::getInstance()->getTabList();
+            $manager = BrowserManagerFactory::getInstance();
+            return $manager instanceof BrowserTabControlInterface ? $manager->getTabList() : [];
         } catch (\Throwable $ignored) {
             return [];
         }

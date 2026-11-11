@@ -133,8 +133,8 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     private const CFG_WORKER_TIMEOUT = 'PARALLEL.WORKER_TIMEOUT_SECONDS';
     private const CFG_WORKER_IDLE_TIMEOUT = 'PARALLEL.WORKER_IDLE_TIMEOUT_SECONDS';
 
-    // App-config key deciding Chrome window visibility. MUST match ChromeManager::CFG_CHROME_HEADLESS
-    // so the banner reports exactly what the workers' ChromeManager will resolve at launch time.
+    // App-config key deciding Chrome window visibility, matching the local manager's headless setting.
+    // The banner therefore reports what each worker will resolve at launch time.
     private const CFG_CHROME_HEADLESS = 'PARALLEL.CHROME_HEADLESS';
 
     // App-config home for the REAL chrome.exe path. Separate from the base behat.yml chrome.executable
@@ -148,6 +148,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     private const OVERRIDE_KEY_SCHEDULED = 'port_band';
 
     private ?DataSheetInterface $runDataSheet = null;
+    private ?string $browserExecutable = null;
 
     // Poll cadence for the concurrent drain loop. 100 ms is small enough that lane output is streamed
     // to its log near-live, but large enough that the busy-wait costs negligible CPU while N workers
@@ -375,6 +376,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // so defaulting never degrades into a silently-wrong path (never-guess is preserved). ---
         $behatConfig = $this->resolveBehatConfig($behatConfigArg, $cwd);
         $chromePath  = $this->resolveChromePath($chromePathArg);
+        $this->browserExecutable = $chromePath;
         $scanRoots   = $this->resolveScanRoots($behatConfig, $featureArg, $suiteArg);
 
         $runRecordWriter = new RunRecordWriter();
@@ -707,7 +709,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // launch and every login failed. A run-scoped directory guarantees each launch gets a clean
         // profile created and owned by the account actually running the fleet.
         //
-        // IMPORTANT: the config value must stay RELATIVE - ChromeManager::start() prepends getcwd().
+        // IMPORTANT: the config value must stay RELATIVE - the local manager prepends getcwd().
         // An absolute path would be double-prepended and make Chrome fall back to the real default
         // profile. It is DERIVED from the absolute path rather than rebuilt by hand: two independent
         // constructions of the same path are exactly how the reapers drifted away from the profile
@@ -753,7 +755,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      *
      * WHY NO BACKSLASH DOUBLING: in single-quoted YAML a backslash is a literal character -
      * the only escape is '' for a quote. The previous doubling therefore CHANGED the value:
-     * Symfony Yaml handed the doubled string to ChromeManager, Chrome was launched with
+     * Symfony Yaml handed the doubled string to the local manager, Chrome was launched with
      * "data\\axenox\\..." and, while Win32 path handling tolerates repeated separators, every
      * string-equality check in the Chrome reapers compared against the coordinator's
      * single-separator paths and silently matched nothing - so orphaned Chrome trees and their
@@ -811,7 +813,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         }
 
         // Headless may be undecided at coordinator level (no app-config flag) - then the workers'
-        // ChromeManager falls back to Xdebug auto-detection, and since fleet workers run with the
+        // The local manager falls back to Xdebug auto-detection, and since fleet workers run with the
         // debugger forced off, that fallback is always headless.
         if ($headless === null) {
             $chromeLine = 'headless (auto: ' . self::CFG_CHROME_HEADLESS . ' not set, workers run debugger-off)';
@@ -859,7 +861,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     /**
      * Returns TRUE if an Xdebug debugger session is currently active on the coordinator process.
      *
-     * Mirrors the detection ChromeManager uses, so the banner's debugger note stays consistent with
+     * Mirrors the detection the local manager uses, so the banner's debugger note stays consistent with
      * the actual headless fallback behaviour. Guarded for older Xdebug builds that may not expose
      * xdebug_is_debugger_active().
      */
@@ -875,8 +877,8 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * PARALLEL.CHROME_HEADLESS when present (true/false), or NULL when it is absent.
      *
      * NULL is meaningful: it tells the banner that no operator decision exists, so the workers'
-     * ChromeManager will fall back to Xdebug auto-detection - which, because fleet workers run with the
-     * debugger disabled, always resolves to headless. Kept separate from ChromeManager::resolveHeadless()
+     * The local manager will fall back to Xdebug auto-detection - which, because fleet workers run with the
+     * debugger disabled, always resolves to headless. Kept separate from its private headless resolver
      * on purpose: this reports intent for the whole fleet, that one decides an individual worker's window.
      *
      * @return bool|null TRUE = headless, FALSE = visible, NULL = not configured (auto -> headless for workers)
@@ -1351,11 +1353,11 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                 // RESERVE the port across processes instead of merely probing it. A bare probe only
                 // deconflicts lanes inside THIS coordinator (the in-memory $heldPorts list): between
                 // picking a port here and the worker's Chrome actually binding it there are seconds
-                // (lane config write, worker spawn, Behat init, ChromeManager launch). In that window any
+                // (lane config write, worker spawn, Behat init, local Chrome launch). In that window any
                 // independent run sharing the band - a second coordinator, or an interactive RunTest if
                 // the bands were ever aligned - probes the same port, sees it free and takes it too. Both
                 // then launch Chrome on it: the loser is not silent, but it costs a lane, because
-                // ChromeManager refuses to kill the foreign browser and fails the run instead. The flock
+                // the local manager refuses to kill the foreign browser and fails the run instead. The flock
                 // taken here keeps the port ours from selection until the close-out releases it, which is
                 // well past the moment Chrome binds it.
                 $reservation = $this->reserveFreePort($portStart, $portEnd, $heldPorts);
@@ -1484,7 +1486,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                     // services only a couple of sessions at once, so the 3rd/4th worker blocks - silent,
                     // producing no output - until an earlier worker exits and frees a debug slot. THAT is
                     // the real "cap of 2". Disabling the debugger per worker restores true N-wide
-                    // concurrency. Headless itself is decided by the worker's ChromeManager from
+                    // concurrency. Headless itself is decided by the worker's local manager from
                     // app-config PARALLEL.CHROME_HEADLESS (with the debugger off, its Xdebug fallback is
                     // headless too). To step through a test, use the non-parallel single-worker path.
                     $callStart = microtime(true);
@@ -1760,7 +1762,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                     // worker-level failure if any (crash/signal); a normal exit (0/1) passes null, so the
                     // section still records the Behat summary from the output.
                     $this->appendFeatureOutcome($logDir, $slotSection[$lane], $slotLogName[$lane], $workerError);
-                    // On a clean exit the worker's own ChromeManager already stopped Chrome, so this
+                    // On a clean exit the worker's own local manager already stopped Chrome, so this
                     // usually just removes the profile dir; on a crash/signal it also kills the orphan.
                     // It runs after EVERY feature, not only at the end of the lane, because the next
                     // feature reuses this same profile dir and must not inherit a live Chrome, a held
@@ -1962,10 +1964,10 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     /**
      * End-of-run backstop that reaps orphaned lane Chrome trees and purges their profile dirs.
      *
-     * WHY THIS EXISTS: fleet workers launch Chrome detached via "start /B", so a worker that is
+     * WHY THIS EXISTS: fleet workers launch Chrome detached, so a worker that is
      * hard-killed on timeout (Process::stop()) leaves its Chrome process tree running - the parent
      * worker dies but the detached browser does not. Nothing else in the coordinator removes these:
-     * ChromeManager::isOwnLeftover() only reaps a leftover at the NEXT run's launch on the same
+     * LocalChromeManager's own-leftover check only reaps a leftover at the NEXT run's launch on the same
      * profile, so between runs the orphan tree and its locked profile dir linger (the observed
      * symptom: six chrome.exe under \lane1 surviving a timed-out lane). This runs after the fleet,
      * on every exit path, to leave the machine clean.
@@ -2047,7 +2049,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     /**
      * Reaps the orphaned Chrome tree of a SINGLE finished/abandoned lane and removes its profile dir.
      *
-     * WHY INLINE, NOT ONLY AT END-OF-RUN: fleet workers launch Chrome detached (start /B), so
+     * WHY INLINE, NOT ONLY AT END-OF-RUN: fleet workers launch Chrome detached, so
      * Process::stop() on a timed-out worker kills the worker but leaves its Chrome tree alive.
      * Relying on a single end-of-run cleanup is not enough when EVERY lane runs to the wall-clock
      * ceiling: the coordinator itself may be killed by its scheduler/queue budget at that same
@@ -2101,6 +2103,17 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                 // Logging itself failed (e.g. workbench torn down) - nothing safe left to do.
             }
         }
+    }
+
+    /**
+     * Supplies the executable the worker launch configuration uses, so image enumeration matches it.
+     *
+     * WHY THIS IS STORED: sweeps run before workers launch, so they cannot infer the image name from
+     * a live Chrome process or a worker config file that has not yet been written.
+     */
+    protected function getBrowserExecutable(): ?string
+    {
+        return $this->browserExecutable;
     }
 
     /**

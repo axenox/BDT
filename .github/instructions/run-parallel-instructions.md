@@ -386,7 +386,7 @@ band and reintroduce the very collision the band exists to prevent.
 
 The band is only a *search window*. Real safety is layered: the in-run held-list prevents two lanes
 getting the same port; the probe skips bound ports; and the residual probe→bind race is caught
-loudly by `ChromeManager`'s foreign-process guard rather than by silently killing someone else's
+loudly by the local manager's foreign-process guard rather than by silently killing someone else's
 Chrome.
 
 ### Chrome profile directories

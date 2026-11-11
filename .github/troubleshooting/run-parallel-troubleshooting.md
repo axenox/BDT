@@ -335,7 +335,7 @@ Chrome ownership is matched on a release-independent identity — the path tail 
 profiles root folder, e.g. `chrome_profiles\<run_uid>_lane1` — instead of the full absolute path
 (`ChromeProfileReaperTrait::profileIdentity()` / `profilesRootMarker()`). All three sweeps
 (`reapChromeProfileDir`, `reapStaleChromeProfiles`, `reapProfilesOfInactiveRuns`) and
-`ChromeManager::isOwnLeftover()` use it, so a leftover survives neither a deployment nor a
+the local manager's own-leftover check use it, so a leftover survives neither a deployment nor a
 coordinator restart. As a side effect a zombie from an older release that squats a port is now
 reclaimed instead of failing the lane with "Port is occupied by a FOREIGN process".
 
@@ -378,7 +378,7 @@ is retried up to three times before giving up). Every caller distinguishes the t
   Profile dirs are NOT deleted in this case: removing a profile while its browser may still be alive
   is what produces an orphan process that later sweeps cannot attribute.
 
-Affected paths: `ChromeManager::stop()`, `RunParallel::cleanupLaneChromes()`,
+Affected paths: `LocalChromeManager::stop()`, `RunParallel::cleanupLaneChromes()`,
 `RunParallel::reapLaneProfile()`, `RunTest::cleanupInteractiveChrome()`, and both sweeps in
 `ChromeProfileReaperTrait`.
 
@@ -397,7 +397,7 @@ processes before the next nightly run.
 - Gets dramatically worse the closer the server is to running out of memory.
 
 ### Cause
-`ChromeManager::isAlive()` asked Chrome's `/json/version` endpoint exactly once with a 2-second
+The local manager's `isAlive()` asked Chrome's `/json/version` endpoint exactly once with a 2-second
 ceiling, and every caller turned a negative into a destructive action: kill the browser, start a new
 one, and replay the login. Two seconds is generous for an idle server and far too little for one that
 is swapping, so healthy-but-slow browsers were killed. Each restart added load, which made the next
@@ -423,14 +423,14 @@ nightly run.
 ### Parallel run fails with "port is used by a foreign process, refusing to kill it"
 
 **Symptom.** One or more lanes of a scheduled parallel run die at Chrome launch. The lane log
-contains a message from ChromeManager saying the remote-debugging port is held by a process it
+contains a message from the local browser manager saying the remote-debugging port is held by a process it
 does not recognise as its own, and that it refuses to kill it. The rest of the run continues on
 the remaining lanes, so the run ends with failures but no crash.
 
 **Cause.** The coordinator used to only *probe* a port before handing it to a lane: it opened a
 socket to it and, if nothing answered, considered the port free. But the port is not bound at
 that moment - Chrome binds it seconds later, after the lane config is written, the worker process
-is spawned, Behat initialises and ChromeManager launches the browser. Any other run that probes
+is spawned, Behat initialises and the local manager launches the browser. Any other run that probes
 the same port inside that window also sees it as free and takes it as well. Whichever browser
 binds first wins the port; the other lane finds a browser it does not own sitting on its port and
 stops, by design, rather than killing someone else's Chrome.
@@ -488,6 +488,25 @@ runs immediately before the navigation.
 Read the `Failing phase` and `Recovery` parts of the message:
 - `Recovery: ... session reattach FAILED` — Chrome answers its debug port but refuses new tabs.
   Usually memory pressure: check the Chrome process count and free memory on the server.
+
+## Process-host selection differs between cleanup paths
+
+### Symptom
+If OS-specific process handling is implemented separately by an action and the browser manager,
+the same launch or profile cleanup can behave differently depending on which path invokes it.
+
+### Cause
+The process-host accessor was duplicated in `RunParallel`, `RunTest`, and the Chrome manager.
+Those copies selected the same host today, but future changes could make cleanup and launch diverge.
+
+### Fix
+`ChromeProfileReaperTrait` now owns the single lazy process-host accessor. `RunParallel`, `RunTest`,
+and `LocalChromeManager` use that shared implementation; OS selection remains in `ProcessHostFactory`.
+
+### What to check when it happens
+Keep process-host construction in `ProcessHostFactory` and use the trait accessor for every class
+that composes `ChromeProfileReaperTrait`. A separate `getProcessHost()` implementation is a sign
+that the shared process lifecycle is starting to drift again.
 - `Failing phase: pre-navigation wait` — the previous page never settled. The navigation itself was
   never attempted, so look at the step BEFORE this one.
 - `Recovery: ... Chrome not reachable, restart requested` — the process died; see the Chrome

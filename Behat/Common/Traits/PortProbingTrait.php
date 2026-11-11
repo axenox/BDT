@@ -20,7 +20,7 @@ use Symfony\Component\Yaml\Yaml;
  *   2. Across runs/projects, separate port bands make overlap unlikely, and the probe skips
  *      any already-bound port (open socket = busy, refused = free).
  *   3. The residual probe->bind race (a port that turns busy after we picked it) is NOT
- *      silent: ChromeManager refuses to kill a live foreign Chrome on its port and fails
+ *      silent: the local browser manager refuses to kill a live foreign Chrome on its port and fails
  *      loudly instead, so the affected run is recorded as a failure rather than sabotaging
  *      another run's browser.
  */
@@ -115,7 +115,7 @@ trait PortProbingTrait
      * ONE coordinator process (the in-memory $held list) and otherwise relies on isPortBound().
      * That is unsafe for INDEPENDENT concurrent runs - e.g. several interactive RunTest processes
      * started before any of them launched Chrome. There is a multi-second gap between picking a
-     * port and Chrome actually binding it (Behat init, container build, ChromeManager launch), so
+     * port and Chrome actually binding it (Behat init, container build, local Chrome launch), so
      * every racing process sees the same port as free and all pick it. In-memory $held cannot help
      * because the racers are separate OS processes. A cross-process advisory lock closes that gap:
      * a port is only handed out once, and stays reserved from selection until the caller releases

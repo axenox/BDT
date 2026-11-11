@@ -7,7 +7,7 @@ use axenox\BDT\Behat\Common\RunRecordWriter;
 use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
 use axenox\BDT\Behat\Common\TestDataReaper;
 use axenox\BDT\Behat\Common\Traits\DeadlockRetryTrait;
-use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
+use axenox\BDT\Behat\BrowserManagers\BrowserManagerFactory;
 use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
@@ -216,8 +216,11 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                     . 'merges into the base behat.yml so lane_id reaches the formatter.'
                 );
             }
-            ChromeManager::getInstance($this)
-                ->configure($chromeConfig);
+            $chromeConfig = array_filter(
+                $chromeConfig,
+                static fn($value) => $value !== null && $value !== ''
+            );
+            BrowserManagerFactory::initInstance($workbench, new UxonObject($chromeConfig));
             // Announce the resolved run configuration up front so this process's log opens with a
             // clear expectation: which mode it runs in (attach-mode worker vs. single process),
             // whether its Chrome will be visible or headless, and whether a debugger is attached.
@@ -290,7 +293,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         // This is a last-resort fallback in case the shutdown function was somehow not registered.
         if (! $this->exerciseFinished) {
             $this->onAfterExercise();
-            ChromeManager::getInstance()->stop();
+            BrowserManagerFactory::getInstance()->stop();
         }
     }
     public function getWorkbench(): WorkbenchInterface
@@ -421,7 +424,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         } finally {
             $this->featureDataSheet = null;
             // Clear so the next feature starts with a clean history
-            ChromeManager::getInstance()->clearStartHistory();
+            BrowserManagerFactory::getInstance()->clearStartHistory();
         }
     }
 
@@ -1342,7 +1345,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
      * Builds a JSON string with metadata about every Chrome instance that ran during
      * the current feature.
      *
-     * Reads ChromeManager::getStartHistory() which accumulates one entry per start()
+     * Reads the browser manager's start history, which accumulates one entry per start()
      * call since the last clearStartHistory(). A feature with no crash will have a
      * single entry; a feature with one crash recovery will have two entries.
      *
@@ -1351,7 +1354,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
      */
     private function buildChromeInfo(array $extra = []): string
     {
-        $history = ChromeManager::getInstance()->getStartHistory();
+        $history = BrowserManagerFactory::getInstance()->getStartHistory();
         if (!empty($extra)) {
             $history = array_map(fn($entry) => array_merge($entry, $extra), $history);
         }
@@ -1409,7 +1412,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $this->onAfterExercise();
         }
 
-        ChromeManager::getInstance()->stop();
+        BrowserManagerFactory::getInstance()->stop();
     }
 
     /**
@@ -1423,9 +1426,8 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
      * same method also serves the non-parallel single-process run (`vendor\bin\behat` directly), so a
      * developer running one feature locally gets the same "visible or headless?" answer up front.
      *
-     * Chrome visibility is read from ChromeManager::willRunHeadless() - the exact value start() will
-     * use - so the banner can never disagree with the real launch. Debugger detection mirrors
-     * ChromeManager's Xdebug check so the note stays consistent with the headless fallback.
+     * The manager description reports the resolved browser mode so the banner remains consistent
+     * with the manager selected for this run.
      *
      * @param bool $attachMode TRUE when this process is a coordinator-driven worker bound to an
      *                         injected run UID; FALSE for a standalone single-process run
@@ -1433,7 +1435,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private function logStartupBanner(bool $attachMode): void
     {
         try {
-            $headless = ChromeManager::getInstance()->willRunHeadless();
+            $managerDescription = BrowserManagerFactory::getInstance()->describe();
             $debuggerActive = extension_loaded('xdebug')
                 && function_exists('xdebug_is_debugger_active')
                 && xdebug_is_debugger_active();
@@ -1445,11 +1447,14 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $lines = [
                 '===== BDT run configuration =====',
                 'Mode:     ' . $modeLine,
-                'Chrome:   ' . ($headless ? 'headless' : 'visible'),
+                'Chrome:   ' . $managerDescription,
             ];
             if ($debuggerActive) {
-                $lines[] = 'Debugger: attached'
-                    . ($headless ? ' (Chrome still headless - set PARALLEL.CHROME_HEADLESS=false to watch the browser)' : ' - browser visible for stepping');
+                $lines[] = 'Debugger: attached';
+                $debugHint = BrowserManagerFactory::getInstance()->getDebugHint();
+                if ($debugHint !== null) {
+                    $lines[] = $debugHint;
+                }
             } else {
                 $lines[] = 'Debugger: not attached';
             }

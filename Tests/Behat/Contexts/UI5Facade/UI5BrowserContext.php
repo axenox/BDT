@@ -3,7 +3,10 @@ namespace axenox\BDT\Tests\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Behat\Common\Attributes\ResumeSafeStep;
 use axenox\BDT\Behat\Common\ErrorManager;
-use axenox\BDT\Behat\Contexts\UI5Facade\ChromeManager;
+use axenox\BDT\Behat\BrowserManagers\BrowserManagerFactory;
+use axenox\BDT\Behat\BrowserManagers\BrowserManagerInterface;
+use axenox\BDT\Behat\BrowserManagers\BrowserTabControlInterface;
+use axenox\BDT\Behat\BrowserManagers\RemoteChromeManager;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\GenericHtmlNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5AbstractNode;
 use axenox\BDT\Behat\Contexts\UI5Facade\Nodes\UI5ButtonNode;
@@ -532,12 +535,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         // it. The probe is a cheap loopback call, so paying it per scenario is affordable.
         $this->ensureChromeAliveAtScenarioBoundary();
 
-        $manager = ChromeManager::getInstance();
-        // WHY THE PORT AND NOT THE PID: start() resolves the PID from netstat and can legitimately
-        // end up with null for a healthy Chrome, in which case this check would relaunch the browser
-        // before every scenario. The port is set unconditionally by start(), so it is the reliable
-        // "has Chrome been started in this process" marker.
-        if ($manager->getPort() === null) {
+        $manager = BrowserManagerFactory::getInstance();
+        if (!$manager->hasActiveSession()) {
             try {
                 $manager->start();
             } catch (\Throwable $e) {
@@ -578,8 +577,8 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     public function ensureChromeAliveAtScenarioBoundary(): void
     {
         try {
-            $manager = ChromeManager::getInstance();
-            if ($manager->getPort() === null || $manager->isAlive()) {
+            $manager = BrowserManagerFactory::getInstance();
+            if (!$manager->hasActiveSession() || $manager->isAlive()) {
                 return;
             }
 
@@ -608,7 +607,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * code 255, discarding the per-scenario results the run exists to produce. The steps fail on
      * their own when they try to use the browser, and the normal error handling records them.
      *
-     * WHY IT STILL RECORDS SOMETHING RATHER THAN IGNORING: ChromeManager no longer reports any of its failure
+     * WHY IT STILL RECORDS SOMETHING RATHER THAN IGNORING: the browser manager no longer reports its failures
      * paths itself - it only throws. This method's workbench logException() is therefore the single record for
      * all three paths (readiness timeout, foreign process on the port, and an unresolvable executable or
      * user_data_dir). Swallowing here would make any of them look like a page that merely failed to load, which
@@ -620,7 +619,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private function handleChromeStartFailure(string $featureTitle, \Throwable $e): void
     {
         try {
-            ChromeManager::getInstance()->stop();
+            BrowserManagerFactory::getInstance()->stop();
         } catch (\Throwable $ignored) {
             // stop() already swallows its own errors; nothing further is safe to do here.
         }
@@ -3834,6 +3833,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * report, and a silently failed session reattach looks exactly like no reattach at all - the
      * two states that have to be told apart when this error shows up on a browser that is still
      * visibly alive and logged in.
+     * Reattaching can discard isolated-context cookies, so a known login is replayed before navigation resumes.
      *
      * @param string $path The relative path to visit
      * @throws \Throwable  The last exception if all attempts fail
@@ -3897,14 +3897,32 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 // loaded already - what broke is THIS session's WebSocket to it. Retrying over that
                 // stale socket fails identically on every attempt and produces the misleading
                 // "Cannot open path ... after N attempts" for a page that is visibly open in the
-                // browser. Reattaching the session gives the retry a working connection. Chrome keeps
-                // running, so its cookies - and therefore the login - survive, and no re-login is
-                // needed. A failed reattach is not fatal here: the retry still runs and either
+                // browser. Reattaching creates a new isolated context, so a known login must be replayed
+                // even though the browser process survived. A failed reattach still lets the retry run and either
                 // succeeds or ends in the regular error above - but it IS recorded, because a
                 // reattach that never worked is the single most useful fact when triaging this error.
-                if (ChromeManager::getInstance()->isAlive()) {
+                if (BrowserManagerFactory::getInstance()->isAlive()) {
+                    $reattached = $this->reconnectSession();
                     $recoveryLog[] = 'attempt ' . $attempt . ': Chrome alive, session reattach '
-                        . ($this->reconnectSession() ? 'succeeded' : 'FAILED');
+                        . ($reattached ? 'succeeded' : 'FAILED');
+                    if ($reattached && $this->lastLoginUrl !== null && !$this->chromeRecoveryInProgress) {
+                        $this->chromeRecoveryInProgress = true;
+                        try {
+                            $this->replayBrowserLogin();
+                            $recoveryLog[] = 'browser login replay succeeded';
+                        } catch (\Throwable $loginError) {
+                            throw new BrowserDriverException(
+                                $this->getSession(),
+                                'Cannot restore browser authentication after session reattach. Recovery: '
+                                    . implode('; ', $recoveryLog) . '; browser login replay FAILED: ' . $loginError->getMessage(),
+                                null,
+                                $loginError,
+                                $this->browser
+                            );
+                        } finally {
+                            $this->chromeRecoveryInProgress = false;
+                        }
+                    }
                 } else {
                     // ensureChromeAlive() returns the real reason a restart failed (null on success), so the
                     // failing step's "Recovery: ..." line names the actual cause instead of the old, useless
@@ -3924,9 +3942,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * Use this when Chrome itself is healthy but this session's CDP/WebSocket connection
      * broke: the driver is forced out of its started state and reconnected, so the next
-     * driver call opens a fresh socket instead of reusing the dead one. Because the Chrome
-     * process is left untouched, its cookies and therefore the current login survive - no
-     * re-authentication is required, unlike a full Chrome restart via recoverChrome().
+     * driver call opens a fresh socket instead of reusing the dead one. The driver creates
+     * a new isolated browser context on start, so callers must replay a known login before
+     * using this session as authenticated, even when the Chrome process is unchanged.
      *
      * Deliberately not Session::restart(): that calls stop() and start() unguarded, and on a
      * broken socket the stop() throws - so start() never runs and the session stays dead. Here
@@ -3939,7 +3957,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     private function reconnectSession(): bool
     {
-        $manager = ChromeManager::getInstance();
+        $manager = BrowserManagerFactory::getInstance();
         // Snapshot taken BEFORE the reconnect: whatever tabs are open right now belong to the
         // session that is about to be discarded. It is read over HTTP on purpose - that endpoint
         // is served by the browser process and keeps answering while this session's socket is dead.
@@ -3982,12 +4000,15 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * has no tabs and when the endpoint could not be reached at all. Callers here treat "no known
      * tabs" as "nothing to clean up", which is the safe reading of either case.
      *
-     * @param ChromeManager $manager The manager owning the Chrome process to query.
+     * @param BrowserManagerInterface $manager The manager owning the browser to query.
      * @return string[] Target IDs of all open page tabs.
     * Remote snapshots exclude pre-existing pages so reconnect cleanup cannot close foreign tabs.
      */
-    private function listPageTargetIds(ChromeManager $manager): array
+    private function listPageTargetIds(BrowserManagerInterface $manager): array
     {
+        if (!$manager instanceof BrowserTabControlInterface) {
+            return [];
+        }
         $ids = [];
         foreach ($manager->getTabList() as $tab) {
             if (($tab['type'] ?? null) === 'page' && ($tab['id'] ?? '') !== ''
@@ -4012,11 +4033,14 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * the known root cause of unrecoverable lanes. One leaked tab per reconnect is exactly the kind
      * of slow leak that only shows up hours into a parallel run.
      *
-     * @param ChromeManager $manager   The manager owning the Chrome process.
+     * @param BrowserManagerInterface $manager The manager owning the browser.
      * @param string[]      $idsBefore Page target IDs captured before the reconnect.
      */
-    private function closeTabsLeftBehind(ChromeManager $manager, array $idsBefore): void
+    private function closeTabsLeftBehind(BrowserManagerInterface $manager, array $idsBefore): void
     {
+        if (!$manager instanceof BrowserTabControlInterface) {
+            return;
+        }
         $idsAfter = $this->listPageTargetIds($manager);
         if (array_diff($idsAfter, $idsBefore) === []) {
             $this->logDebug('Session reattach opened no new tab - leaving the existing tabs untouched.');
@@ -4220,7 +4244,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     /**
      * Recovers from a lost, hung or closed Chrome process and brings the scenario back to where it stopped.
      *
-     *  1. Instructs ChromeManager to terminate the stale Chrome process and start a fresh one on the same port.
+     *  1. Restarts the browser only when its process is lost; a lost page needs only a session reattach.
      *  2. Reattaches the Mink session to the new Chrome and fails loudly if that is not possible.
      *  3. Discards the UI5Browser of the dead page, so the next visit behaves like a first visit.
      *  4. Re-authenticates the browser with the login form values cached by iLogInToPage().
@@ -4236,6 +4260,9 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      *
      * WHY A FAILED REATTACH ABORTS: continuing on a session bound to the dead process only produces socket
      * errors later, far away from the actual cause.
+     *
+     * WHY LOGIN ALSO FOLLOWS A LIVE-PROCESS REATTACH: the driver starts a new isolated context without
+     * the old context's authentication cookies. Browser liveness does not imply session authentication.
      *
      * @param string $targetPageAlias Alias of a page to open after recovery, or an empty string to resume
      *                                the scenario at the end of its last passed step
@@ -4258,24 +4285,29 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             );
         }
         $this->chromeRecoveryInProgress = true;
-        $manager = ChromeManager::getInstance();
-
-        // Printed BEFORE anything can fail, so the output always shows what the recovery started from.
-        $this->reportChromeRecovery(
-            ($manager->isRemote()
-                ? 'Remote Chrome session was lost - reattaching and logging in again. Target: '
-                : 'Chrome was lost - restarting it and logging in again. Target: ')
-            . ($targetPageAlias !== ''
-                ? 'page "' . $targetPageAlias . '" (requested by the caller)'
-                : 'resume point ' . ($this->resumeUrl ?? '(unknown)'))
-            . '. Blocking steps in the current view: '
-            . ($this->blockersInCurrentView === [] ? 'none' : implode('; ', $this->blockersInCurrentView))
-            . '. State of views below (lost, enforced when the scenario leaves the resumed view): '
-            . ($this->blockersInEarlierViews === [] ? 'none' : implode('; ', $this->blockersInEarlierViews)) . '.'
-        );
-
         try {
-            $manager->restart();
+            $manager = BrowserManagerFactory::getInstance();
+            $browserAlive = $manager->isAlive();
+
+            // Report the selected recovery before changing the browser or session.
+            $this->reportChromeRecovery(
+                ($manager instanceof RemoteChromeManager
+                    ? 'Remote Chrome session was lost - reattaching and logging in again. Target: '
+                    : ($browserAlive
+                        ? 'Chrome page was lost - reattaching and logging in again. Target: '
+                        : 'Chrome was lost - restarting it and logging in again. Target: '))
+                . ($targetPageAlias !== ''
+                    ? 'page "' . $targetPageAlias . '" (requested by the caller)'
+                    : 'resume point ' . ($this->resumeUrl ?? '(unknown)'))
+                . '. Blocking steps in the current view: '
+                . ($this->blockersInCurrentView === [] ? 'none' : implode('; ', $this->blockersInCurrentView))
+                . '. State of views below (lost, enforced when the scenario leaves the resumed view): '
+                . ($this->blockersInEarlierViews === [] ? 'none' : implode('; ', $this->blockersInEarlierViews)) . '.'
+            );
+
+            if (!$browserAlive) {
+                $manager->restart();
+            }
 
             if (! $this->reconnectSession()) {
                 throw new RuntimeException(
@@ -4284,16 +4316,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 );
             }
 
-            $this->browser = null;
-
-            // Re-authenticate the BROWSER only; setupUser() must not run again (USER_AUTHENTICATOR optimistic lock).
-            $this->browserLogin(
-                $this->lastLoginUrl,
-                $this->lastLoginTabCaption,
-                $this->lastLoginButtonCaption,
-                $this->lastLoginFields,
-                $this->lastLoginPasswordFieldCaption
-            );
+            $this->replayBrowserLogin();
 
             if ($targetPageAlias !== '') {
                 $this->navigateToPageAlias($targetPageAlias);
@@ -4303,6 +4326,23 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
         } finally {
             $this->chromeRecoveryInProgress = false;
         }
+    }
+
+    /**
+     * Restores authentication after either restart or isolated-context reattach without provisioning the user again.
+     *
+     * Discarding the old UI5Browser first prevents login navigation from waiting on the dead page's state.
+     */
+    private function replayBrowserLogin(): void
+    {
+        $this->browser = null;
+        $this->browserLogin(
+            $this->lastLoginUrl,
+            $this->lastLoginTabCaption,
+            $this->lastLoginButtonCaption,
+            $this->lastLoginFields,
+            $this->lastLoginPasswordFieldCaption
+        );
     }
 
     /**
@@ -4332,7 +4372,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
     private function ensureChromeAlive(): ?string
     {
         try {
-            $manager = ChromeManager::getInstance();
+            $manager = BrowserManagerFactory::getInstance();
 
             // Only a manager that never launched Chrome in this process has nothing to revive. A null port with
             // a start already attempted means Chrome is down (typically a failed restart) - fall through and
@@ -4341,13 +4381,13 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
                 return null;
             }
 
-            if ($manager->getPort() !== null && $manager->isAlive()) {
+            if ($manager->hasActiveSession() && $manager->isAlive()) {
                 return null;
             }
 
             if ($this->lastLoginUrl === null) {
                 $this->reportChromeRecovery('Triggered before a step, before any login - restarting Chrome only, there is no state to restore.');
-                ChromeManager::getInstance()->restart();
+                BrowserManagerFactory::getInstance()->restart();
                 // reconnectSession() returns false when Chrome came back but the session could not be reattached;
                 // reporting null there would be the same false "restart succeeded" this fix exists to remove.
                 if (! $this->reconnectSession()) {

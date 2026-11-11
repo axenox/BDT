@@ -47,6 +47,7 @@ class DatabaseFormatterExtension implements Extension
             ->scalarNode('executable')->defaultNull()->end()
             ->scalarNode('user_data_dir')->defaultNull()->end()
             ->scalarNode('endpoint')->defaultNull()->end()
+            ->scalarNode('base_url')->defaultNull()->end()
             ->end()
             ->end()
             ->scalarNode('run_uid')->defaultNull()->end()
