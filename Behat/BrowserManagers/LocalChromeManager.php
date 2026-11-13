@@ -10,7 +10,7 @@ use exface\Core\Exceptions\RuntimeException;
  * Starts and supervises a Chrome process on the machine that runs the tests.
  * 
  * Use this manager when Chrome should be launched by BDT itself, either headless or as a visible window.
- * It is selected automatically when no remote `endpoint` is configured.
+ * Select it with the app-config key `BROWSER.MANAGER` and configure it in `BROWSER.MANAGER_CONFIG`.
  * 
  * ## Example
  * 
@@ -40,6 +40,10 @@ use exface\Core\Exceptions\RuntimeException;
 class LocalChromeManager extends AbstractBrowserManager implements BrowserTabControlInterface, SupportsParallelLanesInterface
 {
     use ChromeProfileReaperTrait;
+
+    private const DEFAULT_PORT = 9222;
+    private const DEFAULT_PORT_BAND_INTERACTIVE = '9201-9251';
+    private const DEFAULT_PORT_BAND_SCHEDULED = '9251-9300';
 
     private ?int $pid = null;
     private ?int $port = null;
@@ -80,8 +84,8 @@ class LocalChromeManager extends AbstractBrowserManager implements BrowserTabCon
      * @uxon-type string
      * @uxon-required true
      * 
-     * WHY A SETTER: receives the legacy app-config executable through UXON without coupling the
-     * manager to app config.
+     * WHY A SETTER: receives the executable (from BROWSER.MANAGER_CONFIG or a CLI override) through
+     * UXON without coupling the manager to app config.
      */
     public function setExecutable(string $executable): void
     {
@@ -148,8 +152,8 @@ class LocalChromeManager extends AbstractBrowserManager implements BrowserTabCon
      * @uxon-type string
      * @uxon-default 9201-9251
      * 
-     * WHY RETAINED HERE: keeps the interactive port-band setting alongside the other UXON-supplied
-     * local manager options; RunTest reads the same value from app configuration to pick the port.
+     * WHY RETAINED HERE: the interactive band belongs to the local manager's configuration; RunTest
+     * reads it through getPortBandInteractive() to pick the port.
      */
     public function setPortBandInteractive(string $portBand): void
     {
@@ -165,8 +169,8 @@ class LocalChromeManager extends AbstractBrowserManager implements BrowserTabCon
      * @uxon-type string
      * @uxon-default 9251-9300
      * 
-     * WHY RETAINED HERE: keeps the scheduled port-band setting alongside the other UXON-supplied
-     * local manager options; RunParallel reads the same value from app configuration for its lanes.
+     * WHY RETAINED HERE: the scheduled band belongs to the local manager's configuration; RunParallel
+     * reads it through getPortBandScheduled() for its lanes.
      */
     public function setPortBandScheduled(string $portBand): void
     {
@@ -203,12 +207,12 @@ class LocalChromeManager extends AbstractBrowserManager implements BrowserTabCon
                 ? getcwd() . DIRECTORY_SEPARATOR . $this->configuredUserDataDir
                 : $this->configuredUserDataDir;
         }
-        $port = $this->configuredPort ?? 9222;
+        $port = $this->configuredPort ?? self::DEFAULT_PORT;
         $this->getLogbook()->addLine("Config resolved — executable: {$executable}, userDataDir: {$userDataDir}, port: {$port}");
 
         if ($executable === null || $userDataDir === null) {
             $msg = '**ERROR** Local Chrome requires "executable" and "user_data_dir". '
-                . 'Please set them under DatabaseFormatterExtension > chrome in your behat.yml.';
+                . 'Please set "executable" in BROWSER.MANAGER_CONFIG and "user_data_dir" under DatabaseFormatterExtension > browser > config in your behat.yml.';
             $this->getLogbook()->addLine($msg);
             $this->getLogbook()->addIndent(-1);
             throw new ConfigException($msg, null, null);
@@ -233,7 +237,7 @@ class LocalChromeManager extends AbstractBrowserManager implements BrowserTabCon
                 $shownCommandLine = $commandLine === null ? '(command line not retrievable)' : $commandLine;
                 $msg = "**ERROR** Port {$port} is occupied by a FOREIGN process (PID {$existingPid}): {$shownCommandLine}. "
                     . 'Refusing to kill it. This usually indicates a port-band collision between projects or runs — '
-                    . 'check the port_band / port_band_interactive settings in bdt_parallel.yml and the PARALLEL.* app config.';
+                    . 'check the port_band / port_band_interactive settings in bdt_parallel.yml and port_band_interactive / port_band_scheduled in BROWSER.MANAGER_CONFIG.';
                 $this->getLogbook()->addLine($msg);
                 $this->getLogbook()->addIndent(-1);
                 $this->getLogbook()->addIndent(-1);
@@ -386,7 +390,51 @@ class LocalChromeManager extends AbstractBrowserManager implements BrowserTabCon
      */
     public function getApiUrl(): string
     {
-        return 'http://127.0.0.1:' . ($this->port ?? $this->configuredPort ?? 9222);
+        return self::buildApiUrl($this->port ?? $this->configuredPort ?? self::DEFAULT_PORT);
+    }
+
+    /**
+     * Builds the DevTools URL of a local Chrome on the given port - the single source of truth for it.
+     *
+     * WHY STATIC AND PUBLIC: RunTest and RunParallel write the Mink api_url into the generated Behat
+     * configs before any manager instance exists for that port, while the manager itself needs the
+     * same URL at run time. Two hand-built strings would drift apart. The literal 127.0.0.1 (not
+     * "localhost") avoids the IPv6 lookup delay on Windows.
+     *
+     * @param int $port Remote debugging port
+     * @return string e.g. http://127.0.0.1:9222
+     */
+    public static function buildApiUrl(int $port): string
+    {
+        return 'http://127.0.0.1:' . $port;
+    }
+
+    /**
+     * Supplies the interactive port band so RunTest searches the window the manager config defines.
+     *
+     * WHY HERE: the band is part of the local manager's configuration (BROWSER.MANAGER_CONFIG), and a
+     * remote manager has no ports at all, so coordinators read it from the manager instead of from
+     * app-config keys.
+     *
+     * {@inheritDoc}
+     *
+     * @see BrowserLaneConfigurationInterface::getPortBandInteractive()
+     */
+    public function getPortBandInteractive(): string
+    {
+        return $this->portBandInteractive ?? self::DEFAULT_PORT_BAND_INTERACTIVE;
+    }
+
+    /**
+     * Supplies the scheduled port band so RunParallel allocates its lane ports from the configured window.
+     *
+     * {@inheritDoc}
+     *
+     * @see BrowserLaneConfigurationInterface::getPortBandScheduled()
+     */
+    public function getPortBandScheduled(): string
+    {
+        return $this->portBandScheduled ?? self::DEFAULT_PORT_BAND_SCHEDULED;
     }
 
     /**
@@ -398,8 +446,19 @@ class LocalChromeManager extends AbstractBrowserManager implements BrowserTabCon
      */
     public function describe(): string
     {
-        return 'local Chrome, ' . ($this->resolveHeadless() ? 'headless' : 'visible')
-            . ', port ' . ($this->port ?? $this->configuredPort ?? 9222);
+        return $this->describeForParallelLanes()
+            . ', port ' . ($this->port ?? $this->configuredPort ?? self::DEFAULT_PORT);
+    }
+
+    /**
+     * Describes the browser mode without a port because a coordinator has no lane of its own.
+     *
+     * {@inheritDoc}
+     * @see BrowserLaneConfigurationInterface::describeForParallelLanes()
+     */
+    public function describeForParallelLanes(): string
+    {
+        return 'local Chrome, ' . ($this->resolveHeadless() ? 'headless' : 'visible');
     }
 
     /**
@@ -415,7 +474,7 @@ class LocalChromeManager extends AbstractBrowserManager implements BrowserTabCon
     public function getDebugHint(): ?string
     {
         return $this->resolveHeadless()
-            ? 'Chrome remains headless - set PARALLEL.CHROME_HEADLESS=false to watch the browser'
+            ? 'Chrome remains headless - set "headless": false in BROWSER.MANAGER_CONFIG to watch the browser'
             : 'Browser visible for stepping';
     }
 
@@ -575,13 +634,28 @@ class LocalChromeManager extends AbstractBrowserManager implements BrowserTabCon
     }
 
     /**
+     * Supplies the configured executable so coordinators and the shared reaper agree on the image name.
+     *
+     * WHY PUBLIC: RunTest and RunParallel no longer resolve the Chrome path themselves; they take it
+     * from their coordinator manager so the image name they sweep always matches what lanes launch.
+     *
+     * {@inheritDoc}
+     *
+     * @see BrowserLaneConfigurationInterface::getExecutable()
+     */
+    public function getExecutable(): ?string
+    {
+        return $this->executable;
+    }
+
+    /**
      * Supplies the configured executable so the shared reaper can derive the image name to enumerate.
      *
      * @see ChromeProfileReaperTrait::getBrowserExecutable()
      */
     protected function getBrowserExecutable(): ?string
     {
-        return $this->executable;
+        return $this->getExecutable();
     }
 
     /**

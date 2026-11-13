@@ -120,14 +120,22 @@ installation-level BDT configuration override, not the vendor package defaults:
 
 ```json
 {
-  "REMOTE.CHROME_ENDPOINT": "http://127.0.0.1:9222",
-  "REMOTE.BASE_URL": "http://<WINDOWS_HOST_IP>/exface/exface/"
+  "BROWSER.MANAGER": "\\axenox\\BDT\\Behat\\BrowserManagers\\RemoteChromeManager",
+  "BROWSER.MANAGER_CONFIG": {
+    "endpoint": "http://127.0.0.1:9222",
+    "base_url": "http://<WINDOWS_HOST_IP>/exface/exface/"
+  }
 }
 ```
 
 Explicit CLI values override the installation settings. Ensure the command and installation
 configuration use the endpoint above; changing the browser YAML does not update BDT settings.
 Do not change global `SERVER.BASE_URLS` just to set this run's URL.
+
+> **Deprecated:** the former keys `REMOTE.CHROME_ENDPOINT` and `REMOTE.BASE_URL` still work in this
+> release when no installation or user layer selects `BROWSER.MANAGER` (or its effective value is
+> blank), but BDT logs a deprecation warning. Move them to
+> `endpoint` and `base_url` in `BROWSER.MANAGER_CONFIG`.
 
 Keep both pods running. Remote `RunTest` attaches to Chrome rather than launching a Windows
 browser. Use a browser dedicated to this installation; do not share it with other test workers.
@@ -160,7 +168,7 @@ start or restart Podman for you.
 | `controller pids is not available` or `Unit ... was already loaded` | WSL/systemd cgroup startup error. Apply the cgroup fix below and verify the active manager. |
 | Windows localhost cannot reach Chrome | Confirm the machine and both YAML pods are running. Keep the host-network relay configured and check the logs in Step 3. |
 | VPN interferes with VM networking | Use the localhost relay endpoint. Enable user-mode networking if needed, as described below; do not change corporate VPN routes. |
-| `RunTest` uses a different endpoint | Correct the command or `REMOTE.CHROME_ENDPOINT` to `http://127.0.0.1:9222`; do not restart Chrome for a settings error. |
+| `RunTest` uses a different endpoint | Correct the command or `endpoint` in `BROWSER.MANAGER_CONFIG` to `http://127.0.0.1:9222`; do not restart Chrome for a settings error. |
 | `host.containers.internal` refuses connection | Verify which host it resolves to instead of assuming it is Windows WAMP. Use the Windows address tested in Step 4. |
 | Apache 403 | WAMP's `Require local` rejects the incoming WSL client. Apply the application-only access rule below. |
 | HTTP 401 from WAMP | Network access works; keep authentication enabled and use BDT's existing login flow. |

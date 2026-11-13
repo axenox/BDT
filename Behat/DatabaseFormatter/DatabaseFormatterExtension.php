@@ -2,6 +2,7 @@
 namespace axenox\BDT\Behat\DatabaseFormatter;
 
 use axenox\BDT\Behat\Common\Traits\AuthenticatorTimeStampingTrait;
+use axenox\BDT\Behat\BrowserManagers\RemoteChromeManager;
 use axenox\BDT\Behat\Contexts\UI5Facade\LazyChromeDriver;
 use Behat\Behat\EventDispatcher\ServiceContainer\EventDispatcherExtension;
 use Behat\Testwork\ServiceContainer\Extension;
@@ -36,11 +37,23 @@ class DatabaseFormatterExtension implements Extension
     public function initialize(ExtensionManager $extensionManager) {}
 
     /**
-     * Accepts remote CDP endpoints without removing the existing local Chrome launch settings.
+     * Declares the `browser` settings node and, for one more release, the legacy `chrome` node.
+     *
+     * WHY BOTH: `browser` mirrors the app-config pair BROWSER.MANAGER / BROWSER.MANAGER_CONFIG - `manager`
+     * selects the class and `config` holds only per-run values the generated Behat configs inject (port,
+     * profile dir, CLI overrides). `config` is a free-form node because its valid keys are defined by the
+     * selected manager class, which rejects unknown ones itself. The `chrome` node stays accepted so
+     * existing hand-written behat.yml files keep working; see resolveBrowserSettings().
      */
     public function configure(ArrayNodeDefinition $builder) {
         $builder
             ->children()
+            ->arrayNode('browser')
+            ->children()
+            ->scalarNode('manager')->defaultNull()->end()
+            ->variableNode('config')->defaultValue([])->end()
+            ->end()
+            ->end()
             ->arrayNode('chrome')
             ->children()
             ->scalarNode('port')->defaultNull()->end()
@@ -55,15 +68,62 @@ class DatabaseFormatterExtension implements Extension
             ->end();
     }
 
+    /**
+     * Turns the `browser` node and the legacy `chrome` node into one manager class and one config array.
+     *
+     * WHY A PURE STATIC FUNCTION IN THE EXTENSION: this is the only place that still knows the old
+     * `chrome` node, so removing it later is a one-function change. It has no side effects - the
+     * messages it returns are logged by load() once the workbench exists - which also makes it testable
+     * without booting Behat.
+     *
+     * Rules: `browser` wins when both nodes carry settings (a warning says the `chrome` node is ignored).
+     * Otherwise `chrome` maps to browser.config with empty values dropped, and a non-empty chrome.endpoint
+     * selects RemoteChromeManager, exactly as the old endpoint heuristic did.
+     *
+     * @param array $config The processed extension configuration
+     * @return array{0: ?string, 1: array, 2: string[]} Manager class (or NULL), manager config and log messages
+     */
+    public static function resolveBrowserSettings(array $config): array
+    {
+        $manager = $config['browser']['manager'] ?? null;
+        $manager = ($manager === null || $manager === '') ? null : (string) $manager;
+        $browserConfig = $config['browser']['config'] ?? [];
+        $browserConfig = is_array($browserConfig) ? $browserConfig : [];
+        $chrome = array_filter(
+            $config['chrome'] ?? [],
+            static fn($value) => $value !== null && $value !== ''
+        );
+        if ($chrome === []) {
+            return [$manager, $browserConfig, []];
+        }
+
+        if ($manager !== null || $browserConfig !== []) {
+            return [$manager, $browserConfig, [
+                'The DatabaseFormatterExtension "chrome" node is ignored because the "browser" node is present. '
+                . 'Remove the deprecated "chrome" node.'
+            ]];
+        }
+        return [
+            isset($chrome['endpoint']) ? RemoteChromeManager::class : null,
+            $chrome,
+            [
+                'DEPRECATED: the DatabaseFormatterExtension "chrome" node is mapped to "browser: config". '
+                . 'Move the settings to the "browser" node (manager, config); the "chrome" node will be removed in a future release.'
+            ]
+        ];
+    }
+
     public function load(ContainerBuilder $container, array $config)
     {
+        [$browserManager, $browserConfig, $browserMessages] = self::resolveBrowserSettings($config);
         // Register the formatter as a service
         $definition = new Definition(DatabaseFormatter::class, [
             new Reference('database_formatter.workbench'),
             new Reference('screenshot.provider'),
             new Reference(EventDispatcherExtension::DISPATCHER_ID),
             new Reference('suite.registry'),
-            $config['chrome'] ?? [],
+            $browserManager,
+            $browserConfig,
             $config['run_uid'] ?? null,
             $config['lane_id'] ?? null
         ]);
@@ -75,6 +135,9 @@ class DatabaseFormatterExtension implements Extension
         // injected run_uid) the identity resolution additionally runs with the authenticator's
         // TimeStampingBehavior disabled in THIS process - see the method docblock.
         $workbench = $this->bootWorkbenchWithIdentityRetry();
+        foreach ($browserMessages as $message) {
+            $workbench->getLogger()->warning($message);
+        }
         // $container is a Symfony DI container: https://symfony.com/doc/current/components/dependency_injection.html
         $container->set('database_formatter.workbench', $workbench);
     }

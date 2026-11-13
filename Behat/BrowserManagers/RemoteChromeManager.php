@@ -9,7 +9,8 @@ use exface\Core\Exceptions\RuntimeException;
  * 
  * Use this manager when BDT must not launch a browser itself, for example when Chrome runs in a
  * separate container. BDT only attaches to the DevTools endpoint and closes the tabs it opened - it
- * never stops the browser process.
+ * never stops the browser process. Select it with the app-config key `BROWSER.MANAGER` and configure
+ * it in `BROWSER.MANAGER_CONFIG`.
  * 
  * ## Example
  * 
@@ -29,7 +30,8 @@ use exface\Core\Exceptions\RuntimeException;
  * WHY IT EXISTS: a containerized browser has no local PID, port or profile, so none of the local
  * process logic applies; only attach, health check and tab cleanup remain.
  *
- * LIFECYCLE: created by BrowserManagerFactory when an endpoint is configured; start() verifies the
+ * LIFECYCLE: created by BrowserManagerFactory when BROWSER.MANAGER selects it (or an endpoint is
+ * forced from the CLI); start() verifies the
  * endpoint and snapshots the pre-existing pages, stop() closes only pages created since and detaches.
  */
 class RemoteChromeManager extends AbstractBrowserManager implements BrowserTabControlInterface

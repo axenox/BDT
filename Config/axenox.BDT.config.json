@@ -4,23 +4,19 @@
         "START_ON_UNIX": "",
         "OPTIONS": {}
     },
-    "BROWSERS.CHROME_HEADLESS": {
-        "START_ON_WINDOWS": "start \"\" /b \"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromePortable\\GoogleChromePortable.exe\" --headless --disable-extensions --no-sandbox --disable-gpu --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --user-data-dir=\"[#~workbench_path#]\\data\\axenox\\BDT\\GoogleChromeUserData\"",
-        "START_ON_UNIX": "",
-        "OPTIONS": {}
-    },
     "CLEANUP.DAYS_TO_KEEP": 30,
     "CLEANUP.DELETE_BATCH": 100,
     "CLEANUP.TEST_DATA_DAYS_TO_KEEP": 15,
-    "REMOTE.CHROME_ENDPOINT": "",
-    "REMOTE.BASE_URL": "",
+    "BROWSER.MANAGER": "\\axenox\\BDT\\Behat\\BrowserManagers\\LocalChromeManager",
+    "BROWSER.MANAGER_CONFIG": {
+        "executable": "data\\axenox\\BDT\\GoogleChromePortable\\App\\Chrome-bin\\chrome.exe",
+        "port_band_interactive": "9201-9251",
+        "headless": true,
+        "port_band_scheduled": "9251-9300"
+    },
     "PARALLEL.MAX_WORKERS": 4,
-    "PARALLEL.PORT_BAND_INTERACTIVE": "9201-9251",
-    "PARALLEL.PORT_BAND_SCHEDULED": "9251-9300",
     "PARALLEL.WORKER_TIMEOUT_SECONDS": 7200,
     "PARALLEL.WORKER_IDLE_TIMEOUT_SECONDS": 600,
-    "PARALLEL.CHROME_HEADLESS": true,
-    "PARALLEL.CHROME_PATH":"data\\axenox\\BDT\\GoogleChromePortable\\App\\Chrome-bin\\chrome.exe",
     "TEST_USER.USERNAME": "bdt_test",
     "TEST_USER.PASSWORD": "BDT!test54321",
     "TEST_USER.FIRST_NAME": "BDT",

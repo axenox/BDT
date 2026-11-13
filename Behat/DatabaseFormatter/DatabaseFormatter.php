@@ -190,7 +190,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
      * formatter without its workbench or run binding, while dry runs remain safe because the lookup
      * explicitly rejects them.
      */
-    public function __construct(WorkbenchInterface $workbench, ScreenshotProviderInterface $provider, EventDispatcherInterface $eventDispatcher, SuiteRegistry $suiteRegistry, array $chromeConfig = [], ?string $runUid = null, ?string $laneId = null)
+    public function __construct(WorkbenchInterface $workbench, ScreenshotProviderInterface $provider, EventDispatcherInterface $eventDispatcher, SuiteRegistry $suiteRegistry, ?string $browserManager = null, array $browserConfig = [], ?string $runUid = null, ?string $laneId = null)
     {
         self::$eventDispatcher = $eventDispatcher;
         self::$laneId = $laneId;
@@ -216,11 +216,9 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
                     . 'merges into the base behat.yml so lane_id reaches the formatter.'
                 );
             }
-            $chromeConfig = array_filter(
-                $chromeConfig,
-                static fn($value) => $value !== null && $value !== ''
-            );
-            BrowserManagerFactory::initInstance($workbench, new UxonObject($chromeConfig));
+            // browser.manager / browser.config carry only per-run values and a forced class; the factory
+            // merges them over BROWSER.MANAGER / BROWSER.MANAGER_CONFIG and lets an unknown key fail loudly.
+            BrowserManagerFactory::initInstance($workbench, new UxonObject($browserConfig), $browserManager);
             // Announce the resolved run configuration up front so this process's log opens with a
             // clear expectation: which mode it runs in (attach-mode worker vs. single process),
             // whether its Chrome will be visible or headless, and whether a debugger is attached.

@@ -511,3 +511,69 @@ that the shared process lifecycle is starting to drift again.
   never attempted, so look at the step BEFORE this one.
 - `Recovery: ... Chrome not reachable, restart requested` — the process died; see the Chrome
   process management sections above.
+
+## RunParallel stops with "does not support parallel lanes"
+
+**Symptom:** RunParallel fails immediately, before any lane starts, with:
+`The configured browser manager (...RemoteChromeManager) does not support parallel lanes.`
+
+**Cause:** The browser is configured as a remote browser (for example Chrome in an Azure container). A remote endpoint is a single browser. Parallel lanes would all share it, close each other's tabs and log each other out. Earlier versions did not check this and failed later in confusing ways.
+
+**What to do:**
+- For a remote browser, use RunTest. It runs one test session against the remote endpoint.
+- For parallel runs, set `BROWSER.MANAGER` to `LocalChromeManager` and fill `BROWSER.MANAGER_CONFIG` (at least `executable` and the port bands).
+
+## Browser settings moved to BROWSER.MANAGER / BROWSER.MANAGER_CONFIG
+
+**Symptom:** The log shows a deprecation warning about `PARALLEL.CHROME_*` or `REMOTE.*` keys or about the `chrome:` section in behat.yml, or a run fails with `No setter method found for UXON property "..."`.
+
+**Cause:** Browser settings are now configured like the metamodel connector: `BROWSER.MANAGER` selects the browser type, `BROWSER.MANAGER_CONFIG` holds its settings. Each browser type accepts only the settings it understands. A remote browser, for example, has no port bands.
+
+**What to do:**
+- Move the old values into `BROWSER.MANAGER_CONFIG`:
+  - `PARALLEL.CHROME_PATH` → `executable`
+  - `PARALLEL.CHROME_HEADLESS` → `headless`
+  - `PARALLEL.PORT_BAND_INTERACTIVE` / `PARALLEL.PORT_BAND_SCHEDULED` → `port_band_interactive` / `port_band_scheduled`
+  - `REMOTE.CHROME_ENDPOINT` → `endpoint`
+  - `REMOTE.BASE_URL` → `base_url`
+- If the error names a property, remove it from `BROWSER.MANAGER_CONFIG`: it does not apply to the selected browser type.
+- A remote browser needs both `endpoint` and `base_url`. Without `base_url` the browser in the container would try to open the application under the server's own URL, which it usually cannot reach.
+
+## RunParallel reports that the browser executable is not a file
+
+**Symptom:** RunParallel stops before initialization or lane startup with `Browser executable is not a file`.
+
+**Cause:** The configured executable path is missing or points to a directory. Previously a bad path
+could surface as a separate launch failure in each lane. The coordinator now checks it once before
+creating the run or starting workers.
+
+**What to do:** Check `BROWSER.MANAGER_CONFIG.executable`, the legacy `PARALLEL.CHROME_PATH`, or the
+`--chrome_path` override. Relative paths are resolved from the installation root; use the actual
+`chrome.exe`, not its containing directory.
+
+## Legacy browser settings appear to be ignored after migration
+
+**Symptom:** A run selects local Chrome instead of a configured legacy remote endpoint, or uses the
+default executable or headless setting instead of a legacy override.
+
+**Cause:** A shipped default `BROWSER.MANAGER` previously prevented the legacy configuration branch
+from running. The factory now checks the installation and user scopes: if neither selects a manager,
+legacy local values override local defaults and a legacy remote endpoint selects the remote manager
+without importing local settings.
+
+**What to do:** Leave `BROWSER.MANAGER` unset in the installation and user layers while using legacy keys, or explicitly configure the
+manager and migrate all its settings to `BROWSER.MANAGER_CONFIG`. A deprecation warning identifies
+legacy settings still in use.
+
+## RunParallel banner shows a Chrome port that no lane uses
+
+**Symptom:** The coordinator banner reports `port 9222` while lanes use another port range.
+
+**Cause:** The coordinator does not own a browser port; the normal manager description previously reported
+the default driver port in the banner. The banner now uses a port-free coordinator description and displays the resolved scheduled lane band,
+including any `bdt_parallel.yml` override, and passes the same band to the fleet.
+
+**What to do:** Compare `lanes on ports` in the banner with the lane port in the worker log. Check
+`bdt_parallel.yml` and `BROWSER.MANAGER_CONFIG.port_band_scheduled` if the band is unexpected.
+The coordinator reference now declares the parallel-lane capability as well as the browser interface,
+so banner calls to the lane-specific description are checked without changing runtime behavior.

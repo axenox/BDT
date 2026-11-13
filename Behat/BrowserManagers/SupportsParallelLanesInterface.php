@@ -9,9 +9,13 @@ namespace axenox\BDT\Behat\BrowserManagers;
  * that belongs to someone else. Diagnostics and lane code therefore check for this interface
  * explicitly (e.g. BrowserDriverException when reporting the PID of a hung browser).
  *
- * LIFECYCLE: values are NULL until start() has launched the process and are reset by stop().
+ * Implementations also expose lane allocation configuration through BrowserLaneConfigurationInterface,
+ * so a coordinator can reserve ports and clean up the correct browser image.
+ *
+ * LIFECYCLE: PID and port are NULL until start() succeeds and are reset by stop(); lane configuration
+ * remains available before startup.
  */
-interface SupportsParallelLanesInterface
+interface SupportsParallelLanesInterface extends BrowserLaneConfigurationInterface
 {
     /**
      * Supplies a process ID only for managers that own a local browser process.

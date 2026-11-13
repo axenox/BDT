@@ -91,6 +91,20 @@ class BrowserManagerConfigValidationTest extends TestCase
         $this->assertSame('http://127.0.0.1:9222', $manager->getApiUrl());
     }
 
+    /**
+     * A coordinator has no lane port, while the normal description retains its existing port behavior.
+     */
+    public function testLocalLaneDescriptionOmitsPortWithoutChangingNormalDescription(): void
+    {
+        $coordinator = $this->local(['executable' => 'chrome.exe', 'headless' => true]);
+        $lane = $this->local(['executable' => 'chrome.exe', 'headless' => true, 'port' => 9251]);
+
+        $this->assertSame('local Chrome, headless', $coordinator->describeForParallelLanes());
+        $this->assertSame('local Chrome, headless', $lane->describeForParallelLanes());
+        $this->assertSame('local Chrome, headless, port 9222', $coordinator->describe());
+        $this->assertSame('local Chrome, headless, port 9251', $lane->describe());
+    }
+
     public function testUnknownPropertyOnRemoteManagerFails(): void
     {
         $this->expectException(UxonMapError::class);
