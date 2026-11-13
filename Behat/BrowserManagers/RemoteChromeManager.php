@@ -119,6 +119,8 @@ class RemoteChromeManager extends AbstractBrowserManager implements BrowserTabCo
             $result = new BrowserStartResult($this->port, null, 0.0);
             $result->mode = 'remote';
             $result->endpoint = $this->getApiUrl();
+            // Not a new attach: AbstractBrowserManager::start() keeps it out of the start history.
+            $result->reused = true;
             return $result;
         }
 

@@ -15,6 +15,14 @@ class BrowserStartResult
 {
     public string $mode = 'local';
     public ?string $endpoint = null;
+    
+    /**
+     * TRUE when start() found a healthy browser already running and launched or attached nothing.
+     *
+     * WHY: AbstractBrowserManager::start() keeps such results out of the start history. The history
+     * feeds the Chrome section of the run record, and a reuse is not a start.
+     */
+    public bool $reused = false;
 
     /**
      * Carries the launch result so callers can record local starts and remote attachments uniformly.

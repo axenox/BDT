@@ -16,6 +16,7 @@ Each entry has four parts:
 
 | What you see | Go to |
 |---|---|
+| A browser-setting change affects interactive runs but not scheduled lanes | [Generated browser configs drift](#generated-browser-configs-drift) |
 | `"User authentication" ... field "Modified on" is required` on a fresh environment | [Timestamping guard killed the INSERT](#timestamping-guard-killed-the-insert) |
 | `finished_on` is NULL, run log empty, no diagnostic trace | [Invisible close-out](#invisible-close-out) |
 | Run completed on disk but DB rows are empty | [Silent DB write failure](#silent-db-write-failure) |
@@ -26,6 +27,27 @@ Each entry has four parts:
 | Chrome fails to launch, every login fails | [Cross-account profile reuse](#cross-account-profile-reuse) |
 | Real concurrency capped at ~2 lanes | [Xdebug serialized the fleet](#xdebug-serialized-the-fleet) |
 | Run duration in the DB is 1000× too small | [duration_ms holds seconds](#duration_ms-holds-seconds) |
+
+---
+
+## Generated browser configs drift
+
+**Symptom.** Interactive and scheduled runs had separate config-generation implementations, so a
+browser setting added to one could be missing from the other. This was a maintenance risk identified
+from the code, not a newly reproduced runtime failure.
+
+**Root cause.** RunTest built an array and serialized it with Symfony YAML, while RunParallel
+assembled YAML text and escaped path values itself. Every shared browser change required two edits.
+
+**Fix.** Both actions now use `GeneratedBehatConfig` to build extensions and write the generated file
+with `Yaml::dump()`. Lane run/user identities and the header are parameters; profile creation and
+port allocation remain in the actions. Existing parsed keys and values are preserved, including
+the different historical formatter-key spellings. Manual YAML path escaping is no longer needed.
+
+**How to recognize it again.** If the same browser behaves differently between RunTest and
+RunParallel, compare the parsed generated configs. Shared browser settings belong in the builder,
+not in action-specific YAML strings. The builder tests cover local/remote overrides, optional lane
+identities and Windows paths (including spaces and apostrophes) through a YAML round trip.
 
 ---
 

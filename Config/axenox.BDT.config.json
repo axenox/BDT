@@ -10,7 +10,7 @@
     "BROWSER.MANAGER": "\\axenox\\BDT\\Behat\\BrowserManagers\\LocalChromeManager",
     "BROWSER.MANAGER_CONFIG": {
         "executable": "data\\axenox\\BDT\\GoogleChromePortable\\App\\Chrome-bin\\chrome.exe",
-        "port_band_interactive": "9201-9251",
+        "port_band_interactive": "9201-9250",
         "headless": true,
         "port_band_scheduled": "9251-9300"
     },

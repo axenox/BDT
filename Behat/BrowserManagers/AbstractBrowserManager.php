@@ -86,7 +86,12 @@ abstract class AbstractBrowserManager implements BrowserManagerInterface, Workbe
     abstract public function hasActiveSession(): bool;
 
     /**
-     * Starts the browser and records its result in the common history format.
+     * Starts the browser and records real starts in the common history format.
+     *
+     * WHY A REUSE IS NOT RECORDED: doStart() flags its result as reused when a healthy browser was
+     * already running and nothing was launched or attached. The history feeds the Chrome section of the
+     * run record, so recording a reuse would show a phantom 0 ms start there. The pre-split
+     * ChromeManager also returned early on reuse without touching the history.
      *
      * {@inheritDoc}
      *
@@ -95,7 +100,9 @@ abstract class AbstractBrowserManager implements BrowserManagerInterface, Workbe
     public function start(): BrowserStartResult
     {
         $result = $this->doStart();
-        $this->startHistory[] = $result->toHistoryEntry();
+        if (! $result->reused) {
+            $this->startHistory[] = $result->toHistoryEntry();
+        }
         return $result;
     }
 

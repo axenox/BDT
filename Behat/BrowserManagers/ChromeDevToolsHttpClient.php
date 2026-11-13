@@ -164,12 +164,12 @@ class ChromeDevToolsHttpClient
             // log the details so we can distinguish a real failure from normal startup delay
             $this->logbook->addLine("**ERROR** runGuzzleApi({$url}): " . get_class($e) . ' — ' . $e->getMessage());
             if ($requireJson) {
-                throw new RuntimeException('Could not query remote Chrome at ' . $url . ': ' . $e->getMessage(), null, $e);
+                throw new RuntimeException('Could not query Chrome at ' . $url . ': ' . $e->getMessage(), null, $e);
             }
         }
 
         if ($requireJson) {
-            throw new RuntimeException('Could not query remote Chrome at ' . $url);
+            throw new RuntimeException('Could not query Chrome at ' . $url);
         }
         return [];
     }

@@ -2,19 +2,18 @@
 namespace axenox\BDT\Actions;
 
 use axenox\BDT\Behat\Common\BdtPaths;
+use axenox\BDT\Behat\Common\GeneratedBehatConfig;
 use axenox\BDT\Behat\Common\Traits\ChromeProfileReaperTrait;
 use axenox\BDT\Behat\Common\Traits\FeaturePathResolverTrait;
 use axenox\BDT\Behat\Common\Traits\PortProbingTrait;
 use axenox\BDT\Behat\BrowserManagers\BrowserManagerFactory;
 use axenox\BDT\Behat\BrowserManagers\BrowserManagerInterface;
 use axenox\BDT\Behat\BrowserManagers\ChromeDevToolsHttpClient;
-use axenox\BDT\Behat\BrowserManagers\LocalChromeManager;
 use axenox\BDT\Behat\BrowserManagers\RemoteChromeManager;
 use axenox\BDT\Behat\BrowserManagers\SupportsParallelLanesInterface;
 use exface\Core\CommonLogic\UxonObject;
 use exface\Core\CommonLogic\AbstractActionDeferred;
 use exface\Core\CommonLogic\Actions\ServiceParameter;
-use exface\Core\DataTypes\FilePathDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Interfaces\Actions\iCanBeCalledFromCLI;
 use exface\Core\Interfaces\DataSources\DataTransactionInterface;
@@ -22,7 +21,6 @@ use exface\Core\Interfaces\Tasks\ResultMessageStreamInterface;
 use exface\Core\Interfaces\Tasks\TaskInterface;
 use Symfony\Component\Process\Process;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
-use Symfony\Component\Yaml\Yaml;
 
 /**
  * Wrapper action for a single INTERACTIVE Behat run with dynamic Chrome-port allocation.
@@ -579,89 +577,14 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
             $configPath = dirname($behatConfig) . DIRECTORY_SEPARATOR
                 . 'behat_interactive_remote_' . hash('sha256', ChromeDevToolsHttpClient::normalizeEndpoint($coordinator->getApiUrl())) . '.yml';
         }
-        $extensions = self::buildInteractiveExtensions($coordinator, $port, $userDataDirRelative, $chromePath, $chromeEndpoint, $baseUrl);
+        $extensions = GeneratedBehatConfig::buildExtensions($coordinator, $port, $userDataDirRelative, $chromePath, $chromeEndpoint, $baseUrl);
 
-        // Import the base config by its real filename so the import matches even on
-        // case-sensitive systems instead of assuming "behat.yml".
-        $yaml = "# AUTO-GENERATED interactive run config - overwritten per run. Do not edit by hand.\n"
-            . Yaml::dump([
-                'imports' => [basename($behatConfig)],
-                'default' => ['extensions' => $extensions]
-            ], 10, 2);
-        if (file_put_contents($configPath, $yaml) === false) {
-            throw new RuntimeException('Failed to write interactive config: ' . $configPath);
-        }
-        return $configPath;
-    }
-
-    /**
-     * Builds the Behat extension settings of the generated interactive config as a plain array.
-     *
-     * WHY A PURE STATIC FUNCTION: what ends up in the generated file decides whether the Behat child
-     * and this coordinator agree on the browser; keeping it free of file and process access lets a
-     * PHPUnit test pin the rules for a local and for an attached browser.
-     *
-     * Rules: a browser BDT launches itself gets port and profile dir (executable only from the CLI) and
-     * its Mink base_url is the workbench URL from the base config unless --base_url overrides it. An
-     * attached browser gets endpoint and base_url in the browser node only when they came from the CLI,
-     * and the Mink base_url is the manager's own getBaseUrl().
-     *
-     * @return array<string,mixed>
-     */
-    public static function buildInteractiveExtensions(
-        BrowserManagerInterface $coordinator,
-        int $port,
-        string $userDataDirRelative,
-        string $chromePath,
-        string $chromeEndpoint,
-        string $baseUrl
-    ): array {
-        $minkExtension = 'Behat\\MinkExtension';
-        $formatterExtension = '\\' . \axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatterExtension::class;
-
-        if (! $coordinator instanceof SupportsParallelLanesInterface) {
-            $browserConfig = [];
-            if ($chromeEndpoint !== '') {
-                $browserConfig['endpoint'] = $chromeEndpoint;
-            }
-            if ($baseUrl !== '') {
-                $browserConfig['base_url'] = $baseUrl;
-            }
-            $extensions = [
-                $minkExtension => [
-                    'sessions' => ['CHROME_DEBUG_API' => ['chrome' => [
-                        'api_url' => ChromeDevToolsHttpClient::normalizeEndpoint($coordinator->getApiUrl())
-                    ]]]
-                ],
-                $formatterExtension => [
-                    'browser' => [
-                        'manager' => $chromeEndpoint !== '' ? RemoteChromeManager::class : null,
-                        'config' => $browserConfig
-                    ]
-                ]
-            ];
-            if ($coordinator->getBaseUrl() !== null) {
-                $extensions[$minkExtension]['base_url'] = $coordinator->getBaseUrl();
-            }
-            return $extensions;
-        }
-
-        $browserConfig = ['port' => $port, 'user_data_dir' => $userDataDirRelative];
-        if ($chromePath !== '') {
-            $browserConfig['executable'] = $chromePath;
-        }
-        $extensions = [
-            $minkExtension => [
-                'sessions' => ['CHROME_DEBUG_API' => ['chrome' => ['api_url' => LocalChromeManager::buildApiUrl($port)]]]
-            ],
-            $formatterExtension => [
-                'browser' => ['manager' => null, 'config' => $browserConfig]
-            ]
-        ];
-        if ($baseUrl !== '') {
-            $extensions[$minkExtension]['base_url'] = $baseUrl;
-        }
-        return $extensions;
+        return GeneratedBehatConfig::write(
+            $configPath,
+            $behatConfig,
+            'AUTO-GENERATED interactive run config - overwritten per run. Do not edit by hand.',
+            $extensions
+        );
     }
 
     /**

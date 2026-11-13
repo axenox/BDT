@@ -192,7 +192,12 @@ class LocalChromeManager extends AbstractBrowserManager implements BrowserTabCon
         $this->getLogbook()->addIndent(+1);
         if ($this->hasActiveSession() && $this->isAlive()) {
             $this->getLogbook()->addLine('start(): a healthy Chrome is already running on port ' . $this->port . ' - reusing it');
-            return new BrowserStartResult($this->port, $this->pid, 0.0);
+            // Balance the addIndent(+1) at the top of doStart(); this branch used to leave the logbook indented.
+            $this->getLogbook()->addIndent(-1);
+            $result = new BrowserStartResult($this->port, $this->pid, 0.0);
+            // Not a new start: AbstractBrowserManager::start() keeps it out of the start history.
+            $result->reused = true;
+            return $result;
         }
 
         $this->getWorkbench()->getLogger()->info('Using Chrome for BDT', [], $this->getLogbook());

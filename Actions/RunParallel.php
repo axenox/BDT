@@ -3,9 +3,9 @@ namespace axenox\BDT\Actions;
 
 use axenox\BDT\Behat\BrowserManagers\BrowserManagerFactory;
 use axenox\BDT\Behat\BrowserManagers\BrowserManagerInterface;
-use axenox\BDT\Behat\BrowserManagers\LocalChromeManager;
 use axenox\BDT\Behat\BrowserManagers\SupportsParallelLanesInterface;
 use axenox\BDT\Behat\Common\BdtPaths;
+use axenox\BDT\Behat\Common\GeneratedBehatConfig;
 use exface\Core\CommonLogic\UxonObject;
 use axenox\BDT\Behat\Common\Traits\ChromeProfileReaperTrait;
 use axenox\BDT\Behat\Common\Traits\FeaturePathResolverTrait;
@@ -16,7 +16,6 @@ use exface\Core\CommonLogic\Actions\ServiceParameter;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\FilePathDataType;
 use exface\Core\DataTypes\MarkdownDataType;
-use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Facades\ConsoleFacade\CliCommandRunner;
 use exface\Core\CommonLogic\Queue\CliTaskQueue;
@@ -710,8 +709,8 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * isolated user_data_dir, and the executable only when --chrome_path was given) plus the run_uid
      * binding for attach-mode.
      *
-     * WHY THE api_url COMES FROM LocalChromeManager::buildApiUrl(): the manager derives the very same
-     * URL at run time; a hand-built string here is how the two drifted apart before.
+     * WHY THE SHARED BUILDER: interactive and lane configs must use the same browser settings and
+     * serializer; hand-written lane YAML previously required every setting to be maintained twice.
      *
      * NOTE: the run_uid placement below must match your CURRENT DatabaseFormatterExtension
      * config schema (top-level scalars next to the browser node).
@@ -754,52 +753,22 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // the DB, so we deliberately do not accumulate lane files.
         $laneConfigPath = $workingDir . DIRECTORY_SEPARATOR . 'behat_scheduled_lane' . $lane . '.yml';
 
-        $extensionFqn = \axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatterExtension::class;
-
-        $yaml = "# AUTO-GENERATED lane config - overwritten every run. Do not edit by hand.\n"
-            . "imports:\n"
-            . "  - " . $importConfigName . "\n"
-            . "default:\n"
-            . "  extensions:\n"
-            . "    Behat\\MinkExtension:\n"
-            . "      sessions:\n"
-            . "        CHROME_DEBUG_API:\n"
-            . "          chrome:\n"
-            . "            api_url: '" . LocalChromeManager::buildApiUrl($port) . "'\n"
-            . "    " . $extensionFqn . ":\n"
-            . "      run_uid: '" . $runUid . "'\n"
-            . "      lane_id: '" . $laneId . "'\n"
-            . "      browser:\n"
-            . "        manager: null\n"
-            . "        config:\n"
-            . "          port: " . $port . "\n"
-            . "          user_data_dir: '" . $this->yamlEscapeWindowsPath($userDataDirRelative) . "'\n";
-        // The executable is a per-run value only when --chrome_path was given; otherwise the lane's
-        // manager reads it from BROWSER.MANAGER_CONFIG itself.
-        if ($chromePath !== '') {
-            $yaml .= "          executable: '" . $this->yamlEscapeWindowsPath($chromePath) . "'\n";
-        }
-
-        if (file_put_contents($laneConfigPath, $yaml) === false) {
-            throw new RuntimeException('Failed to write lane config: ' . $laneConfigPath);
-        }
-        return $laneConfigPath;
-    }
-
-    /**
-     * Prepares a Windows path for embedding in a SINGLE-QUOTED YAML scalar.
-     *
-     * WHY NO BACKSLASH DOUBLING: in single-quoted YAML a backslash is a literal character -
-     * the only escape is '' for a quote. The previous doubling therefore CHANGED the value:
-     * Symfony Yaml handed the doubled string to the local manager, Chrome was launched with
-     * "data\\axenox\\..." and, while Win32 path handling tolerates repeated separators, every
-     * string-equality check in the Chrome reapers compared against the coordinator's
-     * single-separator paths and silently matched nothing - so orphaned Chrome trees and their
-     * locked profile dirs leaked on every killed lane. Only single quotes need escaping here.
-     */
-    private function yamlEscapeWindowsPath(string $path): string
-    {
-        return str_replace("'", "''", $path);
+        $extensions = GeneratedBehatConfig::buildExtensions(
+            $this->coordinatorManager,
+            $port,
+            $userDataDirRelative,
+            $chromePath,
+            '',
+            '',
+            $runUid,
+            $laneId
+        );
+        return GeneratedBehatConfig::write(
+            $laneConfigPath,
+            $importConfigName,
+            'AUTO-GENERATED lane config - overwritten every run. Do not edit by hand.',
+            $extensions
+        );
     }
 
     /**

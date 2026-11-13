@@ -181,6 +181,13 @@ work. **Only losing all lanes is fatal**, and then every queued feature is recor
 
 The generated lane config imports the base `behat.yml` and only adds the per-lane overrides:
 
+Both RunTest and RunParallel use `Behat\Common\GeneratedBehatConfig` to build extension settings and
+serialize the config with `Yaml::dump()`. Browser overrides have one implementation; lane `run_uid`
+and `lane_id` are optional parameters omitted by interactive runs, and the header is supplied by the
+caller. Profile paths and ports still come from the actions. Do not assemble YAML or escape paths in
+either action. The existing formatter-key spelling is preserved in each variant (interactive has a
+leading backslash, lanes do not).
+
 ```yaml
 imports:
   - behat.yml
@@ -190,14 +197,17 @@ default:
       sessions:
         CHROME_DEBUG_API:
           chrome:
-            api_url: 'http://localhost:9301'
+            api_url: 'http://127.0.0.1:9301'
     axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatterExtension:
       run_uid: '<run uid>'
       lane_id: '<run uid>_lane1'
-      chrome:
-        port: 9301
-        executable: 'C:\...\chrome.exe'
-        user_data_dir: 'data/axenox/BDT/chrome_profiles/<run_uid>_lane1'
+      browser:
+        manager: null
+        config:
+          port: 9301
+          # Only written when --chrome_path was supplied.
+          executable: 'C:\...\chrome.exe'
+          user_data_dir: 'data\axenox\BDT\chrome_profiles\<run_uid>_lane1'
 ```
 
 > Configuration reaches the workers **only through this YAML file**. `BEHAT_PARAMS` environment
