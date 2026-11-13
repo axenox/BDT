@@ -33,6 +33,8 @@ use exface\Core\Interfaces\WorkbenchInterface;
  *   "description": "Validate generated Gherkin feature files before returning them."
  * }
  * ```
+ * 
+ * @author GitHub Copilot
  */
 class GherkinValidateTool extends AbstractAiTool
 {
@@ -41,8 +43,13 @@ class GherkinValidateTool extends AbstractAiTool
 
     /**
      * Returns advisory diagnostics instead of throwing so agents can repair generated Gherkin.
-     *
+     * 
      * @see \axenox\GenAI\Interfaces\AiToolInterface::invoke()
+     * 
+     * @param AiTaskHandlerInterface $agent
+     * @param TaskInterface $prompt
+     * @param array<array-key,mixed> $arguments
+     * @return AiToolResultInterface
      */
     public function invoke(AiTaskHandlerInterface $agent, TaskInterface $prompt, array $arguments): AiToolResultInterface
     {
@@ -58,8 +65,7 @@ class GherkinValidateTool extends AbstractAiTool
             $undefinedSteps = GherkinDataType::findUndefinedSteps($gherkin, [UI5BrowserContext::class]);
 
             return new AiToolResultString(
-                $this,
-                $arguments,
+                $this->getWorkbench(),
                 json_encode([
                     'valid' => $errors === [],
                     'strict' => $strict,
@@ -89,11 +95,8 @@ class GherkinValidateTool extends AbstractAiTool
                 null,
                 $e
             );
-            $agent->getWorkbench()->getLogger()->logException($exception);
-
             return new AiToolResultString(
-                $this,
-                $arguments,
+                $this->getWorkbench(),
                 json_encode(['error' => $exception->getMessage()], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
                 $this->getReturnDataType(),
                 [],
@@ -104,7 +107,7 @@ class GherkinValidateTool extends AbstractAiTool
 
     /**
      * Keeps the tool tolerant of LLM argument serialization while defaulting like GherkinDataType.
-     *
+     * 
      * @param mixed $strictInput
      * @return bool
      */
@@ -119,7 +122,7 @@ class GherkinValidateTool extends AbstractAiTool
 
     /**
      * Extracts line numbers from the shared GherkinDataType error format for structured output.
-     *
+     * 
      * @param string $message
      * @return int|null
      */
@@ -135,8 +138,11 @@ class GherkinValidateTool extends AbstractAiTool
 
     /**
      * Defines the minimal prompt-facing contract needed to validate raw feature text.
-     *
+     * 
      * @see \axenox\GenAI\Common\AbstractAiTool::getArgumentsTemplates()
+     * 
+     * @param WorkbenchInterface $workbench
+     * @return array<array-key,mixed>
      */
     protected static function getArgumentsTemplates(WorkbenchInterface $workbench): array
     {
@@ -158,8 +164,10 @@ class GherkinValidateTool extends AbstractAiTool
 
     /**
      * Returns JSON so agents can consume validity, strict mode and individual diagnostics directly.
-     *
+     * 
      * @see \axenox\GenAI\Interfaces\AiToolInterface::getReturnDataType()
+     * 
+     * @return DataTypeInterface
      */
     public function getReturnDataType(): DataTypeInterface
     {
