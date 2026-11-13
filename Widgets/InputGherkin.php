@@ -182,6 +182,8 @@ JS;
         $aceCompletions = [
             ['caption' => '@Status::Ready', 'value' => '@Status::Ready ', 'meta' => 'Keyword'],
             ['caption' => '@Status::Draft', 'value' => '@Status::Draft ', 'meta' => 'Keyword'],
+            ['caption' => '@Scope::Functional', 'value' => '@Scope::Functional ', 'meta' => 'Keyword'],
+            ['caption' => '@Scope::Regression', 'value' => '@Scope::Regression ', 'meta' => 'Keyword'],
             ['caption' => '@DevMan::TC', 'value' => '@DevMan::TC.... #Fill here with Testcase Number from DevMan ' , 'meta' => 'Keyword'],
             ['caption' => 'Given', 'value' => 'Given ', 'meta' => 'Keyword'],
             ['caption' => 'When', 'value' => 'When ', 'meta' => 'Keyword'],
