@@ -2,6 +2,7 @@
 namespace axenox\BDT\Behat\Common\Traits;
 
 use axenox\BDT\Exceptions\ChromeHangException;
+use WebSocket\Exception\ExceptionInterface as WebSocketExceptionInterface;
 
 /**
  * Detects whether a throwable originates from a broken CDP/WebSocket connection.
@@ -22,6 +23,9 @@ trait CdpConnectionDetectorTrait
      *   → StreamException("Client could not connect…")
      *     → ConnectionException("Could not open socket…")
      *       → RuntimeException (top-level catch)
+     *
+     * Typed WebSocket failures must also be recognized: "Connection has unexpectedly closed"
+     * contains none of the transport keywords below and otherwise bypasses hook recovery entirely.
      *
      * Known patterns and their sources:
      *  - "WebSocket"               → dmore/chrome-mink-driver handshake failure
@@ -45,7 +49,8 @@ trait CdpConnectionDetectorTrait
         $current = $e;
         while ($current !== null) {
             $msg = $current->getMessage();
-            if (str_contains($msg, 'WebSocket')
+            if ($current instanceof WebSocketExceptionInterface
+                || str_contains($msg, 'WebSocket')
                 || str_contains($msg, 'Connection refused')
                 || str_contains($msg, 'actively refused it')
                 || str_contains($msg, 'No connection could be')

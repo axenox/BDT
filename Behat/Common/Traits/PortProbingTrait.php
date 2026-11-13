@@ -20,7 +20,7 @@ use Symfony\Component\Yaml\Yaml;
  *   2. Across runs/projects, separate port bands make overlap unlikely, and the probe skips
  *      any already-bound port (open socket = busy, refused = free).
  *   3. The residual probe->bind race (a port that turns busy after we picked it) is NOT
- *      silent: ChromeManager refuses to kill a live foreign Chrome on its port and fails
+ *      silent: the local browser manager refuses to kill a live foreign Chrome on its port and fails
  *      loudly instead, so the affected run is recorded as a failure rather than sabotaging
  *      another run's browser.
  */
@@ -47,11 +47,16 @@ trait PortProbingTrait
      * "port_band" for the scheduled fleet and "port_band_interactive" for tester runs), each
      * falling back to its own app-config key. Resolution order per key:
      *   1. The key in bdt_parallel.yml next to the base behat.yml, when present.
-     *   2. Otherwise the given app-config option (logged explicitly, never a silent guess).
+     *   2. Otherwise the fallback band the caller read from its coordinator manager (logged explicitly,
+     *      never a silent guess).
      * A key that is PRESENT but malformed fails loudly - a typo must never silently fall back
      * to a default band and reintroduce the very port collision the band exists to prevent.
      * A key that is simply ABSENT is legitimate (the project may only override the other
-     * path's band) and falls back to app config.
+     * path's band) and falls back to the manager's configured band.
+     *
+     * WHY THE FALLBACK IS PASSED IN, NOT READ HERE: the bands now belong to the local browser manager's
+     * configuration (BROWSER.MANAGER_CONFIG); this trait must not know where that lives, and the
+     * precedence of the override file stays exactly as it was.
      *
      * The band is only a SEARCH WINDOW - real collision-safety comes from the runtime
      * free-port probe (allocateFreePort), so two projects with overlapping bands still never
@@ -59,10 +64,11 @@ trait PortProbingTrait
      *
      * @param string $behatConfig     Absolute path to the base behat.yml (locates the override file)
      * @param string $overrideYamlKey Key to read from bdt_parallel.yml (e.g. 'port_band_interactive')
-     * @param string $appConfigKey    App-config option used as fallback (e.g. 'PARALLEL.PORT_BAND_INTERACTIVE')
+     * @param string $fallbackBand    Band used when the override file has no such key (e.g. '9201-9251')
+     * @param string $fallbackSource  Human-readable origin of the fallback, for the log line
      * @return int[] [startPort, endPort]
      */
-    private function resolvePortBand(string $behatConfig, string $overrideYamlKey, string $appConfigKey): array
+    private function resolvePortBand(string $behatConfig, string $overrideYamlKey, string $fallbackBand, string $fallbackSource): array
     {
         $overrideFile = $this->getPortBandOverrideFileName();
         $overridePath = dirname($behatConfig) . DIRECTORY_SEPARATOR . $overrideFile;
@@ -80,9 +86,9 @@ trait PortProbingTrait
         if ($band === null) {
             // Explicit log line rather than a silent guess, so the source of the band is traceable.
             $this->getWorkbench()->getLogger()->info(
-                'No "' . $overrideYamlKey . '" override in ' . $overrideFile . '; using app-config ' . $appConfigKey
+                'No "' . $overrideYamlKey . '" override in ' . $overrideFile . '; using ' . $fallbackSource
             );
-            $band = (string) $this->getWorkbench()->getApp('axenox.BDT')->getConfig()->getOption($appConfigKey);
+            $band = $fallbackBand;
         }
         [$start, $end] = array_map('intval', explode('-', $band));
         if ($end < $start) {
@@ -115,7 +121,7 @@ trait PortProbingTrait
      * ONE coordinator process (the in-memory $held list) and otherwise relies on isPortBound().
      * That is unsafe for INDEPENDENT concurrent runs - e.g. several interactive RunTest processes
      * started before any of them launched Chrome. There is a multi-second gap between picking a
-     * port and Chrome actually binding it (Behat init, container build, ChromeManager launch), so
+     * port and Chrome actually binding it (Behat init, container build, local Chrome launch), so
      * every racing process sees the same port as free and all pick it. In-memory $held cannot help
      * because the racers are separate OS processes. A cross-process advisory lock closes that gap:
      * a port is only handed out once, and stays reserved from selection until the caller releases

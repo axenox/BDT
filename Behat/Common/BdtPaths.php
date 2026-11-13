@@ -45,7 +45,7 @@ final class BdtPaths
      * Builds a path relative to the installation root, e.g. "data\axenox\BDT\Logs\<run_uid>".
      *
      * WHY A RELATIVE VARIANT IS NEEDED AT ALL: two consumers must NOT receive an absolute path.
-     * The interactive behat config's user_data_dir is resolved by ChromeManager::start(), which
+     * The interactive behat config's user_data_dir is resolved by the local browser manager, which
      * prepends getcwd() - an absolute value there becomes a broken "C:\...\C:\..." and Chrome
      * silently falls back to the real user profile. The screenshot path is stored in the database
      * and read back against whatever installation serves the UI, so it must not carry this

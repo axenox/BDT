@@ -96,8 +96,10 @@ default:
     
   # Save test runs to BDT database
   axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatterExtension: 
-    chrome:
-      # ChromeManager uses these to start/stop Chrome automatically
-      port: 9222
-      executable: 'data\axenox\BDT\GoogleChromePortable\App\Chrome-bin\chrome.exe'
-      user_data_dir: 'data\axenox\BDT\ChromeUserData'
+    browser:
+      # Per-run defaults for direct "behat" runs; RunTest/RunParallel replace this node.
+      # The browser type and its other settings (executable, port bands, ...) come from the
+      # app-config keys BROWSER.MANAGER / BROWSER.MANAGER_CONFIG of axenox.BDT.
+      config:
+        port: 9222
+        user_data_dir: 'data\axenox\BDT\ChromeUserData'

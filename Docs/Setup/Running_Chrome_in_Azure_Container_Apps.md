@@ -326,20 +326,67 @@ whole configuration with the local file:
 
 ```json
 {
-  "REMOTE.CHROME_ENDPOINT": "http://<CONTAINER_APP_FQDN>:9222",
-  "REMOTE.BASE_URL": "https://<APPLICATION_HOST>/<APPLICATION_BASE_PATH>/"
+  "BROWSER.MANAGER": "\\axenox\\BDT\\Behat\\BrowserManagers\\RemoteChromeManager",
+  "BROWSER.MANAGER_CONFIG": {
+    "endpoint": "http://<CONTAINER_APP_FQDN>:9222",
+    "base_url": "https://<APPLICATION_HOST>/<APPLICATION_BASE_PATH>/"
+  }
 }
 ```
 
-Explicit `--chrome_endpoint` and `--base_url` options override these defaults. To select a specific
-feature instead of a tag, replace `--tags` with `--feature="<FEATURE_PATH>"`.
+`BROWSER.MANAGER` selects the browser type and `BROWSER.MANAGER_CONFIG` holds the settings of that
+type; a remote browser accepts only `endpoint` and `base_url` (port bands or an executable are
+rejected as unknown settings). Explicit `--chrome_endpoint` and `--base_url` options override these
+values for one run - without changing the server configuration, so the command above keeps working
+unchanged. When `--chrome_endpoint` is given, BDT uses the remote browser even if `BROWSER.MANAGER`
+is a local one, and does not apply the local settings to it.
+If `--chrome_path` is also supplied, it is ignored for the attached browser and the run output says so.
+
+> **Deprecated:** the former keys `REMOTE.CHROME_ENDPOINT` and `REMOTE.BASE_URL` still work in this
+> release when no installation or user layer selects `BROWSER.MANAGER` (or its effective value is
+> blank), but BDT logs a deprecation warning. Move them to
+> `endpoint` and `base_url` in `BROWSER.MANAGER_CONFIG`.
+
+To select a specific feature instead of a tag, replace `--tags` with `--feature="<FEATURE_PATH>"`.
 
 Use `RunTest`, not `RunParallel`: parallel runs need one browser per worker, which this setup does
-not provide.
+not provide. `RunParallel` stops immediately with "does not support parallel lanes" when the
+configured browser is a remote one.
+
+### Browser lifecycle state
+
+Configuration does not start a browser. `hasActiveSession()` becomes true only after a successful
+start or attachment and becomes false on stop, independently of whether the browser is still alive.
+Recovery uses `hasStartBeenAttempted()` separately: a local attempt begins when the profile has
+been resolved, and a remote attempt begins before contacting the endpoint. That marker survives
+stop and failed restarts so step recovery can retry. A healthy repeated start reuses the session.
+
+Local PID and port getters expose runtime values, not configured defaults. The resolved local
+profile remains available after stop for the existing best-effort cleanup sweep; configuring a
+profile alone must not grant that cleanup ownership.
+
+Losing a driver page does not necessarily mean Chrome exited. WebSocket exceptions are recognized by
+type as well as message so a closed page triggers recovery even when the error only says
+"Connection has unexpectedly closed". Recovery reattaches to a healthy browser rather than stopping
+it, replays the cached browser-side login, and restores the scenario's recorded resume point.
+The same login replay follows navigation-time session reattachment: a new isolated context has no
+authentication cookies from the previous context, even when the browser PID is unchanged.
+User provisioning is not repeated.
+
+### Remote tab cleanup
+
+The manager snapshots existing page tabs on attachment and retains that snapshot across reattach
+attempts until `stop()`. A failed health check must not replace the snapshot: doing so would
+misclassify test-created tabs as pre-existing and leave them open. Stopping closes only page tabs
+absent from the snapshot, clears the snapshot, and never terminates the external browser.
+
+Chrome acknowledges tab-close requests before the tabs necessarily disappear from `/json/list`.
+When verifying cleanup, poll for the target to disappear with a bounded timeout rather than
+assuming an immediate list response proves the close failed.
 
 ### How hostname handling works
 
-`ChromeManager` keeps the configured hostname in the HTTP URL, resolves its IPv4 address, and sends
+The remote browser manager keeps the configured hostname in the HTTP URL, resolves its IPv4 address, and sends
 that address and the explicit port in the Host header. DMore's installed `HttpClient` already does
 the same for discovery, tab creation and cleanup. Chrome advertises a reachable numeric WebSocket
 URL, which DMore's `ChromeDriver` passes directly to its WebSocket client. Neither client needs a
@@ -389,8 +436,9 @@ remaining browser pages to verify reporting and run-owned page cleanup.
 | Browser unreachable after an idle period | `minReplicas` is still at its default of 0 and the app scaled to zero. |
 | Chrome starts but no endpoint is reachable | `--command` replaced the image entrypoint. Use `--args`, or start the command with `run.sh`. |
 | `ImagePullFail` with `UNAUTHORIZED` / "authentication required" | Attach the registry-pull identity to the app, grant it the appropriate pull role, and select that same identity for registry authentication. Seeing the image in the portal or Cloud Shell only proves the operator has access, not that the app can pull it. |
-| Browser cannot open the application | Container-side DNS, routing or certificate trust. Verify `REMOTE.BASE_URL` is reachable from the container, not just from the application server. |
+| Browser cannot open the application | Container-side DNS, routing or certificate trust. Verify `base_url` (`BROWSER.MANAGER_CONFIG` or `--base_url`) is reachable from the container, not just from the application server. |
 | Run uses local Chrome or the wrong endpoint | An explicit `--chrome_endpoint` on the command overrides the configuration file. Changing the deployment does not change BDT settings. |
+| Run fails with `No setter method found for UXON property "..."` | `BROWSER.MANAGER_CONFIG` contains a setting the remote browser does not have (for example `executable` or `port_band_interactive`). Remove it. |
 
 ## Not covered
 

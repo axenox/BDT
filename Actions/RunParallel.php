@@ -1,7 +1,12 @@
 <?php
 namespace axenox\BDT\Actions;
 
+use axenox\BDT\Behat\BrowserManagers\BrowserManagerFactory;
+use axenox\BDT\Behat\BrowserManagers\BrowserManagerInterface;
+use axenox\BDT\Behat\BrowserManagers\SupportsParallelLanesInterface;
 use axenox\BDT\Behat\Common\BdtPaths;
+use axenox\BDT\Behat\Common\GeneratedBehatConfig;
+use exface\Core\CommonLogic\UxonObject;
 use axenox\BDT\Behat\Common\Traits\ChromeProfileReaperTrait;
 use axenox\BDT\Behat\Common\Traits\FeaturePathResolverTrait;
 use axenox\BDT\Behat\Common\Traits\PortProbingTrait;
@@ -11,7 +16,6 @@ use exface\Core\CommonLogic\Actions\ServiceParameter;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\FilePathDataType;
 use exface\Core\DataTypes\MarkdownDataType;
-use exface\Core\DataTypes\StringDataType;
 use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Facades\ConsoleFacade\CliCommandRunner;
 use exface\Core\CommonLogic\Queue\CliTaskQueue;
@@ -127,20 +131,12 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     private const LANE_MAX_CONSECUTIVE_TIMEOUTS = 2;
 
     // App-config keys for the parallel orchestration layer. Kept as constants so the reads in
-    // resolvePortBand()/resolveMaxWorkers()/resolveWorkerTimeout() can never drift from config.
-    private const CFG_PORT_BAND  = 'PARALLEL.PORT_BAND_SCHEDULED';
+    // resolveMaxWorkers()/resolveWorkerTimeout() can never drift from config. Browser settings
+    // (executable, headless, port bands) are NOT here: they belong to the browser manager and are read
+    // through the coordinator manager created by BrowserManagerFactory.
     private const CFG_MAX_WORKERS = 'PARALLEL.MAX_WORKERS';
     private const CFG_WORKER_TIMEOUT = 'PARALLEL.WORKER_TIMEOUT_SECONDS';
     private const CFG_WORKER_IDLE_TIMEOUT = 'PARALLEL.WORKER_IDLE_TIMEOUT_SECONDS';
-
-    // App-config key deciding Chrome window visibility. MUST match ChromeManager::CFG_CHROME_HEADLESS
-    // so the banner reports exactly what the workers' ChromeManager will resolve at launch time.
-    private const CFG_CHROME_HEADLESS = 'PARALLEL.CHROME_HEADLESS';
-
-    // App-config home for the REAL chrome.exe path. Separate from the base behat.yml chrome.executable
-    // on purpose: that one points at GoogleChromePortable.exe (single-instance lock), which workers must
-    // NOT use. The fleet needs a direct chrome.exe, so it gets its own key.
-    private const CFG_CHROME_PATH = 'PARALLEL.CHROME_PATH';  // NEW
 
     // Per-project bdt_parallel.yml key for the SCHEDULED band. The override file itself (name,
     // location, rationale) is owned by PortProbingTrait, shared with the interactive RunTest
@@ -148,6 +144,8 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     private const OVERRIDE_KEY_SCHEDULED = 'port_band';
 
     private ?DataSheetInterface $runDataSheet = null;
+    private (BrowserManagerInterface&SupportsParallelLanesInterface)|null $coordinatorManager = null;
+    private ?string $browserExecutable = null;
 
     // Poll cadence for the concurrent drain loop. 100 ms is small enough that lane output is streamed
     // to its log near-live, but large enough that the busy-wait costs negligible CPU while N workers
@@ -323,6 +321,9 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * ALL features -> finalize exactly once. The only Phase 4 change is additive: instead of one
      * worker, we split the matched features into buckets and run a fleet concurrently. The
      * coordinator stays the sole writer of the run row; every worker attaches to the same UID.
+     *
+     * {@inheritDoc}
+     * @see AbstractAction::perform()
      */
     protected function perform(TaskInterface $task, DataTransactionInterface $transaction): ResultInterface
     {
@@ -366,6 +367,27 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         $this->assertScopeInputsSafe($tags, $featureArg, $suiteArg);
         $cwd = $this->getWorkbench()->getInstallationPath();
 
+        // --- Create the coordinator browser manager BEFORE anything expensive or persistent happens.
+        // It is never started: it only tells the coordinator which kind of browser the lanes will get.
+        // WHY BEFORE Behat init AND THE RUN ROW: a remote browser cannot serve parallel lanes (all lanes
+        // would share one browser, close each other's tabs and log each other out), and that must stop
+        // the run before init takes minutes and before a run record exists that would have to be closed
+        // as failed. Capability, not class name, decides: only a manager that owns its browser process
+        // supports lanes. ---
+        $cliOverrides = $chromePathArg === null || $chromePathArg === ''
+            ? []
+            : ['executable' => $chromePathArg];
+        $coordinator = BrowserManagerFactory::create($this->getWorkbench(), new UxonObject($cliOverrides));
+        if (! $coordinator instanceof SupportsParallelLanesInterface) {
+            throw new RuntimeException(
+                'The configured browser manager (' . get_class($coordinator) . ') does not support parallel lanes. '
+                . 'Use RunTest for remote browsers, or configure BROWSER.MANAGER as a local browser manager.'
+            );
+        }
+        $this->coordinatorManager = $coordinator;
+        $this->browserExecutable = $coordinator->getExecutable();
+        self::validateCoordinatorExecutable($this->browserExecutable, $cwd);
+
         // --- Step 0: prepare the environment exactly like a single Behat run does. Init runs FIRST so the
         // installation-root behat.yml exists and is current before we default to it below; a stale base_url
         // would otherwise break every worker. ---
@@ -374,7 +396,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // --- Resolve the deferred inputs from their authoritative sources. Each validates and fails loudly,
         // so defaulting never degrades into a silently-wrong path (never-guess is preserved). ---
         $behatConfig = $this->resolveBehatConfig($behatConfigArg, $cwd);
-        $chromePath  = $this->resolveChromePath($chromePathArg);
+        $chromePath  = (string) $chromePathArg;
         $scanRoots   = $this->resolveScanRoots($behatConfig, $featureArg, $suiteArg);
 
         $runRecordWriter = new RunRecordWriter();
@@ -469,10 +491,17 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                 $maxWorkers   = $this->resolveMaxWorkers();
                 $workerCount  = max(1, min($maxWorkers, count($matchedFiles)));
 
+                // Resolve once before the banner: the YAML override is the same band the fleet uses.
+                $portBand = $this->resolvePortBand(
+                    $behatConfig,
+                    self::OVERRIDE_KEY_SCHEDULED,
+                    $coordinator->getPortBandScheduled(),
+                    'BROWSER.MANAGER_CONFIG port_band_scheduled'
+                );
                 // --- Step 4b: announce the resolved run configuration BEFORE any worker starts, so the
                 // user knows what to expect (how many workers will run, whether Chrome will be visible,
                 // and whether a debugger is in play). Purely informational - it changes no behaviour. ---
-                $banner = $this->buildStartupBanner($workerCount, $maxWorkers, count($matchedFiles));
+                $banner = $this->buildStartupBanner($workerCount, $maxWorkers, count($matchedFiles), $portBand);
                 $this->startupBanner = $banner;
                 $this->getWorkbench()->getLogger()->info($banner);
                 // Mirror the resolved configuration into the run-log so the DB record opens with the same
@@ -490,7 +519,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                 $dispatchDeadline = $this->maxRuntimeSeconds === null
                     ? null
                     : $this->performStart + $this->maxRuntimeSeconds - self::CLOSEOUT_BUDGET_SECONDS;
-                $failures = $this->runFleet($cwd, $behatConfig, $runUid, $chromePath, $tags, $matchedFiles, $workerCount, $banner, $dispatchDeadline);
+                $failures = $this->runFleet($cwd, $behatConfig, $runUid, $chromePath, $portBand, $tags, $matchedFiles, $workerCount, $banner, $dispatchDeadline);
             }
 
         } catch (\Throwable $e) {
@@ -637,7 +666,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                 ->setDefaultValue(null),
             (new ServiceParameter($this))
                 ->setName(self::OPT_CHROME_PATH)
-                ->setDescription('Path to chrome.exe (NOT GoogleChromePortable.exe). Optional - defaults to app config ' . self::CFG_CHROME_PATH . '.')
+                ->setDescription('Path to chrome.exe (NOT GoogleChromePortable.exe). Optional - overrides "executable" of BROWSER.MANAGER_CONFIG for this run.')
                 ->setDefaultValue(null),
             (new ServiceParameter($this))
                 ->setName(self::OPT_FEATURE)
@@ -676,13 +705,15 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      *
      * Why imports the base instead of duplicating it: the lane sits in the same directory as
      * the base config, so "imports: [behat.yml]" resolves relatively and %paths.base% stays
-     * the same as a normal run. The lane only ADDS the per-worker overrides (chrome port +
-     * isolated user_data_dir + chrome.exe path) plus the run_uid binding for attach-mode.
+     * the same as a normal run. The lane only ADDS the per-worker overrides (the browser node: port +
+     * isolated user_data_dir, and the executable only when --chrome_path was given) plus the run_uid
+     * binding for attach-mode.
+     *
+     * WHY THE SHARED BUILDER: interactive and lane configs must use the same browser settings and
+     * serializer; hand-written lane YAML previously required every setting to be maintained twice.
      *
      * NOTE: the run_uid placement below must match your CURRENT DatabaseFormatterExtension
-     * config schema. The extension snapshot in this repo predates attach-mode and only
-     * declares chrome.{port,executable,user_data_dir}; align the run_uid node with wherever
-     * your live extension reads it (top-level scalar shown here).
+     * config schema (top-level scalars next to the browser node).
      */
     private function writeLaneConfig(
         string $workingDir,
@@ -707,7 +738,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // launch and every login failed. A run-scoped directory guarantees each launch gets a clean
         // profile created and owned by the account actually running the fleet.
         //
-        // IMPORTANT: the config value must stay RELATIVE - ChromeManager::start() prepends getcwd().
+        // IMPORTANT: the config value must stay RELATIVE - the local manager prepends getcwd().
         // An absolute path would be double-prepended and make Chrome fall back to the real default
         // profile. It is DERIVED from the absolute path rather than rebuilt by hand: two independent
         // constructions of the same path are exactly how the reapers drifted away from the profile
@@ -722,46 +753,22 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         // the DB, so we deliberately do not accumulate lane files.
         $laneConfigPath = $workingDir . DIRECTORY_SEPARATOR . 'behat_scheduled_lane' . $lane . '.yml';
 
-        $extensionFqn = \axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatterExtension::class;
-
-        $yaml = "# AUTO-GENERATED lane config - overwritten every run. Do not edit by hand.\n"
-            . "imports:\n"
-            . "  - " . $importConfigName . "\n"
-            . "default:\n"
-            . "  extensions:\n"
-            . "    Behat\\MinkExtension:\n"
-            . "      sessions:\n"
-            . "        CHROME_DEBUG_API:\n"
-            . "          chrome:\n"
-            . "            api_url: 'http://localhost:" . $port . "'\n"
-            . "    " . $extensionFqn . ":\n"
-            . "      run_uid: '" . $runUid . "'\n"
-            . "      lane_id: '" . $laneId . "'\n"
-            . "      chrome:\n"
-            . "        port: " . $port . "\n"
-            . "        executable: '" . $this->yamlEscapeWindowsPath($chromePath) . "'\n"
-            . "        user_data_dir: '" . $this->yamlEscapeWindowsPath($userDataDirRelative) . "'\n";
-
-        if (file_put_contents($laneConfigPath, $yaml) === false) {
-            throw new RuntimeException('Failed to write lane config: ' . $laneConfigPath);
-        }
-        return $laneConfigPath;
-    }
-
-    /**
-     * Prepares a Windows path for embedding in a SINGLE-QUOTED YAML scalar.
-     *
-     * WHY NO BACKSLASH DOUBLING: in single-quoted YAML a backslash is a literal character -
-     * the only escape is '' for a quote. The previous doubling therefore CHANGED the value:
-     * Symfony Yaml handed the doubled string to ChromeManager, Chrome was launched with
-     * "data\\axenox\\..." and, while Win32 path handling tolerates repeated separators, every
-     * string-equality check in the Chrome reapers compared against the coordinator's
-     * single-separator paths and silently matched nothing - so orphaned Chrome trees and their
-     * locked profile dirs leaked on every killed lane. Only single quotes need escaping here.
-     */
-    private function yamlEscapeWindowsPath(string $path): string
-    {
-        return str_replace("'", "''", $path);
+        $extensions = GeneratedBehatConfig::buildExtensions(
+            $this->coordinatorManager,
+            $port,
+            $userDataDirRelative,
+            $chromePath,
+            '',
+            '',
+            $runUid,
+            $laneId
+        );
+        return GeneratedBehatConfig::write(
+            $laneConfigPath,
+            $importConfigName,
+            'AUTO-GENERATED lane config - overwritten every run. Do not edit by hand.',
+            $extensions
+        );
     }
 
     /**
@@ -792,16 +799,17 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * unattended-looking run self-explanatory: a user who launched N=4 but sees "1 worker" instantly
      * knows there was only one matched feature, and a user debugging locally is reminded that fleet
      * workers ALWAYS run with the debugger off and (by default) headless, so they should use the
-     * non-parallel single-worker path to actually step through a browser.
+     * non-parallel single-worker path to actually step through a browser. The resolved band is shared
+     * with the fleet so a project override is not misreported.
      *
      * @param int $workerCount    The fleet size that will actually run
      * @param int $maxWorkers      The configured PARALLEL.MAX_WORKERS ceiling
      * @param int $matchedFeatures The number of feature files the tag filter matched
+     * @param int[] $portBand       The resolved scheduled port range
      */
-    private function buildStartupBanner(int $workerCount, int $maxWorkers, int $matchedFeatures): string
+    private function buildStartupBanner(int $workerCount, int $maxWorkers, int $matchedFeatures, array $portBand): string
     {
         $debuggerActive = $this->isDebuggerActive();
-        $headless = $this->resolveHeadlessForBanner();
 
         // Explain WHY the fleet is this size, since worker count is min(maxWorkers, matchedFeatures).
         if ($workerCount < $maxWorkers) {
@@ -810,25 +818,20 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
             $reason = 'limited by ' . self::CFG_MAX_WORKERS . '=' . $maxWorkers;
         }
 
-        // Headless may be undecided at coordinator level (no app-config flag) - then the workers'
-        // ChromeManager falls back to Xdebug auto-detection, and since fleet workers run with the
-        // debugger forced off, that fallback is always headless.
-        if ($headless === null) {
-            $chromeLine = 'headless (auto: ' . self::CFG_CHROME_HEADLESS . ' not set, workers run debugger-off)';
-        } else {
-            $chromeLine = $headless ? 'headless (' . self::CFG_CHROME_HEADLESS . '=true)' : 'visible (' . self::CFG_CHROME_HEADLESS . '=false)';
-        }
-
         $lines = [
             '===== BDT parallel run configuration =====',
             'Lanes:    ' . $workerCount . ' (' . $reason . ')',
             'Features: ' . $matchedFeatures . ' queued, dispatched one per worker process as lanes free up',
-            'Chrome:   ' . $chromeLine,
+            'Chrome:   ' . $this->coordinatorManager->describeForParallelLanes() . ', lanes on ports ' . $portBand[0] . '-' . $portBand[1],
             'Lifetime: ' . $this->describeLifetimeForBanner(),
         ];
         if ($debuggerActive) {
             $lines[] = 'Debugger: ATTACHED to the coordinator - NOTE: fleet workers force the debugger OFF, '
                 . 'so breakpoints do NOT hit inside tests. Use the non-parallel single-worker path to step through a browser.';
+            $debugHint = $this->coordinatorManager->getDebugHint();
+            if ($debugHint !== null) {
+                $lines[] = $debugHint;
+            }
         } else {
             $lines[] = 'Debugger: not attached';
         }
@@ -859,7 +862,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     /**
      * Returns TRUE if an Xdebug debugger session is currently active on the coordinator process.
      *
-     * Mirrors the detection ChromeManager uses, so the banner's debugger note stays consistent with
+     * Mirrors the detection the local manager uses, so the banner's debugger note stays consistent with
      * the actual headless fallback behaviour. Guarded for older Xdebug builds that may not expose
      * xdebug_is_debugger_active().
      */
@@ -868,26 +871,6 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         return extension_loaded('xdebug')
             && function_exists('xdebug_is_debugger_active')
             && xdebug_is_debugger_active();
-    }
-
-    /**
-     * Resolves the headless state the way the banner needs to report it: the explicit app-config flag
-     * PARALLEL.CHROME_HEADLESS when present (true/false), or NULL when it is absent.
-     *
-     * NULL is meaningful: it tells the banner that no operator decision exists, so the workers'
-     * ChromeManager will fall back to Xdebug auto-detection - which, because fleet workers run with the
-     * debugger disabled, always resolves to headless. Kept separate from ChromeManager::resolveHeadless()
-     * on purpose: this reports intent for the whole fleet, that one decides an individual worker's window.
-     *
-     * @return bool|null TRUE = headless, FALSE = visible, NULL = not configured (auto -> headless for workers)
-     */
-    private function resolveHeadlessForBanner(): ?bool
-    {
-        $cfg = $this->getWorkbench()->getApp('axenox.BDT')->getConfig();
-        if ($cfg->hasOption(self::CFG_CHROME_HEADLESS)) {
-            return (bool) $cfg->getOption(self::CFG_CHROME_HEADLESS);
-        }
-        return null;
     }
 
     /**
@@ -1287,6 +1270,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
      * attach-mode child rows. Failures are recorded WITHOUT aborting the run, so finalize still happens
      * once; the caller then throws if any were recorded.
      *
+     * @param int[]    $portBand    Resolved scheduled port range, shared with the startup banner
      * @param string[] $queue       All matched feature files, executed in this order as lanes free up
      * @param int      $workerCount Number of lane slots to set up
      * @param string   $banner      Startup banner echoed into the coordinator log so the run's log opens
@@ -1303,13 +1287,14 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
         string $behatConfig,
         string $runUid,
         string $chromePath,
+        array $portBand,
         ?string $tags,
         array $queue,
         int $workerCount,
         string $banner = '',
         ?float $dispatchDeadline = null
     ): array {
-        [$portStart, $portEnd] = $this->resolvePortBand($behatConfig, self::OVERRIDE_KEY_SCHEDULED, self::CFG_PORT_BAND);
+        [$portStart, $portEnd] = $portBand;
         $timeout = $this->resolveWorkerTimeout();
         $idleTimeout = $this->resolveWorkerIdleTimeout();
         $heldPorts = [];
@@ -1351,11 +1336,11 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                 // RESERVE the port across processes instead of merely probing it. A bare probe only
                 // deconflicts lanes inside THIS coordinator (the in-memory $heldPorts list): between
                 // picking a port here and the worker's Chrome actually binding it there are seconds
-                // (lane config write, worker spawn, Behat init, ChromeManager launch). In that window any
+                // (lane config write, worker spawn, Behat init, local Chrome launch). In that window any
                 // independent run sharing the band - a second coordinator, or an interactive RunTest if
                 // the bands were ever aligned - probes the same port, sees it free and takes it too. Both
                 // then launch Chrome on it: the loser is not silent, but it costs a lane, because
-                // ChromeManager refuses to kill the foreign browser and fails the run instead. The flock
+                // the local manager refuses to kill the foreign browser and fails the run instead. The flock
                 // taken here keeps the port ours from selection until the close-out releases it, which is
                 // well past the moment Chrome binds it.
                 $reservation = $this->reserveFreePort($portStart, $portEnd, $heldPorts);
@@ -1484,8 +1469,8 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                     // services only a couple of sessions at once, so the 3rd/4th worker blocks - silent,
                     // producing no output - until an earlier worker exits and frees a debug slot. THAT is
                     // the real "cap of 2". Disabling the debugger per worker restores true N-wide
-                    // concurrency. Headless itself is decided by the worker's ChromeManager from
-                    // app-config PARALLEL.CHROME_HEADLESS (with the debugger off, its Xdebug fallback is
+                    // concurrency. Headless itself is decided by the worker's local manager from
+                    // BROWSER.MANAGER_CONFIG (with the debugger off, its Xdebug fallback is
                     // headless too). To step through a test, use the non-parallel single-worker path.
                     $callStart = microtime(true);
                     $process = Process::fromShellCommandline($cmd, $cwd, self::WORKER_ENV, null, $timeout);
@@ -1760,7 +1745,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                     // worker-level failure if any (crash/signal); a normal exit (0/1) passes null, so the
                     // section still records the Behat summary from the output.
                     $this->appendFeatureOutcome($logDir, $slotSection[$lane], $slotLogName[$lane], $workerError);
-                    // On a clean exit the worker's own ChromeManager already stopped Chrome, so this
+                    // On a clean exit the worker's own local manager already stopped Chrome, so this
                     // usually just removes the profile dir; on a crash/signal it also kills the orphan.
                     // It runs after EVERY feature, not only at the end of the lane, because the next
                     // feature reuses this same profile dir and must not inherit a live Chrome, a held
@@ -1962,10 +1947,10 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     /**
      * End-of-run backstop that reaps orphaned lane Chrome trees and purges their profile dirs.
      *
-     * WHY THIS EXISTS: fleet workers launch Chrome detached via "start /B", so a worker that is
+     * WHY THIS EXISTS: fleet workers launch Chrome detached, so a worker that is
      * hard-killed on timeout (Process::stop()) leaves its Chrome process tree running - the parent
      * worker dies but the detached browser does not. Nothing else in the coordinator removes these:
-     * ChromeManager::isOwnLeftover() only reaps a leftover at the NEXT run's launch on the same
+     * LocalChromeManager's own-leftover check only reaps a leftover at the NEXT run's launch on the same
      * profile, so between runs the orphan tree and its locked profile dir linger (the observed
      * symptom: six chrome.exe under \lane1 surviving a timed-out lane). This runs after the fleet,
      * on every exit path, to leave the machine clean.
@@ -2047,7 +2032,7 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     /**
      * Reaps the orphaned Chrome tree of a SINGLE finished/abandoned lane and removes its profile dir.
      *
-     * WHY INLINE, NOT ONLY AT END-OF-RUN: fleet workers launch Chrome detached (start /B), so
+     * WHY INLINE, NOT ONLY AT END-OF-RUN: fleet workers launch Chrome detached, so
      * Process::stop() on a timed-out worker kills the worker but leaves its Chrome tree alive.
      * Relying on a single end-of-run cleanup is not enough when EVERY lane runs to the wall-clock
      * ceiling: the coordinator itself may be killed by its scheduler/queue budget at that same
@@ -2104,6 +2089,38 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
     }
 
     /**
+     * Rejects a missing browser executable before creating a run or starting any lanes.
+     *
+     * Relative paths are resolved against the installation root, just as local browser startup
+     * resolves them against the worker's installation-root working directory. Checking here avoids
+     * turning one configuration error into a separate launch failure in every lane.
+     */
+    private static function validateCoordinatorExecutable(?string $executable, string $workingDir): void
+    {
+        $path = $executable;
+        if ($path !== null && $path !== '' && FilePathDataType::isRelative($path)) {
+            $path = rtrim($workingDir, '\\/') . DIRECTORY_SEPARATOR . $path;
+        }
+        if ($path === null || $path === '' || ! is_file($path)) {
+            throw new RuntimeException(
+                'Browser executable is not a file: ' . var_export($executable, true)
+                . '. Configure BROWSER.MANAGER_CONFIG executable or pass --chrome_path.'
+            );
+        }
+    }
+
+    /**
+     * Supplies the executable the worker launch configuration uses, so image enumeration matches it.
+     *
+     * WHY THIS IS STORED: sweeps run before workers launch, so they cannot infer the image name from
+     * a live Chrome process or a worker config file that has not yet been written.
+     */
+    protected function getBrowserExecutable(): ?string
+    {
+        return $this->browserExecutable;
+    }
+
+    /**
      * Resolves the base behat.yml the lanes import: the explicit --behat_config when given, otherwise
      * the installation-root behat.yml that runInit() just (re)created.
      *
@@ -2154,34 +2171,6 @@ class RunParallel extends AbstractAction implements iCanBeCalledFromCLI
                 . '. Lane configs are written to the installation root and import the base config by file '
                 . 'name only, so a config outside that folder would be silently replaced by the root '
                 . self::DEFAULT_BEHAT_CONFIG . '.'
-            );
-        }
-        return $path;
-    }
-
-    /**
-     * Resolves the real chrome.exe path: the explicit --chrome_path when given, otherwise the
-     * PARALLEL.CHROME_PATH app-config value.
-     *
-     * Why a dedicated config key rather than the base behat.yml chrome.executable: that value points at
-     * GoogleChromePortable.exe, whose single-instance lock is exactly what workers must NOT use. hasOption
-     * guards against exface throwing on an unset key so we can emit our own actionable message. Existence
-     * is validated and failure is loud - a missing binary must not degrade into a silent green run.
-     *
-     * @throws RuntimeException if neither source yields an existing file
-     */
-    private function resolveChromePath(?string $explicit): string
-    {
-        if ($explicit !== null && $explicit !== '') {
-            $path = $explicit;
-        } else {
-            $cfg  = $this->getWorkbench()->getApp('axenox.BDT')->getConfig();
-            $path = $cfg->hasOption(self::CFG_CHROME_PATH) ? (string) $cfg->getOption(self::CFG_CHROME_PATH) : '';
-        }
-        if ($path === '' || ! is_file($path)) {
-            throw new RuntimeException(
-                'chrome_path could not be resolved to an existing chrome.exe. '
-                . 'Pass --chrome_path or set ' . self::CFG_CHROME_PATH . ' in app config. Got: ' . var_export($path, true)
             );
         }
         return $path;

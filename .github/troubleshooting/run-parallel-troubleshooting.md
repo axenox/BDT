@@ -16,6 +16,7 @@ Each entry has four parts:
 
 | What you see | Go to |
 |---|---|
+| A browser-setting change affects interactive runs but not scheduled lanes | [Generated browser configs drift](#generated-browser-configs-drift) |
 | `"User authentication" ... field "Modified on" is required` on a fresh environment | [Timestamping guard killed the INSERT](#timestamping-guard-killed-the-insert) |
 | `finished_on` is NULL, run log empty, no diagnostic trace | [Invisible close-out](#invisible-close-out) |
 | Run completed on disk but DB rows are empty | [Silent DB write failure](#silent-db-write-failure) |
@@ -26,6 +27,27 @@ Each entry has four parts:
 | Chrome fails to launch, every login fails | [Cross-account profile reuse](#cross-account-profile-reuse) |
 | Real concurrency capped at ~2 lanes | [Xdebug serialized the fleet](#xdebug-serialized-the-fleet) |
 | Run duration in the DB is 1000× too small | [duration_ms holds seconds](#duration_ms-holds-seconds) |
+
+---
+
+## Generated browser configs drift
+
+**Symptom.** Interactive and scheduled runs had separate config-generation implementations, so a
+browser setting added to one could be missing from the other. This was a maintenance risk identified
+from the code, not a newly reproduced runtime failure.
+
+**Root cause.** RunTest built an array and serialized it with Symfony YAML, while RunParallel
+assembled YAML text and escaped path values itself. Every shared browser change required two edits.
+
+**Fix.** Both actions now use `GeneratedBehatConfig` to build extensions and write the generated file
+with `Yaml::dump()`. Lane run/user identities and the header are parameters; profile creation and
+port allocation remain in the actions. Existing parsed keys and values are preserved, including
+the different historical formatter-key spellings. Manual YAML path escaping is no longer needed.
+
+**How to recognize it again.** If the same browser behaves differently between RunTest and
+RunParallel, compare the parsed generated configs. Shared browser settings belong in the builder,
+not in action-specific YAML strings. The builder tests cover local/remote overrides, optional lane
+identities and Windows paths (including spaces and apostrophes) through a YAML round trip.
 
 ---
 
@@ -335,7 +357,7 @@ Chrome ownership is matched on a release-independent identity — the path tail 
 profiles root folder, e.g. `chrome_profiles\<run_uid>_lane1` — instead of the full absolute path
 (`ChromeProfileReaperTrait::profileIdentity()` / `profilesRootMarker()`). All three sweeps
 (`reapChromeProfileDir`, `reapStaleChromeProfiles`, `reapProfilesOfInactiveRuns`) and
-`ChromeManager::isOwnLeftover()` use it, so a leftover survives neither a deployment nor a
+the local manager's own-leftover check use it, so a leftover survives neither a deployment nor a
 coordinator restart. As a side effect a zombie from an older release that squats a port is now
 reclaimed instead of failing the lane with "Port is occupied by a FOREIGN process".
 
@@ -378,7 +400,7 @@ is retried up to three times before giving up). Every caller distinguishes the t
   Profile dirs are NOT deleted in this case: removing a profile while its browser may still be alive
   is what produces an orphan process that later sweeps cannot attribute.
 
-Affected paths: `ChromeManager::stop()`, `RunParallel::cleanupLaneChromes()`,
+Affected paths: `LocalChromeManager::stop()`, `RunParallel::cleanupLaneChromes()`,
 `RunParallel::reapLaneProfile()`, `RunTest::cleanupInteractiveChrome()`, and both sweeps in
 `ChromeProfileReaperTrait`.
 
@@ -397,7 +419,7 @@ processes before the next nightly run.
 - Gets dramatically worse the closer the server is to running out of memory.
 
 ### Cause
-`ChromeManager::isAlive()` asked Chrome's `/json/version` endpoint exactly once with a 2-second
+The local manager's `isAlive()` asked Chrome's `/json/version` endpoint exactly once with a 2-second
 ceiling, and every caller turned a negative into a destructive action: kill the browser, start a new
 one, and replay the login. Two seconds is generous for an idle server and far too little for one that
 is swapping, so healthy-but-slow browsers were killed. Each restart added load, which made the next
@@ -423,14 +445,14 @@ nightly run.
 ### Parallel run fails with "port is used by a foreign process, refusing to kill it"
 
 **Symptom.** One or more lanes of a scheduled parallel run die at Chrome launch. The lane log
-contains a message from ChromeManager saying the remote-debugging port is held by a process it
+contains a message from the local browser manager saying the remote-debugging port is held by a process it
 does not recognise as its own, and that it refuses to kill it. The rest of the run continues on
 the remaining lanes, so the run ends with failures but no crash.
 
 **Cause.** The coordinator used to only *probe* a port before handing it to a lane: it opened a
 socket to it and, if nothing answered, considered the port free. But the port is not bound at
 that moment - Chrome binds it seconds later, after the lane config is written, the worker process
-is spawned, Behat initialises and ChromeManager launches the browser. Any other run that probes
+is spawned, Behat initialises and the local manager launches the browser. Any other run that probes
 the same port inside that window also sees it as free and takes it as well. Whichever browser
 binds first wins the port; the other lane finds a browser it does not own sitting on its port and
 stops, by design, rather than killing someone else's Chrome.
@@ -488,7 +510,92 @@ runs immediately before the navigation.
 Read the `Failing phase` and `Recovery` parts of the message:
 - `Recovery: ... session reattach FAILED` — Chrome answers its debug port but refuses new tabs.
   Usually memory pressure: check the Chrome process count and free memory on the server.
+
+## Process-host selection differs between cleanup paths
+
+### Symptom
+If OS-specific process handling is implemented separately by an action and the browser manager,
+the same launch or profile cleanup can behave differently depending on which path invokes it.
+
+### Cause
+The process-host accessor was duplicated in `RunParallel`, `RunTest`, and the Chrome manager.
+Those copies selected the same host today, but future changes could make cleanup and launch diverge.
+
+### Fix
+`ChromeProfileReaperTrait` now owns the single lazy process-host accessor. `RunParallel`, `RunTest`,
+and `LocalChromeManager` use that shared implementation; OS selection remains in `ProcessHostFactory`.
+
+### What to check when it happens
+Keep process-host construction in `ProcessHostFactory` and use the trait accessor for every class
+that composes `ChromeProfileReaperTrait`. A separate `getProcessHost()` implementation is a sign
+that the shared process lifecycle is starting to drift again.
 - `Failing phase: pre-navigation wait` — the previous page never settled. The navigation itself was
   never attempted, so look at the step BEFORE this one.
 - `Recovery: ... Chrome not reachable, restart requested` — the process died; see the Chrome
   process management sections above.
+
+## RunParallel stops with "does not support parallel lanes"
+
+**Symptom:** RunParallel fails immediately, before any lane starts, with:
+`The configured browser manager (...RemoteChromeManager) does not support parallel lanes.`
+
+**Cause:** The browser is configured as a remote browser (for example Chrome in an Azure container). A remote endpoint is a single browser. Parallel lanes would all share it, close each other's tabs and log each other out. Earlier versions did not check this and failed later in confusing ways.
+
+**What to do:**
+- For a remote browser, use RunTest. It runs one test session against the remote endpoint.
+- For parallel runs, set `BROWSER.MANAGER` to `LocalChromeManager` and fill `BROWSER.MANAGER_CONFIG` (at least `executable` and the port bands).
+
+## Browser settings moved to BROWSER.MANAGER / BROWSER.MANAGER_CONFIG
+
+**Symptom:** The log shows a deprecation warning about `PARALLEL.CHROME_*` or `REMOTE.*` keys or about the `chrome:` section in behat.yml, or a run fails with `No setter method found for UXON property "..."`.
+
+**Cause:** Browser settings are now configured like the metamodel connector: `BROWSER.MANAGER` selects the browser type, `BROWSER.MANAGER_CONFIG` holds its settings. Each browser type accepts only the settings it understands. A remote browser, for example, has no port bands.
+
+**What to do:**
+- Move the old values into `BROWSER.MANAGER_CONFIG`:
+  - `PARALLEL.CHROME_PATH` → `executable`
+  - `PARALLEL.CHROME_HEADLESS` → `headless`
+  - `PARALLEL.PORT_BAND_INTERACTIVE` / `PARALLEL.PORT_BAND_SCHEDULED` → `port_band_interactive` / `port_band_scheduled`
+  - `REMOTE.CHROME_ENDPOINT` → `endpoint`
+  - `REMOTE.BASE_URL` → `base_url`
+- If the error names a property, remove it from `BROWSER.MANAGER_CONFIG`: it does not apply to the selected browser type.
+- A remote browser needs both `endpoint` and `base_url`. Without `base_url` the browser in the container would try to open the application under the server's own URL, which it usually cannot reach.
+
+## RunParallel reports that the browser executable is not a file
+
+**Symptom:** RunParallel stops before initialization or lane startup with `Browser executable is not a file`.
+
+**Cause:** The configured executable path is missing or points to a directory. Previously a bad path
+could surface as a separate launch failure in each lane. The coordinator now checks it once before
+creating the run or starting workers.
+
+**What to do:** Check `BROWSER.MANAGER_CONFIG.executable`, the legacy `PARALLEL.CHROME_PATH`, or the
+`--chrome_path` override. Relative paths are resolved from the installation root; use the actual
+`chrome.exe`, not its containing directory.
+
+## Legacy browser settings appear to be ignored after migration
+
+**Symptom:** A run selects local Chrome instead of a configured legacy remote endpoint, or uses the
+default executable or headless setting instead of a legacy override.
+
+**Cause:** A shipped default `BROWSER.MANAGER` previously prevented the legacy configuration branch
+from running. The factory now checks the installation and user scopes: if neither selects a manager,
+legacy local values override local defaults and a legacy remote endpoint selects the remote manager
+without importing local settings.
+
+**What to do:** Leave `BROWSER.MANAGER` unset in the installation and user layers while using legacy keys, or explicitly configure the
+manager and migrate all its settings to `BROWSER.MANAGER_CONFIG`. A deprecation warning identifies
+legacy settings still in use.
+
+## RunParallel banner shows a Chrome port that no lane uses
+
+**Symptom:** The coordinator banner reports `port 9222` while lanes use another port range.
+
+**Cause:** The coordinator does not own a browser port; the normal manager description previously reported
+the default driver port in the banner. The banner now uses a port-free coordinator description and displays the resolved scheduled lane band,
+including any `bdt_parallel.yml` override, and passes the same band to the fleet.
+
+**What to do:** Compare `lanes on ports` in the banner with the lane port in the worker log. Check
+`bdt_parallel.yml` and `BROWSER.MANAGER_CONFIG.port_band_scheduled` if the band is unexpected.
+The coordinator reference now declares the parallel-lane capability as well as the browser interface,
+so banner calls to the lane-specific description are checked without changing runtime behavior.

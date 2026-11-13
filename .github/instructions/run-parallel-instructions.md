@@ -181,6 +181,13 @@ work. **Only losing all lanes is fatal**, and then every queued feature is recor
 
 The generated lane config imports the base `behat.yml` and only adds the per-lane overrides:
 
+Both RunTest and RunParallel use `Behat\Common\GeneratedBehatConfig` to build extension settings and
+serialize the config with `Yaml::dump()`. Browser overrides have one implementation; lane `run_uid`
+and `lane_id` are optional parameters omitted by interactive runs, and the header is supplied by the
+caller. Profile paths and ports still come from the actions. Do not assemble YAML or escape paths in
+either action. The existing formatter-key spelling is preserved in each variant (interactive has a
+leading backslash, lanes do not).
+
 ```yaml
 imports:
   - behat.yml
@@ -190,14 +197,17 @@ default:
       sessions:
         CHROME_DEBUG_API:
           chrome:
-            api_url: 'http://localhost:9301'
+            api_url: 'http://127.0.0.1:9301'
     axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatterExtension:
       run_uid: '<run uid>'
       lane_id: '<run uid>_lane1'
-      chrome:
-        port: 9301
-        executable: 'C:\...\chrome.exe'
-        user_data_dir: 'data/axenox/BDT/chrome_profiles/<run_uid>_lane1'
+      browser:
+        manager: null
+        config:
+          port: 9301
+          # Only written when --chrome_path was supplied.
+          executable: 'C:\...\chrome.exe'
+          user_data_dir: 'data\axenox\BDT\chrome_profiles\<run_uid>_lane1'
 ```
 
 > Configuration reaches the workers **only through this YAML file**. `BEHAT_PARAMS` environment
@@ -379,14 +389,14 @@ so nothing can be proven dead, and only the age-based (mtime) sweep reclaims any
 Resolved from a **band**, per execution path:
 
 1. `port_band` in `bdt_parallel.yml` next to the base `behat.yml` (per project), else
-2. app config `PARALLEL.PORT_BAND_SCHEDULED`.
+2. `port_band_scheduled` in the app config `BROWSER.MANAGER_CONFIG`.
 
 A key that is present but malformed fails loudly — a typo must never silently fall back to a default
 band and reintroduce the very collision the band exists to prevent.
 
 The band is only a *search window*. Real safety is layered: the in-run held-list prevents two lanes
 getting the same port; the probe skips bound ports; and the residual probe→bind race is caught
-loudly by `ChromeManager`'s foreign-process guard rather than by silently killing someone else's
+loudly by the local manager's foreign-process guard rather than by silently killing someone else's
 Chrome.
 
 ### Chrome profile directories
@@ -479,7 +489,7 @@ budget and truncate away the coordinator diagnostics the log exists for.
 | `--feature` | one of three | Single feature file or directory. Mutually exclusive with `--suite` |
 | `--suite` | one of three | Named Behat suite. Mutually exclusive with `--feature` |
 | `--behat_config` | no | Base `behat.yml` the lanes import. Defaults to the installation-root file |
-| `--chrome_path` | no | Real `chrome.exe`. Defaults to `PARALLEL.CHROME_PATH` |
+| `--chrome_path` | no | Real `chrome.exe`. Overrides `executable` of `BROWSER.MANAGER_CONFIG` |
 
 > The coordinator lifetime is **not** a CLI option — it arrives only via the `EXFACE_TASK_TIMEOUT_SECONDS`
 > environment variable the launcher sets (see §7b). There is deliberately no `--max_runtime` option.
@@ -489,15 +499,24 @@ budget and truncate away the coordinator diagnostics the log exists for.
 | Key | Default | Meaning |
 |---|---|---|
 | `PARALLEL.MAX_WORKERS` | — (required, ≥1) | Lane ceiling |
-| `PARALLEL.PORT_BAND_SCHEDULED` | — | Port search window, e.g. `9301-9400` |
 | `PARALLEL.WORKER_TIMEOUT_SECONDS` | 1800 | Total wall-clock ceiling per feature. `0` disables |
 | `PARALLEL.WORKER_IDLE_TIMEOUT_SECONDS` | 600 | Idle ceiling per feature. `0` disables |
-| `PARALLEL.CHROME_HEADLESS` | unset → headless | Chrome window visibility for the fleet |
-| `PARALLEL.CHROME_PATH` | — | Path to the real `chrome.exe` |
+| `BROWSER.MANAGER` | `\axenox\BDT\Behat\BrowserManagers\LocalChromeManager` | Browser manager class. RunParallel requires one that owns its browser process (supports parallel lanes) |
+| `BROWSER.MANAGER_CONFIG` | local executable, headless `true` and port bands | UXON settings of that class: `executable`, `headless`, `port_band_interactive`, `port_band_scheduled` for the local manager |
 
-> `PARALLEL.CHROME_PATH` is separate from `behat.yml`'s `chrome.executable` **on purpose**: that one
-> points at `GoogleChromePortable.exe`, whose single-instance lock is exactly what a fleet must not
-> use.
+> The legacy keys `PARALLEL.CHROME_PATH`, `PARALLEL.CHROME_HEADLESS`, `PARALLEL.PORT_BAND_INTERACTIVE`,
+> `PARALLEL.PORT_BAND_SCHEDULED` and `REMOTE.*` still work if no installation or user scope selects
+> a manager (or the effective selector is blank), with a deprecation warning. `executable` must be
+> the real `chrome.exe`, not `GoogleChromePortable.exe`,
+> whose single-instance lock is exactly what a fleet must not use.
+> Legacy local values override shipped local defaults in that case; a legacy remote
+> endpoint selects the remote manager without importing those local defaults. The coordinator checks
+> that the executable is a file, resolving relative paths against the installation root, before init
+> or lane startup. `SupportsParallelLanesInterface` extends `BrowserLaneConfigurationInterface` so
+> process ownership and the allocation settings required before startup remain distinct contracts.
+> Lane-capable managers supply a port-free `describeForParallelLanes()` for the coordinator banner.
+> The coordinator banner shows the resolved scheduled band, including a `bdt_parallel.yml` override,
+> rather than the driver's default port; the same resolved band is passed to the fleet.
 
 Do not disable both timeouts — a truly hung worker would then block its lane forever.
 

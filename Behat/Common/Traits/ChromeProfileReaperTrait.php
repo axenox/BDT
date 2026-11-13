@@ -1,99 +1,73 @@
 <?php
 namespace axenox\BDT\Behat\Common\Traits;
 
+use axenox\BDT\Behat\BrowserManagers\ProcessHosts\ProcessHostInterface;
+use axenox\BDT\Behat\BrowserManagers\ProcessHosts\ProcessHostFactory;
+
 /**
  * Shared reaper for orphaned Chrome process trees and their profile directories.
  *
  * WHY A TRAIT: both RunParallel (scheduled fleet, lane<N> profiles) and RunTest (interactive
- * single run, interactive<port> profile) launch Chrome DETACHED via "start /B". A worker/child
+ * single run, interactive<port> profile) launch Chrome DETACHED. A worker/child
  * that is hard-killed on timeout leaves its Chrome tree alive, still holding a locked profile
  * dir. Both actions therefore need the identical end-of-run cleanup: find every Chrome bound to a
  * given profile dir, kill the tree, then remove the dir. Keeping one implementation guarantees the
  * two paths can never drift in HOW they match a Chrome to its profile (the lane1/lane10 prefix trap
- * is easy to reintroduce) or how they remove a Windows-locked profile tree.
+ * is easy to reintroduce) or how they remove a locked profile tree.
  *
- * WHY WINDOWS-ONLY PRIMITIVES: the whole browser lifecycle here is Windows by construction
- * (start /B launch, taskkill teardown, netstat/CIM discovery), so rd/taskkill/Get-CimInstance are
- * the native, fastest tools. None of these methods throw - a leftover browser is a nuisance to log,
- * never a reason to abort an otherwise-finished run - so callers invoke them from finally blocks.
+ * The process host owns operating-system-specific process and directory operations. None of these
+ * cleanup methods throw - a leftover browser is a nuisance to log, never a reason to abort an
+ * otherwise-finished run - so callers invoke them from finally blocks.
  *
  * This trait has NO dependencies on the using class (unlike PortProbingTrait it needs no
  * getWorkbench()); callers own their own logging.
  */
 trait ChromeProfileReaperTrait
 {
+    private ?ProcessHostInterface $chromeProfileProcessHost = null;
+
     /**
-     * Returns the command line of every running chrome.exe keyed by PID, or NULL if the process list
-     * could not be obtained at all.
+     * Shares one lazily selected process host across launch, discovery, and profile cleanup.
+     */
+    protected function getProcessHost(): ProcessHostInterface
+    {
+        if ($this->chromeProfileProcessHost === null) {
+            $this->chromeProfileProcessHost = ProcessHostFactory::createForCurrentOs();
+        }
+        return $this->chromeProfileProcessHost;
+    }
+
+    /**
+     * Supplies the configured browser executable from which the image name to enumerate is derived.
      *
-     * WHY THE COMMAND LINE (not just the PID): the profile dir - the only marker tying a Chrome to a
-     * specific lane/port - lives in the --user-data-dir launch argument, not in any CIM property. A
-     * single snapshot is taken so a caller matching several dirs scans chrome.exe only once.
+     * WHY ABSTRACT: only the using class knows where its executable comes from (manager config,
+     * app config, CLI argument); NULL means "not known" and yields the host's default image name.
+     */
+    abstract protected function getBrowserExecutable(): ?string;
+
+    /**
+     * Returns the process image name used to enumerate this class's browser processes.
      *
-     * WHY NULL AND NOT AN EMPTY ARRAY ON FAILURE: an empty array means "no Chrome is running", which
-     * every caller treats as "nothing left to clean up - done". Returning it for a FAILED enumeration
-     * made a sweep that never looked indistinguishable from a sweep that found nothing, so leftover
-     * browsers were silently reported as cleaned. That is the false-green shape this framework exists
-     * to prevent, and it fires exactly when it hurts most: spawning powershell.exe is one of the first
-     * things that fails when the machine is out of memory - the very situation that produces orphans.
+     * WHY ONE IMPLEMENTATION HERE: three classes each derived the name with their own copy of the
+     * rule, which was Windows-only and could not be fixed for Linux in one place. The OS-specific
+     * derivation now lives in the process host; this method only connects it to the executable.
+     */
+    protected function getBrowserImageName(): string
+    {
+        return $this->getProcessHost()->getImageNameForExecutable($this->getBrowserExecutable());
+    }
+
+    /**
+     * Returns a single process snapshot so multiple profile sweeps scan the browser image only once.
      *
-     * WHY A COMPLETION MARKER AND NOT ONLY THE EXIT CODE: a shell that is killed or truncated mid-write
-     * can still exit 0 with a partial list, and a partial list silently under-reports processes we were
-     * about to reap. The marker is written LAST, so its presence proves the enumeration ran to the end.
+     * WHY A THIN WRAPPER: enumeration is OS-specific, but all reaper paths need the same command-line
+     * snapshot and the same NULL-means-failure contract.
      *
-     * WHY IT RETRIES: the failure is usually a transient resource shortage, and a retry costs
-     * milliseconds on the happy path (it only runs after a failure) while sparing the caller a skipped
-     * cleanup for a hiccup that was over a second later.
-     *
-     * WHY Get-CimInstance: wmic is removed on current Windows; Get-CimInstance reads the same
-     * Win32_Process data. Output is "<pid>|<commandline>" per line; the PID is numeric and the
-     * command line is only matched later, so the pipe delimiter is safe. No caller input reaches this
-     * command, so there is no injection surface.
-     *
-     * @return array<int,string>|null PID => full command line, or NULL if the list could not be read
+     * @return array<int,string>|null PID => full command line, or NULL if enumeration failed
      */
     protected function listChromeProcessCommandLines(): ?array
     {
-        // Written as the last statement of the script, so receiving it proves the enumeration finished
-        // rather than having been cut short. Deliberately a value no command line can contain.
-        $marker = 'BDT_CHROME_ENUM_OK';
-        $cmd = 'powershell -NoProfile -Command "Get-CimInstance Win32_Process '
-            . '| Where-Object { $_.Name -eq \'chrome.exe\' } '
-            . '| ForEach-Object { $_.ProcessId.ToString() + \'|\' + $_.CommandLine }; '
-            . 'Write-Output \'' . $marker . '\'"';
-
-        // Local rather than a trait constant: trait constants require PHP 8.2+, and this trait must
-        // stay usable on every PHP 8.x runtime in the fleet (same reasoning as PortProbingTrait).
-        $maxAttempts = 3;
-
-        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
-            $output = [];
-            $exitCode = 1;
-            exec($cmd, $output, $exitCode);
-
-            $completed = false;
-            $result = [];
-            if ($exitCode === 0) {
-                foreach ($output as $line) {
-                    if (trim($line) === $marker) {
-                        $completed = true;
-                        continue;
-                    }
-                    $parts = explode('|', $line, 2);
-                    if (count($parts) === 2 && is_numeric(trim($parts[0]))) {
-                        $result[(int) trim($parts[0])] = $parts[1];
-                    }
-                }
-            }
-            if ($completed) {
-                return $result;
-            }
-            if ($attempt < $maxAttempts) {
-                // Short settle: the usual cause is a momentary resource shortage, not a broken box.
-                usleep(300_000);
-            }
-        }
-        return null;
+        return $this->getProcessHost()->listCommandLines($this->getBrowserImageName());
     }
 
     /**
@@ -103,13 +77,13 @@ trait ChromeProfileReaperTrait
      * ways. (1) Our launch command writes --user-data-dir="<dir>" with quotes, but Chrome re-serializes
      * the switch for its own renderer/gpu/utility children WITHOUT quotes when the path has no spaces -
      * so a quoted-only needle matched the browser process and never its children. That was invisible
-     * while the browser was alive (taskkill /T took the tree down), but any child orphaned by a crashed
+     * while the browser was alive (tree cleanup took the children down), but any child orphaned by a crashed
      * or separately-killed parent could never be matched again and lingered forever. (2) A substring
      * match has the prefix trap (...\lane1 is a substring of ...\lane10). Parsing the value out and
      * comparing it for EQUALITY removes both problems by construction.
      *
      * @param string $commandLine Full command line of a chrome.exe process
-     * @return string|null Normalized (lowercase, backslashes, no trailing separator) dir, or NULL if the switch is absent
+     * @return string|null Normalized path, or NULL if the switch is absent
      */
     protected function extractUserDataDir(string $commandLine): ?string
     {
@@ -125,34 +99,21 @@ trait ChromeProfileReaperTrait
         } else {
             $value = substr($value, 0, strcspn($value, " \t"));
         }
-        return $this->normalizeWindowsPath($value);
+        return $this->normalizeProcessPath($value);
     }
 
     /**
-     * Normalizes a Windows path for comparison between CIM output and our own path strings.
+     * Normalizes a process path for comparison with the configured profile directory.
      *
-     * WHY: CIM and PHP may disagree on casing and slash direction, and a trailing separator would
-     * break an otherwise-correct equality check. Every path comparison in this trait goes through
-     * here so the two sides can never drift.
+     * WHY: process command lines and PHP may disagree on separator style, and a trailing separator
+     * would break an otherwise-correct equality check. The process host owns OS-specific normalization.
      *
-     * @param string $path Any absolute or relative Windows path
-     * @return string Lowercased, backslash-separated, without a trailing separator
+     * @param string $path Any absolute or relative process path
+     * @return string Normalized path without a trailing separator
      */
-    protected function normalizeWindowsPath(string $path): string
+    protected function normalizeProcessPath(string $path): string
     {
-        $p = strtolower(str_replace('/', '\\', trim($path)));
-        // Collapse repeated separators: Win32 treats "data\\axenox" and "data\axenox" as the
-        // SAME directory, so Chrome runs happily on a doubled-separator user-data-dir (as the
-        // historical lane configs produced) while a plain string comparison sees two different
-        // paths and silently matches nothing. Collapsing makes the comparison agree with the
-        // file system for both current and historical command lines. A leading UNC "\\server"
-        // prefix is preserved.
-        $isUnc = str_starts_with($p, '\\\\');
-        $p = preg_replace('#\\\\{2,}#', '\\\\', $p) ?? $p;
-        if ($isUnc) {
-            $p = '\\' . $p;
-        }
-        return rtrim($p, '\\');
+        return $this->getProcessHost()->normalizePath($path);
     }
 
     /**
@@ -168,19 +129,18 @@ trait ChromeProfileReaperTrait
      * from the caller's own root (never hardcoded), so it stays correct if the folder is ever renamed.
      *
      * @param string $profilesRoot Absolute path of the chrome_profiles root
-     * @return string|null Normalized marker like "\chrome_profiles\", or NULL if the root has no usable name
+     * @return string|null Normalized marker like "<separator>chrome_profiles<separator>", or NULL if unusable
      */
     protected function profilesRootMarker(string $profilesRoot): ?string
     {
-        $root = $this->normalizeWindowsPath($profilesRoot);
-        // Deliberately not basename(): it is separator-aware and would misbehave for a backslash path
-        // on a non-Windows runtime, which is exactly where a silent NULL would be hardest to notice.
-        $sepPos = strrpos($root, '\\');
+        $separator = $this->getProcessHost()->getDirectorySeparator();
+        $root = $this->normalizeProcessPath($profilesRoot);
+        $sepPos = strrpos($root, $separator);
         $rootName = $sepPos === false ? $root : substr($root, $sepPos + 1);
         if ($rootName === '') {
             return null;
         }
-        return '\\' . $rootName . '\\';
+        return $separator . $rootName . $separator;
     }
 
     /**
@@ -206,7 +166,7 @@ trait ChromeProfileReaperTrait
         if ($marker === null) {
             return null;
         }
-        $normalized = $this->normalizeWindowsPath($path);
+        $normalized = $this->normalizeProcessPath($path);
         $pos = strrpos($normalized, $marker);
         if ($pos === false) {
             return null;
@@ -224,7 +184,7 @@ trait ChromeProfileReaperTrait
      * tail instead, so leftovers survive neither a deployment nor a coordinator restart.
      *
      * This matches Chrome's own children as well as the browser process, so an orphaned renderer whose
-     * parent already died is still reaped. taskkill /T additionally tears down any tree that is still
+     * parent already died is still reaped. The host additionally tears down any tree that is still
      * intact, so a live browser and its children are killed in one call.
      *
      * @param string             $absProfileDir   Absolute profile dir whose Chrome tree(s) to kill
@@ -249,7 +209,7 @@ trait ChromeProfileReaperTrait
                 continue;
             }
             if ($this->profileIdentity($dir, $profilesRoot) === $targetIdentity) {
-                exec('taskkill /F /T /PID ' . (int) $pid . ' 2>nul');
+                $this->getProcessHost()->killTree((int) $pid);
                 $killed[] = (int) $pid;
             }
         }
@@ -257,24 +217,17 @@ trait ChromeProfileReaperTrait
     }
 
     /**
-     * Recursively removes a directory and its contents, returning whether it is gone afterwards.
+     * Recursively removes a directory and its contents through the process host.
      *
-     * WHY "rd /s /q" over a PHP RecursiveIterator: Chrome profile trees are deep and full of files
-     * with Windows-locked/long paths; the native command handles those and is faster. The result is
-     * verified with is_dir() rather than trusted from the exit code, because a still-open Chrome
-     * handle can make the removal partial - the caller logs that case rather than assuming success.
+     * WHY DELEGATE: native deletion is required for locked browser files, and the host preserves the
+     * platform-specific removal behavior while this trait keeps the cleanup flow shared.
      *
      * @param string $dir Absolute path of the directory to remove
      * @return bool TRUE if the directory no longer exists after the attempt
      */
     protected function removeDirectoryTree(string $dir): bool
     {
-        if (! is_dir($dir)) {
-            return true;
-        }
-        exec('rd /s /q "' . $dir . '" 2>nul');
-        clearstatcache(true, $dir);
-        return ! is_dir($dir);
+        return $this->getProcessHost()->removeDirectoryTree($dir);
     }
 
     /**
@@ -351,13 +304,13 @@ trait ChromeProfileReaperTrait
                     continue;
                 }
                 if (isset($stale[$identity]) || ! is_dir($dir)) {
-                    exec('taskkill /F /T /PID ' . (int) $pid . ' 2>nul');
+                    $this->getProcessHost()->killTree((int) $pid);
                     $lines[] = 'Reaped abandoned Chrome PID ' . (int) $pid . ' bound to ' . $dir;
                     $killedAny = true;
                 }
             }
 
-            // Chrome releases its profile handles asynchronously after taskkill returns; removing the
+            // Chrome releases its profile handles asynchronously after tree cleanup returns; removing the
             // dirs immediately would race those handles and leave half-deleted trees behind.
             if ($killedAny) {
                 usleep(1_000_000);
@@ -452,13 +405,13 @@ trait ChromeProfileReaperTrait
                 $dir = $this->extractUserDataDir($commandLine);
                 $identity = $dir === null ? null : $this->profileIdentity($dir, $profilesRoot);
                 if ($identity !== null && isset($orphanDirs[$identity])) {
-                    exec('taskkill /F /T /PID ' . (int) $pid . ' 2>nul');
+                    $this->getProcessHost()->killTree((int) $pid);
                     $lines[] = 'Reaped orphan Chrome PID ' . (int) $pid . ' of inactive run, profile ' . $dir;
                     $killedAny = true;
                 }
             }
 
-            // Chrome releases its profile file handles asynchronously after taskkill returns; deleting
+            // Chrome releases its profile file handles asynchronously after tree cleanup returns; deleting
             // immediately would race those handles and leave half-removed trees behind.
             if ($killedAny) {
                 usleep(1_000_000);
