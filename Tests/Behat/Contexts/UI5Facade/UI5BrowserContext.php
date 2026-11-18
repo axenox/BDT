@@ -2314,8 +2314,12 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * When I look at "SpreadSheet" no. 1
      * Then the column "ID" in data spreadsheet should be disabled
      * Then the column "Created by, Modified by" in data spreadsheet should be disabled
+     * Then the column "ID" is not editable
+     * Then the columns "Created by, Modified by" are not editable
      * 
      * @Then the column :columnName in data spreadsheet should be disabled
+     * @Then the column :columnName is not editable
+     * @Then the columns :columnName are not editable
      * 
      * @param string $columnName Comma-separated captions of spreadsheet columns to check
     */
@@ -2349,7 +2353,7 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
             Assert::assertSame(
                 [],
                 $columnResult['editableRows'],
-                "Column '{$columnResult['caption']}' is not disabled in row(s) "
+                "Column '{$columnResult['caption']}' is editable in row(s) "
                 . implode(', ', $columnResult['editableRows']) . '.'
             );
         }
