@@ -1,0 +1,24 @@
+{
+  "bdt_run": {
+    "name": "BDT test run",
+    "uxon_properties": [],
+    "selector": {
+      "class": "\\axenox\\BDT\\Common\\Selectors\\BdtRunSelector",
+      "factory": "\\axenox\\BDT\\Common\\BdtRun::createFromSelector"
+    },
+    "documentation": {
+      "markdown_printer_class": "\\axenox\\BDT\\Facades\\MarkdownPrinters\\BdtRunMarkdownPrinter"
+    }
+  },
+  "bdt_feature": {
+    "name": "BDT feature",
+    "uxon_properties": [],
+    "selector": {
+      "class": "\\axenox\\BDT\\Common\\Selectors\\BdtFeatureSelector",
+      "factory": "\\axenox\\BDT\\Common\\BdtFeature::createFromSelector"
+    },
+    "documentation": {
+      "markdown_printer_class": "\\axenox\\BDT\\Facades\\MarkdownPrinters\\BdtFeatureMarkdownPrinter"
+    }
+  }
+}

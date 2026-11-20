@@ -1,5 +1,4 @@
 <?php
-
 $appRoot = dirname(__DIR__, 2);
 $autoloadPaths = [
     $appRoot . '/vendor/autoload.php',

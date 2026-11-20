@@ -1,3 +1,19 @@
 {
-  "ACTION.SAVETESTDATA.NAME": "Add to test data"
+  "ACTION.SAVETESTDATA.NAME": "Add to test data",
+  "RUN_REPORT.ATTRIBUTE": "Attribute",
+  "RUN_REPORT.VALUE": "Value",
+  "RUN_REPORT.OPEN_FEATURE": "Open feature report",
+  "RUN_REPORT.BACK_TO_RUN": "Back to test run",
+  "RUN_REPORT.NO_SCENARIOS": "No scenarios were recorded for this test run.",
+  "RUN_REPORT.NO_STEPS": "No steps were recorded for this scenario.",
+  "RUN_REPORT.STATUS.UNKNOWN": "Unknown",
+  "RUN_REPORT.STATUS.PENDING": "Pending",
+  "RUN_REPORT.STATUS.STARTED": "Started",
+  "RUN_REPORT.STATUS.UNDEFINED": "Undefined",
+  "RUN_REPORT.STATUS.PASSED_PREVIOUSLY": "Passed previously",
+  "RUN_REPORT.STATUS.FAILED_PREVIOUSLY": "Failed previously",
+  "RUN_REPORT.STATUS.SKIPPED": "Skipped",
+  "RUN_REPORT.STATUS.PASSED": "Passed",
+  "RUN_REPORT.STATUS.FAILED": "Failed",
+  "RUN_REPORT.STATUS.TIMEOUT": "Timeout"
 }

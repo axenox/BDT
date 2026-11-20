@@ -370,6 +370,7 @@ class UI5DataSpreadSheetNode extends UI5DataTableNode
      * WHY THIS BELONGS HERE: the read-only step used header and cell positions from raw jExcel
      * markup. Hidden columns and cloned headers make those positions diverge; resolving the caption
      * to the renderer's data-x coordinate keeps the check in the same coordinate space as reads.
+     * An empty grid cannot establish cell editability, so it must not pass as read-only.
      *
      * @param string $columnCaption
      * @return int[] 1-based row numbers whose cells are editable
@@ -383,7 +384,11 @@ class UI5DataSpreadSheetNode extends UI5DataTableNode
 
         $editableRows = [];
         $coordinate = $colId ?? (string) $columnIndex;
-        foreach ($this->getTableRows() as $rowIndex => $row) {
+        $rows = $this->getTableRows();
+        if ($rows === []) {
+            throw new RuntimeException('Cannot verify whether column `' . $columnCaption . '` is editable: DataSpreadSheet has no rendered rows.');
+        }
+        foreach ($rows as $rowIndex => $row) {
             $cell = $row->find('css', 'td[data-x="' . $coordinate . '"]');
             if ($cell === null) {
                 throw new RuntimeException('Cannot find DataSpreadSheet cell at column coordinate ' . $coordinate . '.');

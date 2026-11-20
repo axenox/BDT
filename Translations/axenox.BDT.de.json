@@ -1,0 +1,18 @@
+{
+  "RUN_REPORT.ATTRIBUTE": "Attribut",
+  "RUN_REPORT.VALUE": "Wert",
+  "RUN_REPORT.OPEN_FEATURE": "Feature-Bericht öffnen",
+  "RUN_REPORT.BACK_TO_RUN": "Zurück zum Testlauf",
+  "RUN_REPORT.NO_SCENARIOS": "Für diesen Testlauf wurden keine Szenarien aufgezeichnet.",
+  "RUN_REPORT.NO_STEPS": "Für dieses Szenario wurden keine Schritte aufgezeichnet.",
+  "RUN_REPORT.STATUS.UNKNOWN": "Unbekannt",
+  "RUN_REPORT.STATUS.PENDING": "Ausstehend",
+  "RUN_REPORT.STATUS.STARTED": "Gestartet",
+  "RUN_REPORT.STATUS.UNDEFINED": "Undefiniert",
+  "RUN_REPORT.STATUS.PASSED_PREVIOUSLY": "Zuvor bestanden",
+  "RUN_REPORT.STATUS.FAILED_PREVIOUSLY": "Zuvor fehlgeschlagen",
+  "RUN_REPORT.STATUS.SKIPPED": "Übersprungen",
+  "RUN_REPORT.STATUS.PASSED": "Bestanden",
+  "RUN_REPORT.STATUS.FAILED": "Fehlgeschlagen",
+  "RUN_REPORT.STATUS.TIMEOUT": "Zeitüberschreitung"
+}
