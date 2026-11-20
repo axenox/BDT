@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\Common;
 
+use axenox\BDT\BDTApp;
 use axenox\BDT\Behat\Common\Traits\FeaturePathResolverTrait;
 use exface\Core\DataTypes\FilePathDataType;
 use exface\Core\Exceptions\RuntimeException;
@@ -28,15 +29,6 @@ final class RunScope
     // App-config fallback for the base behat.yml: the option ALWAYS wins, the config key is the
     // fallback, the installation-root behat.yml is the default.
     public const CFG_BEHAT_CONFIG = 'PARALLEL.BEHAT_CONFIG';
-
-    // Per-process wall-clock limit in seconds, read by both actions.
-    public const CFG_WORKER_TIMEOUT = 'PARALLEL.WORKER_TIMEOUT_SECONDS';
-
-    // Base config filename defaulted to when neither the option nor the app-config key is set. It is
-    // written by `Behat init`, which the caller must have run beforehand.
-    private const DEFAULT_BEHAT_CONFIG = 'behat.yml';
-
-    public const APP_ALIAS = 'axenox.BDT';
 
     // Error recorded and thrown by both actions when the scope matches nothing. One text, so the run's
     // error_message and the exception the caller sees can never say different things.
@@ -103,7 +95,7 @@ final class RunScope
         $rootDir = $rootDir === false ? rtrim($cwd, '\\/') : rtrim($rootDir, '\\/');
 
         if ($explicit === null || $explicit === '') {
-            $cfg = $this->workbench->getApp(self::APP_ALIAS)->getConfig();
+            $cfg = $this->workbench->getApp(BDTApp::APP_ALIAS)->getConfig();
             if ($cfg->hasOption(self::CFG_BEHAT_CONFIG)) {
                 $fromCfg = $cfg->getOption(self::CFG_BEHAT_CONFIG);
                 $explicit = $fromCfg === null ? null : (string) $fromCfg;
@@ -111,7 +103,7 @@ final class RunScope
         }
 
         if ($explicit === null || $explicit === '') {
-            $path = $rootDir . DIRECTORY_SEPARATOR . self::DEFAULT_BEHAT_CONFIG;
+            $path = $rootDir . DIRECTORY_SEPARATOR . BdtPaths::BEHAT_CONFIG_FILE_NAME;
             if (! is_file($path)) {
                 throw new RuntimeException(
                     'behat_config is not a file: ' . $path . '. Run `vendor/bin/action axenox.BDT:Behat init` '
@@ -132,7 +124,7 @@ final class RunScope
                 'behat_config must live in the installation root (' . $rootDir . '), got: ' . $path
                 . '. Generated configs are written to the installation root and import the base config by file '
                 . 'name only, so a config outside that folder would be silently replaced by the root '
-                . self::DEFAULT_BEHAT_CONFIG . '.'
+                . BdtPaths::BEHAT_CONFIG_FILE_NAME . '.'
             );
         }
         return $path;
@@ -353,13 +345,13 @@ final class RunScope
     {
         $cmd = 'vendor/bin/action ' . $actionAlias;
         if ($tags !== null && $tags !== '') {
-            $cmd .= $this->cliOption('tags', $tags);
+            $cmd .= $this->cliOption(RunOptions::TAGS, $tags);
         }
         if ($feature !== null && $feature !== '') {
-            $cmd .= $this->cliOption('feature', $this->featureRelativePath($feature));
+            $cmd .= $this->cliOption(RunOptions::FEATURE, $this->featureRelativePath($feature));
         }
         if ($suite !== null && $suite !== '') {
-            $cmd .= $this->cliOption('suite', $suite);
+            $cmd .= $this->cliOption(RunOptions::SUITE, $suite);
         }
         foreach ($extraOptions as $name => $value) {
             if ($value !== '') {
@@ -401,17 +393,18 @@ final class RunScope
 
         $culprit = 'recorded command';
         $value = $this->describeInvocation($actionAlias, $tags, $feature, $suite, $extraOptions);
-        $options = ['tags' => $tags, 'feature' => $feature, 'suite' => $suite] + $extraOptions;
+        $options = [RunOptions::TAGS => $tags, RunOptions::FEATURE => $feature, RunOptions::SUITE => $suite] + $extraOptions;
+        $selectors = [RunOptions::TAGS, RunOptions::FEATURE, RunOptions::SUITE];
         foreach ($options as $name => $optionValue) {
             if ($optionValue === null || $optionValue === '') {
                 continue;
             }
             $single = $this->describeInvocation(
                 $actionAlias,
-                $name === 'tags' ? $optionValue : null,
-                $name === 'feature' ? $optionValue : null,
-                $name === 'suite' ? $optionValue : null,
-                in_array($name, ['tags', 'feature', 'suite'], true) ? [] : [$name => $optionValue]
+                $name === RunOptions::TAGS ? $optionValue : null,
+                $name === RunOptions::FEATURE ? $optionValue : null,
+                $name === RunOptions::SUITE ? $optionValue : null,
+                in_array($name, $selectors, true) ? [] : [$name => $optionValue]
             );
             if (! RerunCommandPolicy::isAllowed($single)) {
                 $culprit = '--' . $name . ' value';
@@ -434,14 +427,16 @@ final class RunScope
      * Why quoting must be conditional: a plain value (a suite name, a simple tag) stays bare, so the
      * recorded command reads like one a person would type.
      *
-     * WHY THE CONDITION IS NOT "CONTAINS A SPACE": a Behat tag expression uses && for AND, and a
-     * path may contain &. Unquoted, cmd reads & as a command separator, so re-running the recorded
-     * command truncated the arguments and ran a second command. Anything cmd gives meaning to forces the
-     * quotes; everything else stays bare.
+     * WHY THE CONDITION COMES FROM RerunCommandPolicy: the recorded command is replayed through the console's
+     * allow-list, which accepts a bare value only if every character is one of its BARE_VALUE_CHARS. This
+     * method used to decide with a regex of its own (whitespace and the cmd metacharacters `& | < > ^ ( )`),
+     * a second character list that could drift from the policy - a character the policy later dropped from
+     * the bare set would have been recorded bare and refused on every rerun. Quoting exactly when the policy
+     * would refuse the bare form keeps the two decisions one.
      */
     private function cliOption(string $name, string $value): string
     {
-        return preg_match('/[\s&|<>^()]/', $value) === 0
+        return RerunCommandPolicy::isBareValue($value)
             ? ' --' . $name . '=' . $value
             : ' --' . $name . '="' . $value . '"';
     }

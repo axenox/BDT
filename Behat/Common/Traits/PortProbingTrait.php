@@ -194,17 +194,15 @@ trait PortProbingTrait
     }
 
     /**
-     * Takes the first free numbered lock of a range, ACROSS PROCESSES - the one reservation primitive
-     * behind both port and slot reservation.
+     * Takes the first free numbered lock of a range, ACROSS PROCESSES - the scan behind both port and slot
+     * reservation.
      *
-     * WHY flock AND NOT MERE FILE EXISTENCE: an flock is released automatically when its owning
-     * process dies, so a lock file left behind by a crashed run never permanently blocks a number -
-     * the next run simply re-locks the stale file. Testing existence instead would strand numbers on
-     * every crash.
+     * WHY A SCAN OVER reserveNamedLock(): each number is one named lock "<prefix>_<number>"; the flock
+     * protocol itself (released by the OS when the owner dies, never unlinked, handle kept open) lives
+     * there once. This method only adds the range, the same-process skip list and the per-number check.
      *
      * WHY A CALLBACK FOR EXTRA CHECKS: a port must also be unbound at OS level, a slot has no such
-     * condition. The check runs AFTER the lock is won, so two racing processes never both pass it for
-     * the same number.
+     * condition.
      *
      * @param string        $lockPrefix Lock-file name prefix: "<prefix>_<number>.lock"
      * @param int           $start      First number (inclusive)
@@ -215,49 +213,85 @@ trait PortProbingTrait
      */
     private function reserveNumberedLock(string $lockPrefix, int $start, int $end, array $held = [], ?callable $isUsable = null): ?array
     {
-        $lockDir = $this->getPortLockDir();
         for ($number = $start; $number <= $end; $number++) {
             if (in_array($number, $held, true)) {
                 continue;
             }
-            $lockPath = $lockDir . DIRECTORY_SEPARATOR . $lockPrefix . '_' . $number . '.lock';
-            // 'c' opens for writing and creates the file if missing WITHOUT truncating it: the file
-            // is only a cross-process mutex, its bytes are diagnostic (the owner PID).
-            $handle = @fopen($lockPath, 'c');
-            if ($handle === false) {
-                // Cannot even open the lock file (permissions/disk) - never claim the number blindly.
+            $reservation = $this->reserveNamedLock(
+                $lockPrefix . '_' . $number,
+                $isUsable === null ? null : fn(): bool => $isUsable($number)
+            );
+            if ($reservation === null) {
                 continue;
             }
-            // LOCK_EX|LOCK_NB: take the lock only if no LIVE process holds it; skip immediately
-            // otherwise instead of blocking the whole scan on one contended number.
-            if (! flock($handle, LOCK_EX | LOCK_NB)) {
-                fclose($handle);
-                continue;
-            }
-            if ($isUsable !== null && ! $isUsable($number)) {
-                flock($handle, LOCK_UN);
-                fclose($handle);
-                continue;
-            }
-            // Stamp a human-readable, log-style line so a leftover lock file tells you WHO reserved a
-            // number and WHEN - handy when one looks stuck. Purely diagnostic: the flock above, not
-            // this text, is what actually enforces mutual exclusion. A write failure must never void an
-            // already-won reservation, hence the silenced calls.
-            @ftruncate($handle, 0);
-            @fwrite($handle, sprintf(
-                'pid=%d %s=%d reserved_at=%s%s',
-                getmypid(), $lockPrefix, $number, date('Y-m-d H:i:s'), PHP_EOL
-            ));
-            @fflush($handle);
-            // IMPORTANT: return with $handle still OPEN - closing it would drop the flock and
-            // reopen the very race this method exists to prevent.
-            return ['number' => $number, 'handle' => $handle, 'lockPath' => $lockPath];
+            return ['number' => $number, 'handle' => $reservation['handle'], 'lockPath' => $reservation['lockPath']];
         }
         return null;
     }
 
     /**
-     * Releases a reservation returned by reserveFreePort() or reserveFreeSlot() so the next run can claim it.
+     * Takes ONE named cross-process lock - the flock primitive behind every BDT reservation (ports, test-user
+     * slots, attached-browser endpoints).
+     *
+     * WHY IT EXISTS: RunTest reserved a remote Chrome endpoint with its own fopen/flock copy of the protocol
+     * that reserveNumberedLock() implements for ports and slots. Two copies of a cross-process locking
+     * protocol drift in exactly the details that matter (non-blocking, never unlinked, handle kept open).
+     * Numbered and named reservations now share this one implementation.
+     *
+     * WHY flock AND NOT MERE FILE EXISTENCE: an flock is released automatically when its owning process
+     * dies, so a lock file left behind by a crashed run never permanently blocks anything - the next run
+     * simply re-locks the stale file. Testing existence instead would strand reservations on every crash.
+     *
+     * WHY NULL FOR BOTH "HELD" AND "CANNOT OPEN": neither case may ever be claimed blindly, and for the
+     * numbered scan both simply mean "try the next number". A caller that reserves one specific name names
+     * both causes in its own message.
+     *
+     * WHY A CALLBACK FOR EXTRA CHECKS: a port must also be unbound at OS level. The check runs AFTER the lock
+     * is won, so two racing processes never both pass it for the same lock, and BEFORE the diagnostic stamp,
+     * so a lock that is given back again does not claim an owner.
+     *
+     * The returned handle must stay OPEN for as long as the reservation is needed; release it via
+     * releaseReservedPort().
+     *
+     * @param string        $lockName File name of the lock without extension; must be a valid file name
+     * @param callable|null $isUsable fn(): bool, evaluated once the lock is held; FALSE = give the lock back and return NULL
+     * @return array{handle:resource,lockPath:string}|null NULL when another live process holds the lock, the file cannot be opened or $isUsable refused
+     */
+    private function reserveNamedLock(string $lockName, ?callable $isUsable = null): ?array
+    {
+        $lockPath = $this->getPortLockDir() . DIRECTORY_SEPARATOR . $lockName . '.lock';
+        // 'c' opens for writing and creates the file if missing WITHOUT truncating it: the file
+        // is only a cross-process mutex, its bytes are diagnostic (the owner PID).
+        $handle = @fopen($lockPath, 'c');
+        if ($handle === false) {
+            // Cannot even open the lock file (permissions/disk) - never claim the lock blindly.
+            return null;
+        }
+        // LOCK_EX|LOCK_NB: take the lock only if no LIVE process holds it; return immediately
+        // otherwise instead of blocking the caller on one contended lock.
+        if (! flock($handle, LOCK_EX | LOCK_NB)) {
+            fclose($handle);
+            return null;
+        }
+        if ($isUsable !== null && ! $isUsable()) {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+            return null;
+        }
+        // Stamp a human-readable, log-style line so a leftover lock file tells you WHO reserved it and
+        // WHEN - handy when one looks stuck. Purely diagnostic: the flock above, not this text, is what
+        // actually enforces mutual exclusion. A write failure must never void an already-won
+        // reservation, hence the silenced calls.
+        @ftruncate($handle, 0);
+        @fwrite($handle, sprintf('pid=%d lock=%s reserved_at=%s%s', getmypid(), $lockName, date('Y-m-d H:i:s'), PHP_EOL));
+        @fflush($handle);
+        // IMPORTANT: return with $handle still OPEN - closing it would drop the flock and
+        // reopen the very race this method exists to prevent.
+        return ['handle' => $handle, 'lockPath' => $lockPath];
+    }
+
+    /**
+     * Releases a reservation returned by reserveFreePort(), reserveFreeSlot() or reserveNamedLock() so the next run can claim it.
      *
      * WHY UNLOCK-THEN-CLOSE AND NEVER UNLINK: dropping the flock and closing the handle is enough
      * to free the port for the next reserver. We deliberately do NOT delete the file: a concurrent

@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Tests\PHPUnit\Unit\Actions;
 
+use axenox\BDT\BDTApp;
 use axenox\BDT\Actions\RunTest;
 use axenox\BDT\Behat\Common\RunLifecycle;
 use axenox\BDT\Behat\Common\RunScope;
@@ -109,7 +110,7 @@ class RunTestRunUidTest extends TestCase
      */
     private function action(WorkbenchInterface $workbench, RunLifecycle $lifecycle): RunTest
     {
-        $app = $workbench->getApp('axenox.BDT');
+        $app = $workbench->getApp(BDTApp::APP_ALIAS);
         return new class($app, $lifecycle) extends RunTest {
             public function __construct(\exface\Core\Interfaces\AppInterface $app, private RunLifecycle $stubLifecycle)
             {

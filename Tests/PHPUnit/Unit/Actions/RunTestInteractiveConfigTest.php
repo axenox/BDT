@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Tests\PHPUnit\Unit\Actions;
 
+use axenox\BDT\BDTApp;
 use axenox\BDT\Actions\RunTest;
 use axenox\BDT\Behat\BrowserManagers\BrowserManagerFactory;
 use axenox\BDT\Behat\BrowserManagers\LocalChromeManager;
@@ -103,7 +104,7 @@ class RunTestInteractiveConfigTest extends TestCase
             'BROWSER.MANAGER_CONFIG' => ['executable' => 'base\\chrome.exe']
         ];
         $workbench = self::newWorkbench();
-        $config = $workbench->getApp('axenox.BDT')->getConfig();
+        $config = $workbench->getApp(BDTApp::APP_ALIAS)->getConfig();
         foreach ($options as $key => $value) {
             $config->setOption($key, $value);
         }
@@ -120,7 +121,7 @@ class RunTestInteractiveConfigTest extends TestCase
      */
     private function action(WorkbenchInterface $workbench): RunTest
     {
-        return new RunTest($workbench->getApp('axenox.BDT'));
+        return new RunTest($workbench->getApp(BDTApp::APP_ALIAS));
     }
 
     /**

@@ -88,10 +88,28 @@ Existing shared building blocks — use them instead of reimplementing:
 
 | Concern | Use |
 |---|---|
+| App alias `axenox.BDT` (every `getApp()` call) | `BDTApp::APP_ALIAS` |
+| App-config keys read by more than one class (`TEST_USER.*`, `PARALLEL.WORKER_TIMEOUT_SECONDS`) | `BdtConfig` constants |
+| Per-process wall-clock timeout (absent = 1800 s, `<= 0` = disabled) | `BdtConfig::resolveWorkerTimeout()` |
+| CLI option names of RunTest / RunParallel (`tags`, `feature`, `suite`, `behat_config`, `chrome_path`, `chrome_endpoint`, `base_url`) | `RunOptions` constants |
+| Reading an option from the task (trimmed, blank = absent) | `RunOptions::read()` |
+| Base config file name `behat.yml` | `BdtPaths::BEHAT_CONFIG_FILE_NAME` |
+| Base config, scope (feature/suite/tags), expected counts, empty-scope rule, recorded rerun command | `RunScope` |
+| Which characters a recorded rerun command may contain, bare vs. quoted | `RerunCommandPolicy` (`isAllowed()`, `isBareValue()`) |
+| Behat command line + shell quoting/validation of every interpolated value | `BehatCommandBuilder` |
+| Generated interactive / lane Behat config (extensions + YAML writer) | `GeneratedBehatConfig` |
+| Lane ids, lane profile dir names, slot tokens (`<uid>_laneN`, `<uid>_interactiveN`) | `LaneNaming` |
+| Every path below `data/axenox/BDT` (logs, profiles, locks, screenshots) | `BdtPaths` |
+| Run row lifecycle: open, expected counts, run log, log dir/files, failure, finalize, run UID in messages | `RunLifecycle` |
+| Creating the run record itself | `RunRecordWriter` |
+| Digest of a Behat output file for the run's `log` column | `RunLogDigest` |
+| Draining a running Behat process into its log file, poll cadence | `ProcessOutputDrain` (`drain()`, `POLL_MICROSECONDS`) |
+| "Is an Xdebug debugger attached?" | `XdebugState::isDebuggerActive()` |
 | Chrome port band + free-port probing | `PortProbingTrait` |
+| Cross-process reservations (ports, slots, named locks such as an attached endpoint) | `PortProbingTrait::reserveFreePort()` / `reserveFreeSlot()` / `reserveNamedLock()` |
 | Killing orphan Chrome / removing profile dirs / stale sweeps | `ChromeProfileReaperTrait` |
+| Kill + remove ONE profile dir, logged, never throwing | `ChromeProfileReaperTrait::reapProfileDirQuietly()` |
 | Retrying a DB write the server chose as a deadlock victim | `DeadlockRetryTrait` |
-| Creating / counting / finalizing the run row | `RunRecordWriter` |
 | Lane profile directory path | `RunParallel::laneProfileDir()` |
 | Feature key normalization | `RunParallel::featureKeyFromPath()` |
 | Path normalization | `FilePathDataType::normalize()` |
@@ -221,15 +239,17 @@ by construction.
 
 ## 14. Documentation duty
 
-Any fix touching the `RunParallel` action **must** be added to `TROUBLESHOOTING.md`, written so that
-someone who has never seen the code can understand it:
+Any fix touching the `RunParallel` action **must** be added to
+[`.github/troubleshooting/run-parallel-troubleshooting.md`](troubleshooting/run-parallel-troubleshooting.md),
+written so that someone who has never seen the code can understand it:
 
 * what the observable symptom was,
 * what the actual root cause turned out to be,
 * what was changed, and
 * how to recognize the same problem next time.
 
-Structural changes (new phase, new invariant, new config key) also go into `RUN_PARALLEL.md`.
+Structural changes (new phase, new invariant, new config key) also go into
+[`.github/instructions/run-parallel-instructions.md`](instructions/run-parallel-instructions.md).
 
 ---
 
@@ -244,4 +264,4 @@ Structural changes (new phase, new invariant, new config key) also go into `RUN_
 - [ ] Every data read has an explicit limit / `setAutoCount(false)` where appropriate.
 - [ ] Resource cleanup happens before any DB-backed logging.
 - [ ] Log handles closed after all work, not before.
-- [ ] `TROUBLESHOOTING.md` updated if this touched `RunParallel`.
+- [ ] `.github/troubleshooting/run-parallel-troubleshooting.md` updated if this touched `RunParallel`.

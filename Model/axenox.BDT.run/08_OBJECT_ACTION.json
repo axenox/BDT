@@ -95,7 +95,7 @@
                                             "object_alias": "exface.Core.ACTION",
                                             "id": "test_cli",
                                             "allowed_commands": [
-                                                "#^vendor[/\\\\]bin[/\\\\]action axenox\\.BDT:(?:RunTest|RunParallel)(?: --[a-z][a-z0-9_-]*=(?:\"(?:[^\"%!\\r\\n]*[^\"%!\\r\\n\\\\])?\"|[^\\s&|<>^\"%!]+))*$#iD",
+                                                "#^vendor[/\\\\]bin[/\\\\]action axenox\\.BDT:(?:RunTest|RunParallel)(?: --[a-z][a-z0-9_-]*=(?:\"[\\p{L}0-9@_.:\\/\\\\,~=\\-?+ &|()]*(?<!\\\\)\"|[\\p{L}0-9@_.:\\/\\\\,~=\\-?+]+))*$#iDu",
                                                 "#^vendor[/\\\\]bin[/\\\\]action axenox\\.BDT:Behat init$#iD"
                                             ],
                                             "start_commands": [

@@ -1,10 +1,16 @@
 <?php
 namespace axenox\BDT\Actions;
 
+use axenox\BDT\BDTApp;
+use axenox\BDT\Behat\Common\BdtConfig;
 use axenox\BDT\Behat\Common\BdtPaths;
+use axenox\BDT\Behat\Common\BehatCommandBuilder;
 use axenox\BDT\Behat\Common\GeneratedBehatConfig;
+use axenox\BDT\Behat\Common\LaneNaming;
+use axenox\BDT\Behat\Common\ProcessOutputDrain;
 use axenox\BDT\Behat\Common\RunLifecycle;
 use axenox\BDT\Behat\Common\RunLogDigest;
+use axenox\BDT\Behat\Common\RunOptions;
 use axenox\BDT\Behat\Common\RunScope;
 use axenox\BDT\Behat\Common\Traits\ChromeProfileReaperTrait;
 use axenox\BDT\Behat\Common\Traits\FeaturePathResolverTrait;
@@ -61,16 +67,6 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
 
     private ?string $browserExecutable = null;
 
-    // CLI option names - kept as constants so the option declarations in getCliOptions()
-    // and the reads via getTaskParam() can never drift apart.
-    private const OPT_BEHAT_CONFIG = 'behat_config';
-    private const OPT_CHROME_PATH  = 'chrome_path';
-    private const OPT_CHROME_ENDPOINT = 'chrome_endpoint';
-    private const OPT_BASE_URL = 'base_url';
-    private const OPT_SUITE        = 'suite';
-    private const OPT_TAGS         = 'tags';
-    private const OPT_FEATURE      = 'feature';
-
     // Name of the file in the run's log directory that receives the Behat output, and the run-log section
     // that describes the Behat process.
     private const LOG_FILE_NAME = 'interactive.log';
@@ -85,17 +81,8 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
     // "port_band" key in the same override file; either may be present independently.
     private const OVERRIDE_KEY_INTERACTIVE = 'port_band_interactive';
 
-    // Wall-clock ceiling fallback when PARALLEL.WORKER_TIMEOUT_SECONDS is not configured.
-    // Mirrors RunParallel: a Behat run needs far longer than any generic CLI default.
-    private const RUN_TIMEOUT_SECONDS = 1800;
-
-    // Poll cadence while draining the Behat process. 100 ms streams output near-live while the
-    // busy-wait between reads costs negligible CPU over a multi-minute run.
-    private const DRAIN_POLL_MICROSECONDS = 100000;
-
-    // Size of the pool of interactive test-user slots (see GeneratedBehatConfig::interactiveLaneId()) and
-    // its default. The lock prefix names the pool's lock files; it must differ from the port locks' prefix.
-    private const CFG_INTERACTIVE_USER_SLOTS = 'TEST_USER.INTERACTIVE_SLOTS';
+    // Default size of the pool of interactive test-user slots (see LaneNaming::interactiveLaneId()). The lock
+    // prefix names the pool's lock files; it must differ from the port locks' prefix.
     private const DEFAULT_INTERACTIVE_USER_SLOTS = 10;
     private const USER_SLOT_LOCK_PREFIX = 'interactive_user_slot';
 
@@ -140,9 +127,9 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
         // The wording matches RunParallel's identical guard on purpose: both console-preset buttons
         // sit next to each other on the feature-files page, so a tester who leaves all three inputs
         // empty must get the same sentence whichever button was pressed.
-        $suite       = $this->getTaskParam($task, self::OPT_SUITE, '');
-        $tags        = $this->getTaskParam($task, self::OPT_TAGS, '');
-        $feature     = $this->getTaskParam($task, self::OPT_FEATURE, '');
+        $suite       = RunOptions::read($task, RunOptions::SUITE) ?? '';
+        $tags        = RunOptions::read($task, RunOptions::TAGS) ?? '';
+        $feature     = RunOptions::read($task, RunOptions::FEATURE) ?? '';
 
         if ($tags === '' && $feature === '' && $suite === '') {
             throw new RuntimeException('Provide at least one of --tags, --feature or --suite; refusing to run the whole test base unscoped.');
@@ -159,17 +146,17 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
         // BROWSER.MANAGER_CONFIG and the legacy ones), so there is one reader.
         $cwd = $this->getWorkbench()->getInstallationPath();
         $scope = new RunScope($this->getWorkbench());
-        $behatConfig = $scope->resolveBehatConfig($this->getTaskParam($task, self::OPT_BEHAT_CONFIG) ?: null, $cwd);
-        $chromeEndpoint = $this->getTaskParam($task, self::OPT_CHROME_ENDPOINT);
-        $baseUrl = $this->getTaskParam($task, self::OPT_BASE_URL);
-        $chromePath = $this->getTaskParam($task, self::OPT_CHROME_PATH);
+        $behatConfig = $scope->resolveBehatConfig(RunOptions::read($task, RunOptions::BEHAT_CONFIG), $cwd);
+        $chromeEndpoint = RunOptions::read($task, RunOptions::CHROME_ENDPOINT) ?? '';
+        $baseUrl = RunOptions::read($task, RunOptions::BASE_URL) ?? '';
+        $chromePath = RunOptions::read($task, RunOptions::CHROME_PATH) ?? '';
         if ($chromeEndpoint !== '') {
             $chromeEndpoint = ChromeDevToolsHttpClient::normalizeEndpoint($chromeEndpoint);
-            $this->shellArg($chromeEndpoint, 'Chrome endpoint');
+            BehatCommandBuilder::quote($chromeEndpoint, 'Chrome endpoint');
         }
         if ($baseUrl !== '') {
             $baseUrl = ChromeDevToolsHttpClient::normalizeEndpoint($baseUrl) . '/';
-            $this->shellArg($baseUrl, 'browser-facing base URL');
+            BehatCommandBuilder::quote($baseUrl, 'browser-facing base URL');
         }
         if ($chromePath !== '' && $chromeEndpoint === '') {
             $resolvedClass = BrowserManagerFactory::resolveClass($this->getWorkbench());
@@ -201,7 +188,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
             $tags,
             $feature,
             $suite,
-            [self::OPT_CHROME_ENDPOINT => $chromeEndpoint, self::OPT_BASE_URL => $baseUrl]
+            [RunOptions::CHROME_ENDPOINT => $chromeEndpoint, RunOptions::BASE_URL => $baseUrl]
         );
 
         // These become the positional arguments of performDeferred() - order MUST match its
@@ -280,13 +267,9 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
         // Validate the caller-supplied selectors before anything is persisted. WHY HERE:
         // the run row stores the recorded rerun command, which the Test Runs console renders into its
         // start_commands JSON - an unvalidated value would be saved and shipped to the browser. Until the
-        // run row became this action's job, buildBehatCommand() ran before anything was stored and
+        // run row became this action's job, the command build ran before anything was stored and
         // refused such values in time; now the row is created first, so the same check must come first.
-        foreach (['suite name' => $suite, 'tag expression' => $tags, 'feature path' => $feature] as $what => $value) {
-            if ($value !== '') {
-                $this->shellArg($value, $what);
-            }
-        }
+        BehatCommandBuilder::assertSelectorsSafe($tags, $feature, $suite);
         // The coordinator manager is created from app config plus the CLI values and never started
         // for a local browser: it only tells this action WHAT kind of browser the run uses. A forced
         // endpoint selects RemoteChromeManager even when BROWSER.MANAGER is local (the factory then
@@ -330,7 +313,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
         $scope->resolveScanRoots($behatConfig, $feature, $suite);
 
         // --- Step 2: reserve this run's test-user slot, then create the run row ---
-        // The slot decides which test user the run logs in with (see GeneratedBehatConfig::interactiveLaneId()),
+        // The slot decides which test user the run logs in with (see LaneNaming::interactiveLaneId()),
         // so it is taken BEFORE the row exists: when every slot is in use the run is refused loudly here,
         // leaving no row behind. There is deliberately no fallback to the base user or to a shared slot -
         // that would bring back the optimistic-locking collision the slots exist to prevent.
@@ -339,7 +322,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
         if ($slotReservation === null) {
             throw new RuntimeException(
                 'All ' . $userSlots . ' interactive test-user slots are in use by concurrent RunTest runs. '
-                . 'Wait for one of them to finish or raise ' . self::CFG_INTERACTIVE_USER_SLOTS . '.'
+                . 'Wait for one of them to finish or raise ' . BdtConfig::TEST_USER_INTERACTIVE_SLOTS . '.'
             );
         }
         $userSlot = $slotReservation['slot'];
@@ -352,7 +335,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
                 $tags,
                 $feature,
                 $suite,
-                [self::OPT_CHROME_ENDPOINT => $chromeEndpoint, self::OPT_BASE_URL => $baseUrl]
+                [RunOptions::CHROME_ENDPOINT => $chromeEndpoint, RunOptions::BASE_URL => $baseUrl]
             ));
         } catch (\Throwable $e) {
             // Not a suppression: re-thrown at once. The outer finally below does not exist yet, so the slot
@@ -434,17 +417,18 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
                 yield 'Config: ' . basename($configPath) . "\n\n";
 
                 // --- Step 7: run Behat, streaming output; classify the exit code at the end ---
-                $timeout = $this->resolveRunTimeout();
-                $cmd     = $this->buildBehatCommand($configPath, $suite, $tags, $feature);
+                // NULL = the ceiling is disabled (PARALLEL.WORKER_TIMEOUT_SECONDS <= 0); Symfony then never times out.
+                $timeout = BdtConfig::resolveWorkerTimeout($this->getWorkbench());
+                $cmd     = BehatCommandBuilder::build($configPath, $suite, $tags, $feature);
 
                 $runLog->addLine('Configuration:', 1, 'Run summary');
                 $runLog->addCodeBlock(implode("\n", [
                     trim($allocationMessage),
-                    'Test user slot: ' . $userSlot . ' of ' . $userSlots . ' (lane_id ' . GeneratedBehatConfig::interactiveLaneId($runUid, $userSlot) . ')',
+                    'Test user slot: ' . $userSlot . ' of ' . $userSlots . ' (lane_id ' . LaneNaming::interactiveLaneId($runUid, $userSlot) . ')',
                     'Browser: ' . $coordinator->describe(),
                     'Base config: ' . basename($behatConfig),
                     'Generated config: ' . basename($configPath),
-                    'Timeout: ' . $timeout . ' s'
+                    'Timeout: ' . ($timeout === null ? 'disabled (' . BdtConfig::PARALLEL_WORKER_TIMEOUT_SECONDS . ' <= 0)' : $timeout . ' s')
                 ]), '', 'Run summary');
                 $runLog->addSection(self::LOG_SECTION);
 
@@ -457,7 +441,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
 
                 $timedOut = false;
                 while ($process->isRunning()) {
-                    $chunk = $this->drainIncremental($process, $logHandle);
+                    $chunk = ProcessOutputDrain::drain($process, $logHandle);
                     if ($chunk !== '') {
                         yield $chunk;
                     }
@@ -473,10 +457,10 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
                         $timedOut = true;
                         break;
                     }
-                    usleep(self::DRAIN_POLL_MICROSECONDS);
+                    usleep(ProcessOutputDrain::POLL_MICROSECONDS);
                 }
                 // Flush whatever arrived after the last read inside the loop (and after a kill).
-                $tail = $this->drainIncremental($process, $logHandle);
+                $tail = ProcessOutputDrain::drain($process, $logHandle);
                 if ($tail !== '') {
                     yield $tail;
                 }
@@ -509,7 +493,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
                 if ($timedOut) {
                     throw new RuntimeException(
                         'Interactive Behat run timed out after ' . $timeout . ' s. Adjust '
-                        . RunScope::CFG_WORKER_TIMEOUT . ' if the selection legitimately needs longer.'
+                        . BdtConfig::PARALLEL_WORKER_TIMEOUT_SECONDS . ' if the selection legitimately needs longer.'
                     );
                 }
             } finally {
@@ -538,9 +522,13 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
                     // timed-out/crashed run can leave the browser alive holding the profile - hence an explicit
                     // reap, not a bare rmdir. Done before releaseReservedPort() (outer finally) so the freed
                     // port cannot be reclaimed by another interactive run whose fresh interactive<port> dir we
-                    // would then delete. cleanupInteractiveChrome() never throws.
+                    // would then delete. reapProfileDirQuietly() never throws.
                     if ($ownsBrowser) {
-                        $this->cleanupInteractiveChrome($cwd, (int) $port);
+                        $this->reapProfileDirQuietly(
+                            $cwd . DIRECTORY_SEPARATOR . $this->interactiveProfileDirRelative((int) $port),
+                            'BDT interactive cleanup',
+                            1_000_000
+                        );
                     }
                 }
             }
@@ -679,81 +667,6 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
     }
 
     /**
-     * Returns the value quoted and escaped, ready to be concatenated into the Behat command line.
-     *
-     * WHY IT EXISTS: buildBehatCommand() produces a string that is handed to
-     * Process::fromShellCommandline(), so the shell parses it - and suite, tags and feature reach
-     * this action from the free-text console presets on the feature-files page. Concatenated raw, a
-     * value could close its own argument and append commands that then run as the web-server user.
-     *
-     * WHY escapeshellarg() RATHER THAN HAND-WRITTEN QUOTES: the previous "..." wrapping broke on any
-     * value that ended in a backslash - a Windows directory path typed with a trailing separator
-     * produced "...\Features\", where the backslash escapes the closing quote and corrupts the rest
-     * of the command line. escapeshellarg() counts trailing backslashes correctly, and it quotes for
-     * the platform it is actually running on.
-     *
-     * WHY THE CALLER MUST NOT ADD QUOTES: the returned string already carries its own quotes (double
-     * on Windows, single elsewhere). Wrapping it again would put literal quotes inside the value.
-     *
-     * WHY THREE CHARACTERS ARE STILL REFUSED ON WINDOWS: escapeshellarg() does not escape ", % and !
-     * there - it silently REPLACES each with a space. Behat would then run with a value the tester
-     * never typed, and a run that quietly tests something other than what was asked for is exactly
-     * the failure this framework exists to catch. None of the three belongs in a suite name, a tag
-     * expression or a feature path, so refusing loudly loses nothing.
-     *
-     * WHY LINE BREAKS ARE REFUSED ON EVERY PLATFORM: a newline survives quoting and becomes part of
-     * the value, corrupting the run silently instead of failing. It only ever gets in by pasting
-     * several lines into a single-line preset input, which is a mistake worth reporting.
-     *
-     * @param string $value The value about to be placed on the command line.
-     * @param string $what  Human-readable name of the value, used in the error message.
-     * @throws RuntimeException if the value cannot reach the command line unchanged.
-     */
-    private function shellArg(string $value, string $what): string
-    {
-        if (preg_match('/[\r\n]/', $value) === 1) {
-            throw new RuntimeException(
-                'Refusing to build the Behat command: the ' . $what . ' contains a line break. Got: '
-                . var_export($value, true)
-            );
-        }
-        if (PHP_OS_FAMILY === 'Windows' && strpbrk($value, '"%!') !== false) {
-            throw new RuntimeException(
-                'Refusing to build the Behat command: the ' . $what . ' contains one of the characters " % ! , '
-                . 'which the Windows command line cannot carry without silently altering the value. Got: '
-                . var_export($value, true)
-            );
-        }
-        return escapeshellarg($value);
-    }
-
-    /**
-     * Reads and clears a process's incremental stdout+stderr in one call, copying it into the run's
-     * output file on the way.
-     *
-     * WHY incremental + clearOutput: getIncrementalOutput()/getIncrementalErrorOutput() are
-     * non-blocking and return only what arrived since the previous call, which is exactly what a
-     * streaming loop needs; clearOutput()/clearErrorOutput() then drop the already-forwarded
-     * bytes so a run that logs for minutes does not accumulate its whole output in memory.
-     *
-     * WHY THE FILE IS WRITTEN HERE: the chunk is drained exactly once, so this is the only place that
-     * sees all of the output. Writing it at the same moment it is forwarded to the console keeps the
-     * file and the stream identical, and the run log digest is built from that file at close-out.
-     *
-     * @param resource|null $logHandle Open handle of the run's output file, or NULL to only drain
-     */
-    private function drainIncremental(Process $process, $logHandle = null): string
-    {
-        $out = $process->getIncrementalOutput() . $process->getIncrementalErrorOutput();
-        $process->clearOutput();
-        $process->clearErrorOutput();
-        if ($out !== '' && is_resource($logHandle)) {
-            @fwrite($logHandle, $out);
-        }
-        return $out;
-    }
-
-    /**
      * No positional CLI arguments - all inputs are passed as named options (see getCliOptions()).
      *
      * {@inheritDoc}
@@ -782,31 +695,31 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
     {
         return [
             (new ServiceParameter($this))
-                ->setName(self::OPT_BEHAT_CONFIG)
+                ->setName(RunOptions::BEHAT_CONFIG)
                 ->setDescription('Path to the base behat.yml the generated config imports; must be in the installation root. Falls back to app-config ' . RunScope::CFG_BEHAT_CONFIG . ', then to the installation-root behat.yml, when omitted. That file is written by `Behat init`, which must have been run before this action.')
                 ->setDefaultValue(''),
             (new ServiceParameter($this))
-                ->setName(self::OPT_CHROME_PATH)
+                ->setName(RunOptions::CHROME_PATH)
                 ->setDescription('Path to chrome.exe (NOT GoogleChromePortable.exe). Overrides "executable" of BROWSER.MANAGER_CONFIG for this run.')
                 ->setDefaultValue(''),
             (new ServiceParameter($this))
-                ->setName(self::OPT_CHROME_ENDPOINT)
+                ->setName(RunOptions::CHROME_ENDPOINT)
                 ->setDescription('CDP HTTP endpoint of externally managed Chrome. Forces the remote browser manager for this run and overrides "endpoint" of BROWSER.MANAGER_CONFIG.')
                 ->setDefaultValue(''),
             (new ServiceParameter($this))
-                ->setName(self::OPT_BASE_URL)
+                ->setName(RunOptions::BASE_URL)
                 ->setDescription('Application URL for this run. For a remote browser it is the URL as seen by that browser and overrides "base_url" of BROWSER.MANAGER_CONFIG; for a local browser it overrides the base_url of the base behat.yml.')
                 ->setDefaultValue(''),
             (new ServiceParameter($this))
-                ->setName(self::OPT_SUITE)
+                ->setName(RunOptions::SUITE)
                 ->setDescription('Optional Behat suite name, passed through as --suite')
                 ->setDefaultValue(''),
             (new ServiceParameter($this))
-                ->setName(self::OPT_TAGS)
+                ->setName(RunOptions::TAGS)
                 ->setDescription('Optional Behat tag filter, passed through as --tags')
                 ->setDefaultValue(''),
             (new ServiceParameter($this))
-                ->setName(self::OPT_FEATURE)
+                ->setName(RunOptions::FEATURE)
                 ->setDescription('Optional feature file or directory, passed through as a positional argument')
                 ->setDefaultValue('')
         ];
@@ -824,7 +737,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
      * ATTACH-MODE, binding to the run row this action created instead of creating one itself, exactly as
      * a RunParallel lane does. DatabaseFormatter refuses a run_uid without a lane_id on purpose, so both
      * are always written together. The lane_id also selects the test user (see
-     * UI5Browser::laneUserSuffix()), so concurrent interactive runs never share a user row.
+     * LaneNaming::slotToken()), so concurrent interactive runs never share a user row.
      *
      * WHAT GOES INTO THE browser NODE: only per-run values. For a browser BDT launches itself that is
      * the port and the isolated profile dir (plus the executable only when --chrome_path was given);
@@ -861,10 +774,8 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
         $userDataDirRelative = '';
         if ($coordinator instanceof SupportsParallelLanesInterface) {
             $userDataDirRelative = $this->interactiveProfileDirRelative($port);
-            $userDataDirAbsolute = BdtPaths::ensure($workingDir, BdtPaths::FOLDER_CHROME_PROFILES, 'interactive' . $port);
-            if (! is_dir($userDataDirAbsolute) && ! @mkdir($userDataDirAbsolute, 0755, true) && ! is_dir($userDataDirAbsolute)) {
-                throw new RuntimeException('Could not create interactive user_data_dir: ' . $userDataDirAbsolute);
-            }
+            // ensure() creates the dir or throws; the name comes from the same method the cleanup uses.
+            BdtPaths::ensure($workingDir, BdtPaths::FOLDER_CHROME_PROFILES, $this->interactiveProfileDirName($port));
             $configPath = dirname($behatConfig) . DIRECTORY_SEPARATOR . 'behat_interactive_' . $port . '.yml';
         } else {
             $configPath = dirname($behatConfig) . DIRECTORY_SEPARATOR
@@ -878,7 +789,7 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
             $chromeEndpoint,
             $baseUrl,
             $runUid,
-            GeneratedBehatConfig::interactiveLaneId($runUid, $userSlot)
+            LaneNaming::interactiveLaneId($runUid, $userSlot)
         );
 
         return GeneratedBehatConfig::write(
@@ -904,15 +815,15 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
      */
     private function resolveInteractiveUserSlots(): int
     {
-        $cfg = $this->getWorkbench()->getApp(RunScope::APP_ALIAS)->getConfig();
-        if (! $cfg->hasOption(self::CFG_INTERACTIVE_USER_SLOTS)) {
+        $cfg = $this->getWorkbench()->getApp(BDTApp::APP_ALIAS)->getConfig();
+        if (! $cfg->hasOption(BdtConfig::TEST_USER_INTERACTIVE_SLOTS)) {
             return self::DEFAULT_INTERACTIVE_USER_SLOTS;
         }
-        $raw = $cfg->getOption(self::CFG_INTERACTIVE_USER_SLOTS);
+        $raw = $cfg->getOption(BdtConfig::TEST_USER_INTERACTIVE_SLOTS);
         $slots = filter_var($raw, FILTER_VALIDATE_INT);
         if ($slots === false || $slots < 1) {
             throw new RuntimeException(
-                self::CFG_INTERACTIVE_USER_SLOTS . ' must be an integer >= 1, got ' . var_export($raw, true)
+                BdtConfig::TEST_USER_INTERACTIVE_SLOTS . ' must be an integer >= 1, got ' . var_export($raw, true)
             );
         }
         return $slots;
@@ -950,57 +861,30 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
     }
 
     /**
-     * Builds the Behat command with the tester's pass-through selection.
-     *
-     * WHY POSITIONAL FEATURE OUTSIDE --config: Behat only honours a feature path given as a
-     * positional argument; concatenating it into the config option silently runs everything -
-     * the exact trap already documented for the fleet's worker command. We deliberately do NOT
-     * add --colors: this output is forwarded to a captured stream, and forcing ANSI colours on a
-     * non-TTY would inject escape codes into the result; Behat's own TTY auto-detection is right.
-     *
-     * WHY EVERY INTERPOLATED VALUE GOES THROUGH shellArg(): this string is handed to
-     * Process::fromShellCommandline(), so the shell parses it, and suite/tags/feature reach this
-     * action from the free-text console presets on the feature-files page. Concatenated raw, a
-     * value could close its argument and append commands that then run as the web-server user.
-     * shellArg() supplies the quoting itself, which is why none of the values is wrapped in quotes
-     * here any more - doing so would put literal quotes inside the value.
-     *
-     * WHY PLATFORM SEPARATORS: an unquoted Windows backslash is consumed by the Linux shell,
-     * so the App Service runner must use its native path to the Composer Behat executable.
-     */
-    private function buildBehatCommand(string $configPath, string $suite, string $tags, string $feature): string
-    {
-        $cmd = 'vendor' . DIRECTORY_SEPARATOR . 'bin' . DIRECTORY_SEPARATOR . 'behat ';
-        if ($suite !== '') {
-            $cmd .= ' --suite=' . $this->shellArg($suite, 'suite name');
-        }
-        if ($tags !== '') {
-            $cmd .= ' --tags=' . $this->shellArg($tags, 'tag expression');
-        }
-        if ($feature !== '') {
-            $cmd .= ' ' . $this->shellArg($feature, 'feature path');
-        }
-        return $cmd . ' --config ' . $this->shellArg($configPath, 'behat config path');
-    }
-
-    /**
      * Prevents concurrent interactive runs in this installation from sharing one remote browser.
-     * The full normalized endpoint, not just its port, identifies the cross-process reservation.
-     * Reuses port-lock release semantics so crashes cannot strand an existence-based lock forever.
+     *
+     * WHY THE FULL NORMALIZED ENDPOINT NAMES THE LOCK: many endpoints share a port (443), so only the whole
+     * URL identifies the browser. It is hashed because a URL is not a valid file name.
+     *
+     * WHY reserveNamedLock(): the cross-process flock protocol (released by the OS when the owner dies, so a
+     * crash never strands the endpoint) is the one ports and slots use; this method used to carry its own
+     * fopen/flock copy of it.
+     *
+     * @return array{handle:resource,lockPath:string} Reservation to release via releaseReservedPort()
+     * @throws RuntimeException if the endpoint is reserved by another run or its lock file cannot be opened
      */
     private function reserveRemoteEndpoint(string $endpoint): array
     {
-        $lockPath = $this->getPortLockDir() . DIRECTORY_SEPARATOR
-            . 'chrome_endpoint_' . hash('sha256', ChromeDevToolsHttpClient::normalizeEndpoint($endpoint)) . '.lock';
-        $handle = @fopen($lockPath, 'c');
-        if ($handle === false) {
-            throw new RuntimeException('Could not open remote Chrome endpoint lock: ' . $lockPath);
+        $lockName = 'chrome_endpoint_' . hash('sha256', ChromeDevToolsHttpClient::normalizeEndpoint($endpoint));
+        $reservation = $this->reserveNamedLock($lockName);
+        if ($reservation === null) {
+            throw new RuntimeException(
+                'Remote Chrome endpoint ' . $endpoint . ' could not be reserved: it is already reserved by another '
+                . 'BDT run, or its lock file "' . $lockName . '.lock" in ' . BdtPaths::relative(BdtPaths::FOLDER_PORT_LOCKS)
+                . ' cannot be opened.'
+            );
         }
-        if (!flock($handle, LOCK_EX | LOCK_NB)) {
-            fclose($handle);
-            throw new RuntimeException('Remote Chrome endpoint is already reserved by another BDT run: ' . $endpoint);
-        }
-        return ['handle' => $handle, 'lockPath' => $lockPath];
+        return $reservation;
     }
 
     /**
@@ -1015,109 +899,10 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
     }
 
     /**
-     * Reaps any orphaned Chrome bound to THIS run's interactive profile and removes the profile dir.
-     *
-     * WHY IT EXISTS: the Behat child launches Chrome detached, so a timed-out or crashed
-     * interactive run can leave the browser alive holding data\...\chrome_profiles\interactive<port>.
-     * Nothing else removes it, and because the dir is named by PORT (not reused like the fleet's fixed
-     * lane dirs), every run leaves a fresh one - so without this they accumulate without bound.
-     *
-     * WHY IT NEVER THROWS: it runs in performDeferred()'s finally, so a throw would mask the real run
-     * outcome (or a propagating timeout exception). Failures are logged loudly instead.
-     *
-     * @param string $workingDir The run's working dir (same base writeInteractiveConfig() used)
-     * @param int    $port        The interactive port that names this run's profile dir
-     */
-    private function cleanupInteractiveChrome(string $workingDir, int $port): void
-    {
-        try {
-            // Same path writeInteractiveConfig() created - both derive it from one method, so the
-            // create and the delete side cannot drift apart.
-            $absProfileDir = $workingDir . DIRECTORY_SEPARATOR . $this->interactiveProfileDirRelative($port);
-
-            $logger = $this->getWorkbench()->getLogger();
-
-            // NULL means the process list could not be read at all, so we cannot know whether a browser
-            // is still attached to this profile. Removing the dir anyway would leave a live Chrome with
-            // a deleted profile - an orphan no sweep can attribute later. Skip loudly instead; the next
-            // run's age-based startup sweep reclaims the dir.
-            $chromeProcesses = $this->listChromeProcessCommandLines();
-            if ($chromeProcesses === null) {
-                $logger->warning('BDT interactive cleanup: could not enumerate chrome.exe processes - cleanup was '
-                    . 'SKIPPED (not completed). Profile dir ' . $absProfileDir . ' was left in place.');
-                return;
-            }
-
-            $killed = $this->reapChromeProfileDir($absProfileDir, $chromeProcesses);
-            foreach ($killed as $pid) {
-                $logger->info('BDT interactive cleanup: killed orphan Chrome PID ' . $pid . ' bound to ' . $absProfileDir);
-            }
-            // Chrome releases its profile file handles (ProcessSingleton lock, etc.) asynchronously
-            // after taskkill returns; a short settle avoids racing them into a half-deleted dir.
-            if ($killed !== []) {
-                usleep(1_000_000);
-            }
-            if (! $this->removeDirectoryTree($absProfileDir)) {
-                $logger->warning('BDT interactive cleanup: could not fully remove profile dir ' . $absProfileDir
-                    . ' - a Chrome handle may still be open. It will be overwritten on the next run on this port.');
-            }
-        } catch (\Throwable $e) {
-            // Backstop for the backstop: never let cleanup break the run's finally chain.
-            try {
-                $this->getWorkbench()->getLogger()->logException($e);
-            } catch (\Throwable $ignored) {
-                // Logging itself failed (e.g. workbench already torn down) - nothing safe left to do.
-            }
-        }
-    }
-
-    /**
-     * Resolves the run's wall-clock timeout from app config, falling back to the constant.
-     *
-     * WHY THE SAME KEY AS THE FLEET: an interactive selection is at most as large as a fleet
-     * lane's bucket, so one operator-tuned ceiling serves both paths without a second knob.
-     */
-    private function resolveRunTimeout(): float
-    {
-        $cfg = $this->getWorkbench()->getApp(RunScope::APP_ALIAS)->getConfig();
-        return (float) ($cfg->getOption(RunScope::CFG_WORKER_TIMEOUT) ?: self::RUN_TIMEOUT_SECONDS);
-    }
-
-    /**
-     * Reads an optional task parameter, falling back to a default.
-     *
-     * WHY: suite/tags/feature and the browser overrides are genuine optionals with an empty
-     * default and no config fallback here - an absent one simply means "do not add this flag", so it
-     * must never throw the way a missing mandatory path does.
-     *
-     * WHY IT TRIMS: these values now arrive from free-text console-preset inputs a tester fills in
-     * by hand, and every consumer decides on them with an exact === '' comparison - the scope guard
-     * in performImmediately(), the flag assembly in buildBehatCommand(), the run description in
-     * describeInvocation(). A stray space passes all three and reaches Behat as --tags=" ", which
-     * matches no scenario and exits 0: a run that reports green while having tested nothing, the
-     * exact failure this framework exists to catch. Trimming here makes "whitespace only" and "not
-     * provided" indistinguishable for every consumer at once, instead of asking each call site to
-     * remember it.
-     */
-    private function getTaskParam(TaskInterface $task, string $name, string $default = ''): string
-    {
-        if ($task->hasParameter($name)) {
-            $val = $task->getParameter($name);
-            if ($val !== null) {
-                $val = trim((string) $val);
-                if ($val !== '') {
-                    return $val;
-                }
-            }
-        }
-        return $default;
-    }
-    
-    /**
      * Returns THIS interactive run's Chrome profile dir, relative to the installation root.
      *
-     * WHY IT EXISTS: the profile dir is CREATED in writeInteractiveConfig() and DELETED in
-     * cleanupInteractiveChrome(). Those two built the path independently, with a comment demanding
+     * WHY IT EXISTS: the profile dir is CREATED in writeInteractiveConfig() and DELETED by the reap in
+     * performDeferred()'s finally. Those two built the path independently, with a comment demanding
      * they "mirror" each other - a mirror that only a human could enforce, on a path whose one use is
      * recursive deletion. Deriving both from one method makes the mirror structural instead of
      * documented.
@@ -1128,6 +913,18 @@ class RunTest extends AbstractActionDeferred implements iCanBeCalledFromCLI
      */
     private function interactiveProfileDirRelative(int $port): string
     {
-        return BdtPaths::relative(BdtPaths::FOLDER_CHROME_PROFILES, 'interactive' . $port);
+        return BdtPaths::relative(BdtPaths::FOLDER_CHROME_PROFILES, $this->interactiveProfileDirName($port));
+    }
+
+    /**
+     * Returns the name of THIS interactive run's profile dir: "interactive<port>".
+     *
+     * WHY SEPARATE FROM interactiveProfileDirRelative(): writeInteractiveConfig() creates the dir through
+     * BdtPaths::ensure(), which takes the segments rather than a finished path. It used to spell the name a
+     * second time for that call - exactly the create/delete pair that must never drift.
+     */
+    private function interactiveProfileDirName(int $port): string
+    {
+        return 'interactive' . $port;
     }
 }

@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Tests\PHPUnit;
 
+use axenox\BDT\BDTApp;
 use axenox\BDT\Common\BdtRun;
 use axenox\BDT\Common\Selectors\BdtRunSelector;
 use axenox\BDT\Facades\MarkdownPrinters\BdtRunMarkdownPrinter;
@@ -49,7 +50,7 @@ class BdtMarkdownPrinterMiddlewareTest extends TestCase
             $filemanager,
             $this->directory . DIRECTORY_SEPARATOR . 'config'
         );
-        $installer = new ComponentRegistryInstaller($workbench->getApp('axenox.BDT')->getSelector());
+        $installer = new ComponentRegistryInstaller($workbench->getApp(BDTApp::APP_ALIAS)->getSelector());
         iterator_to_array($installer->install(dirname(__DIR__, 2)));
         $facade = new DocsFacade(new FacadeSelector($workbench, DocsFacade::class));
         $this->middleware = new ComponentPrinterMiddleware(
@@ -104,7 +105,7 @@ class BdtMarkdownPrinterMiddlewareTest extends TestCase
     public function testInstallsAndUninstallsBdtComponents(): void
     {
         $registry = $this->workbench->getComponentRegistry();
-        $installer = new ComponentRegistryInstaller($this->workbench->getApp('axenox.BDT')->getSelector());
+        $installer = new ComponentRegistryInstaller($this->workbench->getApp(BDTApp::APP_ALIAS)->getSelector());
         $path = $this->directory . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'ComponentRegistry.config.json';
         $before = file_get_contents($path);
         iterator_to_array($installer->install(dirname(__DIR__, 2)));

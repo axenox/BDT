@@ -1,6 +1,8 @@
 <?php
 namespace axenox\BDT\Tests\PHPUnit\Unit\Actions;
 
+use axenox\BDT\BDTApp;
+use axenox\BDT\Behat\Common\BdtConfig;
 use axenox\BDT\Actions\RunTest;
 use axenox\BDT\Behat\Common\RunLifecycle;
 use axenox\BDT\Behat\Common\Traits\PortProbingTrait;
@@ -137,7 +139,7 @@ class RunTestUserSlotTest extends TestCase
             'SERVER.INSTALLATION_NAME' => 'bdt-user-slot-unit-test',
             'DEBUG.LIVE_CLASS_AUTOLOADER' => false
         ]);
-        $config = $workbench->getApp('axenox.BDT')->getConfig();
+        $config = $workbench->getApp(BDTApp::APP_ALIAS)->getConfig();
         foreach ($options as $key => $value) {
             $config->setOption($key, $value);
         }
@@ -150,7 +152,7 @@ class RunTestUserSlotTest extends TestCase
      */
     private function action(WorkbenchInterface $workbench, ?\Throwable $rowFailure = null): RunTest
     {
-        $app = $workbench->getApp('axenox.BDT');
+        $app = $workbench->getApp(BDTApp::APP_ALIAS);
         return new class($app, $rowFailure) extends RunTest {
             public function __construct(AppInterface $app, private ?\Throwable $rowFailure)
             {
@@ -192,7 +194,7 @@ class RunTestUserSlotTest extends TestCase
      */
     private function runUntilItThrows(int $slots, ?\Throwable $rowFailure = null): \Throwable
     {
-        $workbench = $this->workbench(['TEST_USER.INTERACTIVE_SLOTS' => $slots]);
+        $workbench = $this->workbench([BdtConfig::TEST_USER_INTERACTIVE_SLOTS => $slots]);
         $method = new \ReflectionMethod(RunTest::class, 'performDeferred');
         $method->setAccessible(true);
         try {
@@ -249,7 +251,7 @@ class RunTestUserSlotTest extends TestCase
     #[DataProvider('invalidSlotCounts')]
     public function testInvalidSlotCountIsRefused(mixed $value): void
     {
-        $action = $this->action($this->workbench(['TEST_USER.INTERACTIVE_SLOTS' => $value]));
+        $action = $this->action($this->workbench([BdtConfig::TEST_USER_INTERACTIVE_SLOTS => $value]));
         $method = new \ReflectionMethod(RunTest::class, 'resolveInteractiveUserSlots');
         $method->setAccessible(true);
 
@@ -281,8 +283,8 @@ class RunTestUserSlotTest extends TestCase
         $method = new \ReflectionMethod(RunTest::class, 'resolveInteractiveUserSlots');
         $method->setAccessible(true);
 
-        $this->assertSame(4, $method->invoke($this->action($this->workbench(['TEST_USER.INTERACTIVE_SLOTS' => 4]))));
-        $this->assertSame(7, $method->invoke($this->action($this->workbench(['TEST_USER.INTERACTIVE_SLOTS' => '7']))));
+        $this->assertSame(4, $method->invoke($this->action($this->workbench([BdtConfig::TEST_USER_INTERACTIVE_SLOTS => 4]))));
+        $this->assertSame(7, $method->invoke($this->action($this->workbench([BdtConfig::TEST_USER_INTERACTIVE_SLOTS => '7']))));
         $this->assertGreaterThanOrEqual(1, $method->invoke($this->action($this->workbench())));
     }
 
@@ -302,7 +304,7 @@ class RunTestUserSlotTest extends TestCase
 
         $this->assertInstanceOf(RuntimeException::class, $error);
         $this->assertStringContainsString('All 2 interactive test-user slots are in use', $error->getMessage());
-        $this->assertStringContainsString('TEST_USER.INTERACTIVE_SLOTS', $error->getMessage());
+        $this->assertStringContainsString(BdtConfig::TEST_USER_INTERACTIVE_SLOTS, $error->getMessage());
         $this->assertStringNotContainsString('Run UID:', $error->getMessage());
     }
 

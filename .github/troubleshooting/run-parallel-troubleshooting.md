@@ -16,6 +16,8 @@ Each entry has four parts:
 
 | What you see | Go to |
 |---|---|
+| RunTest killed after 1800 s although `PARALLEL.WORKER_TIMEOUT_SECONDS` is `0` (meant: disabled) | [PARALLEL.WORKER_TIMEOUT_SECONDS = 0 meant two different things](#parallelworker_timeout_seconds--0-meant-two-different-things) |
+| A RunParallel started with `--tags=" "` (blank) ran unfiltered or only by `--feature`/`--suite` | [RunParallel accepted a blank --tags and then dropped it](#runparallel-accepted-a-blank---tags-and-then-dropped-it) |
 | Rerun from the Test Runs console answers "Command not allowed!" | [Rerun console only accepts the two run actions](#rerun-console-only-accepts-the-two-run-actions) |
 | A run is refused at start with "cannot be re-run from the Test Runs console" | [Rerun console only accepts the two run actions](#rerun-console-only-accepts-the-two-run-actions) |
 | "No feature/scenario matched the requested scope/tags - nothing was run." | [An empty scope reported success](#an-empty-scope-reported-success) |
@@ -38,6 +40,56 @@ Each entry has four parts:
 | Chrome fails to launch, every login fails | [Cross-account profile reuse](#cross-account-profile-reuse) |
 | Real concurrency capped at ~2 lanes | [Xdebug serialized the fleet](#xdebug-serialized-the-fleet) |
 | Run duration in the DB is 1000× too small | [duration_ms holds seconds](#duration_ms-holds-seconds) |
+
+---
+
+## PARALLEL.WORKER_TIMEOUT_SECONDS = 0 meant two different things
+
+**Symptoms**
+- An operator set `PARALLEL.WORKER_TIMEOUT_SECONDS` to `0` to switch the wall-clock ceiling off. Scheduled
+  RunParallel lanes then ran without a ceiling as intended, but every RunTest run was still killed after
+  exactly 30 minutes with "Behat TIMED OUT after 1800 s" - a long interactive selection could never finish.
+
+**Root cause**
+- The two actions read the same key with their own code. RunParallel treated `0` (and negative values) as
+  "disabled". RunTest used `value ?: 1800`, and in PHP `0 ?: 1800` is `1800` - so the same `0` became a
+  30-minute ceiling. The 1800 default itself was also written down twice, once per action.
+
+**Fix**
+- One resolver, used by both actions: `BdtConfig::resolveWorkerTimeout()`. Key absent = 1800 s (one
+  default constant), positive value = that many seconds, `0` or negative = disabled. RunTest now runs
+  without a ceiling when it is disabled and says so in the run log (`Timeout: disabled ...`).
+- Trade-off of `0`: RunParallel lanes are still protected by `PARALLEL.WORKER_IDLE_TIMEOUT_SECONDS`, but
+  RunTest has no idle timeout. A hung RunTest then keeps its port, its test-user slot and its open run row
+  until it is killed by hand. Use `0` only where an operator watches interactive runs.
+
+**How to recognize it again.** A RunTest run log whose configuration block says `Timeout: 1800 s` while
+the app config holds `0` can no longer happen; if a timeout ever differs between a RunTest and a RunParallel
+run on the same config, look for a second reader of the key that bypasses `BdtConfig::resolveWorkerTimeout()`.
+
+---
+
+## RunParallel accepted a blank --tags and then dropped it
+
+**Symptoms**
+- A RunParallel started with an option that contained only whitespace (typically `--tags=" "` from an
+  empty-looking console preset field) was NOT refused with "Provide at least one of --tags, --feature or
+  --suite". It ran - either over the whole test base or scoped by `--feature`/`--suite` alone - although the
+  caller believed it was filtered by tags. RunTest refused the same input.
+
+**Root cause**
+- RunParallel read its options untrimmed. `" "` is not empty, so the "at least one scope selector" guard
+  counted it as given; the worker command builder later trimmed it, saw an empty string and left `--tags`
+  out. The guard and the command disagreed about the same value. RunTest already trimmed in its own reader.
+
+**Fix**
+- One shared option reader for both actions, `RunOptions::read()`, which trims and treats a blank value as
+  absent. The guard, the recorded rerun command and the Behat command now all see the same value. The
+  option names themselves are defined once in `RunOptions` as well.
+
+**How to recognize it again.** A run whose recorded `behat_command` has no `--tags` (or no scope selector at
+all) although the caller says tags were passed. Today such an input is refused before a run row exists
+with "Provide at least one of --tags, --feature or --suite".
 
 ---
 
@@ -613,9 +665,10 @@ is retried up to three times before giving up). Every caller distinguishes the t
   Profile dirs are NOT deleted in this case: removing a profile while its browser may still be alive
   is what produces an orphan process that later sweeps cannot attribute.
 
-Affected paths: `LocalChromeManager::stop()`, `RunParallel::cleanupLaneChromes()`,
-`RunParallel::reapLaneProfile()`, `RunTest::cleanupInteractiveChrome()`, and both sweeps in
-`ChromeProfileReaperTrait`.
+Affected paths: `LocalChromeManager::stop()`, `RunParallel::cleanupLaneChromes()`, and both sweeps in
+`ChromeProfileReaperTrait`, plus the single-dir reap `ChromeProfileReaperTrait::reapProfileDirQuietly()`
+used by `RunParallel::reapLaneProfile()` and by RunTest's interactive close-out (formerly
+`RunTest::cleanupInteractiveChrome()`).
 
 ### What to do when you see the warning
 Nothing is lost — the next run's startup sweep reclaims what was skipped. Repeated warnings mean the

@@ -111,6 +111,11 @@ failed instead of vanishing, and the untouched rest of the queue keeps flowing.
   reads the existing `behat.yml` and its imports. Tag filter = `--tags` if given,
   otherwise the suite's own `filters.tags` (what Behat itself applies). Every worker command receives
   `--suite` together with its feature path.
+* **One command builder.** Every worker command (and RunTest's single Behat command) is built by
+  `BehatCommandBuilder::build()`, which quotes each value with `escapeshellarg()` and refuses what the
+  shell cannot carry unchanged (line breaks and NUL everywhere, `" % !` on Windows); the executable path
+  `vendor/bin/behat` uses the platform separator. The POSIX path (Linux) is supported by design but not
+  covered by a test yet.
 * **Run UID contract.** From the moment the run row exists (Phase 2), every outcome — success,
   nothing matched (a failure), worker failures, coordinator error, close-out failure — carries a line
   `Run UID: <uid>` of its own. The line is built in one place: `RunLifecycle::appendRunUid()` for
@@ -322,8 +327,16 @@ comes up on that port, profile dir cannot be cleared). So:
 
 Enforced by Symfony `Process` via `checkTimeout()`. Fires **even while the worker is making
 progress**. Because a worker now runs exactly one feature, this bounds a single feature — it names
-the one feature that hung instead of aborting everything a lane had left to do. Set to `0` to
-disable.
+the one feature that hung instead of aborting everything a lane had left to do. Set to `0` (or a
+negative value) to disable.
+
+The key has **one** resolver, `BdtConfig::resolveWorkerTimeout()`, used by RunParallel (per worker) and
+by RunTest (for its single Behat process): absent = 1800 s, positive = that many seconds, `<= 0` =
+disabled. Never read the key anywhere else — RunTest once turned `0` into 1800 s with `?:`.
+
+Trade-off of `0`: the fleet is still protected by its idle timeout (below), but RunTest has no idle
+timeout. With `0` a hung RunTest keeps its port, its test-user slot and its run row until it is killed by
+hand.
 
 ### Idle timeout — `PARALLEL.WORKER_IDLE_TIMEOUT_SECONDS`, default 600 s
 
@@ -460,7 +473,8 @@ an integer >= 1, anything else is refused). The slot does **not** depend on how 
 local and remote runs draw from the same pool, so a local port number can never overlap a remote one and
 remote endpoints that all share port 443 still get different slots. Agents and
 testers now start RunTest concurrently, and runs that resolve to the same role would otherwise write
-the same `USER_AUTHENTICATOR` row and collide on optimistic locking. `UI5Browser::laneUserSuffix()`
+the same `USER_AUTHENTICATOR` row and collide on optimistic locking. `LaneNaming::slotToken()`
+(called by `UI5Browser::getTestUsername()`)
 therefore accepts `_laneN` **and** `_interactiveN` and throws for any other format; the username becomes
 `<TEST_USER.USERNAME>_interactive<slot>`. N caps the number of distinct interactive users, as the worker
 count caps the lane users. `UI5Browser::isTestUsername()` (used by `TestDataReaper`) recognises both slot
@@ -564,7 +578,7 @@ keep running (10) / stalled (102).
 |---|---|---|
 | `PARALLEL.MAX_WORKERS` | — (required, ≥1) | Lane ceiling |
 | `TEST_USER.INTERACTIVE_SLOTS` | `10` (integer ≥ 1; anything else is refused) | Size of the pool of interactive test-user slots: the maximum number of concurrent RunTest runs and of distinct `<TEST_USER.USERNAME>_interactive<slot>` users |
-| `PARALLEL.WORKER_TIMEOUT_SECONDS` | 1800 | Total wall-clock ceiling per feature. `0` disables |
+| `PARALLEL.WORKER_TIMEOUT_SECONDS` | 1800 | Total wall-clock ceiling per feature (RunParallel) and per run (RunTest). `0` or negative disables, for both. Trade-off: the fleet is still protected by its idle timeout, but RunTest has none - with `0` a hung RunTest keeps its port, test-user slot and run row until it is killed by hand |
 | `PARALLEL.WORKER_IDLE_TIMEOUT_SECONDS` | 600 | Idle ceiling per feature. `0` disables |
 | `BROWSER.MANAGER` | `\axenox\BDT\Behat\BrowserManagers\LocalChromeManager` | Browser manager class. RunParallel requires one that owns its browser process (supports parallel lanes) |
 | `BROWSER.MANAGER_CONFIG` | local executable, headless `true` and port bands | UXON settings of that class: `executable`, `headless`, `port_band_interactive`, `port_band_scheduled` for the local manager |

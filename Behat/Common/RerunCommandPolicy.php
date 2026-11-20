@@ -54,9 +54,10 @@ final class RerunCommandPolicy
      * What a QUOTED value may contain on top of a bare one: space and the boolean/grouping characters of a
      * tag expression - `&` `|` `(` `)`.
      *
-     * RunScope::cliOption() puts a value in quotes exactly when it contains whitespace, `&`, `|`, `<`, `>`,
-     * `^`, `(` or `)`. Of those, `<`, `>` and `^` are not valid in a Behat tag expression and are refused
-     * here on purpose. Still forbidden inside quotes: `"` (would end the value), `%` and `!` (cmd expands
+     * RunScope::cliOption() puts a value in quotes exactly when isBareValue() refuses it, i.e. when it contains
+     * any character outside BARE_VALUE_CHARS. Of the characters cmd acts on, only these extras are accepted
+     * inside the quotes; `<`, `>` and `^` are not valid in a Behat tag expression and are refused on purpose.
+     * Still forbidden inside quotes: `"` (would end the value), `%` and `!` (cmd expands
      * them even inside quotes), `;`, `$` and the backtick (live inside double quotes on POSIX shells), tab
      * and line breaks.
      */
@@ -133,6 +134,22 @@ final class RerunCommandPolicy
             }
         }
         return false;
+    }
+
+    /**
+     * Tells whether a value may stand BARE (unquoted) in a recorded command, i.e. consists only of
+     * BARE_VALUE_CHARS.
+     *
+     * WHY IT LIVES HERE: RunScope::cliOption() needs exactly this decision to choose between `--x=value` and
+     * `--x="value"`. Deciding it from the same constant the allow-list uses means the recorder can never
+     * leave a value bare that the console then refuses as bare. A subject that is not valid UTF-8 makes
+     * preg_match() fail and is reported as not bare (the quoted form is then refused by the console as well).
+     *
+     * @param string $value Option value without quotes
+     */
+    public static function isBareValue(string $value): bool
+    {
+        return preg_match('#^[' . self::BARE_VALUE_CHARS . ']+$#Du', $value) === 1;
     }
 
     /**

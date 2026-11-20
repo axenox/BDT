@@ -3,6 +3,8 @@ namespace axenox\BDT\Behat\Common\Traits;
 
 use axenox\BDT\Behat\BrowserManagers\ProcessHosts\ProcessHostInterface;
 use axenox\BDT\Behat\BrowserManagers\ProcessHosts\ProcessHostFactory;
+use axenox\BDT\Behat\Common\LaneNaming;
+use exface\Core\Interfaces\WorkbenchInterface;
 
 /**
  * Shared reaper for orphaned Chrome process trees and their profile directories.
@@ -19,8 +21,11 @@ use axenox\BDT\Behat\BrowserManagers\ProcessHosts\ProcessHostFactory;
  * cleanup methods throw - a leftover browser is a nuisance to log, never a reason to abort an
  * otherwise-finished run - so callers invoke them from finally blocks.
  *
- * This trait has NO dependencies on the using class (unlike PortProbingTrait it needs no
- * getWorkbench()); callers own their own logging.
+ * Only reapProfileDirQuietly() needs the using class to provide getWorkbench() (for its log lines; both
+ * actions and LocalChromeManager have it). Every other method returns its findings and leaves the logging
+ * to the caller.
+ *
+ * @method WorkbenchInterface getWorkbench()
  */
 trait ChromeProfileReaperTrait
 {
@@ -231,6 +236,67 @@ trait ChromeProfileReaperTrait
     }
 
     /**
+     * Kills every Chrome bound to ONE profile dir and removes the dir - logging what happened, never throwing.
+     *
+     * WHY ONE METHOD: RunTest (cleanupInteractiveChrome, for its interactive<port> profile) and RunParallel
+     * (reapLaneProfile, for one lane after each feature or kill) carried the same snapshot -> kill -> settle ->
+     * remove sequence, including the same NULL-snapshot rule, in two copies. A fix to one (e.g. the rule that a
+     * dir must not be removed when the process list could not be read) would not have reached the other.
+     *
+     * WHY THE DIR IS SKIPPED WHEN THE PROCESS LIST IS UNAVAILABLE: we then cannot know whether a browser is still
+     * attached. Removing the dir anyway would leave a live Chrome with a deleted profile - an orphan no sweep
+     * can attribute later. The skip is logged; the end-of-run cleanup and the next run's startup sweeps reclaim
+     * the dir.
+     *
+     * WHY A SETTLE PAUSE: Chrome releases its profile file handles (ProcessSingleton lock, etc.) asynchronously
+     * after the kill returns; removing the dir at once would race those handles into a half-deleted profile.
+     * The caller chooses the length because the trade-off differs: a lane reap runs inside the fleet's drain
+     * loop between two features and must not hold the lane longer than needed, an interactive close-out runs
+     * once at the end.
+     *
+     * WHY IT NEVER THROWS: callers run it in finally blocks and inside the drain loop, where a throw would mask
+     * the real run outcome or strand the other lanes. Resources are freed BEFORE anything is logged, because
+     * the workbench logger writes to a database that may be exactly what is broken.
+     *
+     * @param string $absProfileDir      Absolute profile dir whose Chrome tree(s) to kill and which to remove
+     * @param string $logLabel           Prefix of every log line, naming the caller (e.g. "BDT parallel cleanup: lane 3")
+     * @param int    $settleMicroseconds Pause between a kill and the removal
+     */
+    protected function reapProfileDirQuietly(string $absProfileDir, string $logLabel, int $settleMicroseconds): void
+    {
+        try {
+            $chromeProcesses = $this->listChromeProcessCommandLines();
+            if ($chromeProcesses === null) {
+                $this->getWorkbench()->getLogger()->warning($logLabel . ': could not enumerate browser processes - the '
+                    . 'Chrome reap was SKIPPED (not completed). Profile dir ' . $absProfileDir . ' was left in place.');
+                return;
+            }
+
+            $killed = $this->reapChromeProfileDir($absProfileDir, $chromeProcesses);
+            if ($killed !== []) {
+                usleep($settleMicroseconds);
+            }
+            $removed = $this->removeDirectoryTree($absProfileDir);
+
+            $logger = $this->getWorkbench()->getLogger();
+            foreach ($killed as $pid) {
+                $logger->info($logLabel . ': killed orphan Chrome PID ' . $pid . ' bound to ' . $absProfileDir);
+            }
+            if (! $removed) {
+                $logger->warning($logLabel . ': could not fully remove profile dir ' . $absProfileDir
+                    . ' - a Chrome handle may still be open. A later run or the startup sweep reclaims it.');
+            }
+        } catch (\Throwable $e) {
+            // Documented boundary (see docblock): cleanup must never break the caller's finally chain or drain loop.
+            try {
+                $this->getWorkbench()->getLogger()->logException($e);
+            } catch (\Throwable $ignored) {
+                // Logging itself failed (e.g. workbench already torn down) - nothing safe left to do.
+            }
+        }
+    }
+
+    /**
      * Kills Chromes bound to stale/vanished profile dirs under our profiles root and removes those dirs.
      *
      * WHY THIS EXISTS: the per-run cleanup in the coordinator's finally block only runs if the
@@ -368,15 +434,14 @@ trait ChromeProfileReaperTrait
             }
 
             // Collect the lane profile dirs whose owning run is not active any more. The dir name is
-            // "<run_uid>_lane<N>", so the UID is everything before the last "_lane".
+            // "<run_uid>_lane<N>"; LaneNaming owns how the UID is taken back out of it.
             $orphanDirs = [];
-            foreach (glob($profilesRoot . DIRECTORY_SEPARATOR . '*_lane*', GLOB_ONLYDIR) ?: [] as $dir) {
-                $name = basename($dir);
-                $pos = strrpos($name, '_lane');
-                if ($pos === false || $pos === 0) {
+            foreach (glob($profilesRoot . DIRECTORY_SEPARATOR . LaneNaming::laneDirGlob(), GLOB_ONLYDIR) ?: [] as $dir) {
+                $ownerUid = LaneNaming::ownerRunUidOfLaneDir(basename($dir));
+                if ($ownerUid === null) {
                     continue;
                 }
-                $ownerUid = strtolower(substr($name, 0, $pos));
+                $ownerUid = strtolower($ownerUid);
                 if (! isset($active[$ownerUid])) {
                     // Keyed by release-independent identity, so a Chrome launched by a previous
                     // deployment still matches the very same physical lane profile.

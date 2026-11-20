@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Facades\MarkdownPrinters;
 
+use axenox\BDT\BDTApp;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\DataTypes\BinaryDataType;
 use exface\Core\DataTypes\MarkdownDataType;
@@ -711,7 +712,7 @@ abstract class AbstractBdtMarkdownPrinter extends AbstractMarkdownPrinter implem
      */
     protected function translate(string $key): string
     {
-        return $this->workbench->getApp('axenox.BDT')->getTranslator()->translate('RUN_REPORT.' . $key);
+        return $this->workbench->getApp(BDTApp::APP_ALIAS)->getTranslator()->translate('RUN_REPORT.' . $key);
     }
 
     /**

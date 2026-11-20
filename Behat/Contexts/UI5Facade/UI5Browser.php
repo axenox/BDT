@@ -2,9 +2,11 @@
 
 namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
+use axenox\BDT\BDTApp;
 use axenox\BDT\Behat\Common\BdtPaths;
 use axenox\BDT\Behat\Common\ErrorManager;
-use axenox\BDT\Behat\Common\GeneratedBehatConfig;
+use axenox\BDT\Behat\Common\BdtConfig;
+use axenox\BDT\Behat\Common\LaneNaming;
 use axenox\BDT\Behat\Common\Traits\AuthenticatorTimeStampingTrait;
 use axenox\BDT\Behat\Common\Traits\DeadlockRetryTrait;
 use axenox\BDT\Behat\Common\Traits\ExceptionArgumentsSuppressionTrait;
@@ -105,14 +107,6 @@ class UI5Browser
     private $chromeRecoveryFn = null;
 
     /**
-     * The token that separates the lane slot from the base username in a per-lane test user.
-     *
-     * Public because the naming convention is not private knowledge any more: the coordinator's data
-     * cleanup has to recognise a test user without being able to create one.
-     */
-    public const LANE_USERNAME_TOKEN = '_lane';
-
-    /**
      * Class UI5 puts on a tab header that did not fit into its tab strip and was moved into the overflow list.
      */
     private const TAB_HIDDEN_IN_OVERFLOW_CLASS = 'sapMITBFilterHidden';
@@ -159,7 +153,7 @@ class UI5Browser
 
     public static function setupUser(WorkbenchInterface $workbench, array $roles, string $locale = null): array
     {
-        $config = $workbench->getApp('axenox.BDT')->getConfig();
+        $config = $workbench->getApp(BDTApp::APP_ALIAS)->getConfig();
 
         // In a parallel run each worker carries a lane_id (wired through DatabaseFormatter). Give every
         // lane its OWN exface.Core.USER row by suffixing the username, so concurrent workers never
@@ -201,8 +195,8 @@ class UI5Browser
                     $userSheet->addRow([
                         'USERNAME' => $testRunnerUsername,
                         'PASSWORD' => self::getTestUserPassword($workbench),
-                        'FIRST_NAME' => $config->getOption('TEST_USER.FIRST_NAME'),
-                        'LAST_NAME' => $config->getOption('TEST_USER.LAST_NAME'),
+                        'FIRST_NAME' => $config->getOption(BdtConfig::TEST_USER_FIRST_NAME),
+                        'LAST_NAME' => $config->getOption(BdtConfig::TEST_USER_LAST_NAME),
                         'LOCALE' => $workbench->getConfig()->getOption('SERVER.DEFAULT_LOCALE')
                     ]);
                     $userSheet->dataCreate();
@@ -327,49 +321,6 @@ class UI5Browser
         DatabaseFormatter::getEventDispatcher()->dispatch(new BeforeUserLoggedIn($testRunnerUsername, $roleAliasArray));
 
         return $loginFields;
-    }
-
-    /**
-     * Derives the stable per-lane username suffix from a lane_id.
-     *
-     * Why only the trailing "_laneN" / "_interactiveN" and not the whole lane_id: lane_id is built by the
-     * action as "<run_uid>_laneN" (RunParallel lane N) or "<run_uid>_interactive<slot>" (RunTest, slot
-     * reserved across processes). The run_uid changes every run, so embedding it would create a brand
-     * new user row on every run and let test users accumulate without bound. Keeping just the slot token
-     * makes the username identical across runs, so find-or-create reuses the same row and the user set
-     * stays capped - at the worker count for the fleet, at TEST_USER.INTERACTIVE_SLOTS for
-     * RunTest.
-     *
-     * Why RunTest needs its own user at all: AI agents and testers now start RunTest concurrently. Runs
-     * that resolve to the same role would write the same USER_AUTHENTICATOR row and fail with
-     * optimistic-locking errors. The reserved slot is unique among concurrently running interactive runs
-     * by construction, so it separates them exactly as the lane number separates fleet lanes.
-     *
-     * Why it throws instead of falling back: if we are in an attach-mode run (lane_id present) but cannot
-     * locate the slot, silently using the base username would put every run back on one shared
-     * row — the exact collision this change exists to prevent. Failing loudly surfaces a broken
-     * lane_id contract instead of hiding it behind a data race.
-     */
-    private static function laneUserSuffix(string $laneId): string
-    {
-        if (preg_match('/' . self::laneSlotPattern() . '$/', $laneId, $matches) !== 1) {
-            throw new RuntimeException('Cannot derive lane user suffix: lane_id "' . $laneId . '" has no "_laneN" or "_interactiveN" token.');
-        }
-        return $matches[0];
-    }
-
-    /**
-     * Returns the regex fragment (unanchored) that matches one username slot token: "_laneN" or "_interactiveN".
-     *
-     * WHY ONE PATTERN FOR BOTH DIRECTIONS: laneUserSuffix() derives the suffix from a lane_id and
-     * isTestUsername() recognises it on a stored username. If the two used separate patterns, a new
-     * slot kind added to one would create users the data cleanup never recognises as test users and
-     * therefore never removes.
-     */
-    private static function laneSlotPattern(): string
-    {
-        return '(?:' . preg_quote(self::LANE_USERNAME_TOKEN, '/') . '|'
-            . preg_quote(GeneratedBehatConfig::LANE_ID_TOKEN_INTERACTIVE, '/') . ')\d+';
     }
 
     /**
@@ -1810,7 +1761,7 @@ JS
      */
     public function findLatestXlsxFile(): ?string
     {
-        $config = $this->getWorkbench()->getApp('axenox.BDT')->getConfig();
+        $config = $this->getWorkbench()->getApp(BDTApp::APP_ALIAS)->getConfig();
         $downloadDir = $config->getOption('TEST_DOWNLOADS.DIRECTORY_WINDOWS');
 
         // Find XLSX files modified in the last 2 minutes 
@@ -2626,10 +2577,10 @@ JS
      */
     public static function getTestUsername(WorkbenchInterface $workbench): string
     {
-        $baseUsername = $workbench->getApp('axenox.BDT')->getConfig()->getOption('TEST_USER.USERNAME');
+        $baseUsername = $workbench->getApp(BDTApp::APP_ALIAS)->getConfig()->getOption(BdtConfig::TEST_USER_USERNAME);
         $laneId = DatabaseFormatter::getLaneId();
         return $laneId !== null
-            ? $baseUsername . self::laneUserSuffix($laneId)
+            ? $baseUsername . LaneNaming::slotToken($laneId)
             : $baseUsername;
     }
 
@@ -2646,7 +2597,7 @@ JS
      */
     public static function getTestUserPassword(WorkbenchInterface $workbench): string
     {
-        return (string) $workbench->getApp('axenox.BDT')->getConfig()->getOption('TEST_USER.PASSWORD');
+        return (string) $workbench->getApp(BDTApp::APP_ALIAS)->getConfig()->getOption(BdtConfig::TEST_USER_PASSWORD);
     }
 
     /**
@@ -2660,14 +2611,14 @@ JS
      */
     public static function isTestUsername(WorkbenchInterface $workbench, string $username): bool
     {
-        $baseUsername = (string) $workbench->getApp('axenox.BDT')->getConfig()->getOption('TEST_USER.USERNAME');
+        $baseUsername = (string) $workbench->getApp(BDTApp::APP_ALIAS)->getConfig()->getOption(BdtConfig::TEST_USER_USERNAME);
         if ($baseUsername === '') {
             return false;
         }
         if ($username === $baseUsername) {
             return true;
         }
-        return preg_match('/^' . preg_quote($baseUsername, '/') . self::laneSlotPattern() . '$/', $username) === 1;
+        return preg_match('/^' . preg_quote($baseUsername, '/') . LaneNaming::slotTokenPattern() . '$/', $username) === 1;
     }
 
     /**

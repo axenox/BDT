@@ -1,11 +1,14 @@
 <?php
 namespace axenox\BDT\Behat\DatabaseFormatter;
 
+use axenox\BDT\BDTApp;
+use axenox\BDT\Behat\Common\BdtConfig;
 use axenox\BDT\Behat\Common\ExpectedTestCountCalculator;
 use axenox\BDT\Behat\Common\LeafFirstDeleter;
 use axenox\BDT\Behat\Common\RunRecordWriter;
 use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
 use axenox\BDT\Behat\Common\TestDataReaper;
+use axenox\BDT\Behat\Common\XdebugState;
 use axenox\BDT\Behat\Common\Traits\DeadlockRetryTrait;
 use axenox\BDT\Behat\BrowserManagers\BrowserManagerFactory;
 use axenox\BDT\Behat\Events\AfterPageVisited;
@@ -1435,9 +1438,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     {
         try {
             $managerDescription = BrowserManagerFactory::getInstance()->describe();
-            $debuggerActive = extension_loaded('xdebug')
-                && function_exists('xdebug_is_debugger_active')
-                && xdebug_is_debugger_active();
+            $debuggerActive = XdebugState::isDebuggerActive();
 
             $modeLine = $attachMode
                 ? 'attach-mode worker' . (self::$laneId !== null ? ' (lane ' . self::$laneId . ')' : '')
@@ -1796,7 +1797,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private static function cleanUpTestRuns(OnCleanUpEvent $event)
     {
         $workbench = $event->getWorkbench();
-        $config = $workbench->getApp('axenox.BDT')->getConfig();
+        $config = $workbench->getApp(BDTApp::APP_ALIAS)->getConfig();
 
         // Retention is opt-in: without an explicit positive age, keep every run.
         if (! $config->hasOption(self::CLEANUP_DAYS_TO_KEEP)) {
@@ -1895,7 +1896,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private static function cleanUpTestData(OnCleanUpEvent $event) : void
     {
         $workbench = $event->getWorkbench();
-        $config = $workbench->getApp('axenox.BDT')->getConfig();
+        $config = $workbench->getApp(BDTApp::APP_ALIAS)->getConfig();
 
         // Opt-in, exactly like the run retention above: without an explicit positive age nothing is
         // deleted. A destructive job must never start because an option was forgotten.
@@ -1925,7 +1926,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         self::logTestDataReport($workbench, $report, $maxAgeDays);
 
         if ($report['users'] === 0) {
-            $event->addResultMessage('BDT: no test data cleanup - no test user found for the configured TEST_USER.USERNAME.');
+            $event->addResultMessage('BDT: no test data cleanup - no test user found for the configured ' . BdtConfig::TEST_USER_USERNAME . '.');
             return;
         }
         // Naming the scope matters more than the row count: it is the only way an operator can tell

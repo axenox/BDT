@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Tests\PHPUnit\Unit\Common;
 
+use axenox\BDT\BDTApp;
 use axenox\BDT\Behat\Common\RunScope;
 use exface\Core\CommonLogic\Workbench;
 use exface\Core\Exceptions\RuntimeException;
@@ -68,7 +69,7 @@ class RunScopeTest extends TestCase
         $this->workbench = self::newWorkbench();
         // The shipped or installation value of PARALLEL.BEHAT_CONFIG must not steer the resolution under
         // test; an empty value means "the behat.yml of the given root".
-        $this->workbench->getApp('axenox.BDT')->getConfig()->setOption('PARALLEL.BEHAT_CONFIG', '');
+        $this->workbench->getApp(BDTApp::APP_ALIAS)->getConfig()->setOption('PARALLEL.BEHAT_CONFIG', '');
         $this->root = $this->workbench->filemanager()->getPathToVendorFolder() . DIRECTORY_SEPARATOR . self::FIXTURE_PREFIX . bin2hex(random_bytes(6));
         try {
             mkdir($this->root . DIRECTORY_SEPARATOR . 'alpha', 0777, true);

@@ -1,10 +1,12 @@
 <?php
 namespace axenox\BDT\Tests\PHPUnit\Unit\Common;
 
+use axenox\BDT\BDTApp;
 use axenox\BDT\Behat\BrowserManagers\BrowserManagerFactory;
 use axenox\BDT\Behat\BrowserManagers\LocalChromeManager;
 use axenox\BDT\Behat\BrowserManagers\RemoteChromeManager;
 use axenox\BDT\Behat\Common\GeneratedBehatConfig;
+use axenox\BDT\Behat\Common\LaneNaming;
 use axenox\BDT\Behat\DatabaseFormatter\DatabaseFormatterExtension;
 use exface\Core\CommonLogic\UxonObject;
 use exface\Core\CommonLogic\Workbench;
@@ -33,7 +35,7 @@ class GeneratedBehatConfigTest extends TestCase
             'SERVER.INSTALLATION_NAME' => 'bdt-generated-config-unit-test',
             'DEBUG.LIVE_CLASS_AUTOLOADER' => false
         ]);
-        $config = $workbench->getApp('axenox.BDT')->getConfig();
+        $config = $workbench->getApp(BDTApp::APP_ALIAS)->getConfig();
         $config->setOption('BROWSER.MANAGER', LocalChromeManager::class);
         $config->setOption('BROWSER.MANAGER_CONFIG', ['executable' => 'base\\chrome.exe']);
         return $workbench;
@@ -195,7 +197,7 @@ class GeneratedBehatConfigTest extends TestCase
     public function testInteractiveRunWritesRunAndLaneIdentityUnderTheBaseConfigKey(): void
     {
         $extensions = GeneratedBehatConfig::buildExtensions(
-            $this->local(), 9201, 'profile\\interactive9201', '', '', '', 'run-uid', GeneratedBehatConfig::interactiveLaneId('run-uid', 3)
+            $this->local(), 9201, 'profile\\interactive9201', '', '', '', 'run-uid', LaneNaming::interactiveLaneId('run-uid', 3)
         );
 
         $this->assertArrayHasKey(DatabaseFormatterExtension::class, $extensions);
@@ -210,7 +212,7 @@ class GeneratedBehatConfigTest extends TestCase
     public function testInteractiveLaneIdRequiresASlot(): void
     {
         $this->expectException(\exface\Core\Exceptions\RuntimeException::class);
-        GeneratedBehatConfig::interactiveLaneId('run-uid', 0);
+        LaneNaming::interactiveLaneId('run-uid', 0);
     }
 
     /**

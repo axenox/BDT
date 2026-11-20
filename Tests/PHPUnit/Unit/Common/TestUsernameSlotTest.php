@@ -1,6 +1,9 @@
 <?php
 namespace axenox\BDT\Tests\PHPUnit\Unit\Common;
 
+use axenox\BDT\BDTApp;
+use axenox\BDT\Behat\Common\BdtConfig;
+use axenox\BDT\Behat\Common\LaneNaming;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use exface\Core\CommonLogic\Workbench;
 use exface\Core\Exceptions\RuntimeException;
@@ -19,9 +22,7 @@ class TestUsernameSlotTest extends TestCase
 {
     private function suffix(string $laneId): string
     {
-        $method = new \ReflectionMethod(UI5Browser::class, 'laneUserSuffix');
-        $method->setAccessible(true);
-        return $method->invoke(null, $laneId);
+        return LaneNaming::slotToken($laneId);
     }
 
     /**
@@ -34,7 +35,7 @@ class TestUsernameSlotTest extends TestCase
             'SERVER.INSTALLATION_NAME' => 'bdt-test-username-unit-test',
             'DEBUG.LIVE_CLASS_AUTOLOADER' => false
         ]);
-        $workbench->getApp('axenox.BDT')->getConfig()->setOption('TEST_USER.USERNAME', 'bdt_user');
+        $workbench->getApp(BDTApp::APP_ALIAS)->getConfig()->setOption(BdtConfig::TEST_USER_USERNAME, 'bdt_user');
         return $workbench;
     }
 

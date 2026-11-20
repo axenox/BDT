@@ -4,6 +4,7 @@ namespace axenox\BDT\Tests\PHPUnit\Unit\BrowserManagers;
 use axenox\BDT\Behat\BrowserManagers\BrowserManagerFactory;
 use axenox\BDT\Behat\BrowserManagers\LocalChromeManager;
 use axenox\BDT\Behat\BrowserManagers\RemoteChromeManager;
+use axenox\BDT\Behat\Common\XdebugState;
 use axenox\BDT\Exceptions\ConfigException;
 use exface\Core\CommonLogic\Configuration;
 use exface\Core\CommonLogic\UxonObject;
@@ -649,8 +650,6 @@ class BrowserManagerFactoryTest extends TestCase
      */
     private function debuggerActive(): bool
     {
-        return extension_loaded('xdebug')
-            && function_exists('xdebug_is_debugger_active')
-            && xdebug_is_debugger_active();
+        return XdebugState::isDebuggerActive();
     }
 }

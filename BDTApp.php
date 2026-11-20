@@ -12,6 +12,16 @@ use exface\Core\CommonLogic\AppInstallers\AbstractSqlDatabaseInstaller;
 class BDTApp extends App
 {
     /**
+     * The alias of this app - the one spelling every BDT class uses to look up the app and its config.
+     *
+     * WHY A CONSTANT HERE: the literal used to be repeated in more than twenty getApp() calls and in two
+     * private constants of its own (RunScope, BrowserManagerFactory). The app class is the natural owner
+     * of its own alias, and a single definition means a typo can no longer make one caller silently read
+     * the config of an app that does not exist.
+     */
+    public const APP_ALIAS = 'axenox.BDT';
+
+    /**
      *
      * {@inheritDoc}
      * @see \exface\Core\CommonLogic\Model\App::getInstaller()
