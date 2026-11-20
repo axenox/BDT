@@ -1,11 +1,14 @@
 <?php
 namespace axenox\BDT\Behat\DatabaseFormatter;
 
+use axenox\BDT\BDTApp;
+use axenox\BDT\Behat\Common\BdtConfig;
 use axenox\BDT\Behat\Common\ExpectedTestCountCalculator;
 use axenox\BDT\Behat\Common\LeafFirstDeleter;
 use axenox\BDT\Behat\Common\RunRecordWriter;
 use axenox\BDT\Behat\Common\ScreenshotProviderInterface;
 use axenox\BDT\Behat\Common\TestDataReaper;
+use axenox\BDT\Behat\Common\XdebugState;
 use axenox\BDT\Behat\Common\Traits\DeadlockRetryTrait;
 use axenox\BDT\Behat\BrowserManagers\BrowserManagerFactory;
 use axenox\BDT\Behat\Events\AfterPageVisited;
@@ -18,7 +21,6 @@ use axenox\BDT\Interfaces\TestResultInterface;
 use axenox\BDT\Interfaces\TestRunObserverInterface;
 use Behat\Testwork\EventDispatcher\Event\BeforeSuiteTested;
 use Behat\Testwork\Output\Formatter;
-use Behat\Testwork\Suite\Suite;
 use Behat\Testwork\Suite\SuiteRegistry;
 use Behat\Testwork\Tester\Result\TestResult;
 use Behat\Behat\EventDispatcher\Event\AfterOutlineTested;
@@ -175,7 +177,8 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private ?string $injectedRunUid = null;
 
     /**
-     * Per-lane identifier injected via config in parallel runs (e.g. "<run_uid>_lane2").
+     * Per-lane identifier injected via config in attach-mode runs: "<run_uid>_lane2" for a RunParallel
+     * lane, "<run_uid>_interactive<slot>" for the single process of a RunTest run.
      *
      * Kept static so {@see UI5Browser::setupUser()} can read it without a formatter reference and
      * namespace the provisioned test user per lane. This prevents two concurrent workers that
@@ -1435,9 +1438,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     {
         try {
             $managerDescription = BrowserManagerFactory::getInstance()->describe();
-            $debuggerActive = extension_loaded('xdebug')
-                && function_exists('xdebug_is_debugger_active')
-                && xdebug_is_debugger_active();
+            $debuggerActive = XdebugState::isDebuggerActive();
 
             $modeLine = $attachMode
                 ? 'attach-mode worker' . (self::$laneId !== null ? ' (lane ' . self::$laneId . ')' : '')
@@ -1472,22 +1473,19 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             return;
         }
 
-        // Prefer the durable action command RunTest injects via the BDT_RUN_COMMAND env var
-        // ("vendor\bin\action <app>:RunTest --tags=..."), the reproducible form the Test Runs page
-        // reruns. Fall back to the raw behat argv only for a plain "vendor\bin\behat" run that sets
-        // no such variable - that config-based argv is not meant to be rerun elsewhere.
-        $command = getenv('BDT_RUN_COMMAND') ?: null;
-        if ($command === null) {
-            $cliArgs = $_SERVER['argv'] ?? [];
-            if (! empty($cliArgs)) {
-                // First item is the file called - remove that
-                array_shift($cliArgs);
-                $command = implode(' ', $cliArgs);
-            }
+        // This path is only reached by a plain "vendor\bin\behat" run: RunTest and RunParallel own their
+        // run row and start Behat in attach-mode, recording their rerunnable ACTION command themselves.
+        // The raw behat argv is therefore the only command there is to record here.
+        $command = null;
+        $cliArgs = $_SERVER['argv'] ?? [];
+        if (! empty($cliArgs)) {
+            // First item is the file called - remove that
+            array_shift($cliArgs);
+            $command = implode(' ', $cliArgs);
         }
         try{
-            // Run-row creation is shared with the coordinator's RunLifecycle via RunRecordWriter,
-            // so the run schema stays controlled from one place.
+            // Run-row creation is shared with RunTest/RunParallel via RunRecordWriter, so the run
+            // schema stays controlled from one place.
             $this->runDataSheet = (new RunRecordWriter())->create($this->workbench, $command);
             $this->registerMetrics();
         }
@@ -1524,49 +1522,22 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private function calculateExpectedTotals(): array
     {
         try {
-            $calculator = new ExpectedTestCountCalculator();
-
-            // When Behat is invoked with a positional feature/path (RunTest's --feature reaches
-            // Behat as a bare path argument, not an option), ONLY that path runs - not the whole
-            // suite. Count it alone so the expected totals match what actually executes; otherwise
-            // every single-feature interactive run is measured against the suite-wide total and
-            // looks like it stopped early. See getPositionalFeaturePath() for why suite-wide
-            // counting is wrong here.
-            $featurePath = $this->getPositionalFeaturePath();
-            if ($featurePath !== null) {
-                // Behat still applies a tag filter to the positional path: the CLI --tags when
-                // given, otherwise the OWNING suite's configured filter. Reproduce that so a
-                // "feature + tags" selection is not over-counted. With no owning suite (a path
-                // outside every configured suite) only the CLI --tags can apply.
-                $owningSuite = $this->findSuiteOwningPath($featurePath);
-                $tagExpression = $owningSuite !== null
-                    ? $this->resolveTagExpression($owningSuite)
-                    : $this->getCliOption('tags');
-                $result = $calculator->calculate([$featurePath], $tagExpression);
-                return [$result->featureCount, $result->scenarioCount];
-            }
-
-            $features = 0;
-            $scenarios = 0;
-            $selectedSuite = $this->getCliOption('suite');
-            foreach ($this->suiteRegistry->getSuites() as $suite) {
-                // Honour Behat's --suite option: when a single suite is selected on the CLI,
-                // only that suite runs, so only it must be counted. Without this filter the
-                // expected totals would include every configured suite across all imported
-                // apps and dwarf what actually ran, making every --suite run look like it
-                // stopped early.
-                if ($selectedSuite !== null && $suite->getName() !== $selectedSuite) {
-                    continue;
-                }
-                $paths = $suite->hasSetting('paths') ? $suite->getSetting('paths') : [];
-                if (empty($paths)) {
-                    continue;
-                }
-                $result = $calculator->calculate($paths, $this->resolveTagExpression($suite));
-                $features += $result->featureCount;
-                $scenarios += $result->scenarioCount;
-            }
-            return [$features, $scenarios];
+            // The scope rules (suite selection, owning suite of a positional path, CLI --tags over the
+            // suite's own filters.tags) live in ExpectedTestCountCalculator::calculateForScope(), shared
+            // with the RunTest/RunParallel coordinators. Here we only supply the facts from this process:
+            // the live suites and the CLI arguments Behat was started with.
+            //
+            // A positional feature/path (RunTest's --feature reaches Behat as a bare path argument, not
+            // an option) runs ONLY that path - not the whole suite - so it is counted alone; otherwise
+            // every single-feature interactive run is measured against the suite-wide total and looks
+            // like it stopped early. See getPositionalFeaturePath().
+            $result = (new ExpectedTestCountCalculator())->calculateForScope(
+                $this->describeSuites(),
+                $this->getCliOption('suite'),
+                $this->getCliOption('tags'),
+                $this->getPositionalFeaturePath()
+            );
+            return [$result->featureCount, $result->scenarioCount];
         } catch (\Throwable $e) {
             // Never let scope estimation block run creation; leave the counts NULL instead.
             ErrorManager::getInstance()->logException($e, $this->workbench);
@@ -1575,23 +1546,26 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     }
 
     /**
-     * Resolves the active tag filter for a suite, preferring the CLI "--tags" option (which
-     * Behat applies globally to every suite) over the suite's own configured filters.
+     * Describes the suites Behat resolved for this process in the plain shape the shared scope code
+     * works on (name => paths + own tag filter).
      *
-     * Why read argv directly: CLI --tags is the authoritative override Behat applies last, and
-     * the formatter already reads $_SERVER['argv'] elsewhere. The per-suite "filters.tags"
-     * setting is only the fallback for runs without an explicit --tags.
+     * WHY THE CONVERSION: the coordinators read the same information from behat.yml, where no Suite
+     * objects exist. A plain-array contract is what lets both sides call one implementation of
+     * "which suite owns this path" and "which tag filter applies" instead of each keeping its own.
+     *
+     * @return array<string,array{paths:string[],tags:?string}>
      */
-    private function resolveTagExpression(Suite $suite): ?string
+    private function describeSuites(): array
     {
-        // CLI --tags is Behat's authoritative override, applied to every suite.
-        $cliTags = $this->getCliOption('tags');
-        if ($cliTags !== null) {
-            return $cliTags;
+        $suites = [];
+        foreach ($this->suiteRegistry->getSuites() as $suite) {
+            $filters = $suite->hasSetting('filters') ? $suite->getSetting('filters') : [];
+            $suites[$suite->getName()] = [
+                'paths' => $suite->hasSetting('paths') ? (array) $suite->getSetting('paths') : [],
+                'tags' => $filters['tags'] ?? null
+            ];
         }
-        // Otherwise fall back to the suite's own configured tag filter.
-        $filters = $suite->hasSetting('filters') ? $suite->getSetting('filters') : [];
-        return $filters['tags'] ?? null;
+        return $suites;
     }
 
     /**
@@ -1666,40 +1640,6 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     }
 
     /**
-     * Finds the suite whose configured paths contain the given positional feature path, or null.
-     *
-     * WHY IT EXISTS: when a positional path is counted on its own (see calculateExpectedTotals),
-     * the tag filter Behat applies is still the OWNING suite's configured filter unless --tags
-     * overrides it. Locating that suite lets resolveTagExpression() reproduce Behat's real
-     * filtering; without it a suite-level default tag filter would be ignored and the expected
-     * scenario count over-counted for that path.
-     */
-    private function findSuiteOwningPath(string $featurePath): ?Suite
-    {
-        $needle = $this->normalizePathForCompare($featurePath);
-        if ($needle === null) {
-            return null;
-        }
-        foreach ($this->suiteRegistry->getSuites() as $suite) {
-            $paths = $suite->hasSetting('paths') ? $suite->getSetting('paths') : [];
-            foreach ($paths as $suitePath) {
-                $base = $this->normalizePathForCompare((string) $suitePath);
-                if ($base === null) {
-                    continue;
-                }
-                // Exact file match, or the feature lives under the suite's directory. The trailing
-                // separator guards a directory boundary so "features2" cannot match "features".
-                if ($needle === $base
-                    || str_starts_with($needle, rtrim($base, '/\\') . DIRECTORY_SEPARATOR)
-                ) {
-                    return $suite;
-                }
-            }
-        }
-        return null;
-    }
-    
-    /**
      * Reports whether a step failure was caused by a browser wait timeout.
      *
      * WHY the chain is walked instead of a plain instanceof: a BrowserTimeoutException
@@ -1721,26 +1661,6 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
             $e = $e->getPrevious();
         }
         return false;
-    }
-
-    /**
-     * Normalizes a path for cross-suite comparison: real absolute path, lower-cased. Returns null
-     * for a path that does not resolve on disk.
-     *
-     * WHY realpath: suite paths and the CLI path can differ in separators and "." segments;
-     * realpath collapses both to one canonical spelling so the prefix compare is reliable.
-     *
-     * WHY lower-case unconditionally: this framework runs on Windows, whose filesystem is
-     * case-insensitive, so "Features\Login.feature" and "features\login.feature" are one file;
-     * a case-sensitive compare would wrongly report no owning suite.
-     */
-    private function normalizePathForCompare(string $path): ?string
-    {
-        $real = realpath($path);
-        if ($real === false) {
-            return null;
-        }
-        return strtolower($real);
     }
 
     /**
@@ -1877,7 +1797,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private static function cleanUpTestRuns(OnCleanUpEvent $event)
     {
         $workbench = $event->getWorkbench();
-        $config = $workbench->getApp('axenox.BDT')->getConfig();
+        $config = $workbench->getApp(BDTApp::APP_ALIAS)->getConfig();
 
         // Retention is opt-in: without an explicit positive age, keep every run.
         if (! $config->hasOption(self::CLEANUP_DAYS_TO_KEEP)) {
@@ -1976,7 +1896,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
     private static function cleanUpTestData(OnCleanUpEvent $event) : void
     {
         $workbench = $event->getWorkbench();
-        $config = $workbench->getApp('axenox.BDT')->getConfig();
+        $config = $workbench->getApp(BDTApp::APP_ALIAS)->getConfig();
 
         // Opt-in, exactly like the run retention above: without an explicit positive age nothing is
         // deleted. A destructive job must never start because an option was forgotten.
@@ -2006,7 +1926,7 @@ class DatabaseFormatter implements Formatter, TestRunObserverInterface
         self::logTestDataReport($workbench, $report, $maxAgeDays);
 
         if ($report['users'] === 0) {
-            $event->addResultMessage('BDT: no test data cleanup - no test user found for the configured TEST_USER.USERNAME.');
+            $event->addResultMessage('BDT: no test data cleanup - no test user found for the configured ' . BdtConfig::TEST_USER_USERNAME . '.');
             return;
         }
         // Naming the scope matters more than the row count: it is the only way an operator can tell

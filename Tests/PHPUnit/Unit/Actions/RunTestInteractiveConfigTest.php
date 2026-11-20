@@ -1,16 +1,16 @@
 <?php
 namespace axenox\BDT\Tests\PHPUnit\Unit\Actions;
 
+use axenox\BDT\BDTApp;
 use axenox\BDT\Actions\RunTest;
 use axenox\BDT\Behat\BrowserManagers\BrowserManagerFactory;
 use axenox\BDT\Behat\BrowserManagers\LocalChromeManager;
 use axenox\BDT\Behat\BrowserManagers\RemoteChromeManager;
 use axenox\BDT\Behat\Common\GeneratedBehatConfig;
 use exface\Core\CommonLogic\UxonObject;
+use exface\Core\CommonLogic\Workbench;
 use exface\Core\Exceptions\UxonMapError;
 use exface\Core\Exceptions\RuntimeException;
-use exface\Core\Interfaces\AppInterface;
-use exface\Core\Interfaces\ConfigurationInterface;
 use exface\Core\Interfaces\DataSources\DataTransactionInterface;
 use exface\Core\Interfaces\Tasks\ResultMessageStreamInterface;
 use exface\Core\Interfaces\Tasks\TaskInterface;
@@ -24,21 +24,104 @@ use PHPUnit\Framework\TestCase;
  * base_url setting; for a browser BDT launches itself it is only the Mink base_url. Handing it to a local
  * manager is rejected as an unknown setting, and writing it into the wrong place silently points the
  * browser at the wrong application URL. An attached browser must also never receive a local executable.
+ *
+ * The workbench is a real, unstarted one; the browser settings are set in memory on its BDT app config. The
+ * task, transaction and result stream handed to performImmediately() are plain value objects of the action
+ * contract, not workbench services, so they stay stubs.
  */
 class RunTestInteractiveConfigTest extends TestCase
 {
-    private const FORMATTER = '\\axenox\\BDT\\Behat\\DatabaseFormatter\\DatabaseFormatterExtension';
+    private const FORMATTER = 'axenox\\BDT\\Behat\\DatabaseFormatter\\DatabaseFormatterExtension';
 
-    private function workbench(array $options = ['PARALLEL.CHROME_PATH' => 'base\\chrome.exe']): WorkbenchInterface
+    // Unique file-name prefix of the throwaway base configs, and how old a leftover must be before the sweep in
+    // setUpBeforeClass() removes it (the age keeps it away from a test running concurrently in another process).
+    private const CONFIG_PREFIX = 'behat_phpunit_';
+    private const LEFTOVER_MIN_AGE_SECONDS = 3600;
+
+    private string $behatConfig = '';
+
+    /**
+     * Removes throwaway base configs that EARLIER runs left in the installation root.
+     *
+     * WHY: tearDown() removes this run's file after every test, failed or not - but a process that dies
+     * mid-test (fatal error, killed runner) never reaches it, and the file would then stay in the real
+     * installation root next to behat.yml for good. Only files with the unique prefix and a minimum age are
+     * touched.
+     */
+    public static function setUpBeforeClass(): void
     {
-        $config = $this->createStub(ConfigurationInterface::class);
-        $config->method('hasOption')->willReturnCallback(fn(string $key) => array_key_exists($key, $options));
-        $config->method('getOption')->willReturnCallback(fn(string $key) => $options[$key] ?? null);
-        $app = $this->createStub(AppInterface::class);
-        $app->method('getConfig')->willReturn($config);
-        $workbench = $this->createStub(WorkbenchInterface::class);
-        $workbench->method('getApp')->willReturn($app);
+        $root = self::newWorkbench()->getInstallationPath();
+        foreach (glob($root . DIRECTORY_SEPARATOR . self::CONFIG_PREFIX . '*.yml') ?: [] as $leftover) {
+            if (is_file($leftover) && time() - (int) @filemtime($leftover) > self::LEFTOVER_MIN_AGE_SECONDS) {
+                @unlink($leftover);
+            }
+        }
+    }
+
+    /**
+     * Creates a throwaway base config inside the REAL installation root.
+     *
+     * WHY: behat_config is resolved in performImmediately() before chrome_path and must live in the
+     * installation root (the same rule as RunParallel). A test that only needs to get past that check to
+     * reach the chrome_path validation therefore needs a config that satisfies the rule - an arbitrary
+     * existing file elsewhere is refused. The unique name keeps parallel test runs from sharing it, and
+     * tearDown removes it even when the test fails.
+     */
+    protected function setUp(): void
+    {
+        $this->behatConfig = self::newWorkbench()->getInstallationPath() . DIRECTORY_SEPARATOR
+            . self::CONFIG_PREFIX . bin2hex(random_bytes(6)) . '.yml';
+        file_put_contents($this->behatConfig, "default: ~\n");
+    }
+
+    protected function tearDown(): void
+    {
+        if ($this->behatConfig !== '') {
+            @unlink($this->behatConfig);
+        }
+    }
+
+    private static function newWorkbench(): Workbench
+    {
+        return new Workbench([
+            'SERVER.INSTALLATION_NAME' => 'bdt-interactive-config-unit-test',
+            'DEBUG.LIVE_CLASS_AUTOLOADER' => false
+        ]);
+    }
+
+    /**
+     * A real workbench whose BDT app config carries the given browser settings, in memory only.
+     *
+     * The default selects a locally launched browser, so a test does not depend on which BROWSER.MANAGER the
+     * machine running it has configured.
+     *
+     * @param array<string,mixed> $options App config options to override
+     */
+    private function workbench(array $options = []): WorkbenchInterface
+    {
+        $options = $options ?: [
+            'BROWSER.MANAGER' => LocalChromeManager::class,
+            'BROWSER.MANAGER_CONFIG' => ['executable' => 'base\\chrome.exe']
+        ];
+        $workbench = self::newWorkbench();
+        $config = $workbench->getApp(BDTApp::APP_ALIAS)->getConfig();
+        foreach ($options as $key => $value) {
+            $config->setOption($key, $value);
+        }
+        // The shipped value may be overridden by the installation; an empty one means "root behat.yml".
+        $config->setOption('PARALLEL.BEHAT_CONFIG', '');
         return $workbench;
+    }
+
+    /**
+     * Builds a REAL RunTest around the real workbench.
+     *
+     * WHY NOT A MOCK OF THE ACTION: mocking the class under test only to hand it a workbench leaves a mock
+     * with no expectations (PHPUnit flags it) and tests a subclass instead of the action itself.
+     */
+    private function action(WorkbenchInterface $workbench): RunTest
+    {
+        return new RunTest($workbench->getApp(BDTApp::APP_ALIAS));
     }
 
     /**
@@ -46,11 +129,7 @@ class RunTestInteractiveConfigTest extends TestCase
      */
     private function validateInputs(WorkbenchInterface $workbench, array $parameters): array
     {
-        $action = $this->getMockBuilder(RunTest::class)
-            ->disableOriginalConstructor()
-            ->onlyMethods(['getWorkbench'])
-            ->getMock();
-        $action->method('getWorkbench')->willReturn($workbench);
+        $action = $this->action($workbench);
         $task = $this->createStub(TaskInterface::class);
         $task->method('hasParameter')->willReturnCallback(fn($name) => array_key_exists($name, $parameters));
         $task->method('getParameter')->willReturnCallback(fn($name) => $parameters[$name] ?? null);
@@ -117,10 +196,9 @@ class RunTestInteractiveConfigTest extends TestCase
     public function testForcedRemoteIgnoresMissingChromePathDuringImmediateValidation(): void
     {
         $workbench = $this->workbench();
-        $workbench->method('getInstallationPath')->willReturn(__DIR__);
         $arguments = $this->validateInputs($workbench, [
-            'tags' => 'test_7',
-            'behat_config' => __FILE__,
+            'tags' => '@test_7',
+            'behat_config' => $this->behatConfig,
             'chrome_path' => 'missing\\chrome.exe',
             'chrome_endpoint' => 'http://localhost:9405'
         ]);
@@ -134,10 +212,9 @@ class RunTestInteractiveConfigTest extends TestCase
     public function testConfiguredRemoteIgnoresMissingChromePathDuringImmediateValidation(): void
     {
         $workbench = $this->workbench(['BROWSER.MANAGER' => RemoteChromeManager::class]);
-        $workbench->method('getInstallationPath')->willReturn(__DIR__);
         $arguments = $this->validateInputs($workbench, [
-            'tags' => 'test_7',
-            'behat_config' => __FILE__,
+            'tags' => '@test_7',
+            'behat_config' => $this->behatConfig,
             'chrome_path' => 'missing\\chrome.exe'
         ]);
         $this->assertSame('missing\\chrome.exe', $arguments[2]);
@@ -151,9 +228,53 @@ class RunTestInteractiveConfigTest extends TestCase
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('chrome_path is not a file');
         $this->validateInputs($this->workbench(), [
-            'tags' => 'test_7',
+            'tags' => '@test_7',
+            'behat_config' => $this->behatConfig,
+            'chrome_path' => 'missing\\chrome.exe'
+        ]);
+    }
+
+    /**
+     * A base config outside the installation root is refused, because the generated config imports it
+     * by file name only and would silently get the root behat.yml instead.
+     */
+    public function testBehatConfigOutsideTheInstallationRootIsRefusedBeforeChromePath(): void
+    {
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('behat_config must live in the installation root');
+        $this->validateInputs($this->workbench(), [
+            'tags' => '@test_7',
             'behat_config' => __FILE__,
             'chrome_path' => 'missing\\chrome.exe'
+        ]);
+    }
+
+    /**
+     * A tag expression the rerun console would refuse is refused when the run starts, before any port,
+     * run row or browser - the rerun button would otherwise answer "Command not allowed!" with no reason.
+     */
+    public function testATagExpressionTheRerunConsoleWouldRefuseIsRefusedAtStart(): void
+    {
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('--tags value cannot be re-run from the Test Runs console');
+        $this->validateInputs($this->workbench(), [
+            'tags' => '@a;b',
+            'behat_config' => $this->behatConfig
+        ]);
+    }
+
+    /**
+     * Same for a value the endpoint normalizer lets through (a URL path may contain ";" or "$") but the
+     * console would refuse.
+     */
+    public function testAnEndpointTheRerunConsoleWouldRefuseIsRefusedAtStart(): void
+    {
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('--chrome_endpoint value cannot be re-run from the Test Runs console');
+        $this->validateInputs($this->workbench(), [
+            'tags' => '@test_7',
+            'behat_config' => $this->behatConfig,
+            'chrome_endpoint' => 'http://localhost:9405/a;b'
         ]);
     }
 
@@ -162,10 +283,10 @@ class RunTestInteractiveConfigTest extends TestCase
      */
     public function testForcedRemoteReportsIgnoredChromePathInRunOutput(): void
     {
-        $action = (new \ReflectionClass(RunTest::class))->newInstanceWithoutConstructor();
+        $action = $this->action($this->workbench());
         $method = new \ReflectionMethod(RunTest::class, 'performDeferred');
         $method->setAccessible(true);
-        $output = $method->invoke($action, '', '', 'missing\\chrome.exe', '', 'test_7', '', 'http://localhost:9405', '');
+        $output = $method->invoke($action, '', '', 'missing\\chrome.exe', '', '@test_7', '', 'http://localhost:9405', '');
 
         $this->assertSame("===== BDT interactive run =====\n", $output->current());
         $output->next();
@@ -181,14 +302,10 @@ class RunTestInteractiveConfigTest extends TestCase
             'BROWSER.MANAGER' => RemoteChromeManager::class,
             'BROWSER.MANAGER_CONFIG' => ['endpoint' => 'http://localhost:9405', 'base_url' => 'http://app/']
         ]);
-        $action = $this->getMockBuilder(RunTest::class)
-            ->disableOriginalConstructor()
-            ->onlyMethods(['getWorkbench'])
-            ->getMock();
-        $action->method('getWorkbench')->willReturn($workbench);
+        $action = $this->action($workbench);
         $method = new \ReflectionMethod(RunTest::class, 'performDeferred');
         $method->setAccessible(true);
-        $output = $method->invoke($action, '', '', 'missing\\chrome.exe', '', 'test_7');
+        $output = $method->invoke($action, '', '', 'missing\\chrome.exe', '', '@test_7');
 
         $this->assertSame("===== BDT interactive run =====\n", $output->current());
         $output->next();

@@ -104,9 +104,11 @@ Read it like this:
 
 **Possible additional lines in this section:**
 
-- `No feature files matched the requested scope/tags - nothing to run.`
-  → The filter selected zero test files. Nothing failed; nothing ran. Usually a
-  wrong tag or a wrong path in the request.
+- `No feature/scenario matched the requested scope/tags - nothing was run.`
+  → The filter selected zero test files or zero scenarios. **This is a failure,
+  not a quiet success:** the run is marked failed, the same text is stored in the
+  run's `error_message`, and the action itself ends with an error (the scheduler
+  or console shows it red). Usually a wrong tag, suite or path in the request.
 - `coordinator deadline reached at +X s ... stopping dispatch and killing N running lane(s); M feature(s) still queued`
   → **The run ran out of its allotted time.** The features that were still
   running were stopped mid-test and M features never got a turn. This is a
@@ -255,6 +257,8 @@ that hits several consecutive timeouts is taken out of service on purpose, so th
 rest of the queue is not fed into a station that seems unhealthy. If you see one
 lane failing repeatedly, that is a real signal worth reporting.
 
-**"Nothing ran and there is no error."**
-Look for `No feature files matched the requested scope/tags` at the top. The
-filter matched nothing — usually a tag or path typo in the request.
+**"Nothing ran."**
+Look for `No feature/scenario matched the requested scope/tags - nothing was run.`
+at the top. The filter matched nothing — usually a tag, suite or path typo in the
+request. Such a run is always reported as **failed**, with the same text in the
+run's `error_message`; it never shows up as a green run.

@@ -35,8 +35,13 @@ final class GeneratedBehatConfig
         ?string $laneId = null
     ): array {
         $minkExtension = 'Behat\\MinkExtension';
-        // Preserve the existing parsed keys: lane configs used no leading backslash.
-        $formatterExtension = ($runUid !== null || $laneId !== null ? '' : '\\') . DatabaseFormatterExtension::class;
+        // One spelling for every generated config, WITHOUT a leading backslash: that is how the base
+        // behat.yml names the extension, so the generated key is textually the same one it overrides.
+        // Behat itself would resolve both spellings to the same extension (it instantiates the locator
+        // with class_exists() and re-keys the config by the extension's own config key), but a
+        // textually different key is still instantiated a second time and makes a failed merge look
+        // like Behat's fault instead of ours - see the lane_id check in DatabaseFormatter.
+        $formatterExtension = DatabaseFormatterExtension::class;
 
         if (! $coordinator instanceof SupportsParallelLanesInterface) {
             $browserConfig = [];

@@ -60,6 +60,17 @@ final class BdtPaths
     public const FOLDER_CHROME_USER_DATA = 'ChromeUserData';
 
     /**
+     * File name of the Behat base config: the installation-root file `Behat init` writes, and the name a
+     * temporary dry-run config gets.
+     *
+     * WHY HERE AND NOT IN THE Behat ACTION: the Behat action writes the file, RunScope defaults to it,
+     * RunParallel's lane configs import it and FeatureFileValidatingBehavior names its dry-run config after
+     * it. A Behat/Common helper must not depend on an action class, and this class already owns the names
+     * BDT uses on disk - so it is the one place all four can read the name from.
+     */
+    public const BEHAT_CONFIG_FILE_NAME = 'behat.yml';
+
+    /**
      * Builds a path relative to the installation root, e.g. "data\axenox\BDT\Logs\<run_uid>".
      *
      * WHY A RELATIVE VARIANT IS NEEDED AT ALL: two consumers must NOT receive an absolute path.

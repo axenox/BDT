@@ -1,6 +1,8 @@
 <?php
 namespace axenox\BDT\Actions;
 
+use axenox\BDT\BDTApp;
+use axenox\BDT\Behat\Common\BdtPaths;
 use exface\Core\CommonLogic\AbstractActionDeferred;
 use exface\Core\CommonLogic\Filemanager;
 use exface\Core\DataTypes\FilePathDataType;
@@ -121,7 +123,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
     protected function getGlobalYmlPath(): string
     {
         $wbPath = $this->getWorkbench()->getInstallationPath();
-        return $wbPath . DIRECTORY_SEPARATOR . 'behat.yml';
+        return $wbPath . DIRECTORY_SEPARATOR . BdtPaths::BEHAT_CONFIG_FILE_NAME;
     }
 
     protected function doIncludeApp(string $alias, array &$yml = null): \Generator
@@ -228,7 +230,7 @@ class Behat extends AbstractActionDeferred implements iCanBeCalledFromCLI
 
     protected function doStartBrowser(string $configKey): \Generator
     {
-        $cfg = $this->getWorkbench()->getApp('axenox.BDT')->getConfig()->getOption('BROWSERS.' . mb_strtoupper($configKey));
+        $cfg = $this->getWorkbench()->getApp(BDTApp::APP_ALIAS)->getConfig()->getOption('BROWSERS.' . mb_strtoupper($configKey));
         if (ServerSoftwareDataType::isOsWindows()) {
             $cmd = $cfg->getProperty('START_ON_WINDOWS');
         } else {
