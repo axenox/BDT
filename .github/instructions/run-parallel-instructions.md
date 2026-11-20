@@ -42,8 +42,7 @@ directly under the same run UID.
                                           |
                          +----------------v-----------------+
                          |          COORDINATOR             |
-                         |  - Behat init                    |
-                         |  - resolve scope & config        |
+                         |  - resolve config & scope        |
                          |  - CREATE run row  --------------+---> axenox.BDT.run  (run_uid)
                          |  - expected feature/scenario cnt |
                          |  - build ONE queue of features   |
@@ -106,17 +105,37 @@ failed instead of vanishing, and the untouched rest of the queue keeps flowing.
 * Options: `--tags`, `--feature`, `--suite`, `--behat_config`, `--chrome_path`.
 * **At least one of `--tags`, `--feature`, `--suite` is mandatory.** A completely unscoped
   invocation would run the entire test base — the "looks green but ran the wrong thing" footgun.
-* `--feature` and `--suite` are mutually exclusive (same question, two ways → loud failure instead
-  of a hidden precedence rule).
+* `--feature` and `--suite` may be combined (Behat runs that feature within that suite). The feature
+  must lie inside the suite's configured paths; otherwise the run is refused **before the run row is
+  created**, because Behat would filter the feature out, run nothing and report green. The check
+  reads the existing `behat.yml` and its imports. Tag filter = `--tags` if given,
+  otherwise the suite's own `filters.tags` (what Behat itself applies). Every worker command receives
+  `--suite` together with its feature path.
+* **Run UID contract.** From the moment the run row exists (Phase 2), every outcome — success,
+  nothing matched (a failure), worker failures, coordinator error, close-out failure — carries a line
+  `Run UID: <uid>` of its own. The line is built in one place: `RunLifecycle::appendRunUid()` for
+  messages and `RunLifecycle::withRunUid()` for exceptions (never added twice); do not append it by
+  hand at a call site. Agents parse it to read the run from
+  the DB. Before the row exists (invalid input, missing config, all interactive slots taken) there is no such line, on purpose.
+* **HTML-encoded selectors are refused.** `RunScope::assertNotHtmlEncoded()` rejects a tag expression,
+  suite or feature path that contains an HTML entity (`&amp;`, `&#38;`, ...) in both actions, before
+  anything else: a valid tag expression never contains `;`, and a mangled one would end as a silent
+  "nothing to run".
 
-### Phase 1 — Behat init
+### Phase 1 — Base config and scope (no Behat init)
 
-`Behat init` runs first, blocking. It rewrites the installation-root `behat.yml`, registers app
-suites and refreshes `base_url` to the live workbench URL. Lanes never init themselves, so a stale
-`base_url` here would break every worker.
+**The action does not run `Behat init`.** Init is a setup step of its own that the caller runs before
+the tests (scheduler step, the Test Runs console's start command, agent setup). It rewrites the
+installation-root `behat.yml`, registers app suites and refreshes `base_url`; doing it again on every
+action call would duplicate the step and rewrite a file other Behat processes may be reading. Running
+init is therefore the caller's responsibility, and a stale `base_url` after a deployment means init
+was not run.
 
-Only after init are `behat_config`, `chrome_path` and the scan roots resolved — each with its own
-loud validation. Defaulting is allowed; guessing is not.
+What the action does require is that the root `behat.yml` exists. `behat_config`, `chrome_path` and
+the scan roots are resolved right after the inputs are read — before any browser, port, run row or
+Chrome work — each with its own loud validation. A missing config fails with
+`behat_config is not a file: <path>. Run `vendor/bin/action axenox.BDT:Behat init` first ...`.
+Defaulting is allowed; guessing is not.
 
 ### Phase 2 — Open the run row
 
@@ -141,8 +160,11 @@ Two sweeps, both needed:
 
 ### Phase 4 — Expected counts
 
-`ExpectedTestCountCalculator` scans the resolved roots with the tag filter and produces
-`expected_feature_count` / `expected_scenario_count`, written onto the run row.
+`RunScope::calculateExpectedScope()` (→ `ExpectedTestCountCalculator::calculateForScope()`) scans the
+resolved scope and produces `expected_feature_count` / `expected_scenario_count`, written onto the run
+row. The tag filter is applied the way Behat applies it: `--tags` when given, otherwise **the owning
+suite's own `filters.tags`**. `DatabaseFormatter` (plain `vendor\bin\behat` runs) calls the very same
+method, so the coordinator and the formatter cannot disagree about what will run.
 
 This is done **by the coordinator, up front, over all matched features** because:
 
@@ -153,8 +175,11 @@ This is done **by the coordinator, up front, over all matched features** because
 A feature file that fails to parse aborts the run **here**, loudly, instead of letting a worker die
 later with an opaque exit code 255.
 
-If nothing matched: the run is finalized cleanly and reports "nothing to run". It is never allowed
-to fall through to a worker with no feature path — Behat would then run the entire suite.
+If nothing matched (no scenario survives the tag filter): the run is finalized, `error_message` records "No
+feature/scenario matched the requested scope/tags - nothing was run." (status failed), and the action
+**throws** with the same text and the `Run UID:` line. RunTest does the same before it starts Behat. It is
+never allowed to fall through to a worker with no feature path — Behat would then run the entire suite —
+and never reports success for a run that executed nothing.
 
 ### Phase 5 — Fleet size and banner
 
@@ -182,11 +207,14 @@ work. **Only losing all lanes is fatal**, and then every queued feature is recor
 The generated lane config imports the base `behat.yml` and only adds the per-lane overrides:
 
 Both RunTest and RunParallel use `Behat\Common\GeneratedBehatConfig` to build extension settings and
-serialize the config with `Yaml::dump()`. Browser overrides have one implementation; lane `run_uid`
-and `lane_id` are optional parameters omitted by interactive runs, and the header is supplied by the
-caller. Profile paths and ports still come from the actions. Do not assemble YAML or escape paths in
-either action. The existing formatter-key spelling is preserved in each variant (interactive has a
-leading backslash, lanes do not).
+serialize the config with `Yaml::dump()`. Browser overrides have one implementation; the header is
+supplied by the caller. Profile paths and ports still come from the actions. Do not assemble YAML or
+escape paths in either action. **Both actions write `run_uid` and `lane_id`** (lanes:
+`<run_uid>_lane<N>`; RunTest: `<run_uid>_interactive<slot>`), so the Behat child is always in attach-mode.
+The formatter key is written in ONE spelling for every config - without a leading backslash, exactly
+as the base `behat.yml` names it. (Behat resolves the locator with `class_exists()` and re-keys the
+config by the extension's own config key, so a leading backslash was functionally equal, but a
+textually different key is instantiated a second time and makes a failed merge hard to diagnose.)
 
 ```yaml
 imports:
@@ -365,7 +393,7 @@ from it — no self-imposed deadline, and the identity-based orphan sweep is ski
 positive value is refused loudly.
 
 Given the lifetime, the coordinator sets a **self-imposed deadline** measured from the very start of
-`perform()` (not from run-row creation — `Behat init` alone can take minutes): at
+`perform()` (not from run-row creation, which only follows the input checks and scope resolution): at
 `start + max_runtime − CLOSEOUT_BUDGET_SECONDS` it stops dispatching new features and kills its running
 lanes, then finalizes the run normally. The reserved close-out budget means the launcher's hard kill
 can no longer land inside the finalize. Features killed or never dispatched at the deadline are recorded
@@ -426,6 +454,33 @@ do not collide on a shared `USER_AUTHENTICATOR` row. A worker started with a `ru
 `lane_id` fails loudly at startup — a broken lane_id contract must not degrade into optimistic-lock
 errors halfway through the night.
 
+A **RunTest** run uses `lane_id = <run_uid>_interactive<slot>`, where `<slot>` is a number 1..N reserved
+across processes for the whole run from a pool of `TEST_USER.INTERACTIVE_SLOTS` slots (default 10;
+an integer >= 1, anything else is refused). The slot does **not** depend on how the browser is attached:
+local and remote runs draw from the same pool, so a local port number can never overlap a remote one and
+remote endpoints that all share port 443 still get different slots. Agents and
+testers now start RunTest concurrently, and runs that resolve to the same role would otherwise write
+the same `USER_AUTHENTICATOR` row and collide on optimistic locking. `UI5Browser::laneUserSuffix()`
+therefore accepts `_laneN` **and** `_interactiveN` and throws for any other format; the username becomes
+`<TEST_USER.USERNAME>_interactive<slot>`. N caps the number of distinct interactive users, as the worker
+count caps the lane users. `UI5Browser::isTestUsername()` (used by `TestDataReaper`) recognises both slot
+kinds through the same pattern. The slot is taken **before the run row is created**, with the same
+flock mechanism as the port reservation (`PortProbingTrait::reserveFreeSlot()` on top of
+`reserveNumberedLock()`, lock files `interactive_user_slot_<n>.lock`), and released in the generator's
+outer `finally` on every exit path. When all N slots are in use the run is refused with a message naming
+the config key - there is no fallback to the base user or a shared slot.
+
+### RunTest follows the same ownership model
+
+RunTest is the single-process sibling of the coordinator: resolve config and scope (in
+`performImmediately`, so a missing `behat.yml` fails before anything starts) →
+create the run row → yield `Run UID: <uid>` → expected counts → reserve port → write the interactive
+config → run Behat → finalize in the generator's `finally`, on every exit path (normal end, crash,
+timeout, any exception). Like RunParallel, it does not run `Behat init`. Behat's output is also written to `Logs/<run_uid>/interactive.log`, and the
+run log is built from it by the same `RunLogDigest` the fleet uses. The closing banner repeats the
+`Run UID:` line for every outcome. `DatabaseFormatter`'s owner mode remains only for a plain
+`vendor\bin\behat` call.
+
 ### Xdebug
 
 Every worker is started with `XDEBUG_MODE=off` and `XDEBUG_SESSION` / `XDEBUG_TRIGGER` removed.
@@ -464,7 +519,7 @@ data/axenox/BDT/chrome_profiles/<run_uid>_lane<N>/     (removed after each featu
 
 | Table | Written by | Contains |
 |---|---|---|
-| `axenox.BDT.run` | **coordinator only** | started/finished, duration, expected counts, `behat_command`, Markdown run log |
+| `axenox.BDT.run` | **action that owns the run only** (RunParallel coordinator, RunTest) | started/finished, duration, expected counts, `behat_command`, Markdown run log, `error_message` |
 | `axenox.BDT.run_feature` | worker (attach-mode) | one row per feature, `filename` normalized |
 | `axenox.BDT.run_scenario` | worker (attach-mode) | one row per scenario/outline |
 | `axenox.BDT.run_step` | worker (attach-mode) | one row per step and substep |
@@ -477,6 +532,15 @@ budget and truncate away the coordinator diagnostics the log exists for.
 > The run log answers *"did the fleet work?"*.
 > The child rows answer *"did the tests pass?"*.
 
+**Run status (`bdt_run_stats.status`, shown as `run_stats__status`).** A FINISHED run is **failed (101)**
+when the owning action recorded a run-level failure in `error_message` (coordinator error, worker
+failures, nothing matched, RunTest exception / crash / timeout). Otherwise the existing step-based
+verdicts apply unchanged (undefined 30, failed 101, skipped 98, passed 100). The run-level check exists
+because the step verdicts read child rows only: a run that threw but left only passed children, or none,
+would read as passed, which is what agents reading the DB must never see. The failure is written in the
+same finalize update as `finished_on` and the run log (`RunLifecycle::stageFailure()`). Unfinished runs
+keep running (10) / stalled (102).
+
 ---
 
 ## 10. Configuration reference
@@ -486,8 +550,8 @@ budget and truncate away the coordinator diagnostics the log exists for.
 | Option | Required | Meaning |
 |---|---|---|
 | `--tags` | one of three | Behat tag expression, e.g. `@Status::Ready` |
-| `--feature` | one of three | Single feature file or directory. Mutually exclusive with `--suite` |
-| `--suite` | one of three | Named Behat suite. Mutually exclusive with `--feature` |
+| `--feature` | one of three | Single feature file or directory. May be combined with `--suite`; must lie inside that suite |
+| `--suite` | one of three | Named Behat suite. May be combined with `--feature` |
 | `--behat_config` | no | Base `behat.yml` the lanes import. Defaults to the installation-root file |
 | `--chrome_path` | no | Real `chrome.exe`. Overrides `executable` of `BROWSER.MANAGER_CONFIG` |
 
@@ -499,6 +563,7 @@ budget and truncate away the coordinator diagnostics the log exists for.
 | Key | Default | Meaning |
 |---|---|---|
 | `PARALLEL.MAX_WORKERS` | — (required, ≥1) | Lane ceiling |
+| `TEST_USER.INTERACTIVE_SLOTS` | `10` (integer ≥ 1; anything else is refused) | Size of the pool of interactive test-user slots: the maximum number of concurrent RunTest runs and of distinct `<TEST_USER.USERNAME>_interactive<slot>` users |
 | `PARALLEL.WORKER_TIMEOUT_SECONDS` | 1800 | Total wall-clock ceiling per feature. `0` disables |
 | `PARALLEL.WORKER_IDLE_TIMEOUT_SECONDS` | 600 | Idle ceiling per feature. `0` disables |
 | `BROWSER.MANAGER` | `\axenox\BDT\Behat\BrowserManagers\LocalChromeManager` | Browser manager class. RunParallel requires one that owns its browser process (supports parallel lanes) |
@@ -511,8 +576,8 @@ budget and truncate away the coordinator diagnostics the log exists for.
 > whose single-instance lock is exactly what a fleet must not use.
 > Legacy local values override shipped local defaults in that case; a legacy remote
 > endpoint selects the remote manager without importing those local defaults. The coordinator checks
-> that the executable is a file, resolving relative paths against the installation root, before init
-> or lane startup. `SupportsParallelLanesInterface` extends `BrowserLaneConfigurationInterface` so
+> that the executable is a file, resolving relative paths against the installation root, before
+> lane startup. `SupportsParallelLanesInterface` extends `BrowserLaneConfigurationInterface` so
 > process ownership and the allocation settings required before startup remain distinct contracts.
 > Lane-capable managers supply a port-free `describeForParallelLanes()` for the coordinator banner.
 > The coordinator banner shows the resolved scheduled band, including a `bdt_parallel.yml` override,

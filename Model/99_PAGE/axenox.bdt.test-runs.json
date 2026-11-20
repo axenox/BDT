@@ -106,6 +106,9 @@
                 "attribute_alias": "finished_on"
             },
             {
+                "attribute_alias": "error_message"
+            },
+            {
                 "attribute_alias": "CREATED_BY_USER__LABEL"
             }
         ],

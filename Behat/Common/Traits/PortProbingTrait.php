@@ -143,54 +143,121 @@ trait PortProbingTrait
      */
     private function reserveFreePort(int $start, int $end, array $held = []): array
     {
+        // Only after winning the reservation do we ask the OS whether the port is actually free: it could
+        // be bound by something outside BDT, or by a run still inside its own reservation-to-bind
+        // window. If busy, the lock is released again and the scan goes on.
+        $reservation = $this->reserveNumberedLock(
+            'port',
+            $start,
+            $end,
+            $held,
+            fn(int $port): bool => ! $this->isPortBound($port)
+        );
+        if ($reservation === null) {
+            throw new RuntimeException(
+                'Port band ' . $start . '-' . $end . ' exhausted - every port is bound or reserved by another run'
+            );
+        }
+        return ['port' => $reservation['number'], 'handle' => $reservation['handle'], 'lockPath' => $reservation['lockPath']];
+    }
+
+    /**
+     * Atomically reserves the first free slot number 1..$count ACROSS PROCESSES, or returns NULL when
+     * every slot is taken.
+     *
+     * WHY IT EXISTS: a RunTest run needs a small, bounded identity that is unique among CONCURRENT runs
+     * and independent of how its browser is attached - it names the run's test user. A port cannot serve
+     * (a remote browser has none, and a wide band would allow hundreds of users), and an endpoint URL
+     * cannot either (many share port 443). A numbered slot is exactly what the fleet's laneN is for the
+     * scheduled run: the count caps the number of distinct test users.
+     *
+     * WHY IT REUSES reserveNumberedLock(): the cross-process flock protocol (non-blocking, released by
+     * the OS when the owner dies, never unlinked) is the same one that keeps ports unique; a second
+     * implementation would have to get those subtleties right again.
+     *
+     * WHY NULL AND NOT AN EXCEPTION: only the caller knows which setting sizes the pool, and the message
+     * must name it.
+     *
+     * Release via releaseReservedPort(); the handle must stay OPEN for the life of the run.
+     *
+     * @param string $lockPrefix Lock-file name prefix; separate pools must use separate prefixes
+     * @param int    $count      Number of slots in the pool (>= 1)
+     * @return array{slot:int,handle:resource,lockPath:string}|null
+     */
+    private function reserveFreeSlot(string $lockPrefix, int $count): ?array
+    {
+        $reservation = $this->reserveNumberedLock($lockPrefix, 1, $count);
+        if ($reservation === null) {
+            return null;
+        }
+        return ['slot' => $reservation['number'], 'handle' => $reservation['handle'], 'lockPath' => $reservation['lockPath']];
+    }
+
+    /**
+     * Takes the first free numbered lock of a range, ACROSS PROCESSES - the one reservation primitive
+     * behind both port and slot reservation.
+     *
+     * WHY flock AND NOT MERE FILE EXISTENCE: an flock is released automatically when its owning
+     * process dies, so a lock file left behind by a crashed run never permanently blocks a number -
+     * the next run simply re-locks the stale file. Testing existence instead would strand numbers on
+     * every crash.
+     *
+     * WHY A CALLBACK FOR EXTRA CHECKS: a port must also be unbound at OS level, a slot has no such
+     * condition. The check runs AFTER the lock is won, so two racing processes never both pass it for
+     * the same number.
+     *
+     * @param string        $lockPrefix Lock-file name prefix: "<prefix>_<number>.lock"
+     * @param int           $start      First number (inclusive)
+     * @param int           $end        Last number (inclusive)
+     * @param int[]         $held       Numbers already reserved earlier in THIS process (same-process fast skip)
+     * @param callable|null $isUsable   fn(int $number): bool, evaluated once the lock is held; FALSE = skip the number
+     * @return array{number:int,handle:resource,lockPath:string}|null NULL when every number is taken
+     */
+    private function reserveNumberedLock(string $lockPrefix, int $start, int $end, array $held = [], ?callable $isUsable = null): ?array
+    {
         $lockDir = $this->getPortLockDir();
-        for ($port = $start; $port <= $end; $port++) {
-            if (in_array($port, $held, true)) {
+        for ($number = $start; $number <= $end; $number++) {
+            if (in_array($number, $held, true)) {
                 continue;
             }
-            $lockPath = $lockDir . DIRECTORY_SEPARATOR . 'port_' . $port . '.lock';
+            $lockPath = $lockDir . DIRECTORY_SEPARATOR . $lockPrefix . '_' . $number . '.lock';
             // 'c' opens for writing and creates the file if missing WITHOUT truncating it: the file
             // is only a cross-process mutex, its bytes are diagnostic (the owner PID).
             $handle = @fopen($lockPath, 'c');
             if ($handle === false) {
-                // Cannot even open the lock file (permissions/disk) - never claim the port blindly.
+                // Cannot even open the lock file (permissions/disk) - never claim the number blindly.
                 continue;
             }
             // LOCK_EX|LOCK_NB: take the lock only if no LIVE process holds it; skip immediately
-            // otherwise instead of blocking the whole band scan on one contended port.
+            // otherwise instead of blocking the whole scan on one contended number.
             if (! flock($handle, LOCK_EX | LOCK_NB)) {
                 fclose($handle);
                 continue;
             }
-            // Only after winning the reservation do we ask the OS whether the port is actually free:
-            // it could be bound by something outside BDT, or by a run still inside its own
-            // reservation-to-bind window. If busy, release and keep scanning.
-            if ($this->isPortBound($port)) {
+            if ($isUsable !== null && ! $isUsable($number)) {
                 flock($handle, LOCK_UN);
                 fclose($handle);
                 continue;
             }
             // Stamp a human-readable, log-style line so a leftover lock file tells you WHO reserved a
-            // port and WHEN - handy when a port looks stuck. Purely diagnostic: the flock above, not
+            // number and WHEN - handy when one looks stuck. Purely diagnostic: the flock above, not
             // this text, is what actually enforces mutual exclusion. A write failure must never void an
             // already-won reservation, hence the silenced calls.
             @ftruncate($handle, 0);
             @fwrite($handle, sprintf(
-                'pid=%d port=%d reserved_at=%s%s',
-                getmypid(), $port, date('Y-m-d H:i:s'), PHP_EOL
+                'pid=%d %s=%d reserved_at=%s%s',
+                getmypid(), $lockPrefix, $number, date('Y-m-d H:i:s'), PHP_EOL
             ));
             @fflush($handle);
             // IMPORTANT: return with $handle still OPEN - closing it would drop the flock and
             // reopen the very race this method exists to prevent.
-            return ['port' => $port, 'handle' => $handle, 'lockPath' => $lockPath];
+            return ['number' => $number, 'handle' => $handle, 'lockPath' => $lockPath];
         }
-        throw new RuntimeException(
-            'Port band ' . $start . '-' . $end . ' exhausted - every port is bound or reserved by another run'
-        );
+        return null;
     }
 
     /**
-     * Releases a reservation returned by reserveFreePort() so the next run can claim the port.
+     * Releases a reservation returned by reserveFreePort() or reserveFreeSlot() so the next run can claim it.
      *
      * WHY UNLOCK-THEN-CLOSE AND NEVER UNLINK: dropping the flock and closing the handle is enough
      * to free the port for the next reserver. We deliberately do NOT delete the file: a concurrent

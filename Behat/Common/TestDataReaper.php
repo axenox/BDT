@@ -334,8 +334,9 @@ final class TestDataReaper
      * Resolves the UIDs of the base test user and all of its per-lane siblings.
      *
      * WHY A PATTERN MATCH AND NOT A SINGLE USERNAME: a parallel run provisions one user per lane by
-     * appending "_laneN" to the configured base username. Cleaning only the base user would leave
-     * everything the lanes created - which in a parallel run is all of it.
+     * appending "_laneN" to the configured base username, and every RunTest run one by appending
+     * "_interactive<slot>". Cleaning only the base user would leave everything the lanes and the
+     * interactive runs created - which in a parallel run is all of it.
      *
      * WHY UI5Browser DECIDES WHAT A TEST USERNAME IS: that class owns the naming convention because
      * it is the one that creates the users. Re-implementing the pattern here would let the two drift

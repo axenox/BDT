@@ -4,6 +4,7 @@ namespace axenox\BDT\Behat\Contexts\UI5Facade;
 
 use axenox\BDT\Behat\Common\BdtPaths;
 use axenox\BDT\Behat\Common\ErrorManager;
+use axenox\BDT\Behat\Common\GeneratedBehatConfig;
 use axenox\BDT\Behat\Common\Traits\AuthenticatorTimeStampingTrait;
 use axenox\BDT\Behat\Common\Traits\DeadlockRetryTrait;
 use axenox\BDT\Behat\Common\Traits\ExceptionArgumentsSuppressionTrait;
@@ -167,7 +168,7 @@ class UI5Browser
         //   2. roles cross-contaminate: dataUpdate() OVERWRITES USER_ROLE_USERS, so the last writer wins
         //      while both browser sessions are logged in under the same username — a scenario can then
         //      silently run with another lane's roles.
-        // Only the stable "_laneN" slot is appended, never the full run-scoped lane_id, so the set of
+        // Only the stable "_laneN" / "_interactive<slot>" slot is appended, never the full run-scoped lane_id, so the set of
         // test users stays bounded to the worker count and is reused on every nightly run instead of
         // piling up a fresh row each night. In the single-process path getLaneId() is null, so the
         // username and all existing behavior are unchanged.
@@ -331,24 +332,44 @@ class UI5Browser
     /**
      * Derives the stable per-lane username suffix from a lane_id.
      *
-     * Why only the trailing "_laneN" and not the whole lane_id: lane_id is built by the coordinator
-     * as "<run_uid>_laneN". The run_uid changes every night, so embedding it would create a brand new
-     * user row on every run and let test users accumulate without bound. Keeping just "_laneN" makes
-     * the username identical across runs, so find-or-create reuses the same row and the user set stays
-     * capped at the worker count.
+     * Why only the trailing "_laneN" / "_interactiveN" and not the whole lane_id: lane_id is built by the
+     * action as "<run_uid>_laneN" (RunParallel lane N) or "<run_uid>_interactive<slot>" (RunTest, slot
+     * reserved across processes). The run_uid changes every run, so embedding it would create a brand
+     * new user row on every run and let test users accumulate without bound. Keeping just the slot token
+     * makes the username identical across runs, so find-or-create reuses the same row and the user set
+     * stays capped - at the worker count for the fleet, at TEST_USER.INTERACTIVE_SLOTS for
+     * RunTest.
      *
-     * Why it throws instead of falling back: if we are in a parallel run (lane_id present) but cannot
-     * locate the lane slot, silently using the base username would put every lane back on one shared
+     * Why RunTest needs its own user at all: AI agents and testers now start RunTest concurrently. Runs
+     * that resolve to the same role would write the same USER_AUTHENTICATOR row and fail with
+     * optimistic-locking errors. The reserved slot is unique among concurrently running interactive runs
+     * by construction, so it separates them exactly as the lane number separates fleet lanes.
+     *
+     * Why it throws instead of falling back: if we are in an attach-mode run (lane_id present) but cannot
+     * locate the slot, silently using the base username would put every run back on one shared
      * row — the exact collision this change exists to prevent. Failing loudly surfaces a broken
      * lane_id contract instead of hiding it behind a data race.
      */
     private static function laneUserSuffix(string $laneId): string
     {
-        $pos = strrpos($laneId, self::LANE_USERNAME_TOKEN);
-        if ($pos === false) {
-            throw new RuntimeException('Cannot derive lane user suffix: lane_id "' . $laneId . '" has no "_laneN" token.');
+        if (preg_match('/' . self::laneSlotPattern() . '$/', $laneId, $matches) !== 1) {
+            throw new RuntimeException('Cannot derive lane user suffix: lane_id "' . $laneId . '" has no "_laneN" or "_interactiveN" token.');
         }
-        return substr($laneId, $pos);
+        return $matches[0];
+    }
+
+    /**
+     * Returns the regex fragment (unanchored) that matches one username slot token: "_laneN" or "_interactiveN".
+     *
+     * WHY ONE PATTERN FOR BOTH DIRECTIONS: laneUserSuffix() derives the suffix from a lane_id and
+     * isTestUsername() recognises it on a stored username. If the two used separate patterns, a new
+     * slot kind added to one would create users the data cleanup never recognises as test users and
+     * therefore never removes.
+     */
+    private static function laneSlotPattern(): string
+    {
+        return '(?:' . preg_quote(self::LANE_USERNAME_TOKEN, '/') . '|'
+            . preg_quote(GeneratedBehatConfig::LANE_ID_TOKEN_INTERACTIVE, '/') . ')\d+';
     }
 
     /**
@@ -2629,7 +2650,8 @@ JS
     }
 
     /**
-     * Tells whether a username belongs to the BDT test user family (base user or any lane user).
+     * Tells whether a username belongs to the BDT test user family (base user, any lane user or any
+     * interactive-run user).
      *
      * WHY IT IS STRICT INSTEAD OF A PREFIX CHECK: anything that acts on "the test users" - most of
      * all the data cleanup - decides from this answer whether rows may be deleted. A prefix match
@@ -2645,7 +2667,7 @@ JS
         if ($username === $baseUsername) {
             return true;
         }
-        return preg_match('/^' . preg_quote($baseUsername . self::LANE_USERNAME_TOKEN, '/') . '\d+$/', $username) === 1;
+        return preg_match('/^' . preg_quote($baseUsername, '/') . self::laneSlotPattern() . '$/', $username) === 1;
     }
 
     /**

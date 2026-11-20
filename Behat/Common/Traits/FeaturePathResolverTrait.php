@@ -114,8 +114,8 @@ trait FeaturePathResolverTrait
      * in exactly one place means the run-log, the heartbeat key, the recorded rerun command and the DB
      * column can never drift apart.
      *
-     * WHY FORWARD SLASHES: the recorded rerun command is injected into the Test Runs console's
-     * start_commands JSON array, where a backslash is the escape character and would come back doubled.
+     * WHY FORWARD SLASHES: the recorded rerun command, the run log and run_feature.filename all show the
+     * same platform-neutral form, and the resolver accepts it as input.
      *
      * WHY IT IS NOT LOWER-CASED HERE: this is the human-readable form, so the original spelling of the
      * file is preserved. Case folding is a lookup concern and stays with the caller.
