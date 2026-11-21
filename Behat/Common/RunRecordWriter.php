@@ -24,6 +24,9 @@ use exface\Core\Interfaces\DataSheets\DataSheetInterface;
 final class RunRecordWriter
 {
     use DeadlockRetryTrait;
+
+    // Upper bound of the stored run-level failure text (bytes).
+    private const ERROR_MESSAGE_MAX_BYTES = 8000;
     /**
      * Creates a new run row and returns the datasheet carrying the generated UID.
      *
@@ -145,5 +148,36 @@ final class RunRecordWriter
     public function setRunLog(DataSheetInterface $runSheet, string $log): void
     {
         $runSheet->setCellValue('log', 0, $log);
+    }
+
+    /**
+     * Stages the run-level failure (error_message) onto the run sheet WITHOUT issuing its own update.
+     *
+     * WHY IT EXISTS: the run status is derived in the database from CHILD rows. A failure of the run itself -
+     * a coordinator error, a feature file that failed to parse, a crashed or timed-out Behat process - often
+     * leaves no failed child behind, so the derivation could not see it and the run read as passed. Storing
+     * the failure on the run row gives the status something to honour.
+     *
+     * WHY IT RIDES ALONG WITH finalize(): like setRunLog(), it only stages the value, so the whole close-out
+     * (finished_on, duration, log, failure) is ONE write on a row whose only writer is the owning action.
+     *
+     * WHY IT IS CAPPED: an exception message can carry a whole stack of context; the column is read by
+     * people and agents, so a bounded, still-readable text is more useful than an unbounded one. mb_strcut
+     * trims on a byte budget without splitting a multi-byte character.
+     *
+     * @param DataSheetInterface $runSheet The sheet returned by create().
+     * @param string $message Non-empty description of what failed; an empty one is ignored, because an empty
+     *                        string must never be mistaken for a recorded failure.
+     */
+    public function setError(DataSheetInterface $runSheet, string $message): void
+    {
+        $message = trim($message);
+        if ($message === '') {
+            return;
+        }
+        if (strlen($message) > self::ERROR_MESSAGE_MAX_BYTES) {
+            $message = mb_strcut($message, 0, self::ERROR_MESSAGE_MAX_BYTES) . "\n... (truncated)";
+        }
+        $runSheet->setCellValue('error_message', 0, $message);
     }
 }

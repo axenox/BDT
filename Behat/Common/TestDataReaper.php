@@ -2,6 +2,7 @@
 
 namespace axenox\BDT\Behat\Common;
 
+use axenox\BDT\BDTApp;
 use axenox\BDT\Behat\Contexts\UI5Facade\UI5Browser;
 use exface\Core\Behaviors\TimeStampingBehavior;
 use exface\Core\CommonLogic\UxonObject;
@@ -54,7 +55,7 @@ final class TestDataReaper
      * results and de-provision the test users. A config option could be mis-set once and destroy
      * weeks of history, so this exclusion is not configurable - configuration may only ADD to it.
      */
-    private const PROTECTED_APPS = ['exface.Core', 'axenox.BDT'];
+    private const PROTECTED_APPS = ['exface.Core', BDTApp::APP_ALIAS];
 
     private const CFG_EXCLUDE_APPS    = 'TEST_DATA_CLEANUP.EXCLUDE_APPS';
 
@@ -334,8 +335,9 @@ final class TestDataReaper
      * Resolves the UIDs of the base test user and all of its per-lane siblings.
      *
      * WHY A PATTERN MATCH AND NOT A SINGLE USERNAME: a parallel run provisions one user per lane by
-     * appending "_laneN" to the configured base username. Cleaning only the base user would leave
-     * everything the lanes created - which in a parallel run is all of it.
+     * appending "_laneN" to the configured base username, and every RunTest run one by appending
+     * "_interactive<slot>". Cleaning only the base user would leave everything the lanes and the
+     * interactive runs created - which in a parallel run is all of it.
      *
      * WHY UI5Browser DECIDES WHAT A TEST USERNAME IS: that class owns the naming convention because
      * it is the one that creates the users. Re-implementing the pattern here would let the two drift
@@ -346,9 +348,9 @@ final class TestDataReaper
      */
     private function findTestUserUids(): array
     {
-        $base = (string) $this->workbench->getApp('axenox.BDT')->getConfig()->getOption('TEST_USER.USERNAME');
+        $base = (string) $this->workbench->getApp(BDTApp::APP_ALIAS)->getConfig()->getOption(BdtConfig::TEST_USER_USERNAME);
         if ($base === '') {
-            throw new RuntimeException('Cannot clean up test data: TEST_USER.USERNAME is empty.');
+            throw new RuntimeException('Cannot clean up test data: ' . BdtConfig::TEST_USER_USERNAME . ' is empty.');
         }
 
         $ds = DataSheetFactory::createFromObjectIdOrAlias($this->workbench, 'exface.Core.USER');
@@ -433,7 +435,7 @@ final class TestDataReaper
         $aliasCol = $ds->getColumns()->addFromExpression('ALIAS_WITH_NS');
         $ds->getFilters()->addConditionFromValueArray('APP__ALIAS', $apps);
 
-        $cfg = $this->workbench->getApp('axenox.BDT')->getConfig();
+        $cfg = $this->workbench->getApp(BDTApp::APP_ALIAS)->getConfig();
         if ($cfg->hasOption(self::CFG_OBJECT_FILTERS)) {
             $uxon = $cfg->getOption(self::CFG_OBJECT_FILTERS);
             if ($uxon instanceof UxonObject && ! $uxon->isEmpty()) {
@@ -757,7 +759,7 @@ final class TestDataReaper
      */
     private function getConfigList(string $key): array
     {
-        $cfg = $this->workbench->getApp('axenox.BDT')->getConfig();
+        $cfg = $this->workbench->getApp(BDTApp::APP_ALIAS)->getConfig();
         if (! $cfg->hasOption($key)) {
             return [];
         }
@@ -773,7 +775,7 @@ final class TestDataReaper
      */
     private function getMaxPasses(): int
     {
-        $cfg = $this->workbench->getApp('axenox.BDT')->getConfig();
+        $cfg = $this->workbench->getApp(BDTApp::APP_ALIAS)->getConfig();
         $passes = $cfg->hasOption(self::CFG_MAX_PASSES) ? (int) $cfg->getOption(self::CFG_MAX_PASSES) : self::DEFAULT_MAX_PASSES;
         return max(1, $passes);
     }

@@ -2,6 +2,7 @@
 namespace axenox\BDT\Behaviors;
 
 use exface\Core\CommonLogic\Model\Behaviors\AbstractBehavior;
+use axenox\BDT\Behat\Common\BdtPaths;
 use axenox\BDT\DataTypes\GherkinDataType;
 use exface\Core\Events\Action\OnBeforeActionPerformedEvent;
 use exface\Core\Exceptions\RuntimeException;
@@ -194,7 +195,7 @@ class FeatureFileValidatingBehavior extends AbstractBehavior
 
         // A .feature extension is required - the Gherkin loader ignores other files.
         $tmpFile = $tmpDir . DIRECTORY_SEPARATOR . 'dryrun.feature';
-        $tmpConf = $tmpDir . DIRECTORY_SEPARATOR . 'behat.yml';
+        $tmpConf = $tmpDir . DIRECTORY_SEPARATOR . BdtPaths::BEHAT_CONFIG_FILE_NAME;
 
         try {
             file_put_contents($tmpFile, $content);

@@ -64,6 +64,11 @@ BDT starts and cleans up local Chrome itself, using an allocated port and an iso
 For a remote manager, the external browser must already be running; BDT attaches to it rather
 than launching or stopping its process.
 
+**RunTest and RunParallel do not run `Behat init`.** Run it before them (a scheduler step, the
+console's start command, or your agent's setup), and again after a deployment so `base_url` is
+current. The actions only require the installation-root `behat.yml` to exist and fail with an
+instruction to run init if it does not.
+
 Examples (replace the app/feature names with ones from your installation):
 
 ```console
@@ -75,9 +80,9 @@ vendor\bin\action axenox.BDT:RunTest --suite=my.APP
 | Option | Meaning |
 |---|---|
 | `--tags` | Behat tag filter. |
-| `--feature` | Feature file or directory. |
+| `--feature` | Feature file or directory. May be combined with `--suite`; the feature must then lie inside that suite. |
 | `--suite` | Behat suite name. Selectors can be combined; at least one of `--tags`, `--feature`, `--suite` is required. |
-| `--behat_config` | Base config imported by the generated config. Defaults to `PARALLEL.BEHAT_CONFIG`, then installation-root `behat.yml`. |
+| `--behat_config` | Base config imported by the generated config; must be in the installation root. Defaults to `PARALLEL.BEHAT_CONFIG`, then installation-root `behat.yml`. |
 | `--chrome_path` | Override the local executable for this run; use the real `chrome.exe`, not the portable launcher. Ignored for an attached browser. |
 | `--chrome_endpoint` | Remote CDP HTTP endpoint; forces the remote manager for this run. |
 | `--base_url` | Application URL. For a remote manager, the URL reachable from that browser; for a local manager, a Mink `base_url` override only. |
@@ -99,17 +104,19 @@ vendor\bin\action axenox.BDT:RunParallel --tags=@Status::Ready
 
 **RunParallel requires a local browser manager supporting parallel lanes.** It rejects the remote
 manager because lanes would share the same browser and interfere with each other's tabs and logins.
-It initializes Behat automatically, queues matching features, and runs one feature per worker process.
+It does not initialize Behat (run `Behat init` first, see above), queues matching features, and runs one feature per worker process.
 
 | Option | Meaning |
 |---|---|
 | `--tags` | Behat tag filter; no automatic tag filter is applied when omitted. |
-| `--feature` | Restrict to a feature file or directory; mutually exclusive with `--suite`. |
-| `--suite` | Restrict to a named suite; mutually exclusive with `--feature`. At least one of `--tags`, `--feature`, `--suite` is required. |
-| `--behat_config` | Base config in the installation root; defaults to `behat.yml`, refreshed by initialization. |
+| `--feature` | Restrict to a feature file or directory. May be combined with `--suite`; the feature must then lie inside that suite. |
+| `--suite` | Restrict to a named suite. May be combined with `--feature`. At least one of `--tags`, `--feature`, `--suite` is required. |
+| `--behat_config` | Base config in the installation root; defaults to `PARALLEL.BEHAT_CONFIG`, then `behat.yml`, which `Behat init` creates. |
 | `--chrome_path` | Override the local executable for this run; otherwise use `BROWSER.MANAGER_CONFIG.executable`. |
 
-Worker count is configured with `PARALLEL.MAX_WORKERS`, not a CLI option. Local browser port bands
+Worker count is configured with `PARALLEL.MAX_WORKERS`, not a CLI option. The number of concurrent
+RunTest runs is capped by `TEST_USER.INTERACTIVE_SLOTS` (default 10): each run reserves one slot,
+which gives it its own test user. Local browser port bands
 and headless mode belong in `BROWSER.MANAGER_CONFIG`.
 
 ### Results
@@ -118,7 +125,12 @@ and headless mode belong in `BROWSER.MANAGER_CONFIG`.
   and the scenario/step details in the automated-tests UI.
 - With the shipped formatter configuration, HTML reports go to
   `<INSTALLATION_ROOT>\data\axenox\BDT\Reports`.
-- RunParallel also writes worker and coordinator logs under
+- Both actions create and close their own run row and print its UID on a line of its own,
+  `Run UID: <uid>` (RunTest right after the row is created and again in its closing banner;
+  RunParallel in every result or error message once the row exists). Use that UID to read the run,
+  its features, scenarios and steps from the database.
+- RunTest writes its Behat output to `<INSTALLATION_ROOT>\data\axenox\BDT\Logs\<run_uid>\interactive.log`;
+  RunParallel also writes worker and coordinator logs under
   `<INSTALLATION_ROOT>\data\axenox\BDT\Logs\<run_uid>` and stores a machinery summary in the run's
   **Log** attribute. See [How to read a BDT parallel run log](Parallel_Run/reading-the-run-log.md).
   A healthy machinery log does not mean every scenario passed.

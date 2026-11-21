@@ -2,6 +2,7 @@
 namespace axenox\BDT\Behat\BrowserManagers;
 
 use axenox\BDT\Behat\Common\Traits\ChromeProfileReaperTrait;
+use axenox\BDT\Behat\Common\XdebugState;
 use axenox\BDT\Exceptions\ConfigException;
 use exface\Core\DataTypes\FilePathDataType;
 use exface\Core\Exceptions\RuntimeException;
@@ -671,8 +672,6 @@ class LocalChromeManager extends AbstractBrowserManager implements BrowserTabCon
         if ($this->headless !== null) {
             return $this->headless;
         }
-        return !(extension_loaded('xdebug')
-            && function_exists('xdebug_is_debugger_active')
-            && xdebug_is_debugger_active());
+        return ! XdebugState::isDebuggerActive();
     }
 }

@@ -96,6 +96,73 @@ final class ExpectedTestCountCalculator
     }
 
     /**
+     * Computes the expected counts of a whole Behat invocation: which suites run, which feature path
+     * (if any) is passed positionally and which tag filter Behat applies to each of them.
+     *
+     * WHY THIS LIVES HERE AND IS SHARED: the formatter (single process) and the coordinators
+     * (RunParallel, RunTest) must predict exactly what Behat will run. The formatter already knew two
+     * rules the coordinators did not: Behat applies the owning suite's own "filters.tags" when no
+     * --tags is given, and a positional path runs only inside the suite that owns it. A coordinator
+     * that counted with the CLI --tags alone over-counted every --suite run without --tags, expected
+     * exceeded actual, and the run looked like a silent stop. One implementation for all callers
+     * makes that drift impossible.
+     *
+     * RULES (mirroring Behat):
+     * - --suite restricts the run to that suite only;
+     * - a positional feature path runs only inside the suite that owns it; with --suite given, a path
+     *   outside that suite runs NOTHING and counts as zero (the coordinators refuse it before this point);
+     * - tag filter per suite = CLI --tags when given, otherwise the suite's own filters.tags;
+     * - a positional path owned by no suite (and no --suite) is counted with the CLI --tags alone.
+     *
+     * @param array<string,array{paths:string[],tags:?string}> $suites Suite definitions (see BehatSuiteResolver::resolveSuites())
+     * @param string|null $cliSuite    Value of --suite, if given
+     * @param string|null $cliTags     Value of --tags, if given (an empty string means "no filter", as for Behat)
+     * @param string|null $featurePath Absolute positional feature file or directory, if given
+     */
+    public function calculateForScope(array $suites, ?string $cliSuite, ?string $cliTags, ?string $featurePath = null): ExpectedTestCountResult
+    {
+        if ($cliSuite !== null) {
+            $suites = isset($suites[$cliSuite]) ? [$cliSuite => $suites[$cliSuite]] : [];
+        }
+
+        if ($featurePath !== null) {
+            $owner = BehatSuiteResolver::findSuiteOwningPath($suites, $featurePath);
+            if ($owner === null && $cliSuite !== null) {
+                return new ExpectedTestCountResult(0, 0, [], []);
+            }
+            $tagExpression = $owner !== null ? ($cliTags ?? $suites[$owner]['tags']) : $cliTags;
+            return $this->calculate([$featurePath], $tagExpression);
+        }
+
+        $total = new ExpectedTestCountResult(0, 0, [], []);
+        foreach ($suites as $suite) {
+            if (empty($suite['paths'])) {
+                continue;
+            }
+            $total = self::merge($total, $this->calculate($suite['paths'], $cliTags ?? $suite['tags']));
+        }
+        return $total;
+    }
+
+    /**
+     * Adds two results together.
+     *
+     * WHY THE COUNTS ARE SUMMED BUT THE FILE LIST IS NOT: Behat runs a feature once per suite that
+     * contains it, so the counts add up per suite - but the coordinators dispatch one worker per FILE,
+     * so a file reachable through two suites must appear in the work list once.
+     */
+    private static function merge(ExpectedTestCountResult $a, ExpectedTestCountResult $b): ExpectedTestCountResult
+    {
+        return new ExpectedTestCountResult(
+            $a->featureCount + $b->featureCount,
+            $a->scenarioCount + $b->scenarioCount,
+            array_values(array_unique(array_merge($a->scannedFiles, $b->scannedFiles))),
+            array_merge($a->errors, $b->errors),
+            array_values(array_unique(array_merge($a->matchedFiles, $b->matchedFiles)))
+        );
+    }
+
+    /**
      * Expands directories to the .feature files they contain and passes through file paths.
      *
      * Why recurse manually instead of glob(): suites commonly nest features in sub-folders,

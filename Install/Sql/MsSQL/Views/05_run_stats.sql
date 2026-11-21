@@ -25,6 +25,11 @@ SELECT
          WHEN MAX(r.finished_on) IS NULL AND DATEDIFF(MINUTE, MAX(ss.started_on), GETDATE()) > 10 THEN 102
          -- Still running within timeout window
          WHEN MAX(r.finished_on) IS NULL THEN 10
+        -- RUN-LEVEL FAILURE. The step verdicts below read child rows only, so a run that failed before or
+        -- between its children (coordinator error, feature that failed to parse, crashed or timed-out
+        -- Behat process) left nothing for them to see and read as passed. The action that owns the run
+        -- records every such failure in error_message; a finished run with one is failed.
+         WHEN MAX(CASE WHEN r.error_message IS NOT NULL AND r.error_message <> '' THEN 1 ELSE 0 END) = 1 THEN 101
         -- NEW BRANCH. An undefined step means the scenario definition itself is broken: Behat does not
         -- execute anything after an undefined step, so the remaining verdicts in this scenario carry no
         -- information. Reported before the failure branch on purpose - a broken definition has to be

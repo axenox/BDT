@@ -1,6 +1,7 @@
 <?php
 namespace axenox\BDT\Behat\BrowserManagers;
 
+use axenox\BDT\BDTApp;
 use axenox\BDT\Exceptions\ConfigException;
 use exface\Core\CommonLogic\UxonObject;
 use exface\Core\Exceptions\OutOfBoundsException;
@@ -38,7 +39,6 @@ use exface\Core\Interfaces\WorkbenchInterface;
  */
 class BrowserManagerFactory
 {
-    private const APP_ALIAS = 'axenox.BDT';
     private const CFG_MANAGER = 'BROWSER.MANAGER';
     private const CFG_MANAGER_CONFIG = 'BROWSER.MANAGER_CONFIG';
     private const CFG_LEGACY_ENDPOINT = 'REMOTE.CHROME_ENDPOINT';
@@ -74,7 +74,7 @@ class BrowserManagerFactory
         ?string $managerClass = null
     ): BrowserManagerInterface {
         $runtimeOverrides = $runtimeOverrides ?? new UxonObject();
-        $appConfig = $workbench->getApp(self::APP_ALIAS)->getConfig();
+        $appConfig = $workbench->getApp(BDTApp::APP_ALIAS)->getConfig();
         [$hasManagerOverride, $legacyKeys, $hasManagerConfigOverride] = self::readHigherScopeSettings($appConfig);
         $configuredClass = self::readConfiguredManagerClass($appConfig);
         $useLegacy = $legacyKeys !== [] && (! $hasManagerOverride || $configuredClass === null);
@@ -127,7 +127,7 @@ class BrowserManagerFactory
         ?UxonObject $runtimeOverrides = null,
         ?string $managerClass = null
     ): string {
-        $appConfig = $workbench->getApp(self::APP_ALIAS)->getConfig();
+        $appConfig = $workbench->getApp(BDTApp::APP_ALIAS)->getConfig();
         [$hasManagerOverride, $legacyKeys] = self::readHigherScopeSettings($appConfig);
         $configuredClass = self::readConfiguredManagerClass($appConfig);
         $useLegacy = $legacyKeys !== [] && (! $hasManagerOverride || $configuredClass === null);
