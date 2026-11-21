@@ -1,80 +1,24 @@
 <?php
 namespace axenox\BDT\Behat\Contexts\UI5Facade\Nodes;
 
-use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\BDT\Behat\DatabaseFormatter\SubstepResult;
 use axenox\BDT\Exceptions\FacadeNodeException;
 use axenox\BDT\Interfaces\TestResultInterface;
-use exface\Core\Exceptions\RuntimeException;
 use exface\Core\Interfaces\Debug\LogBookInterface;
 
 /**
- * Node for the Markdown widget (sap.ui.core.HTML rendering a ToastUI viewer).
+ * Checks Markian viewer output rather than merely finding the native UI5 host.
  *
- * Why this class exists:
- * The Markdown widget renders as two nested DIVs with the relevant attributes split
- * across them: the outer DIV carries the `exfw exfw-Markdown` marker classes but has
- * no id, while the inner DIV carries the control id and the `markdown-editor` class
- * but no `exfw` class. UI5ContainerNode locates children by id, so this node is
- * normally constructed from the INNER div - which means the inherited
- * getWidgetType() finds no `exfw` class on the node nor in its subtree and throws
- * "Cannot find widget inside of DOM node ...". This class bridges both directions:
- * the element id is resolved no matter which of the two DIVs the node was built
- * from, and the widget type is read from the marker ancestor.
+ * A host can exist while rendering has failed or a Mermaid fence remains unrendered.
+ * These checks make those failures visible in BDT results.
  */
 class UI5MarkdownNode extends UI5AbstractNode
 {
     /**
-     * Resolves the UI5 control id regardless of which DIV the node was built from.
-     *
-     * Why this override exists:
-     * Only the inner `.markdown-editor` DIV has an `id` attribute. When the node is
-     * built from the outer marker DIV (factory path via findParentWithWidgetClass),
-     * the inherited getElementId() returns null and getWidgetFromElementId() breaks
-     * on explode(). The outer DIV carries the same control id in
-     * `data-sap-ui-preserve`, so it can be used as a fallback. Overriding the id
-     * lookup instead of getWidget() keeps the caching in UI5AbstractNode::getWidget().
-     *
-     * @return string
-     */
-    public function getElementId() : string
-    {
-        $node = $this->getNodeElement();
-        foreach (['id', 'data-sap-ui-preserve'] as $attr) {
-            $value = $node->getAttribute($attr);
-            if ($value !== null && $value !== '') {
-                return $value;
-            }
-        }
-        if (null !== $inner = $node->find('css', '.markdown-editor[id]')) {
-            return $inner->getAttribute('id');
-        }
-        throw new RuntimeException('Cannot determine the UI5 control id of the Markdown node "' . $node->getXpath() . '"!');
-    }
-
-    /**
-     * Reads the widget type from the `exfw-Markdown` marker ancestor.
-     *
-     * Why this override exists:
-     * The node element is usually the inner container, which carries neither the
-     * `exfw` class nor any `exfw` descendant, so the inherited implementation would
-     * throw. findWidgetNode() already walks up to the nearest `.exfw` ancestor and
-     * findWidgetType() already extracts the type from the CSS class - both are
-     * reused here instead of hardcoding "Markdown".
-     *
-     * @return string|null
-     */
-    public function getWidgetType() : ?string
-    {
-        $widgetNode = self::findWidgetNode($this->getNodeElement());
-        return UI5FacadeNodeFactory::findWidgetType($widgetNode) ?? parent::getWidgetType();
-    }
-
-    /**
      * Returns a human-readable label for logs and failure messages.
      *
      * Why this override exists:
-     * Neither of the two DIVs of the Markdown widget carries an `aria-label`, so the
+     * The Markdown host does not necessarily carry an `aria-label`, so the
      * inherited getCaption() would call strstr() on null and break its own string
      * return type. The Markdown widget itself usually has no caption either - what the
      * user sees as the title is the caption of the surrounding container (e.g. the
@@ -113,7 +57,7 @@ class UI5MarkdownNode extends UI5AbstractNode
      * Why these particular assertions:
      * Merely finding the container proves nothing - the node element IS that
      * container, so such a check can never fail. What can actually go wrong is:
-     * (a) ToastUI never built its contents area, (b) the block is parked in UI5's
+     * (a) Markian never built its contents area, (b) the block is parked in UI5's
      * preserve area during a rerender and is therefore invisible to the user, and
      * (c) a Mermaid diagram failed to render and Mermaid substituted its own error
      * SVG - the DOM then looks perfectly healthy while the user sees "Syntax error
@@ -133,11 +77,15 @@ class UI5MarkdownNode extends UI5AbstractNode
                 $lb = $result->getLogbook();
                 $node = $this->getNodeElement();
 
-                $contents = $node->hasClass('toastui-editor-contents')
+                $failure = $node->getAttribute('data-markian-error') ?? $node->find('css', '[data-markian-error]')?->getAttribute('data-markian-error');
+                if ($failure !== null) {
+                    throw new FacadeNodeException($this, 'Markdown rendering failed: ' . $failure);
+                }
+                $contents = $node->hasClass('markian-document')
                     ? $node
-                    : $node->find('css', '.toastui-editor-contents');
+                    : $node->find('css', '.markian-viewer .markian-document');
                 if ($contents === null) {
-                    throw new FacadeNodeException($this, 'Markdown viewer did not render: no `.toastui-editor-contents` inside "' . $node->getXpath() . '"');
+                    throw new FacadeNodeException($this, 'Markdown viewer did not render: no `.markian-document` inside "' . $node->getXpath() . '"');
                 }
 
                 // UI5 moves preserved HTML content into the hidden #sap-ui-preserve area
@@ -187,10 +135,7 @@ class UI5MarkdownNode extends UI5AbstractNode
     protected function checkMermaidDiagrams(\Behat\Mink\Element\NodeElement $contents, LogBookInterface $logbook) : void
     {
         // Take the <pre> wrappers only - the nested <code> would double-count every diagram.
-        $blocks = $contents->findAll('css', 'pre.lang-mermaid');
-        if (empty($blocks)) {
-            $blocks = $contents->findAll('css', 'code[data-language="mermaid"]');
-        }
+        $blocks = $contents->findAll('css', '.markian-rendered-fence[data-language="mermaid"], pre > code.language-mermaid');
         if (empty($blocks)) {
             return;
         }
