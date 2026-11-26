@@ -966,6 +966,10 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      * fields and their values in a Gherkin table. Each field is found by its visible label
      * (caption). The table must have two columns named "widget_name" and "value".
      *
+     * Wait for each field's UI reactions before moving on so they cannot race the next
+     * input.
+     * widgets that format values or require a selection may need a different step.
+     *
      * Usage example:
      *
      *   Then I fill the following fields:
@@ -980,17 +984,18 @@ class UI5BrowserContext extends BehatFormatterContext implements Context
      */
     public function iFillTheFollowingFields(TableNode $fields): void
     {
-        // Process each row in the table
+        $browser = $this->getBrowser();
+
         foreach ($fields->getHash() as $row) {
-            // Find input by caption
-            $widget = $this->getBrowser()->findInputByCaption($row['widget_name']);
+            $caption = $row['widget_name'];
+            $widget = $browser->findInputByCaption($caption);
             Assert::assertNotNull(
                 $widget,
-                sprintf('Cannot find input widget "%s"', $row['widget_name'])
+                sprintf('Cannot find input widget "%s"', $caption)
             );
 
-            // Set value and wait for any UI reactions
             $widget->setValue($row['value']);
+            $browser->getWaitManager()->waitForPendingOperations(true, true, true);
         }
     }
 
