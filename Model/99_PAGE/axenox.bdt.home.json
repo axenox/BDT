@@ -42,6 +42,10 @@
                                 "hidden": true
                             },
                             {
+                                "attribute_alias": "paused",
+                                "hidden": true
+                            },
+                            {
                                 "attribute_alias": "run_feature__filename",
                                 "hidden": true
                             },
